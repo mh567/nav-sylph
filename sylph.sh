@@ -234,43 +234,63 @@ do_install() {
         echo "installed=$(date -Iseconds)" > "${APP_DIR}/.installed-by-script"
     fi
 
-    # 完成提示
-    echo ""
-    echo -e "${GREEN}════════════════════════════════════════${NC}"
-    echo -e "${GREEN}            安装完成!                   ${NC}"
-    echo -e "${GREEN}════════════════════════════════════════${NC}"
-    echo ""
-    echo "  安装目录: $APP_DIR"
-    echo ""
-    echo -e "  ${YELLOW}默认管理密码: admin123${NC}"
-    echo -e "  ${YELLOW}请登录后立即修改密码!${NC}"
-    echo ""
-    echo "  常用命令:"
-    echo "    ./sylph.sh start    # 启动服务"
-    echo "    ./sylph.sh stop     # 停止服务"
-    echo "    ./sylph.sh status   # 查看状态"
-    echo ""
-
-    # 平台特定提示
-    if has_systemd; then
-        echo "  开机自启 (仅 Linux):"
-        echo "    sudo ./sylph.sh enable"
-        echo ""
-    elif [ "$OS" = "macos" ]; then
-        echo -e "  ${BLUE}提示: macOS 可使用 launchd 实现开机自启${NC}"
-        echo "    参考: https://support.apple.com/guide/terminal/apdc6c1077b-5d5d-4d35-9c19-60f2397b2369/mac"
-        echo ""
-    elif [ "$OS" = "windows" ] || [ "$OS" = "wsl" ]; then
-        echo -e "  ${BLUE}提示: Windows 可使用任务计划程序实现开机自启${NC}"
-        echo ""
-    fi
-
     # 询问是否启动
+    local service_started=false
     read -p "是否立即启动服务? [Y/n] " -n 1 -r
     echo ""
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         do_start
+        service_started=true
     fi
+
+    # 获取配置
+    get_config
+
+    # 完成提示 - 显示完整状态
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║                    安装完成!                               ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}── 安装信息 ──${NC}"
+    echo "  安装目录:     $APP_DIR"
+    echo "  安装方式:     一键脚本"
+    echo ""
+    echo -e "${CYAN}── 服务状态 ──${NC}"
+    if [ "$service_started" = true ] && is_running; then
+        echo -e "  运行状态:     ${GREEN}运行中${NC} (PID: $(cat ${PID_FILE}))"
+    else
+        echo -e "  运行状态:     ${YELLOW}未启动${NC}"
+    fi
+    if has_systemd; then
+        echo -e "  开机自启:     ${YELLOW}未启用${NC} (可用 sudo ./sylph.sh enable 启用)"
+    else
+        echo -e "  开机自启:     不适用 (当前系统: $OS)"
+    fi
+    echo ""
+    echo -e "${CYAN}── 访问信息 ──${NC}"
+    echo "  访问地址:     http://${HOST}:${PORT}"
+    echo -e "  管理密码:     ${YELLOW}admin123${NC} (请登录后立即修改!)"
+    echo ""
+    echo -e "${CYAN}── 管理命令 ──${NC}"
+    echo "  cd $APP_DIR"
+    echo "  ./sylph.sh start       # 启动服务"
+    echo "  ./sylph.sh stop        # 停止服务"
+    echo "  ./sylph.sh restart     # 重启服务"
+    echo "  ./sylph.sh status      # 查看状态"
+    echo "  ./sylph.sh logs        # 查看日志"
+    echo "  ./sylph.sh update      # 更新版本"
+    echo "  ./sylph.sh uninstall   # 卸载"
+    if has_systemd; then
+        echo "  sudo ./sylph.sh enable   # 开机自启"
+        echo "  sudo ./sylph.sh disable  # 禁用自启"
+    fi
+    echo ""
+    echo -e "${CYAN}── 配置说明 ──${NC}"
+    echo "  服务器配置:   编辑 .env 文件 (端口、HTTPS等)"
+    echo "  书签管理:     浏览器访问后点击右下角齿轮图标"
+    echo "  修改密码:     在管理面板中修改"
+    echo ""
 }
 
 # 启动服务
