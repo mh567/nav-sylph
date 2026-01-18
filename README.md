@@ -17,26 +17,84 @@
 - **灵活配置**：支持环境变量、配置文件多种配置方式
 - **HTTPS 支持**：可选启用 HTTPS，支持自定义证书路径
 
-## 快速开始
+## 一键部署
 
-### 使用管理脚本（推荐）
+### 🚀 服务器部署 (Linux)
 
 ```bash
-# 1. 初始化（安装依赖、创建目录）
-./manage.sh install
+# 一键安装
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
 
-# 2. 启动服务
-./manage.sh start
-
-# 3. 查看状态
-./manage.sh status
+# 设置开机自启 (可选)
+cd ~/nav-sylph
+sudo ./manage.sh enable
 ```
+
+### 💻 本地部署
+
+#### Linux / macOS
+
+```bash
+# 一键安装
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
+```
+
+#### Windows
+
+**方式一：使用 Git Bash 或 WSL**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
+```
+
+**方式二：手动安装**
+
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/mh567/nav-sylph.git
+cd nav-sylph
+
+# 2. 安装依赖
+npm install
+
+# 3. 启动服务
+npm start
+```
+
+### 📦 自定义安装目录
+
+```bash
+# 指定安装目录
+NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
+```
+
+### 🔄 更新与卸载
+
+```bash
+cd ~/nav-sylph
+
+# 更新到最新版本
+./install.sh update
+
+# 卸载
+./install.sh uninstall
+```
+
+## 默认密码
+
+| 项目 | 值 |
+|------|-----|
+| **默认管理密码** | `admin123` |
+
+> ⚠️ **安全提示**：首次登录后请立即在管理面板中修改密码！
 
 服务器默认运行在 [http://127.0.0.1:4000](http://127.0.0.1:4000)。
 
-### 传统方式
+## 传统方式部署
 
 ```bash
+git clone https://github.com/mh567/nav-sylph.git
+cd nav-sylph
 npm install
 npm start
 ```
