@@ -1,96 +1,31 @@
-# Nav Sylph - 个人导航页
+# Nav Sylph
 
-一个极简、高效的个人导航与书签管理页面，提供最纯粹的浏览起步体验。
+一个极简、高效的个人导航与书签管理页面。
 
 ![预览](docs/preview.png)
 
-## 功能特性
+## 核心特点
 
-- **极简设计**：纯净无广告，秒开体验，专注搜索与书签
-- **自定义搜索**：内置多个搜索引擎，支持在管理面板设置默认引擎
-- **书签分类管理**：支持自定义分类名称及书签链接，拖拽排序
-- **显示模式切换**：支持「图标+文字」和「纯文字」两种书签显示模式
-- **管理面板**：点击右下角图标进入可视化编辑
-- **PWA 支持**：可安装到桌面或手机主屏，像原生应用一样使用
-- **响应式布局**：完美适配移动端和桌面端，支持系统级暗黑模式
-- **安全防护**：Rate Limiting、安全头、bcrypt 密码加密
-- **灵活配置**：支持环境变量、配置文件多种配置方式
-- **HTTPS 支持**：可选启用 HTTPS，支持自定义证书路径
+| 特点 | 说明 |
+|------|------|
+| **极简设计** | 纯净无广告，秒开体验，专注搜索与书签 |
+| **书签管理** | 分类管理、拖拽排序、图标/纯文字两种显示模式 |
+| **多搜索引擎** | 内置 Google、百度、Bing、DuckDuckGo，可设置默认 |
+| **PWA 支持** | 可安装到桌面或手机主屏，离线可用 |
+| **响应式布局** | 完美适配移动端和桌面端，支持系统级暗黑模式 |
+| **安全防护** | bcrypt 密码加密、Rate Limiting、安全头、XSS 防护 |
 
-## 一键部署
+## 部署与管理
 
-### 🚀 服务器部署 (Linux)
-
-```bash
-# 一键安装
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
-
-# 设置开机自启 (可选)
-cd ~/nav-sylph
-sudo ./manage.sh enable
-```
-
-### 💻 本地部署
-
-#### Linux / macOS
-
-```bash
-# 一键安装
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
-```
-
-#### Windows
-
-**方式一：使用 Git Bash 或 WSL**
+### 一键部署
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
 ```
 
-**方式二：手动安装**
+支持 Linux / macOS / Windows (Git Bash, WSL)
 
-```powershell
-# 1. 克隆仓库
-git clone https://github.com/mh567/nav-sylph.git
-cd nav-sylph
-
-# 2. 安装依赖
-npm install
-
-# 3. 启动服务
-npm start
-```
-
-### 📦 自定义安装目录
-
-```bash
-# 指定安装目录
-NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
-```
-
-### 🔄 更新与卸载
-
-```bash
-cd ~/nav-sylph
-
-# 更新到最新版本
-./install.sh update
-
-# 卸载
-./install.sh uninstall
-```
-
-## 默认密码
-
-| 项目 | 值 |
-|------|-----|
-| **默认管理密码** | `admin123` |
-
-> ⚠️ **安全提示**：首次登录后请立即在管理面板中修改密码！
-
-服务器默认运行在 [http://127.0.0.1:4000](http://127.0.0.1:4000)。
-
-## 传统方式部署
+### 手动部署
 
 ```bash
 git clone https://github.com/mh567/nav-sylph.git
@@ -99,44 +34,67 @@ npm install
 npm start
 ```
 
-## 管理脚本
+### 脚本说明
+
+项目提供两个管理脚本：
+
+#### `install.sh` - 一键部署脚本
 
 | 命令 | 说明 |
 |------|------|
-| `./manage.sh install` | 初始化：安装依赖、创建目录、生成配置 |
+| `./install.sh install` | 一键安装（克隆仓库、安装依赖、启动服务） |
+| `./install.sh update` | 更新到最新版本（保留配置） |
+| `./install.sh uninstall` | 完全卸载 |
+
+```bash
+# 自定义安装目录
+NAV_SYLPH_DIR=/opt/nav-sylph ./install.sh install
+```
+
+#### `manage.sh` - 服务管理脚本
+
+| 命令 | 说明 |
+|------|------|
+| `./manage.sh install` | 初始化：安装依赖、创建目录 |
 | `./manage.sh start` | 启动服务（后台运行） |
-| `./manage.sh stop` | 优雅停止服务 |
+| `./manage.sh stop` | 停止服务 |
 | `./manage.sh restart` | 重启服务 |
-| `./manage.sh status` | 查看运行状态和健康检查 |
+| `./manage.sh status` | 查看运行状态 |
 | `./manage.sh logs` | 查看实时日志 |
-| `sudo ./manage.sh enable` | 安装 systemd 服务并启用开机自启 |
+| `sudo ./manage.sh enable` | 安装为 systemd 服务（开机自启） |
 | `sudo ./manage.sh disable` | 卸载 systemd 服务 |
 
-## 界面设置
+## 系统配置
 
-在管理面板中可配置：
+### 配置文件
 
-| 设置项 | 说明 |
-|--------|------|
-| **默认搜索引擎** | 设置页面加载时使用的搜索引擎 |
-| **书签显示模式** | 「图标+文字」显示网站图标，「纯文字模式」仅显示标题 |
-
-纯文字模式特别适合：
-- 追求极简风格的用户
-- 网络环境较差（减少图标请求）
-- 移动端更大的触控区域
-
-## 服务器配置
+| 文件 | 用途 |
+|------|------|
+| `.env` | 环境变量配置（主要配置文件） |
+| `server-config.json` | JSON 格式服务器配置（可选） |
+| `config.json` | 书签数据存储（自动生成） |
+| `.admin-password.json` | 管理密码存储（自动生成） |
 
 ### 配置优先级
 
 ```
-默认值 → server-config.json → .env 文件 → 环境变量
+默认值 → server-config.json → .env → 环境变量
 ```
 
-### 环境变量
+### 环境变量 (.env)
 
-复制 `.env.example` 为 `.env` 并编辑：
+复制 `.env.example` 为 `.env` 进行配置：
+
+```bash
+# 服务器配置
+SERVER_HOST=127.0.0.1
+SERVER_PORT=4000
+
+# HTTPS 配置（可选）
+HTTPS_ENABLED=false
+HTTPS_KEY_PATH=/path/to/key.pem
+HTTPS_CERT_PATH=/path/to/cert.pem
+```
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -145,81 +103,48 @@ npm start
 | `HTTPS_ENABLED` | `false` | 是否启用 HTTPS |
 | `HTTPS_KEY_PATH` | - | SSL 私钥路径 |
 | `HTTPS_CERT_PATH` | - | SSL 证书路径 |
-| `HTTPS_CA_PATH` | - | CA 证书链路径（可选） |
-| `ADMIN_PASSWORD_FILE` | `.admin-password.json` | 密码文件路径 |
-| `LOG_DIR` | `logs` | 日志目录 |
 
-### JSON 配置文件
+## 操作与使用
 
-创建 `server-config.json`：
+### 默认账户
 
-```json
-{
-  "server": {
-    "host": "127.0.0.1",
-    "port": 4000,
-    "https": {
-      "enabled": false,
-      "keyPath": "",
-      "certPath": ""
-    }
-  }
-}
-```
+| 项目 | 值 |
+|------|-----|
+| 访问地址 | http://127.0.0.1:4000 |
+| 管理密码 | `admin123` |
 
-## 安全特性
+> ⚠️ **首次登录后请立即修改密码！**
 
-### 已实现的安全措施
+### 管理面板
 
-| 特性 | 说明 |
+点击页面右下角齿轮图标进入管理面板，可进行：
+
+- **书签管理**：添加/编辑/删除书签和分类
+- **拖拽排序**：拖动书签或分类调整顺序
+- **搜索引擎**：设置默认搜索引擎
+- **显示模式**：切换图标模式/纯文字模式
+- **修改密码**：更改管理密码
+
+### 搜索功能
+
+- 输入关键词后按 `Enter` 搜索
+- 点击搜索框左侧图标切换搜索引擎
+- 支持 Google、百度、Bing、DuckDuckGo
+
+### PWA 安装
+
+- **桌面**：浏览器地址栏点击安装图标
+- **手机**：浏览器菜单选择「添加到主屏幕」
+
+## 技术栈
+
+| 层级 | 技术 |
 |------|------|
-| **密码加密** | bcrypt (cost=10) 哈希存储 |
-| **密码强度** | 最低 8 位字符 |
-| **Rate Limiting** | 认证接口限流（60秒内最多10次） |
-| **安全头** | X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy |
-| **本地绑定** | 默认仅监听 127.0.0.1 |
-| **XSS 防护** | 前端输出自动转义 |
-
-### 生产部署安全清单
-
-- [ ] 修改默认密码 `admin123`（**必须**）
-- [ ] 配置 HTTPS 或使用反向代理
-- [ ] 设置敏感文件权限：`chmod 600 .admin-password.json`
-- [ ] 配置防火墙规则
-- [ ] 定期更新依赖：`npm audit && npm update`
-
-## API 接口
-
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/config` | GET | 获取书签配置 |
-| `/api/config` | POST | 保存配置（需 `X-Admin-Password` 头） |
-| `/api/verify-password` | POST | 验证管理密码 |
-| `/api/change-password` | POST | 修改密码（body: `{newPassword}`） |
-| `/api/health` | GET | 健康检查 |
-
-**注意**：POST 接口受 Rate Limiting 保护。
-
-## 书签配置
-
-配置保存在 `config.json`：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `theme` | String | 主题：`light`、`dark`、`auto` |
-| `searchEngine` | String | 默认搜索引擎 ID |
-| `showBookmarkIcons` | Boolean | 是否显示书签图标 |
-| `searchEngines` | Array | 搜索引擎列表 |
-| `categories` | Array | 书签分类列表 |
-
-## Systemd 服务
-
-生产环境一键安装：
-
-```bash
-sudo ./manage.sh enable    # 安装并启用开机自启
-sudo ./manage.sh disable   # 卸载服务
-```
+| **前端** | HTML5 + CSS3 + 原生 JavaScript (ES6+) |
+| **后端** | Node.js + Express.js |
+| **存储** | JSON 文件存储 |
+| **安全** | bcrypt 密码哈希、Rate Limiting、安全响应头 |
+| **PWA** | Service Worker + Web App Manifest |
 
 ## 目录结构
 
@@ -229,31 +154,14 @@ nav-sylph/
 │   ├── index.html         # 主页面
 │   ├── app.js             # 前端逻辑
 │   ├── styles.css         # 样式
-│   ├── sw.js              # Service Worker (PWA)
-│   ├── manifest.json      # PWA 清单
-│   ├── favicon.svg        # 网站图标
-│   └── icon.svg           # 应用图标
+│   └── sw.js              # Service Worker
 ├── server-config/          # 服务器配置模块
-│   ├── defaults.js        # 默认配置
-│   └── index.js           # 配置加载器
-├── logs/                   # 日志目录
-├── config.json            # 书签数据
-├── server.js              # 后端服务
-├── manage.sh              # 管理脚本
-├── package.json           # 依赖配置
+├── server.js              # 后端服务入口
+├── install.sh             # 一键部署脚本
+├── manage.sh              # 服务管理脚本
 ├── .env.example           # 环境变量示例
-├── .gitignore             # Git 忽略规则
-├── nav-sylph.service      # systemd 服务文件
-├── DEPLOYMENT.md          # 部署指南
-└── README.md              # 说明文档
+└── package.json           # 依赖配置
 ```
-
-## 技术栈
-
-- **前端**：原生 JavaScript (ES6+), CSS3, HTML5
-- **后端**：Node.js + Express.js
-- **安全**：bcrypt 密码加密、Rate Limiting、安全头
-- **存储**：JSON 文件存储
 
 ## 许可证
 
