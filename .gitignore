@@ -12,32 +12,57 @@ server-config.json
 # Security files
 .admin-password.json
 
+# User bookmarks config (personal data)
+config.json
+
 # AI assistant files
 CLAUDE.md
+.claude/
 
 # Logs
 logs/
 *.log
+npm-debug.log*
 
 # Process files
 *.pid
+.nav-sylph.pid
 
 # OS files
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*.sublime-workspace
+*.sublime-project
+.project
+.settings/
+*.code-workspace
 
 # Build artifacts
 dist/
 build/
+tmp/
+temp/
 
 # Certificates (if stored locally)
 certs/
 *.pem
 *.key
 *.crt
+
+# Package manager lock files (optional, uncomment if needed)
+# package-lock.json
+
+# Backup files
+*.bak
+*.backup
+*~
