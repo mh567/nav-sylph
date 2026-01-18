@@ -12,6 +12,9 @@ server-config.json
 # Security files
 .admin-password.json
 
+# Installation marker (created by one-click script)
+.installed-by-script
+
 # User bookmarks config (personal data)
 config.json
 

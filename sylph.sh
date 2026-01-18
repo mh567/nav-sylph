@@ -229,6 +229,11 @@ do_install() {
     [ -f "${APP_DIR}/.admin-password.json" ] && chmod 600 "${APP_DIR}/.admin-password.json"
     [ -f "${APP_DIR}/.env" ] && chmod 600 "${APP_DIR}/.env"
 
+    # 远程安装模式：创建标记文件，用于区分开发目录
+    if [ "$MODE" = "remote" ]; then
+        echo "installed=$(date -Iseconds)" > "${APP_DIR}/.installed-by-script"
+    fi
+
     # 完成提示
     echo ""
     echo -e "${GREEN}════════════════════════════════════════${NC}"
@@ -468,11 +473,11 @@ do_uninstall() {
 
     cd "$APP_DIR"
 
-    # 检测是否为开发目录（包含 .git）
-    if [ -d ".git" ]; then
-        log_warn "检测到这是一个 Git 仓库（开发目录）"
+    # 检测是否为脚本安装的目录
+    if [ ! -f ".installed-by-script" ]; then
+        log_warn "检测到这不是通过一键脚本安装的目录"
         echo ""
-        echo "为防止误删开发代码，uninstall 命令不会删除此目录。"
+        echo "为防止误删开发代码或手动部署的项目，uninstall 命令已阻止。"
         echo ""
         echo "如果只是想停止服务:"
         echo "  ./sylph.sh stop"
