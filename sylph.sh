@@ -466,6 +466,23 @@ do_uninstall() {
         exit 1
     fi
 
+    cd "$APP_DIR"
+
+    # 检测是否为开发目录（包含 .git）
+    if [ -d ".git" ]; then
+        log_warn "检测到这是一个 Git 仓库（开发目录）"
+        echo ""
+        echo "为防止误删开发代码，uninstall 命令不会删除此目录。"
+        echo ""
+        echo "如果只是想停止服务:"
+        echo "  ./sylph.sh stop"
+        echo ""
+        echo "如果确实要删除，请手动执行:"
+        echo "  rm -rf $APP_DIR"
+        echo ""
+        exit 1
+    fi
+
     echo -e "${YELLOW}警告: 这将删除 Nav Sylph 及所有数据!${NC}"
     read -p "确定要卸载吗? [y/N] " -n 1 -r
     echo ""
@@ -474,8 +491,6 @@ do_uninstall() {
         log_info "取消卸载"
         exit 0
     fi
-
-    cd "$APP_DIR"
 
     # 停止服务
     log_step "停止服务..."
