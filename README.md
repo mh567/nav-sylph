@@ -22,27 +22,13 @@
 
 Nav Sylph 是一个基于 **Node.js** 的轻量级 Web 应用，可部署在个人服务器或本地电脑上，作为浏览器首页使用。
 
-### 部署要求
-
-| 环境 | 要求 |
-|------|------|
-| **Node.js** | >= 14.0 |
-| **npm** | >= 6.0 |
-| **Git** | 用于一键安装 |
-| **系统** | Linux / macOS / Windows |
-
 ### 一键安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
 ```
 
-脚本会自动检测依赖、克隆仓库、安装并启动服务。
-
-安装完成后显示：
-- 服务运行状态和访问地址
-- 默认管理密码
-- 所有管理命令
+支持 Linux / macOS / Windows (Git Bash, WSL)
 
 ### 手动安装
 
