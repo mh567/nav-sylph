@@ -79,18 +79,29 @@ const defaultConfig = {
     categories: [
         {
             id: 'cat_1',
-            name: '常用',
+            name: '论坛',
             bookmarks: [
-                { id: 'bm_1', title: 'GitHub', url: 'https://github.com' },
-                { id: 'bm_2', title: 'Google', url: 'https://google.com' }
+                { id: 'bm_1', title: 'V2EX', url: 'https://v2ex.com' },
+                { id: 'bm_2', title: 'Reddit', url: 'https://reddit.com' },
+                { id: 'bm_3', title: 'Hacker News', url: 'https://news.ycombinator.com' }
             ]
         },
         {
             id: 'cat_2',
-            name: '工具',
+            name: '视频',
             bookmarks: [
-                { id: 'bm_3', title: 'Notion', url: 'https://notion.so' },
-                { id: 'bm_4', title: 'Figma', url: 'https://figma.com' }
+                { id: 'bm_4', title: 'YouTube', url: 'https://youtube.com' },
+                { id: 'bm_5', title: 'Bilibili', url: 'https://bilibili.com' },
+                { id: 'bm_6', title: 'Netflix', url: 'https://netflix.com' }
+            ]
+        },
+        {
+            id: 'cat_3',
+            name: 'AI',
+            bookmarks: [
+                { id: 'bm_7', title: 'ChatGPT', url: 'https://chat.openai.com' },
+                { id: 'bm_8', title: 'Claude', url: 'https://claude.ai' },
+                { id: 'bm_9', title: 'Gemini', url: 'https://gemini.google.com' }
             ]
         }
     ],
