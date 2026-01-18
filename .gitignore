@@ -12,6 +12,9 @@ server-config.json
 # Security files
 .admin-password.json
 
+# AI assistant files
+CLAUDE.md
+
 # Logs
 logs/
 *.log
