@@ -14,8 +14,9 @@
     --transition: 200ms ease;
 }
 
+/* 跟随系统：深色模式 */
 @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
         --bg: #0a0a0a;
         --bg-card: #161616;
         --bg-hover: #222;
@@ -28,6 +29,21 @@
         --shadow: 0 1px 3px rgba(0,0,0,0.3);
         --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
     }
+}
+
+/* 强制深色模式 */
+:root[data-theme="dark"] {
+    --bg: #0a0a0a;
+    --bg-card: #161616;
+    --bg-hover: #222;
+    --text: #f0f0f0;
+    --text-secondary: #a0a0a0;
+    --text-muted: #666;
+    --border: #2a2a2a;
+    --accent: #a0aec0;
+    --accent-hover: #cbd5e0;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }

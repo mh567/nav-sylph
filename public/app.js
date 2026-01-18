@@ -32,6 +32,7 @@
             try {
                 this.config = await API.get('/api/config');
                 this.migrateConfig();
+                this.applyTheme();
                 this.render();
                 this.bind();
                 $('#loader').remove();
@@ -49,6 +50,22 @@
             }
             if (this.config.showBookmarkIcons === undefined) {
                 this.config.showBookmarkIcons = true;
+            }
+            if (this.config.theme === undefined) {
+                this.config.theme = 'auto';
+            }
+        }
+
+        applyTheme() {
+            const theme = this.config.theme || 'auto';
+            const root = document.documentElement;
+
+            if (theme === 'auto') {
+                // 跟随系统
+                root.removeAttribute('data-theme');
+            } else {
+                // 强制指定主题
+                root.setAttribute('data-theme', theme);
             }
         }
 
@@ -221,9 +238,19 @@
                     <div class="section-title">界面设置</div>
                     <div class="setting-row">
                         <label>
+                            <span>主题模式</span>
+                            <select id="themeModeSelect">
+                                <option value="auto" ${this.config.theme === 'auto' ? 'selected' : ''}>跟随系统</option>
+                                <option value="light" ${this.config.theme === 'light' ? 'selected' : ''}>浅色模式</option>
+                                <option value="dark" ${this.config.theme === 'dark' ? 'selected' : ''}>深色模式</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <label>
                             <span>默认搜索引擎</span>
                             <select id="defaultEngineSelect">
-                                ${this.config.searchEngines.map(e => 
+                                ${this.config.searchEngines.map(e =>
                                     `<option value="${e.id}" ${e.id === this.config.searchEngine ? 'selected' : ''}>${this.esc(e.name)}</option>`
                                 ).join('')}
                             </select>
@@ -253,6 +280,11 @@
 
             this.renderEnginesEditor();
             this.renderCatsEditor();
+
+            $('#themeModeSelect').onchange = (e) => {
+                this.config.theme = e.target.value;
+                this.applyTheme();
+            };
 
             $('#defaultEngineSelect').onchange = (e) => {
                 this.config.searchEngine = e.target.value;
