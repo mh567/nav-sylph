@@ -234,11 +234,24 @@ do_install() {
         echo "installed=$(date -Iseconds)" > "${APP_DIR}/.installed-by-script"
     fi
 
-    # 询问是否启动
+    # 启动服务
+    # 远程模式（curl | bash）无法交互，直接启动
+    # 本地模式可以询问用户
     local service_started=false
-    read -p "是否立即启动服务? [Y/n] " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    if [ "$MODE" = "remote" ]; then
+        # 远程模式：直接启动
+        do_start
+        service_started=true
+    elif [ -t 0 ]; then
+        # 本地模式且有终端：询问用户
+        read -p "是否立即启动服务? [Y/n] " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            do_start
+            service_started=true
+        fi
+    else
+        # 本地模式但无终端：直接启动
         do_start
         service_started=true
     fi
