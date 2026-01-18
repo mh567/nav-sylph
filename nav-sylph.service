@@ -1,0 +1,35 @@
+[Unit]
+Description=Nav Sylph - Personal Navigation Page
+Documentation=https://github.com/your-username/nav-sylph
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/nav-sylph
+
+ExecStart=/usr/bin/node server.js
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+Environment=NODE_ENV=production
+Environment=SERVER_HOST=127.0.0.1
+Environment=SERVER_PORT=4000
+EnvironmentFile=-/opt/nav-sylph/.env
+
+StandardOutput=append:/opt/nav-sylph/logs/server.log
+StandardError=append:/opt/nav-sylph/logs/server.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nav-sylph/logs /opt/nav-sylph/config.json /opt/nav-sylph/.admin-password.json
+
+[Install]
+WantedBy=multi-user.target

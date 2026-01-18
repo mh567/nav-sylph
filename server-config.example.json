@@ -1,0 +1,21 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4000,
+    "https": {
+      "enabled": false,
+      "keyPath": "",
+      "certPath": "",
+      "caPath": ""
+    }
+  },
+  "security": {
+    "adminPasswordFile": ".admin-password.json"
+  },
+  "paths": {
+    "data": "data.json",
+    "icon": "icon.svg",
+    "favicon": "favicon.svg",
+    "logs": "logs"
+  }
+}

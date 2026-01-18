@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Server config (user-specific)
+server-config.json
+
+# Security files
+.admin-password.json
+
+# Logs
+logs/
+*.log
+
+# Process files
+*.pid
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+
+# Certificates (if stored locally)
+certs/
+*.pem
+*.key
+*.crt
