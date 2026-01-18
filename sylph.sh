@@ -320,13 +320,8 @@ do_start() {
     sleep 2
 
     if is_running; then
-        echo ""
-        log_info "服务启动成功"
-        echo ""
-        echo "  PID:  $(cat ${PID_FILE})"
-        echo "  URL:  http://${HOST}:${PORT}"
-        echo "  日志: ${LOG_FILE}"
-        echo ""
+        log_info "服务启动成功 (PID: $(cat ${PID_FILE}))"
+        return 0
     else
         log_error "启动失败，请查看日志: tail -50 ${LOG_FILE}"
         exit 1

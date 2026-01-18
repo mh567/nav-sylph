@@ -194,6 +194,17 @@
                 const res = await API.post('/api/verify-password', {}, pwd);
                 if (!res.valid) return alert('密码错误');
                 this.password = pwd;
+
+                // 检测是否为默认密码，提示修改
+                if (pwd === 'admin123') {
+                    const shouldChange = confirm('⚠️ 您正在使用默认密码，存在安全风险！\n\n强烈建议立即修改密码。\n\n点击「确定」立即修改密码，点击「取消」稍后修改。');
+                    if (shouldChange) {
+                        this.renderAdminPanel();
+                        $('#modal').hidden = false;
+                        setTimeout(() => this.changePassword(), 100);
+                        return;
+                    }
+                }
             }
             this.renderAdminPanel();
             $('#modal').hidden = false;
