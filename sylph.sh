@@ -235,15 +235,9 @@ do_install() {
     fi
 
     # 启动服务
-    # 远程模式（curl | bash）无法交互，直接启动
-    # 本地模式可以询问用户
     local service_started=false
-    if [ "$MODE" = "remote" ]; then
-        # 远程模式：直接启动
-        do_start
-        service_started=true
-    elif [ -t 0 ]; then
-        # 本地模式且有终端：询问用户
+    if [ -t 0 ]; then
+        # 有交互终端：询问用户
         read -p "是否立即启动服务? [Y/n] " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Nn]$ ]]; then
@@ -251,7 +245,7 @@ do_install() {
             service_started=true
         fi
     else
-        # 本地模式但无终端：直接启动
+        # 无交互终端（curl | bash）：直接启动
         do_start
         service_started=true
     fi
