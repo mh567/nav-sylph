@@ -511,6 +511,13 @@ do_uninstall() {
     fi
 
     echo -e "${YELLOW}警告: 这将删除 Nav Sylph 及所有数据!${NC}"
+
+    # 非交互模式直接退出，防止误删
+    if [ ! -t 0 ]; then
+        log_error "卸载操作需要交互式终端确认，请直接运行: ./sylph.sh uninstall"
+        exit 1
+    fi
+
     read -p "确定要卸载吗? [y/N] " -n 1 -r
     echo ""
 
@@ -519,26 +526,61 @@ do_uninstall() {
         exit 0
     fi
 
-    # 停止服务
-    log_step "停止服务..."
-    do_stop 2>/dev/null || true
+    # ===== 1. 停止 systemd 服务（如果存在）=====
+    if has_systemd; then
+        # 检查服务是否正在运行
+        if systemctl is-active --quiet ${APP_NAME} 2>/dev/null; then
+            log_step "停止 systemd 服务..."
+            sudo systemctl stop ${APP_NAME}
+            log_info "systemd 服务已停止"
+        fi
 
-    # 移除 systemd 服务
-    if has_systemd && [ -f "${SYSTEMD_DIR}/${APP_NAME}.service" ]; then
-        log_step "移除 systemd 服务..."
-        sudo systemctl stop ${APP_NAME} 2>/dev/null || true
-        sudo systemctl disable ${APP_NAME} 2>/dev/null || true
-        sudo rm -f "${SYSTEMD_DIR}/${APP_NAME}.service"
-        sudo systemctl daemon-reload
+        # 检查服务是否已启用开机自启
+        if systemctl is-enabled --quiet ${APP_NAME} 2>/dev/null; then
+            log_step "禁用开机自启..."
+            sudo systemctl disable ${APP_NAME}
+            log_info "已禁用开机自启"
+        fi
+
+        # 删除服务文件
+        if [ -f "${SYSTEMD_DIR}/${APP_NAME}.service" ]; then
+            log_step "移除 systemd 服务文件..."
+            sudo rm -f "${SYSTEMD_DIR}/${APP_NAME}.service"
+            sudo systemctl daemon-reload
+            log_info "已移除服务文件"
+        fi
     fi
 
-    # 删除目录
+    # ===== 2. 停止手动启动的进程 =====
+    if is_running; then
+        log_step "停止服务进程..."
+        do_stop
+    elif [ -f "${PID_FILE}" ]; then
+        # 清理残留的 PID 文件
+        rm -f "${PID_FILE}"
+    fi
+
+    # ===== 3. macOS: 检查 launchd =====
+    if [ "$OS" = "macos" ]; then
+        local plist_file="$HOME/Library/LaunchAgents/com.nav-sylph.plist"
+        if [ -f "$plist_file" ]; then
+            log_step "检测到 launchd 服务，正在移除..."
+            launchctl unload "$plist_file" 2>/dev/null || true
+            rm -f "$plist_file"
+            log_info "已移除 launchd 服务"
+        fi
+    fi
+
+    # ===== 4. 删除安装目录 =====
     log_step "删除文件..."
     cd ~
     rm -rf "$APP_DIR"
 
     echo ""
     log_info "卸载完成!"
+    echo ""
+    echo "感谢使用 Nav Sylph!"
+    echo ""
 }
 
 # 启用 systemd 服务
