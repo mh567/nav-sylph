@@ -17,15 +17,15 @@
 
 ## 部署与管理
 
-### 一键部署
+### 一键安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
 ```
 
 支持 Linux / macOS / Windows (Git Bash, WSL)
 
-### 手动部署
+### 手动安装
 
 ```bash
 git clone https://github.com/mh567/nav-sylph.git
@@ -34,35 +34,40 @@ npm install
 npm start
 ```
 
-### 脚本说明
+### 管理脚本 `sylph.sh`
 
-项目提供两个管理脚本：
-
-#### `install.sh` - 一键部署脚本
+项目使用统一的 `sylph.sh` 脚本进行所有管理操作：
 
 | 命令 | 说明 |
 |------|------|
-| `./install.sh install` | 一键安装（克隆仓库、安装依赖、启动服务） |
-| `./install.sh update` | 更新到最新版本（保留配置） |
-| `./install.sh uninstall` | 完全卸载 |
+| `./sylph.sh install` | 安装（远程执行时自动克隆仓库） |
+| `./sylph.sh start` | 启动服务 |
+| `./sylph.sh stop` | 停止服务 |
+| `./sylph.sh restart` | 重启服务 |
+| `./sylph.sh status` | 查看运行状态 |
+| `./sylph.sh logs` | 查看实时日志 |
+| `./sylph.sh update` | 更新到最新版本（保留配置） |
+| `./sylph.sh uninstall` | 完全卸载 |
+
+#### 开机自启
+
+| 系统 | 方式 |
+|------|------|
+| **Linux** | `sudo ./sylph.sh enable` 安装 systemd 服务 |
+| **macOS** | 使用 launchd（脚本会提示具体方法） |
+| **Windows** | 使用任务计划程序（脚本会提示具体方法） |
 
 ```bash
-# 自定义安装目录
-NAV_SYLPH_DIR=/opt/nav-sylph ./install.sh install
+# Linux 开机自启
+sudo ./sylph.sh enable    # 启用
+sudo ./sylph.sh disable   # 禁用
 ```
 
-#### `manage.sh` - 服务管理脚本
+#### 自定义安装目录
 
-| 命令 | 说明 |
-|------|------|
-| `./manage.sh install` | 初始化：安装依赖、创建目录 |
-| `./manage.sh start` | 启动服务（后台运行） |
-| `./manage.sh stop` | 停止服务 |
-| `./manage.sh restart` | 重启服务 |
-| `./manage.sh status` | 查看运行状态 |
-| `./manage.sh logs` | 查看实时日志 |
-| `sudo ./manage.sh enable` | 安装为 systemd 服务（开机自启） |
-| `sudo ./manage.sh disable` | 卸载 systemd 服务 |
+```bash
+NAV_SYLPH_DIR=/opt/nav-sylph ./sylph.sh install
+```
 
 ## 系统配置
 
@@ -117,7 +122,7 @@ HTTPS_CERT_PATH=/path/to/cert.pem
 
 ### 管理面板
 
-点击页面右下角齿轮图标进入管理面板，可进行：
+点击页面右下角齿轮图标进入管理面板：
 
 - **书签管理**：添加/编辑/删除书签和分类
 - **拖拽排序**：拖动书签或分类调整顺序
@@ -129,7 +134,6 @@ HTTPS_CERT_PATH=/path/to/cert.pem
 
 - 输入关键词后按 `Enter` 搜索
 - 点击搜索框左侧图标切换搜索引擎
-- 支持 Google、百度、Bing、DuckDuckGo
 
 ### PWA 安装
 
@@ -157,8 +161,7 @@ nav-sylph/
 │   └── sw.js              # Service Worker
 ├── server-config/          # 服务器配置模块
 ├── server.js              # 后端服务入口
-├── install.sh             # 一键部署脚本
-├── manage.sh              # 服务管理脚本
+├── sylph.sh               # 统一管理脚本
 ├── .env.example           # 环境变量示例
 └── package.json           # 依赖配置
 ```
