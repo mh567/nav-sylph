@@ -1,36 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
-    </linearGradient>
-    <filter id="shadow">
-      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
-    </filter>
-  </defs>
-  
-  <!-- Background circle -->
-  <circle cx="50" cy="50" r="45" fill="url(#grad)"/>
-  
-  <!-- Compass outer ring -->
-  <circle cx="50" cy="50" r="32" fill="none" stroke="white" stroke-width="2" opacity="0.3"/>
-  <circle cx="50" cy="50" r="28" fill="none" stroke="white" stroke-width="1.5" opacity="0.5"/>
-  
-  <!-- Cardinal points -->
-  <circle cx="50" cy="22" r="2" fill="white" opacity="0.6"/>
-  <circle cx="78" cy="50" r="2" fill="white" opacity="0.6"/>
-  <circle cx="50" cy="78" r="2" fill="white" opacity="0.6"/>
-  <circle cx="22" cy="50" r="2" fill="white" opacity="0.6"/>
-  
-  <!-- Compass needle (North: red, South: white) -->
-  <g filter="url(#shadow)">
-    <!-- North pointer (red) -->
-    <path d="M 50 50 L 45 35 L 50 20 L 55 35 Z" fill="#ef4444"/>
-    <!-- South pointer (white) -->
-    <path d="M 50 50 L 45 65 L 50 80 L 55 65 Z" fill="white" opacity="0.9"/>
-  </g>
-  
-  <!-- Center dot -->
-  <circle cx="50" cy="50" r="4" fill="white"/>
-  <circle cx="50" cy="50" r="2.5" fill="#1d4ed8"/>
+  <!-- G-shaped curved arrow logo - transparent background -->
+  <path d="M 70 10
+           C 40 0, 8 25, 8 55
+           C 8 85, 35 98, 60 90
+           C 80 84, 92 68, 90 48
+           L 58 58
+           L 88 32
+           L 92 65
+           L 70 50
+           C 75 68, 60 82, 45 80
+           C 25 76, 20 58, 24 42
+           C 28 26, 48 16, 65 22
+           L 70 10 Z"
+        fill="#1a1a1a"/>
 </svg>
