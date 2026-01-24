@@ -6,6 +6,59 @@
     const html = (str) => { const t = document.createElement('template'); t.innerHTML = str.trim(); return t.content.firstChild; };
     const uid = () => 'id_' + Math.random().toString(36).slice(2, 9);
 
+    // ========== 端到端加密工具 ==========
+    const Crypto = {
+        // 从分享码派生 AES 密钥（用户无感知）
+        async deriveKey(code) {
+            const enc = new TextEncoder();
+            const keyMaterial = await crypto.subtle.importKey(
+                'raw', enc.encode(code + '-nav-sylph-e2e'), 'PBKDF2', false, ['deriveKey']
+            );
+            return crypto.subtle.deriveKey(
+                { name: 'PBKDF2', salt: enc.encode('nav-sylph-paste-v2'), iterations: 100000, hash: 'SHA-256' },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+            );
+        },
+
+        // 加密文本
+        async encrypt(text, code) {
+            const key = await this.deriveKey(code);
+            const enc = new TextEncoder();
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const encrypted = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv },
+                key,
+                enc.encode(text)
+            );
+            // 合并 iv + 密文，转 base64
+            const combined = new Uint8Array(iv.length + encrypted.byteLength);
+            combined.set(iv);
+            combined.set(new Uint8Array(encrypted), iv.length);
+            return btoa(String.fromCharCode(...combined));
+        },
+
+        // 解密文本
+        async decrypt(encryptedBase64, code) {
+            try {
+                const key = await this.deriveKey(code);
+                const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
+                const iv = combined.slice(0, 12);
+                const data = combined.slice(12);
+                const decrypted = await crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv },
+                    key,
+                    data
+                );
+                return new TextDecoder().decode(decrypted);
+            } catch {
+                throw new Error('解密失败');
+            }
+        }
+    };
+
     const API = {
         async get(url) {
             const res = await fetch(url);
@@ -25,6 +78,7 @@
             this.config = null;
             this.password = null;
             this.dragData = null;
+            this.pasteMode = false;
             this.init();
         }
 
@@ -135,8 +189,10 @@
         }
 
         bind() {
-            $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.search(); };
+            $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
+            $('#searchInput').oninput = (e) => this.handleSearchInput(e);
             $('#adminBtn').onclick = () => this.openAdmin();
+            $('#helpBtn').onclick = () => this.showHelp();
             $('#modalBackdrop').onclick = () => this.closeAdmin();
             $('#cancelBtn').onclick = () => this.closeAdmin();
             $('#saveBtn').onclick = () => this.save();
@@ -202,6 +258,184 @@
             const engine = this.config.searchEngines.find(e => e.id === this.config.searchEngine);
             if (engine) window.open(engine.url + encodeURIComponent(q), '_blank');
             $('#searchInput').value = '';
+        }
+
+        // ========== Paste 分享功能 ==========
+
+        // 检查是否为分享模式触发字符
+        isPasteTrigger(char) {
+            return char === '>' || char === '》';
+        }
+
+        handleSearchInput(e) {
+            const value = e.target.value;
+            const isPasteMode = value.length > 0 && this.isPasteTrigger(value[0]);
+
+            if (isPasteMode !== this.pasteMode) {
+                this.pasteMode = isPasteMode;
+                this.togglePasteMode(isPasteMode);
+            }
+        }
+
+        togglePasteMode(enabled) {
+            const form = $('#searchForm');
+            const input = $('#searchInput');
+            const searchBtn = $('.search-btn');
+
+            form.classList.toggle('paste-mode', enabled);
+
+            if (enabled) {
+                input.placeholder = '输入要分享的文本，回车发送...';
+                // 隐藏搜索引擎选择
+                $('#engineBtn').style.display = 'none';
+                // 更改按钮图标为发送
+                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>';
+                searchBtn.title = '发送分享';
+            } else {
+                input.placeholder = '搜索...';
+                $('#engineBtn').style.display = '';
+                // 恢复搜索图标
+                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>';
+                searchBtn.title = '搜索';
+            }
+        }
+
+        async handleSearch() {
+            const value = $('#searchInput').value;
+
+            if (value.length > 0 && this.isPasteTrigger(value[0])) {
+                const text = value.slice(1).trim();
+
+                if (!text) return;
+
+                // 直接作为分享内容
+                await this.showPasteOptions(text);
+                return;
+            }
+
+            // 正常搜索
+            this.search();
+        }
+
+        async showPasteOptions(content) {
+            // 简单确认是否需要 PIN
+            const usePin = confirm('是否设置4位PIN码保护？\n\n点击「确定」设置PIN，点击「取消」直接分享');
+
+            let pin = null;
+            if (usePin) {
+                pin = prompt('请输入4位数字PIN码：');
+                if (pin && !/^\d{4}$/.test(pin)) {
+                    alert('PIN码必须是4位数字');
+                    return;
+                }
+                if (!pin) return; // 用户取消
+            }
+
+            await this.createPaste(content, pin);
+        }
+
+        async createPaste(content, pin = null) {
+            try {
+                // 先请求生成分享码
+                const codeRes = await fetch('/api/paste/code', { method: 'POST' });
+                const codeData = await codeRes.json();
+
+                if (!codeData.code) {
+                    alert(codeData.error || '创建分享失败');
+                    return;
+                }
+
+                const code = codeData.code;
+
+                // 使用分享码进行端到端加密
+                const encryptedContent = await Crypto.encrypt(content, code);
+
+                const body = { code, content: encryptedContent };
+                if (pin) body.pin = pin;
+
+                const res = await fetch('/api/paste', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    $('#searchInput').value = '';
+                    this.pasteMode = false;
+                    this.togglePasteMode(false);
+                    this.showPasteResult(code, !!pin);
+                } else {
+                    alert(data.error || '创建分享失败');
+                }
+            } catch (e) {
+                alert('创建分享失败: ' + e.message);
+            }
+        }
+
+        showPasteResult(code, hasPin = false) {
+            this.hidePasteResult();
+
+            // 简洁的 URL，无需密钥
+            const url = `${location.origin}/paste/${code}`;
+            const pinInfo = hasPin ? '<div class="paste-pin-info">🔒 已设置PIN保护</div>' : '';
+            const result = html(`
+                <div class="paste-result" id="pasteResult">
+                    <button class="paste-close" title="关闭">×</button>
+                    <div class="paste-code">${this.esc(code)}</div>
+                    ${pinInfo}
+                    <div class="paste-link" data-url="${this.esc(url)}">📋 复制链接</div>
+                    <div class="paste-expiry">5分钟后过期</div>
+                </div>
+            `);
+
+            result.querySelector('.paste-close').onclick = () => this.hidePasteResult();
+
+            result.querySelector('.paste-link').onclick = async (e) => {
+                const link = e.target;
+                const copyUrl = link.dataset.url;
+                try {
+                    await navigator.clipboard.writeText(copyUrl);
+                    link.textContent = '✅ 已复制';
+                    setTimeout(() => { link.textContent = '📋 复制链接'; }, 2000);
+                } catch {
+                    prompt('复制链接:', copyUrl);
+                }
+            };
+
+            $('#searchForm').after(result);
+        }
+
+        hidePasteResult() {
+            const existing = $('#pasteResult');
+            if (existing) existing.remove();
+        }
+
+        showHelp() {
+            const helpHtml = `
+                <div class="help-overlay" id="helpOverlay">
+                    <div class="help-content">
+                        <button class="help-close">×</button>
+                        <h3>📤 跨设备文本分享</h3>
+                        <div class="help-section">
+                            <strong>发送</strong>
+                            <p>搜索框输入 <code>></code> + 内容，回车发送</p>
+                        </div>
+                        <div class="help-section">
+                            <strong>接收</strong>
+                            <p>在另一设备打开分享链接即可</p>
+                        </div>
+                        <p class="help-note">端到端加密 · 5分钟过期 · 阅后即删</p>
+                    </div>
+                </div>
+            `;
+            const overlay = html(helpHtml);
+            overlay.onclick = (e) => {
+                if (e.target === overlay || e.target.classList.contains('help-close')) {
+                    overlay.remove();
+                }
+            };
+            document.body.appendChild(overlay);
         }
 
         async openAdmin() {

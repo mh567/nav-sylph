@@ -10,6 +10,98 @@ const config = require('./server-config');
 const app = express();
 let server;
 
+// ========== Paste 分享功能 ==========
+const pasteStorage = new Map();
+// 结构: { code: { content, pin, expiresAt, attempts } }
+
+// 词表用于生成易记的分享码
+const ADJECTIVES = [
+    'happy', 'sunny', 'cool', 'swift', 'brave', 'calm', 'eager', 'fair', 'gentle', 'kind',
+    'lively', 'merry', 'nice', 'proud', 'quick', 'smart', 'warm', 'wise', 'bold', 'bright',
+    'clean', 'clear', 'crisp', 'deep', 'fine', 'fresh', 'glad', 'good', 'grand', 'great',
+    'keen', 'light', 'neat', 'pure', 'rich', 'safe', 'sharp', 'soft', 'strong', 'sweet',
+    'tall', 'true', 'vast', 'vivid', 'wild', 'young', 'zesty', 'agile', 'fancy', 'golden',
+    'handy', 'ideal', 'jolly', 'lucky', 'magic', 'noble', 'peaceful', 'rapid', 'royal', 'silent',
+    'simple', 'smooth', 'solid', 'stable', 'steady', 'super', 'tender', 'tiny', 'ultra', 'unique',
+    'useful', 'valid', 'vital', 'witty', 'zealous', 'azure', 'cosmic', 'divine', 'epic', 'fiery',
+    'frozen', 'humble', 'lunar', 'mighty', 'mystic', 'polar', 'primal', 'radiant', 'rustic', 'serene',
+    'silver', 'sonic', 'stellar', 'stormy', 'sunset', 'thunder', 'timber', 'turbo', 'velvet', 'vintage'
+];
+
+const NOUNS = [
+    'tiger', 'eagle', 'wolf', 'bear', 'fox', 'hawk', 'lion', 'deer', 'swan', 'dove',
+    'oak', 'pine', 'maple', 'cedar', 'birch', 'willow', 'palm', 'fern', 'rose', 'lily',
+    'river', 'lake', 'ocean', 'stream', 'wave', 'cloud', 'rain', 'snow', 'wind', 'storm',
+    'star', 'moon', 'sun', 'sky', 'dawn', 'dusk', 'night', 'day', 'light', 'shadow',
+    'stone', 'rock', 'hill', 'peak', 'cliff', 'cave', 'sand', 'dust', 'flame', 'spark',
+    'dragon', 'phoenix', 'griffin', 'raven', 'falcon', 'owl', 'crane', 'heron', 'finch', 'lark',
+    'coral', 'pearl', 'jade', 'ruby', 'amber', 'crystal', 'diamond', 'emerald', 'onyx', 'opal',
+    'bridge', 'tower', 'castle', 'temple', 'garden', 'forest', 'meadow', 'valley', 'island', 'harbor',
+    'arrow', 'blade', 'crown', 'drum', 'flute', 'harp', 'horn', 'lyre', 'shield', 'sword',
+    'atlas', 'bolt', 'comet', 'delta', 'echo', 'frost', 'glow', 'haze', 'iris', 'jazz',
+    'karma', 'lotus', 'metro', 'nexus', 'orbit', 'pulse', 'quest', 'ridge', 'surge', 'tide',
+    'unity', 'vortex', 'whisper', 'zenith', 'zephyr', 'anchor', 'beacon', 'cipher', 'drift', 'ember',
+    'flare', 'glider', 'horizon', 'ignite', 'jungle', 'kindle', 'lagoon', 'mirage', 'nebula', 'oasis',
+    'prism', 'quartz', 'rapids', 'sage', 'terra', 'umbra', 'vertex', 'wraith', 'yacht', 'zero',
+    'alpha', 'beta', 'gamma', 'sigma', 'omega', 'nova', 'pixel', 'quasar', 'realm', 'spirit',
+    'thunder', 'titan', 'vapor', 'vector', 'voyage', 'wander', 'wonder', 'xerox', 'yonder', 'zodiac',
+    'breeze', 'canyon', 'delta', 'epoch', 'fiber', 'grain', 'haven', 'inlet', 'jewel', 'knot',
+    'ledge', 'manor', 'night', 'olive', 'petal', 'quill', 'reef', 'shell', 'thorn', 'bloom',
+    'coast', 'dune', 'field', 'grove', 'marsh', 'plain', 'shore', 'trail', 'woods', 'brook'
+];
+
+function generatePasteCode() {
+    const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+    const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+    const num = Math.floor(Math.random() * 900) + 100; // 100-999
+    const code = `${adj}-${noun}-${num}`;
+
+    // 确保唯一性
+    if (pasteStorage.has(code)) {
+        return generatePasteCode();
+    }
+    return code;
+}
+
+function isPasteCodeFormat(str) {
+    // 匹配 word-word-number 格式
+    return /^[a-z]+-[a-z]+-\d{3}$/.test(str);
+}
+
+// 清理过期分享
+function cleanExpiredPastes() {
+    const now = Date.now();
+    for (const [code, data] of pasteStorage.entries()) {
+        if (now > data.expiresAt) {
+            pasteStorage.delete(code);
+        }
+    }
+}
+
+// 每60秒清理过期分享
+setInterval(cleanExpiredPastes, 60000);
+
+// Paste 速率限制
+const pasteRateLimitMap = new Map();
+const PASTE_CREATE_LIMIT = 10; // 每小时创建限制
+const PASTE_GET_LIMIT = 30;    // 每小时获取限制
+const PASTE_RATE_WINDOW = 3600000; // 1小时
+
+function checkPasteRateLimit(ip, action) {
+    const now = Date.now();
+    const key = `${ip}:paste:${action}`;
+    const limit = action === 'create' ? PASTE_CREATE_LIMIT : PASTE_GET_LIMIT;
+
+    let record = pasteRateLimitMap.get(key);
+    if (!record || now - record.start > PASTE_RATE_WINDOW) {
+        record = { start: now, count: 0 };
+    }
+    record.count++;
+    pasteRateLimitMap.set(key, record);
+
+    return record.count <= limit;
+}
+
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
 const PASSWORD_FILE = config.security.adminPasswordFile;
 
@@ -215,6 +307,307 @@ app.post('/api/change-password', rateLimit, async (req, res) => {
 
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ========== Paste API ==========
+
+// 生成分享码（用于客户端加密）
+app.post('/api/paste/code', (req, res) => {
+    const ip = req.ip || req.connection.remoteAddress;
+
+    if (!checkPasteRateLimit(ip, 'create')) {
+        return res.status(429).json({ error: '创建过于频繁，请稍后再试' });
+    }
+
+    const code = generatePasteCode();
+    res.json({ code });
+});
+
+// 创建分享
+app.post('/api/paste', (req, res) => {
+    const ip = req.ip || req.connection.remoteAddress;
+
+    const { code, content, pin } = req.body;
+
+    // 验证分享码格式
+    if (!code || !isPasteCodeFormat(code)) {
+        return res.status(400).json({ error: '无效的分享码' });
+    }
+
+    // 检查分享码是否已被使用
+    if (pasteStorage.has(code)) {
+        return res.status(400).json({ error: '分享码已被使用' });
+    }
+
+    if (!content || typeof content !== 'string') {
+        return res.status(400).json({ error: '内容不能为空' });
+    }
+
+    if (content.length > 100000) {
+        return res.status(400).json({ error: '内容过大' });
+    }
+
+    if (pin && (!/^\d{4}$/.test(pin))) {
+        return res.status(400).json({ error: 'PIN 必须是4位数字' });
+    }
+
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5分钟后过期
+
+    pasteStorage.set(code, {
+        content,
+        pin: pin || null,
+        expiresAt,
+        attempts: 0
+    });
+
+    console.log(`[Paste] Created: ${code} (expires in 5min)`);
+
+    res.json({
+        success: true,
+        code,
+        expiresAt,
+        hasPin: !!pin
+    });
+});
+
+// 获取分享 (API)
+app.post('/api/paste/:code', (req, res) => {
+    const ip = req.ip || req.connection.remoteAddress;
+
+    if (!checkPasteRateLimit(ip, 'get')) {
+        return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+
+    const { code } = req.params;
+    const { pin } = req.body;
+
+    if (!isPasteCodeFormat(code)) {
+        return res.status(400).json({ error: '无效的分享码格式' });
+    }
+
+    const paste = pasteStorage.get(code);
+
+    if (!paste) {
+        return res.status(404).json({ error: '分享不存在或已过期' });
+    }
+
+    if (Date.now() > paste.expiresAt) {
+        pasteStorage.delete(code);
+        return res.status(404).json({ error: '分享已过期' });
+    }
+
+    // PIN 验证
+    if (paste.pin) {
+        if (!pin) {
+            return res.json({ requirePin: true });
+        }
+        if (pin !== paste.pin) {
+            paste.attempts++;
+            if (paste.attempts >= 3) {
+                pasteStorage.delete(code);
+                console.log(`[Paste] Destroyed due to PIN failures: ${code}`);
+                return res.status(403).json({ error: 'PIN 错误次数过多，分享已销毁' });
+            }
+            return res.status(403).json({ error: `PIN 错误，剩余 ${3 - paste.attempts} 次尝试` });
+        }
+    }
+
+    const content = paste.content;
+
+    // 阅后即删
+    pasteStorage.delete(code);
+    console.log(`[Paste] Retrieved and deleted: ${code}`);
+
+    res.json({
+        success: true,
+        content
+    });
+});
+
+// 分享页面路由
+app.get('/paste/:code', (req, res) => {
+    const { code } = req.params;
+
+    if (!isPasteCodeFormat(code)) {
+        return res.redirect('/');
+    }
+
+    const paste = pasteStorage.get(code);
+    const exists = paste && Date.now() <= paste.expiresAt;
+    const requirePin = exists && paste.pin;
+
+    // 返回支持客户端解密的 HTML 页面（使用分享码作为密钥）
+    const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分享内容</title>
+    <style>
+        :root {
+            --bg: #fafafa; --bg-card: #ffffff; --text: #1a1a1a;
+            --text-secondary: #666; --border: #e5e5e5; --accent: #4a5568;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0a0a0a; --bg-card: #161616; --text: #f0f0f0;
+                --text-secondary: #a0a0a0; --border: #2a2a2a; --accent: #a0aec0;
+            }
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100vh;
+            display: flex; align-items: center; justify-content: center; padding: 20px;
+        }
+        .container {
+            width: 100%; max-width: 600px; background: var(--bg-card);
+            border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+        }
+        .title { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; }
+        .content {
+            background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 16px; font-family: monospace; font-size: 14px; line-height: 1.6;
+            white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;
+        }
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 12px 24px; background: var(--accent); color: white;
+            border: none; border-radius: 8px; font-size: 14px; font-weight: 500;
+            cursor: pointer; margin-top: 16px; transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .notice { font-size: 13px; color: var(--text-secondary); margin-top: 12px; }
+        .error { text-align: center; color: var(--text-secondary); }
+        .pin-form { display: flex; gap: 12px; flex-wrap: wrap; }
+        .pin-input {
+            flex: 1; min-width: 120px; padding: 12px 16px; font-size: 18px;
+            text-align: center; letter-spacing: 8px; border: 1px solid var(--border);
+            border-radius: 8px; background: var(--bg); color: var(--text);
+        }
+        .pin-input:focus { outline: none; border-color: var(--accent); }
+        .msg { padding: 12px; border-radius: 8px; margin-top: 12px; font-size: 14px; }
+        .msg.error-msg { background: #fee; color: #c00; }
+        @media (prefers-color-scheme: dark) { .msg.error-msg { background: #400; color: #faa; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        ${!exists ? `
+            <div class="error">
+                <p style="font-size: 48px; margin-bottom: 16px;">😕</p>
+                <p>分享不存在或已过期</p>
+                <a href="/" class="btn" style="text-decoration: none; margin-top: 24px;">返回首页</a>
+            </div>
+        ` : requirePin ? `
+            <div class="title">🔐 此分享需要验证 PIN</div>
+            <form class="pin-form" id="pinForm">
+                <input type="text" class="pin-input" id="pinInput" maxlength="4" pattern="\\d{4}"
+                       placeholder="••••" autocomplete="off" inputmode="numeric">
+                <button type="submit" class="btn">验证</button>
+            </form>
+            <div id="errorMsg"></div>
+        ` : `
+            <div class="title">分享内容</div>
+            <div class="content" id="content">加载中...</div>
+            <button class="btn" id="copyBtn">📋 复制内容</button>
+            <p class="notice">此内容已从服务器删除</p>
+        `}
+    </div>
+    <script>
+        // 使用分享码进行端到端解密
+        const Crypto = {
+            async deriveKey(code) {
+                const enc = new TextEncoder();
+                const keyMaterial = await crypto.subtle.importKey(
+                    'raw', enc.encode(code + '-nav-sylph-e2e'), 'PBKDF2', false, ['deriveKey']
+                );
+                return crypto.subtle.deriveKey(
+                    { name: 'PBKDF2', salt: enc.encode('nav-sylph-paste-v2'), iterations: 100000, hash: 'SHA-256' },
+                    keyMaterial,
+                    { name: 'AES-GCM', length: 256 },
+                    false,
+                    ['decrypt']
+                );
+            },
+            async decrypt(encryptedBase64, code) {
+                const key = await this.deriveKey(code);
+                const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
+                const iv = combined.slice(0, 12);
+                const data = combined.slice(12);
+                const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+                return new TextDecoder().decode(decrypted);
+            }
+        };
+
+        const code = '${code}';
+        let decryptedText = '';
+
+        async function showContent(encryptedContent) {
+            try {
+                decryptedText = await Crypto.decrypt(encryptedContent, code);
+                document.getElementById('content').textContent = decryptedText;
+                document.getElementById('copyBtn').onclick = () => {
+                    navigator.clipboard.writeText(decryptedText).then(() => {
+                        document.getElementById('copyBtn').textContent = '✅ 已复制';
+                        setTimeout(() => { document.getElementById('copyBtn').textContent = '📋 复制内容'; }, 2000);
+                    });
+                };
+            } catch {
+                document.getElementById('content').textContent = '解密失败';
+            }
+        }
+
+        ${exists && !requirePin ? `
+        fetch('/api/paste/' + code, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.content) {
+                    showContent(data.content);
+                } else {
+                    document.getElementById('content').textContent = data.error || '获取失败';
+                }
+            })
+            .catch(() => { document.getElementById('content').textContent = '获取失败'; });
+        ` : ''}
+        ${exists && requirePin ? `
+        document.getElementById('pinForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const pin = document.getElementById('pinInput').value;
+            if (!/^\\d{4}$/.test(pin)) return;
+
+            try {
+                const res = await fetch('/api/paste/' + code, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pin })
+                });
+                const data = await res.json();
+
+                if (data.content) {
+                    document.querySelector('.container').innerHTML =
+                        '<div class="title">分享内容</div>' +
+                        '<div class="content" id="content">解密中...</div>' +
+                        '<button class="btn" id="copyBtn">📋 复制内容</button>' +
+                        '<p class="notice">此内容已从服务器删除</p>';
+                    showContent(data.content);
+                } else {
+                    document.getElementById('errorMsg').innerHTML =
+                        '<div class="msg error-msg">' + (data.error || '验证失败') + '</div>';
+                    if (data.error && data.error.includes('销毁')) {
+                        document.getElementById('pinForm').style.display = 'none';
+                    }
+                }
+            } catch {
+                document.getElementById('errorMsg').innerHTML = '<div class="msg error-msg">请求失败</div>';
+            }
+        };
+        ` : ''}
+    </script>
+</body>
+</html>`;
+
+    res.type('html').send(html);
 });
 
 function createServer() {
