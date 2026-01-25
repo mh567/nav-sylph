@@ -298,6 +298,14 @@
         }
 
         buildSearchIndex() {
+            // 先学习所有分类和标签
+            if (typeof Pinyin !== 'undefined') {
+                this.favorites.forEach(f => {
+                    if (f.category) Pinyin.learnText(f.category);
+                    if (f.tags && f.tags.length) Pinyin.learnTexts(f.tags);
+                });
+            }
+
             // 构建搜索索引（包含拼音）
             this.favHaystack = this.favorites.map(f => {
                 let hostname = '';

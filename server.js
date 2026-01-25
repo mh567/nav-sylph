@@ -169,7 +169,7 @@ app.use((req, res, next) => {
 // 简易 Rate Limiting (密码相关接口)
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW = 60000; // 1分钟
-const RATE_LIMIT_MAX = 10; // 最多10次
+const RATE_LIMIT_MAX = 30; // 最多30次
 
 function rateLimit(req, res, next) {
     const ip = req.ip || req.connection.remoteAddress;
