@@ -320,12 +320,6 @@ do_install() {
     [ -f "${APP_DIR}/.admin-password.json" ] && chmod 600 "${APP_DIR}/.admin-password.json"
     [ -f "${APP_DIR}/.env" ] && chmod 600 "${APP_DIR}/.env"
 
-    # 远程安装模式：创建标记文件，用于区分开发目录
-    if [ "$MODE" = "remote" ]; then
-        echo "installed=$(date -Iseconds)" > "${APP_DIR}/.installed-by-script"
-        echo "version=${LATEST_VERSION}" >> "${APP_DIR}/.installed-by-script"
-    fi
-
     # 启动服务
     local service_started=false
     if [ -t 0 ]; then
@@ -569,7 +563,6 @@ do_update() {
     [ -f ".env" ] && cp .env "$backup_dir/"
     [ -f "server-config.json" ] && cp server-config.json "$backup_dir/"
     [ -f "favorites.json" ] && cp favorites.json "$backup_dir/"
-    [ -f ".installed-by-script" ] && cp .installed-by-script "$backup_dir/"
 
     # 下载新版本
     log_step "下载新版本..."
@@ -605,7 +598,6 @@ do_update() {
     [ -f "$backup_dir/.env" ] && cp "$backup_dir/.env" .
     [ -f "$backup_dir/server-config.json" ] && cp "$backup_dir/server-config.json" .
     [ -f "$backup_dir/favorites.json" ] && cp "$backup_dir/favorites.json" .
-    [ -f "$backup_dir/.installed-by-script" ] && cp "$backup_dir/.installed-by-script" .
     rm -rf "$backup_dir"
 
     # 更新依赖
@@ -614,12 +606,6 @@ do_update() {
 
     # 设置权限
     chmod +x sylph.sh
-
-    # 更新安装标记
-    if [ -f ".installed-by-script" ]; then
-        echo "version=${LATEST_VERSION}" >> .installed-by-script
-        echo "updated=$(date -Iseconds)" >> .installed-by-script
-    fi
 
     # 启动服务
     log_step "启动服务..."
@@ -660,22 +646,10 @@ do_uninstall() {
 
     cd "$APP_DIR"
 
-    # 检测是否为脚本安装的目录
-    if [ ! -f ".installed-by-script" ]; then
-        log_warn "检测到这不是通过一键脚本安装的目录"
-        echo ""
-        echo "为防止误删开发代码或手动部署的项目，uninstall 命令已阻止。"
-        echo ""
-        echo "如果只是想停止服务:"
-        echo "  ./sylph.sh stop"
-        echo ""
-        echo "如果确实要删除，请手动执行:"
-        echo "  rm -rf $APP_DIR"
-        echo ""
-        exit 1
-    fi
-
     echo -e "${YELLOW}警告: 这将删除 Nav Sylph 及所有数据!${NC}"
+    echo ""
+    echo "  安装目录: $APP_DIR"
+    echo ""
 
     # 非交互模式直接退出，防止误删
     if [ ! -t 0 ]; then
