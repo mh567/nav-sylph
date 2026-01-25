@@ -27,5 +27,8 @@ module.exports = {
     app: {
         name: 'nav-sylph',
         pidFile: '.nav-sylph.pid'
+    },
+    webdav: {
+        configFile: '.webdav-config.json'
     }
 };
