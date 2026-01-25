@@ -1,6 +1,23 @@
 {
   "versions": [
     {
+      "version": "1.1.1",
+      "date": "2025-01-25",
+      "highlights": [
+        "简化安装和卸载流程",
+        "移除 Git 依赖，直接从 Release 下载"
+      ],
+      "changes": {
+        "feat": [
+          "安装/更新改为从 GitHub Release 下载"
+        ],
+        "improve": [
+          "简化卸载逻辑，无需检测安装方式",
+          "更新部署文档"
+        ]
+      }
+    },
+    {
       "version": "1.1.0",
       "date": "2025-01-25",
       "highlights": [
