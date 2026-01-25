@@ -123,7 +123,15 @@ ls -la "$DIST_DIR/${RELEASE_NAME}/"
 # 打包
 log_step "创建压缩包..."
 cd "$DIST_DIR"
-tar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+# 使用 --no-xattrs 和 --no-mac-metadata 排除 macOS 扩展属性（兼容 Linux）
+if tar --help 2>&1 | grep -q 'no-xattrs'; then
+    tar --no-xattrs -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+elif tar --help 2>&1 | grep -q 'no-mac-metadata'; then
+    tar --no-mac-metadata -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+else
+    # 使用 COPYFILE_DISABLE 环境变量（macOS 特有）
+    COPYFILE_DISABLE=1 tar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+fi
 cd "$PROJECT_DIR"
 
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
