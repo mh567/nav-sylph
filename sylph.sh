@@ -237,14 +237,11 @@ download_release() {
         return 1
     fi
 
-    # 移动到目标目录
-    if [ -d "$dest_dir" ]; then
-        # 更新模式：复制新文件
-        cp -r "$extracted_dir"/* "$dest_dir/"
-    else
-        # 安装模式：移动整个目录
-        mv "$extracted_dir" "$dest_dir"
-    fi
+    # 确保目标目录存在
+    mkdir -p "$dest_dir"
+
+    # 复制文件到目标目录
+    cp -r "$extracted_dir"/* "$dest_dir/"
 
     # 清理
     rm -f "$temp_file"

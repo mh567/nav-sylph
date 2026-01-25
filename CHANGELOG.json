@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "1.1.2",
+      "date": "2025-01-25",
+      "highlights": [
+        "修复一键安装脚本解压失败的问题"
+      ],
+      "changes": {
+        "fix": [
+          "修复 download_release 函数目录处理逻辑"
+        ]
+      }
+    },
+    {
       "version": "1.1.1",
       "date": "2025-01-25",
       "highlights": [
