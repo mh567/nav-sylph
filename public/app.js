@@ -79,6 +79,17 @@
             this.password = null;
             this.dragData = null;
             this.pasteMode = false;
+            // 收藏书签检索
+            this.favorites = [];
+            this.favSearchMode = false;
+            this.uf = null;  // uFuzzy 实例
+            this.favHaystack = [];  // 搜索索引数组
+            this.favSelectedIdx = 0;  // 当前选中的下拉项
+            // 性能优化
+            this.searchDebounceTimer = null;
+            this.favManagerPage = 0;
+            this.favManagerPageSize = 50;
+            this.favManagerFiltered = null;  // 当前过滤结果
             this.init();
         }
 
@@ -86,6 +97,8 @@
             try {
                 this.config = await API.get('/api/config');
                 this.migrateConfig();
+                // 加载收藏书签
+                await this.loadFavorites();
                 this.applyTheme();
                 this.render();
                 this.bind();
@@ -226,6 +239,11 @@
             };
 
             document.onkeydown = (e) => {
+                // 收藏检索模式的键盘导航
+                if (this.favSearchMode && this.handleFavKeydown(e)) {
+                    return;
+                }
+
                 if (e.key === 'Escape') {
                     if (!dropdown.hidden) {
                         dropdown.hidden = true;
@@ -260,6 +278,276 @@
             $('#searchInput').value = '';
         }
 
+        // ========== 收藏书签模糊检索 ==========
+
+        async loadFavorites() {
+            try {
+                const data = await API.get('/api/favorites');
+                this.favorites = data.favorites || [];
+                this.buildSearchIndex();
+            } catch (e) {
+                console.error('Load favorites failed:', e);
+                this.favorites = [];
+            }
+        }
+
+        buildSearchIndex() {
+            // 构建搜索索引
+            this.favHaystack = this.favorites.map(f => {
+                let hostname = '';
+                try { hostname = new URL(f.url).hostname; } catch {}
+                return `${f.title} | ${f.description || ''} | ${f.category || ''} | ${hostname} | ${(f.tags || []).join(' ')}`;
+            });
+
+            // 初始化 uFuzzy（宽松模式，适合中英文混合）
+            if (typeof uFuzzy !== 'undefined') {
+                this.uf = new uFuzzy({
+                    intraMode: 1,
+                    intraIns: 1,
+                    interIns: 3,
+                });
+            }
+        }
+
+        isFavSearchTrigger(char) {
+            return char === '/' || char === '、';
+        }
+
+        // 防抖搜索 - 避免频繁搜索影响性能
+        debouncedSearchFavorites(query) {
+            if (this.searchDebounceTimer) {
+                clearTimeout(this.searchDebounceTimer);
+            }
+            // 立即显示加载状态（如果查询不为空）
+            if (query && this.favorites.length > 100) {
+                const dropdown = $('#favDropdown');
+                if (dropdown && dropdown.innerHTML.includes('fav-empty')) {
+                    // 保持当前内容，不显示loading
+                }
+            }
+            // 50ms 防抖，快速响应同时避免过度计算
+            this.searchDebounceTimer = setTimeout(() => {
+                this.searchFavorites(query);
+            }, 50);
+        }
+
+        toggleFavSearchMode(enabled) {
+            const form = $('#searchForm');
+            const input = $('#searchInput');
+            const searchBtn = $('.search-btn');
+
+            form.classList.toggle('fav-search-mode', enabled);
+
+            if (enabled) {
+                input.placeholder = '搜索收藏书签...';
+                $('#engineBtn').style.display = 'none';
+                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+                searchBtn.title = '收藏检索';
+                this.showFavDropdown();
+            } else {
+                input.placeholder = '搜索...';
+                $('#engineBtn').style.display = '';
+                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>';
+                searchBtn.title = '搜索';
+                this.hideFavDropdown();
+            }
+        }
+
+        showFavDropdown() {
+            let dropdown = $('#favDropdown');
+            if (!dropdown) {
+                dropdown = html('<div class="fav-dropdown" id="favDropdown"></div>');
+                $('.search-wrapper').appendChild(dropdown);
+            }
+            dropdown.hidden = false;
+            this.favSelectedIdx = 0;
+
+            // 显示最近收藏
+            this.renderFavResults(this.favorites.slice(0, 10), null, null);
+        }
+
+        hideFavDropdown() {
+            const dropdown = $('#favDropdown');
+            if (dropdown) {
+                dropdown.hidden = true;
+            }
+        }
+
+        searchFavorites(query) {
+            const dropdown = $('#favDropdown');
+            if (!dropdown) return;
+
+            // 如果没有收藏，显示提示
+            if (this.favorites.length === 0) {
+                dropdown.innerHTML = '<div class="fav-empty">无收藏书签，请在管理面板中导入</div>';
+                return;
+            }
+
+            if (!query) {
+                this.renderFavResults(this.favorites.slice(0, 10), null, null, null);
+                return;
+            }
+
+            // 如果 uFuzzy 未初始化，使用简单匹配
+            if (!this.uf) {
+                const q = query.toLowerCase();
+                const filtered = this.favorites.filter(f =>
+                    f.title.toLowerCase().includes(q) ||
+                    (f.description || '').toLowerCase().includes(q) ||
+                    (f.category || '').toLowerCase().includes(q) ||
+                    f.url.toLowerCase().includes(q)
+                ).slice(0, 15);
+                this.renderFavResults(filtered, null, null, null);
+                return;
+            }
+
+            // uFuzzy 搜索
+            const idxs = this.uf.filter(this.favHaystack, query);
+
+            if (!idxs || idxs.length === 0) {
+                dropdown.innerHTML = '<div class="fav-empty">无匹配结果</div>';
+                return;
+            }
+
+            const info = this.uf.info(idxs, this.favHaystack, query);
+            const order = this.uf.sort(info, this.favHaystack, query);
+
+            // 取前 15 个结果
+            const topOrder = order.slice(0, 15);
+            const results = topOrder.map(i => this.favorites[idxs[i]]);
+
+            this.renderFavResults(results, info, topOrder, idxs);
+        }
+
+        renderFavResults(favs, info, order, idxs) {
+            const dropdown = $('#favDropdown');
+            if (!dropdown) return;
+
+            if (favs.length === 0) {
+                dropdown.innerHTML = '<div class="fav-empty">无收藏书签，请在管理面板中导入</div>';
+                return;
+            }
+
+            this.favSelectedIdx = 0;
+
+            dropdown.innerHTML = favs.map((fav, i) => {
+                let titleHtml = this.esc(fav.title);
+
+                // 如果有匹配信息，高亮标题
+                if (info && order && idxs) {
+                    const infoIdx = order[i];
+                    const ranges = info.ranges[infoIdx];
+                    if (ranges && ranges.length > 0) {
+                        titleHtml = this.highlightText(fav.title, ranges);
+                    }
+                }
+
+                let hostname = '';
+                try { hostname = new URL(fav.url).hostname; } catch {}
+
+                return `
+                    <a class="fav-item${i === 0 ? ' selected' : ''}" href="${this.esc(fav.url)}" target="_blank" rel="noopener" data-idx="${i}">
+                        <img class="fav-icon" src="${this.getFavicon(fav.url)}" alt=""
+                             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>${fav.title[0] || '?'}</text></svg>'">
+                        <div class="fav-info">
+                            <div class="fav-title">${titleHtml}</div>
+                            <div class="fav-meta">
+                                ${fav.category ? `<span class="fav-category">${this.esc(fav.category)}</span>` : ''}
+                                <span class="fav-host">${this.esc(hostname)}</span>
+                            </div>
+                        </div>
+                    </a>
+                `;
+            }).join('');
+        }
+
+        highlightText(text, ranges) {
+            if (!ranges || ranges.length === 0) return this.esc(text);
+
+            // ranges 是匹配字符的位置数组
+            // 只取标题长度内的位置
+            const titleLen = text.length;
+            const validRanges = ranges.filter(r => r < titleLen);
+            if (validRanges.length === 0) return this.esc(text);
+
+            // 合并连续位置为区间
+            const intervals = [];
+            let start = validRanges[0], end = validRanges[0];
+
+            for (let i = 1; i < validRanges.length; i++) {
+                if (validRanges[i] === end + 1) {
+                    end = validRanges[i];
+                } else {
+                    intervals.push([start, end]);
+                    start = end = validRanges[i];
+                }
+            }
+            intervals.push([start, end]);
+
+            // 构建高亮文本
+            let result = '';
+            let lastEnd = 0;
+
+            for (const [s, e] of intervals) {
+                if (s > lastEnd) {
+                    result += this.esc(text.slice(lastEnd, s));
+                }
+                result += `<mark>${this.esc(text.slice(s, e + 1))}</mark>`;
+                lastEnd = e + 1;
+            }
+
+            if (lastEnd < text.length) {
+                result += this.esc(text.slice(lastEnd));
+            }
+
+            return result;
+        }
+
+        handleFavKeydown(e) {
+            const dropdown = $('#favDropdown');
+            if (!dropdown || dropdown.hidden) return false;
+
+            const items = $$('.fav-item', dropdown);
+            if (items.length === 0) return false;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                this.favSelectedIdx = Math.min(this.favSelectedIdx + 1, items.length - 1);
+                this.updateFavSelection(items);
+                return true;
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                this.favSelectedIdx = Math.max(this.favSelectedIdx - 1, 0);
+                this.updateFavSelection(items);
+                return true;
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const selected = items[this.favSelectedIdx];
+                if (selected) {
+                    window.open(selected.href, '_blank');
+                    $('#searchInput').value = '';
+                    this.favSearchMode = false;
+                    this.toggleFavSearchMode(false);
+                }
+                return true;
+            } else if (e.key === 'Escape') {
+                $('#searchInput').value = '';
+                this.favSearchMode = false;
+                this.toggleFavSearchMode(false);
+                return true;
+            }
+
+            return false;
+        }
+
+        updateFavSelection(items) {
+            items.forEach((item, i) => {
+                item.classList.toggle('selected', i === this.favSelectedIdx);
+            });
+            // 滚动到可见区域
+            items[this.favSelectedIdx]?.scrollIntoView({ block: 'nearest' });
+        }
+
         // ========== Paste 分享功能 ==========
 
         // 检查是否为分享模式触发字符
@@ -269,6 +557,22 @@
 
         handleSearchInput(e) {
             const value = e.target.value;
+
+            // 检查收藏检索模式
+            const isFavMode = value.length > 0 && this.isFavSearchTrigger(value[0]);
+            if (isFavMode !== this.favSearchMode) {
+                this.favSearchMode = isFavMode;
+                this.toggleFavSearchMode(isFavMode);
+            }
+
+            // 如果在收藏检索模式，执行防抖搜索
+            if (this.favSearchMode) {
+                const query = value.slice(1).trim();
+                this.debouncedSearchFavorites(query);
+                return;
+            }
+
+            // 原有的 Paste 模式检测
             const isPasteMode = value.length > 0 && this.isPasteTrigger(value[0]);
 
             if (isPasteMode !== this.pasteMode) {
@@ -302,6 +606,18 @@
 
         async handleSearch() {
             const value = $('#searchInput').value;
+
+            // 收藏检索模式：回车打开选中结果
+            if (value.length > 0 && this.isFavSearchTrigger(value[0])) {
+                const selected = $('.fav-item.selected');
+                if (selected) {
+                    window.open(selected.href, '_blank');
+                    $('#searchInput').value = '';
+                    this.favSearchMode = false;
+                    this.toggleFavSearchMode(false);
+                }
+                return;
+            }
 
             if (value.length > 0 && this.isPasteTrigger(value[0])) {
                 const text = value.slice(1).trim();
@@ -416,16 +732,24 @@
                 <div class="help-overlay" id="helpOverlay">
                     <div class="help-content">
                         <button class="help-close">×</button>
-                        <h3>📤 跨设备文本分享</h3>
+                        <h3>🔍 快捷功能</h3>
                         <div class="help-section">
-                            <strong>发送</strong>
+                            <strong>收藏书签检索</strong>
+                            <p>搜索框输入 <code>/</code> + 关键词，快速搜索收藏</p>
+                            <p class="help-tip">支持标题、网址、分类、描述模糊匹配</p>
+                            <p class="help-tip">↑↓ 选择，Enter 打开，Esc 退出</p>
+                        </div>
+                        <div class="help-section">
+                            <strong>跨设备文本分享</strong>
                             <p>搜索框输入 <code>></code> + 内容，回车发送</p>
+                            <p class="help-tip">端到端加密 · 5分钟过期 · 阅后即删</p>
                         </div>
                         <div class="help-section">
-                            <strong>接收</strong>
-                            <p>在另一设备打开分享链接即可</p>
+                            <strong>管理收藏</strong>
+                            <p>点击右下角 ⚙️ 进入管理面板</p>
+                            <p class="help-tip">支持导入/导出浏览器书签</p>
+                            <p class="help-tip">兼容 Chrome、Edge、Firefox、Safari</p>
                         </div>
-                        <p class="help-note">端到端加密 · 5分钟过期 · 阅后即删</p>
                     </div>
                 </div>
             `;
@@ -501,6 +825,20 @@
                     </div>
                 </div>
                 <div class="section">
+                    <div class="section-title">收藏书签</div>
+                    <div class="fav-stats">
+                        共 <strong>${this.favorites.length}</strong> 个收藏
+                        <span class="fav-hint">（搜索框输入 <code>/</code> 快速检索）</span>
+                    </div>
+                    <div class="fav-actions">
+                        <button class="btn" id="importFavBtn">📥 导入书签</button>
+                        <button class="btn" id="exportFavBtn">📤 导出书签</button>
+                        <button class="btn" id="addFavBtn">+ 添加收藏</button>
+                        <button class="btn" id="manageFavBtn">管理收藏</button>
+                    </div>
+                    <input type="file" id="favFileInput" accept=".html,.htm" hidden>
+                </div>
+                <div class="section">
                     <div class="section-title">搜索引擎</div>
                     <div id="enginesEditor"></div>
                     <button class="add-btn" id="addEngine">+ 添加搜索引擎</button>
@@ -539,6 +877,13 @@
                 this.config.categories.push({ id: uid(), name: '新分类', bookmarks: [] });
                 this.renderCatsEditor();
             };
+
+            // 收藏书签相关绑定
+            $('#importFavBtn').onclick = () => $('#favFileInput').click();
+            $('#favFileInput').onchange = (e) => this.handleFavImport(e);
+            $('#addFavBtn').onclick = () => this.showAddFavDialog();
+            $('#manageFavBtn').onclick = () => this.showFavManager();
+            $('#exportFavBtn').onclick = () => this.exportFavorites();
         }
 
         renderEnginesEditor() {
@@ -716,6 +1061,369 @@
             } catch (e) {
                 alert('保存失败: ' + e.message);
             }
+        }
+
+        // ========== 收藏书签管理 ==========
+
+        async handleFavImport(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const htmlContent = await file.text();
+
+            try {
+                const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true }, this.password);
+                if (res.success) {
+                    alert(`导入成功！新增 ${res.imported} 个书签${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
+                    await this.loadFavorites();
+                    this.renderAdminPanel();
+                } else {
+                    alert(res.error || '导入失败');
+                }
+            } catch (err) {
+                alert('导入失败: ' + err.message);
+            }
+
+            e.target.value = '';
+        }
+
+        async exportFavorites() {
+            try {
+                const res = await fetch('/api/favorites/export', {
+                    headers: { 'X-Admin-Password': this.password }
+                });
+                if (!res.ok) {
+                    const data = await res.json();
+                    alert(data.error || '导出失败');
+                    return;
+                }
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'bookmarks.html';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                alert('导出失败: ' + err.message);
+            }
+        }
+
+        showAddFavDialog() {
+            // 获取现有分类列表
+            const existingCategories = [...new Set(this.favorites.map(f => f.category).filter(Boolean))];
+            const categoryOptions = existingCategories.length > 0
+                ? existingCategories.map(c => `<option value="${this.esc(c)}">${this.esc(c)}</option>`).join('')
+                : '';
+
+            const dialog = html(`
+                <div class="fav-dialog-overlay" id="favDialog">
+                    <div class="fav-dialog">
+                        <h3>添加收藏</h3>
+                        <div class="fav-form">
+                            <input type="text" id="favTitle" placeholder="标题 *">
+                            <input type="url" id="favUrl" placeholder="URL *">
+                            <input type="text" id="favDesc" placeholder="描述（可选）">
+                            <div class="fav-category-row">
+                                ${existingCategories.length > 0 ? `
+                                    <select id="favCategorySelect">
+                                        <option value="">-- 选择分类 --</option>
+                                        ${categoryOptions}
+                                        <option value="__new__">+ 新建分类</option>
+                                    </select>
+                                ` : ''}
+                                <input type="text" id="favCategory" placeholder="${existingCategories.length > 0 ? '或输入新分类' : '分类（可选）'}">
+                            </div>
+                            <input type="text" id="favTags" placeholder="标签（逗号分隔，可选）">
+                        </div>
+                        <div class="fav-dialog-actions">
+                            <button class="btn" id="favCancelBtn">取消</button>
+                            <button class="btn btn-primary" id="favSaveBtn">保存</button>
+                        </div>
+                    </div>
+                </div>
+            `);
+
+            document.body.appendChild(dialog);
+
+            // 分类选择联动
+            const categorySelect = $('#favCategorySelect');
+            const categoryInput = $('#favCategory');
+            if (categorySelect) {
+                categorySelect.onchange = (e) => {
+                    if (e.target.value === '__new__') {
+                        categoryInput.focus();
+                        categorySelect.value = '';
+                    } else if (e.target.value) {
+                        categoryInput.value = e.target.value;
+                    }
+                };
+            }
+
+            $('#favCancelBtn').onclick = () => dialog.remove();
+            $('#favSaveBtn').onclick = async () => {
+                const title = $('#favTitle').value.trim();
+                const url = $('#favUrl').value.trim();
+
+                if (!title || !url) {
+                    alert('标题和 URL 不能为空');
+                    return;
+                }
+
+                // 优先使用下拉选择的分类，否则使用输入的
+                let category = categoryInput.value.trim();
+                if (categorySelect && categorySelect.value && categorySelect.value !== '__new__') {
+                    category = categorySelect.value;
+                }
+
+                const newFav = {
+                    id: 'fav_' + Math.random().toString(36).slice(2, 11),
+                    title,
+                    url,
+                    description: $('#favDesc').value.trim(),
+                    category,
+                    tags: $('#favTags').value.split(',').map(t => t.trim()).filter(Boolean),
+                    createdAt: Date.now(),
+                    updatedAt: Date.now()
+                };
+
+                this.favorites.unshift(newFav);
+                await this.saveFavorites();
+                dialog.remove();
+                this.renderAdminPanel();
+            };
+        }
+
+        async saveFavorites() {
+            try {
+                const res = await API.post('/api/favorites', { favorites: this.favorites }, this.password);
+                if (res.success) {
+                    this.buildSearchIndex();
+                } else {
+                    alert(res.error || '保存失败');
+                }
+            } catch (err) {
+                alert('保存失败: ' + err.message);
+            }
+        }
+
+        showFavManager() {
+            const body = $('#modalBody');
+            this.favManagerPage = 0;
+            this.favManagerFiltered = null;
+
+            // 按分类统计
+            const categoryStats = {};
+            this.favorites.forEach(f => {
+                const cat = f.category || '未分类';
+                categoryStats[cat] = (categoryStats[cat] || 0) + 1;
+            });
+            const categoryCount = Object.keys(categoryStats).length;
+
+            body.innerHTML = `
+                <div class="fav-manager">
+                    <div class="fav-manager-header">
+                        <button class="btn" id="backToAdmin">← 返回</button>
+                        <input type="text" id="favManagerSearch" placeholder="搜索 ${this.favorites.length} 个收藏..." class="fav-manager-search">
+                        <select id="favCategoryFilter" class="fav-category-filter">
+                            <option value="">全部分类 (${categoryCount})</option>
+                            ${Object.entries(categoryStats)
+                                .sort((a, b) => b[1] - a[1])
+                                .map(([cat, count]) => `<option value="${this.esc(cat)}">${this.esc(cat)} (${count})</option>`)
+                                .join('')}
+                        </select>
+                    </div>
+                    <div class="fav-manager-stats" id="favManagerStats"></div>
+                    <div class="fav-manager-list" id="favManagerList"></div>
+                    <div class="fav-manager-footer" id="favManagerFooter"></div>
+                </div>
+            `;
+
+            $('#backToAdmin').onclick = () => this.renderAdminPanel();
+            $('#favManagerSearch').oninput = (e) => this.debouncedFilterFavManager(e.target.value, $('#favCategoryFilter').value);
+            $('#favCategoryFilter').onchange = (e) => this.filterFavManager($('#favManagerSearch').value, e.target.value);
+
+            this.renderFavManagerList(this.favorites);
+        }
+
+        debouncedFilterFavManager(query, category) {
+            if (this.searchDebounceTimer) {
+                clearTimeout(this.searchDebounceTimer);
+            }
+            this.searchDebounceTimer = setTimeout(() => {
+                this.filterFavManager(query, category);
+            }, 80);
+        }
+
+        filterFavManager(query, category) {
+            this.favManagerPage = 0;
+            let filtered = this.favorites;
+
+            // 先按分类过滤
+            if (category) {
+                filtered = filtered.filter(f => (f.category || '未分类') === category);
+            }
+
+            // 再按关键词过滤
+            if (query && query.trim()) {
+                const q = query.trim();
+                if (this.uf && this.favHaystack.length > 0) {
+                    const idxs = this.uf.filter(this.favHaystack, q);
+                    if (idxs && idxs.length > 0) {
+                        const idxSet = new Set(idxs.map(i => this.favorites[i].id));
+                        filtered = filtered.filter(f => idxSet.has(f.id));
+                    } else {
+                        filtered = [];
+                    }
+                } else {
+                    const qLower = q.toLowerCase();
+                    filtered = filtered.filter(f =>
+                        f.title.toLowerCase().includes(qLower) ||
+                        (f.description || '').toLowerCase().includes(qLower) ||
+                        f.url.toLowerCase().includes(qLower)
+                    );
+                }
+            }
+
+            this.favManagerFiltered = filtered;
+            this.renderFavManagerList(filtered);
+        }
+
+        renderFavManagerList(favs) {
+            const list = $('#favManagerList');
+            const footer = $('#favManagerFooter');
+            const stats = $('#favManagerStats');
+
+            if (!list) return;
+
+            const total = favs.length;
+            const pageSize = this.favManagerPageSize;
+            const start = this.favManagerPage * pageSize;
+            const end = Math.min(start + pageSize, total);
+            const pageFavs = favs.slice(start, end);
+            const totalPages = Math.ceil(total / pageSize);
+
+            // 更新统计
+            if (stats) {
+                if (total === 0) {
+                    stats.innerHTML = '';
+                } else if (total <= pageSize) {
+                    stats.innerHTML = `<span>共 ${total} 项</span>`;
+                } else {
+                    stats.innerHTML = `<span>显示 ${start + 1}-${end} / 共 ${total} 项</span>`;
+                }
+            }
+
+            if (total === 0) {
+                list.innerHTML = '<div class="fav-empty">无匹配结果</div>';
+                if (footer) footer.innerHTML = '';
+                return;
+            }
+
+            // 渲染列表项（使用 DocumentFragment 优化）
+            list.innerHTML = pageFavs.map(fav => `
+                <div class="fav-manager-item" data-id="${fav.id}">
+                    <img class="fav-manager-icon" src="${this.getFavicon(fav.url)}" alt="" loading="lazy"
+                         onerror="this.style.display='none'">
+                    <div class="fav-manager-info">
+                        <div class="fav-manager-title">${this.esc(fav.title)}</div>
+                        <div class="fav-manager-url">${this.esc(fav.url)}</div>
+                    </div>
+                    ${fav.category ? `<span class="fav-manager-category">${this.esc(fav.category)}</span>` : ''}
+                    <div class="fav-manager-actions">
+                        <button class="btn btn-sm edit-fav">编辑</button>
+                        <button class="btn btn-sm btn-danger del-fav">删除</button>
+                    </div>
+                </div>
+            `).join('');
+
+            // 分页控件
+            if (footer && totalPages > 1) {
+                footer.innerHTML = `
+                    <div class="fav-pagination">
+                        <button class="btn btn-sm" id="favPrevPage" ${this.favManagerPage === 0 ? 'disabled' : ''}>上一页</button>
+                        <span class="fav-page-info">${this.favManagerPage + 1} / ${totalPages}</span>
+                        <button class="btn btn-sm" id="favNextPage" ${this.favManagerPage >= totalPages - 1 ? 'disabled' : ''}>下一页</button>
+                    </div>
+                `;
+                $('#favPrevPage').onclick = () => {
+                    if (this.favManagerPage > 0) {
+                        this.favManagerPage--;
+                        this.renderFavManagerList(this.favManagerFiltered || this.favorites);
+                        list.scrollTop = 0;
+                    }
+                };
+                $('#favNextPage').onclick = () => {
+                    if (this.favManagerPage < totalPages - 1) {
+                        this.favManagerPage++;
+                        this.renderFavManagerList(this.favManagerFiltered || this.favorites);
+                        list.scrollTop = 0;
+                    }
+                };
+            } else if (footer) {
+                footer.innerHTML = '';
+            }
+
+            // 事件委托
+            list.onclick = (e) => {
+                const item = e.target.closest('.fav-manager-item');
+                if (!item) return;
+                const id = item.dataset.id;
+
+                if (e.target.classList.contains('del-fav')) {
+                    if (confirm('确定删除此收藏？')) {
+                        this.favorites = this.favorites.filter(f => f.id !== id);
+                        this.saveFavorites();
+                        // 重新过滤并渲染
+                        if (this.favManagerFiltered) {
+                            this.favManagerFiltered = this.favManagerFiltered.filter(f => f.id !== id);
+                        }
+                        this.renderFavManagerList(this.favManagerFiltered || this.favorites);
+                    }
+                } else if (e.target.classList.contains('edit-fav')) {
+                    this.editFavorite(id);
+                }
+            };
+        }
+
+        editFavorite(id) {
+            const fav = this.favorites.find(f => f.id === id);
+            if (!fav) return;
+
+            const dialog = html(`
+                <div class="fav-dialog-overlay" id="favEditDialog">
+                    <div class="fav-dialog">
+                        <h3>编辑收藏</h3>
+                        <div class="fav-form">
+                            <input type="text" id="editFavTitle" value="${this.esc(fav.title)}" placeholder="标题">
+                            <input type="url" id="editFavUrl" value="${this.esc(fav.url)}" placeholder="URL">
+                            <input type="text" id="editFavDesc" value="${this.esc(fav.description || '')}" placeholder="描述">
+                            <input type="text" id="editFavCategory" value="${this.esc(fav.category || '')}" placeholder="分类">
+                            <input type="text" id="editFavTags" value="${(fav.tags || []).join(', ')}" placeholder="标签">
+                        </div>
+                        <div class="fav-dialog-actions">
+                            <button class="btn" id="editFavCancelBtn">取消</button>
+                            <button class="btn btn-primary" id="editFavSaveBtn">保存</button>
+                        </div>
+                    </div>
+                </div>
+            `);
+
+            document.body.appendChild(dialog);
+
+            $('#editFavCancelBtn').onclick = () => dialog.remove();
+            $('#editFavSaveBtn').onclick = async () => {
+                fav.title = $('#editFavTitle').value.trim();
+                fav.url = $('#editFavUrl').value.trim();
+                fav.description = $('#editFavDesc').value.trim();
+                fav.category = $('#editFavCategory').value.trim();
+                fav.tags = $('#editFavTags').value.split(',').map(t => t.trim()).filter(Boolean);
+                fav.updatedAt = Date.now();
+
+                await this.saveFavorites();
+                dialog.remove();
+                this.showFavManager();
+            };
         }
 
         async changePassword() {

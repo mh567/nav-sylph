@@ -17,6 +17,7 @@ server-config.json
 
 # User bookmarks config (personal data)
 config.json
+favorites.json
 
 # AI assistant files
 CLAUDE.md

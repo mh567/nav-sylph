@@ -123,6 +123,7 @@ function checkPasteRateLimit(ip, action) {
 }
 
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
+const FAVORITES_FILE = path.join(config.rootDir, 'favorites.json');
 const PASSWORD_FILE = config.security.adminPasswordFile;
 
 // 禁用 X-Powered-By 头
@@ -225,6 +226,11 @@ const defaultConfig = {
     ]
 };
 
+const defaultFavorites = {
+    version: 1,
+    favorites: []
+};
+
 async function ensureFile(file, defaultData) {
     try {
         await fs.access(file);
@@ -261,6 +267,7 @@ async function init() {
     }
 
     await ensureFile(CONFIG_FILE, defaultConfig);
+    await ensureFile(FAVORITES_FILE, defaultFavorites);
     await ensureFile(PASSWORD_FILE, {
         passwordHash: await bcrypt.hash(config.security.defaultPassword, 10)
     });
@@ -327,6 +334,200 @@ app.post('/api/change-password', rateLimit, async (req, res) => {
 
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ========== Favorites API ==========
+
+// 解析 Netscape Bookmark HTML 格式（Chrome/Edge/Firefox/Safari 通用）
+function parseBookmarkHtml(html) {
+    const results = [];
+    let currentCategory = '未分类';
+    const lines = html.split('\n');
+
+    for (const line of lines) {
+        // 检查是否是分类标题 <H3>...</H3>
+        const folderMatch = /<H3[^>]*>([^<]+)<\/H3>/i.exec(line);
+        if (folderMatch) {
+            currentCategory = folderMatch[1].trim();
+            continue;
+        }
+
+        // 检查是否是书签链接 <A HREF="..." ...>title</A>
+        const linkMatch = /<A\s+HREF="([^"]+)"[^>]*>([^<]+)<\/A>/i.exec(line);
+        if (linkMatch) {
+            const url = linkMatch[1];
+            const title = linkMatch[2].trim();
+
+            // 跳过无效 URL
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                continue;
+            }
+
+            results.push({
+                id: 'fav_' + Math.random().toString(36).slice(2, 11),
+                title,
+                url,
+                description: '',
+                category: currentCategory,
+                tags: [],
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+            });
+        }
+    }
+
+    return results;
+}
+
+// 生成 Netscape Bookmark HTML 格式（可导入到任何浏览器）
+function generateBookmarkHtml(favorites) {
+    const now = Math.floor(Date.now() / 1000);
+
+    // 按分类分组
+    const byCategory = {};
+    for (const fav of favorites) {
+        const cat = fav.category || '未分类';
+        if (!byCategory[cat]) byCategory[cat] = [];
+        byCategory[cat].push(fav);
+    }
+
+    let html = `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<!-- This is an automatically generated file.
+     It will be read and overwritten.
+     DO NOT EDIT! -->
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+`;
+
+    for (const [category, items] of Object.entries(byCategory)) {
+        html += `    <DT><H3 ADD_DATE="${now}">${escapeHtml(category)}</H3>\n`;
+        html += `    <DL><p>\n`;
+        for (const item of items) {
+            const addDate = Math.floor((item.createdAt || Date.now()) / 1000);
+            html += `        <DT><A HREF="${escapeHtml(item.url)}" ADD_DATE="${addDate}">${escapeHtml(item.title)}</A>\n`;
+        }
+        html += `    </DL><p>\n`;
+    }
+
+    html += `</DL><p>\n`;
+    return html;
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// 获取收藏书签
+app.get('/api/favorites', async (req, res) => {
+    try {
+        const data = await readJSON(FAVORITES_FILE);
+        res.json(data);
+    } catch (err) {
+        console.error('读取收藏失败:', err);
+        res.status(500).json({ error: '读取收藏失败' });
+    }
+});
+
+// 保存收藏书签
+app.post('/api/favorites', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const { favorites } = req.body;
+        if (!Array.isArray(favorites)) {
+            return res.status(400).json({ error: '无效的数据格式' });
+        }
+
+        await writeJSON(FAVORITES_FILE, { version: 1, favorites });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('保存收藏失败:', err);
+        res.status(500).json({ error: '保存收藏失败' });
+    }
+});
+
+// 导入浏览器书签
+app.post('/api/favorites/import', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const { html, merge = true } = req.body;
+        if (!html || typeof html !== 'string') {
+            return res.status(400).json({ error: '无效的书签数据' });
+        }
+
+        // 解析 Netscape Bookmark HTML
+        const imported = parseBookmarkHtml(html);
+
+        let currentData = { favorites: [] };
+        if (merge) {
+            try {
+                currentData = await readJSON(FAVORITES_FILE);
+            } catch {}
+        }
+
+        // 去重合并（基于 URL）
+        const existingUrls = new Set(currentData.favorites.map(f => f.url));
+        let duplicates = 0;
+        const newFavorites = [];
+
+        for (const item of imported) {
+            if (existingUrls.has(item.url)) {
+                duplicates++;
+            } else {
+                existingUrls.add(item.url);
+                newFavorites.push(item);
+            }
+        }
+
+        currentData.favorites = [...currentData.favorites, ...newFavorites];
+        await writeJSON(FAVORITES_FILE, { version: 1, favorites: currentData.favorites });
+
+        res.json({
+            success: true,
+            imported: newFavorites.length,
+            duplicates
+        });
+    } catch (err) {
+        console.error('导入失败:', err);
+        res.status(500).json({ error: '导入失败: ' + err.message });
+    }
+});
+
+// 导出书签为 HTML
+app.get('/api/favorites/export', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const data = await readJSON(FAVORITES_FILE);
+        const html = generateBookmarkHtml(data.favorites || []);
+
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="bookmarks.html"');
+        res.send(html);
+    } catch (err) {
+        console.error('导出失败:', err);
+        res.status(500).json({ error: '导出失败' });
+    }
 });
 
 // ========== Paste API ==========
