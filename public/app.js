@@ -298,11 +298,29 @@
         }
 
         buildSearchIndex() {
-            // 构建搜索索引
+            // 构建搜索索引（包含拼音）
             this.favHaystack = this.favorites.map(f => {
                 let hostname = '';
                 try { hostname = new URL(f.url).hostname; } catch {}
-                return `${f.title} | ${f.description || ''} | ${f.category || ''} | ${hostname} | ${(f.tags || []).join(' ')}`;
+
+                // 基础搜索文本
+                const title = f.title || '';
+                const desc = f.description || '';
+                const category = f.category || '';
+                const tags = (f.tags || []).join(' ');
+
+                // 构建拼音索引
+                let pinyinParts = '';
+                if (typeof Pinyin !== 'undefined') {
+                    pinyinParts = [
+                        Pinyin.buildSearchPinyin(title),
+                        Pinyin.buildSearchPinyin(desc),
+                        Pinyin.buildSearchPinyin(category),
+                        Pinyin.buildSearchPinyin(tags)
+                    ].join(' ');
+                }
+
+                return `${title} | ${desc} | ${category} | ${hostname} | ${tags} | ${pinyinParts}`;
             });
 
             // 初始化 uFuzzy（宽松模式，适合中英文混合）
@@ -1688,67 +1706,77 @@
             this.favManagerFiltered = null;
             this.favManagerSelected = new Set();
 
-            // 按分类统计
+            // 按分类统计并构建树状结构
             const categoryStats = {};
             this.favorites.forEach(f => {
                 const cat = f.category || '未分类';
                 categoryStats[cat] = (categoryStats[cat] || 0) + 1;
             });
-            const categoryCount = Object.keys(categoryStats).length;
-            const uniqueCategories = Object.keys(categoryStats).sort();
+
+            // 如果当前选中的分类不存在于统计中，手动添加（空分类）
+            if (this.favManagerCurrentCategory && !categoryStats[this.favManagerCurrentCategory]) {
+                categoryStats[this.favManagerCurrentCategory] = 0;
+            }
+
+            // 构建树状分类结构
+            const categoryTree = this.buildCategoryTree(categoryStats);
 
             body.innerHTML = `
-                <div class="fav-manager">
-                    <div class="fav-manager-header">
-                        <button class="btn" id="backToAdmin">← 返回</button>
-                        <input type="text" id="favManagerSearch" placeholder="搜索 ${this.favorites.length} 个收藏..." class="fav-manager-search">
-                        <select id="favCategoryFilter" class="fav-category-filter">
-                            <option value="">全部分类 (${categoryCount})</option>
-                            ${Object.entries(categoryStats)
-                                .sort((a, b) => b[1] - a[1])
-                                .map(([cat, count]) => `<option value="${this.esc(cat)}" ${this.favManagerCurrentCategory === cat ? 'selected' : ''}>${this.esc(cat)} (${count})</option>`)
-                                .join('')}
-                        </select>
+                <div class="fav-manager fav-manager-split">
+                    <div class="fav-manager-sidebar" id="categorySidebar">
+                        <div class="sidebar-header">
+                            <span class="sidebar-title">分类</span>
+                            <button class="btn btn-sm" id="addCategoryBtn" title="新建分类">+</button>
+                        </div>
+                        <div class="category-tree" id="categoryTree">
+                            <div class="category-tree-item ${!this.favManagerCurrentCategory ? 'active' : ''}"
+                                 data-category="" data-drop-target="true">
+                                <span class="tree-item-icon">📁</span>
+                                <span class="tree-item-name">全部收藏</span>
+                                <span class="tree-item-count">${this.favorites.length}</span>
+                            </div>
+                            ${this.renderCategoryTree(categoryTree, 0)}
+                            <div class="category-tree-item category-tree-new" data-category="__new__" data-drop-target="true">
+                                <span class="tree-item-icon">➕</span>
+                                <span class="tree-item-name">新建分类...</span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="fav-batch-bar" id="favBatchBar">
-                        <label class="fav-select-all">
-                            <input type="checkbox" id="selectAllFav">
-                            <span>全选</span>
-                        </label>
-                        <span class="fav-selected-count" id="favSelectedCount"></span>
-                        <button class="btn btn-danger btn-sm" id="deleteSelectedBtn" disabled>删除选中</button>
+                    <div class="fav-manager-main">
+                        <div class="fav-manager-header">
+                            <button class="btn" id="backToAdmin">← 返回</button>
+                            <input type="text" id="favManagerSearch" placeholder="搜索收藏（支持拼音）..." class="fav-manager-search">
+                        </div>
+                        <div class="fav-batch-bar" id="favBatchBar">
+                            <label class="fav-select-all">
+                                <input type="checkbox" id="selectAllFav">
+                                <span>全选</span>
+                            </label>
+                            <span class="fav-selected-count" id="favSelectedCount"></span>
+                            <button class="btn btn-danger btn-sm" id="deleteSelectedBtn" disabled>删除选中</button>
+                        </div>
+                        <div class="fav-manager-stats" id="favManagerStats"></div>
+                        <div class="fav-manager-list" id="favManagerList"></div>
+                        <div class="fav-manager-footer" id="favManagerFooter"></div>
                     </div>
-                    <div class="fav-category-zones" id="categoryDropZones">
-                        <div class="category-zones-label">拖拽收藏到分类：</div>
-                        ${uniqueCategories.map(cat => `
-                            <div class="category-drop-zone" data-category="${this.esc(cat)}">${this.esc(cat)}</div>
-                        `).join('')}
-                        <div class="category-drop-zone category-new" data-category="__new__">+ 新分类</div>
-                    </div>
-                    <div class="fav-manager-stats" id="favManagerStats"></div>
-                    <div class="fav-manager-list" id="favManagerList"></div>
-                    <div class="fav-manager-footer" id="favManagerFooter"></div>
                 </div>
             `;
 
+            // 绑定事件
             $('#backToAdmin').onclick = async () => {
-                // Auto-save favorites before returning
                 await this.saveFavorites();
                 this.favManagerCurrentCategory = '';
                 this.renderAdminPanel();
             };
-            $('#favManagerSearch').oninput = (e) => this.debouncedFilterFavManager(e.target.value, $('#favCategoryFilter').value);
-            $('#favCategoryFilter').onchange = (e) => {
-                this.favManagerCurrentCategory = e.target.value;
-                this.filterFavManager($('#favManagerSearch').value, e.target.value);
-            };
+            $('#favManagerSearch').oninput = (e) => this.debouncedFilterFavManager(e.target.value, this.favManagerCurrentCategory);
+            $('#addCategoryBtn').onclick = () => this.promptNewCategory();
 
             // Batch selection
             $('#selectAllFav').onchange = (e) => this.toggleSelectAllFav(e.target.checked);
             $('#deleteSelectedBtn').onclick = () => this.deleteSelectedFavorites();
 
-            // Category drop zones
-            this.bindCategoryDropZones();
+            // Category tree events
+            this.bindCategoryTree();
 
             // Apply current filter
             if (this.favManagerCurrentCategory) {
@@ -1758,31 +1786,136 @@
             }
         }
 
-        bindCategoryDropZones() {
-            const zones = $('#categoryDropZones');
-            if (!zones) return;
+        // 构建树状分类结构
+        buildCategoryTree(categoryStats) {
+            const tree = {};
+            Object.entries(categoryStats).forEach(([cat, count]) => {
+                const parts = cat.split('/').filter(Boolean);
+                let current = tree;
+                let path = '';
+                parts.forEach((part, i) => {
+                    path = path ? `${path}/${part}` : part;
+                    if (!current[part]) {
+                        current[part] = {
+                            name: part,
+                            fullPath: path,
+                            count: 0,
+                            children: {}
+                        };
+                    }
+                    // 只在叶子节点累加计数
+                    if (i === parts.length - 1) {
+                        current[part].count += count;
+                    }
+                    current = current[part].children;
+                });
+            });
+            return tree;
+        }
 
-            zones.ondragover = (e) => {
-                e.preventDefault();
-                const zone = e.target.closest('.category-drop-zone');
-                if (zone) zone.classList.add('drag-over');
+        // 渲染树状分类
+        renderCategoryTree(tree, level) {
+            let html = '';
+            const entries = Object.entries(tree).sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+
+            for (const [name, node] of entries) {
+                const hasChildren = Object.keys(node.children).length > 0;
+                const isActive = this.favManagerCurrentCategory === node.fullPath;
+                const indent = level * 16;
+
+                html += `
+                    <div class="category-tree-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''}"
+                         data-category="${this.esc(node.fullPath)}"
+                         data-drop-target="true"
+                         style="padding-left: ${12 + indent}px">
+                        ${hasChildren ? '<span class="tree-toggle">▶</span>' : '<span class="tree-toggle-placeholder"></span>'}
+                        <span class="tree-item-icon">📁</span>
+                        <span class="tree-item-name">${this.esc(name)}</span>
+                        <span class="tree-item-count">${node.count}</span>
+                    </div>
+                `;
+
+                if (hasChildren) {
+                    html += `<div class="category-tree-children">${this.renderCategoryTree(node.children, level + 1)}</div>`;
+                }
+            }
+            return html;
+        }
+
+        // 绑定分类树事件
+        bindCategoryTree() {
+            const tree = $('#categoryTree');
+            if (!tree) return;
+
+            // 点击分类筛选
+            tree.onclick = async (e) => {
+                const item = e.target.closest('.category-tree-item');
+                if (!item) return;
+
+                // 点击展开/折叠按钮
+                if (e.target.classList.contains('tree-toggle')) {
+                    const children = item.nextElementSibling;
+                    if (children && children.classList.contains('category-tree-children')) {
+                        children.classList.toggle('collapsed');
+                        e.target.textContent = children.classList.contains('collapsed') ? '▶' : '▼';
+                    }
+                    return;
+                }
+
+                // 新建分类
+                if (item.classList.contains('category-tree-new')) {
+                    this.promptNewCategory();
+                    return;
+                }
+
+                const category = item.dataset.category;
+
+                // 如果有选中的书签，询问是否移动到该分类
+                if (this.favManagerSelected && this.favManagerSelected.size > 0 && category) {
+                    const count = this.favManagerSelected.size;
+                    if (confirm(`是否将选中的 ${count} 个书签移动到「${category || '未分类'}」？`)) {
+                        this.favorites.forEach(f => {
+                            if (this.favManagerSelected.has(f.id)) {
+                                f.category = category;
+                                f.updatedAt = Date.now();
+                            }
+                        });
+                        this.favManagerSelected.clear();
+                        await this.saveFavorites();
+                        this.showFavManager();
+                        return;
+                    }
+                }
+
+                // 选择分类筛选
+                this.favManagerCurrentCategory = category;
+                $$('.category-tree-item', tree).forEach(el => el.classList.remove('active'));
+                item.classList.add('active');
+                this.filterFavManager($('#favManagerSearch')?.value || '', category);
             };
 
-            zones.ondragleave = (e) => {
-                const zone = e.target.closest('.category-drop-zone');
-                if (zone) zone.classList.remove('drag-over');
+            // 拖拽支持
+            tree.ondragover = (e) => {
+                e.preventDefault();
+                const item = e.target.closest('.category-tree-item[data-drop-target]');
+                if (item) item.classList.add('drag-over');
             };
 
-            zones.ondrop = async (e) => {
+            tree.ondragleave = (e) => {
+                const item = e.target.closest('.category-tree-item');
+                if (item) item.classList.remove('drag-over');
+            };
+
+            tree.ondrop = async (e) => {
                 e.preventDefault();
-                const zone = e.target.closest('.category-drop-zone');
-                if (!zone) return;
-                zone.classList.remove('drag-over');
+                const item = e.target.closest('.category-tree-item[data-drop-target]');
+                if (!item) return;
+                item.classList.remove('drag-over');
 
                 const favId = e.dataTransfer.getData('text/plain');
                 if (!favId) return;
 
-                let newCategory = zone.dataset.category;
+                let newCategory = item.dataset.category;
 
                 if (newCategory === '__new__') {
                     newCategory = prompt('请输入新分类名称：');
@@ -1795,26 +1928,37 @@
                     fav.category = newCategory;
                     fav.updatedAt = Date.now();
                     await this.saveFavorites();
-                    // Preserve current category filter when refreshing
                     this.showFavManager();
                 }
             };
+        }
 
-            // Also handle click on "+ 新分类" zone to create category
-            $$('.category-drop-zone.category-new', zones).forEach(zone => {
-                zone.onclick = () => {
-                    const newCategory = prompt('请输入新分类名称：');
-                    if (newCategory && newCategory.trim()) {
-                        const categoryName = newCategory.trim();
-                        // Add new category zone immediately
-                        const newZone = document.createElement('div');
-                        newZone.className = 'category-drop-zone';
-                        newZone.dataset.category = categoryName;
-                        newZone.textContent = categoryName;
-                        zone.before(newZone);
+        // 新建分类
+        promptNewCategory() {
+            const name = prompt('请输入新分类名称（支持用 / 创建子分类，如：工具/开发）：');
+            if (!name || !name.trim()) return;
+
+            const categoryName = name.trim();
+
+            // 检查是否有选中的书签，如果有则移动到新分类
+            if (this.favManagerSelected && this.favManagerSelected.size > 0) {
+                this.favorites.forEach(f => {
+                    if (this.favManagerSelected.has(f.id)) {
+                        f.category = categoryName;
+                        f.updatedAt = Date.now();
                     }
-                };
-            });
+                });
+                this.favManagerSelected.clear();
+                this.saveFavorites();
+            }
+
+            // 设置当前分类并刷新
+            this.favManagerCurrentCategory = categoryName;
+            this.showFavManager();
+        }
+
+        bindCategoryDropZones() {
+            // 已被 bindCategoryTree 替代
         }
 
         toggleSelectAllFav(checked) {
@@ -1874,29 +2018,50 @@
             this.favManagerPage = 0;
             let filtered = this.favorites;
 
-            // 先按分类过滤
+            // 先按分类过滤（支持树状结构，选择父分类时也显示子分类内容）
             if (category) {
-                filtered = filtered.filter(f => (f.category || '未分类') === category);
+                filtered = filtered.filter(f => {
+                    const favCat = f.category || '未分类';
+                    // 精确匹配或前缀匹配（子分类）
+                    return favCat === category || favCat.startsWith(category + '/');
+                });
             }
 
             // 再按关键词过滤
             if (query && query.trim()) {
-                const q = query.trim();
-                if (this.uf && this.favHaystack.length > 0) {
+                const q = query.trim().toLowerCase();
+
+                // 使用 uFuzzy 进行模糊搜索
+                if (this.uf && this.favHaystack && this.favHaystack.length > 0) {
                     const idxs = this.uf.filter(this.favHaystack, q);
                     if (idxs && idxs.length > 0) {
-                        const idxSet = new Set(idxs.map(i => this.favorites[i].id));
-                        filtered = filtered.filter(f => idxSet.has(f.id));
+                        const matchedIds = new Set(idxs.map(i => this.favorites[i]?.id).filter(Boolean));
+                        filtered = filtered.filter(f => matchedIds.has(f.id));
                     } else {
-                        filtered = [];
+                        // uFuzzy 没有匹配，尝试简单包含搜索
+                        filtered = filtered.filter(f => {
+                            const searchText = [
+                                f.title || '',
+                                f.url || '',
+                                f.category || '',
+                                f.description || '',
+                                (f.tags || []).join(' ')
+                            ].join(' ').toLowerCase();
+                            return searchText.includes(q);
+                        });
                     }
                 } else {
-                    const qLower = q.toLowerCase();
-                    filtered = filtered.filter(f =>
-                        f.title.toLowerCase().includes(qLower) ||
-                        (f.description || '').toLowerCase().includes(qLower) ||
-                        f.url.toLowerCase().includes(qLower)
-                    );
+                    // 没有 uFuzzy，使用简单搜索
+                    filtered = filtered.filter(f => {
+                        const searchText = [
+                            f.title || '',
+                            f.url || '',
+                            f.category || '',
+                            f.description || '',
+                            (f.tags || []).join(' ')
+                        ].join(' ').toLowerCase();
+                        return searchText.includes(q);
+                    });
                 }
             }
 
