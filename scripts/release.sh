@@ -89,7 +89,7 @@ log_step "准备打包文件..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/${RELEASE_NAME}"
 
-# 复制需要打包的文件（排除开发/用户相关文件）
+# 复制需要打包的文件（仅运行必需文件）
 # 核心文件
 cp server.js "$DIST_DIR/${RELEASE_NAME}/"
 cp package.json "$DIST_DIR/${RELEASE_NAME}/"
@@ -103,15 +103,12 @@ cp .env.example "$DIST_DIR/${RELEASE_NAME}/"
 cp server-config.example.json "$DIST_DIR/${RELEASE_NAME}/"
 cp nav-sylph.service "$DIST_DIR/${RELEASE_NAME}/"
 
-# 文档
+# 文档（仅 README）
 cp README.md "$DIST_DIR/${RELEASE_NAME}/"
-cp DEPLOYMENT.md "$DIST_DIR/${RELEASE_NAME}/"
 
 # 目录
 cp -r public "$DIST_DIR/${RELEASE_NAME}/"
 cp -r server-config "$DIST_DIR/${RELEASE_NAME}/"
-mkdir -p "$DIST_DIR/${RELEASE_NAME}/docs"
-cp docs/preview.png "$DIST_DIR/${RELEASE_NAME}/docs/" 2>/dev/null || true
 
 # 创建空目录
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/logs"
@@ -123,15 +120,14 @@ ls -la "$DIST_DIR/${RELEASE_NAME}/"
 # 打包
 log_step "创建压缩包..."
 cd "$DIST_DIR"
-# 使用 --no-xattrs 和 --no-mac-metadata 排除 macOS 扩展属性（兼容 Linux）
-if tar --help 2>&1 | grep -q 'no-xattrs'; then
-    tar --no-xattrs -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
-elif tar --help 2>&1 | grep -q 'no-mac-metadata'; then
-    tar --no-mac-metadata -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
-else
-    # 使用 COPYFILE_DISABLE 环境变量（macOS 特有）
-    COPYFILE_DISABLE=1 tar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+
+# 清除 macOS 扩展属性（避免 Linux 解压警告）
+if command -v xattr &> /dev/null; then
+    find "${RELEASE_NAME}" -type f -exec xattr -c {} \; 2>/dev/null || true
 fi
+
+# 使用 COPYFILE_DISABLE 环境变量排除 macOS 资源 fork
+COPYFILE_DISABLE=1 tar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
 cd "$PROJECT_DIR"
 
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"

@@ -1,6 +1,19 @@
 {
   "versions": [
     {
+      "version": "1.1.5",
+      "date": "2025-01-25",
+      "highlights": [
+        "精简安装包，移除不必要的文档文件"
+      ],
+      "changes": {
+        "improve": [
+          "移除 docs/ 和 DEPLOYMENT.md，减小安装包体积",
+          "修复 Linux 解压时的 macOS 扩展属性警告"
+        ]
+      }
+    },
+    {
       "version": "1.1.4",
       "date": "2025-01-25",
       "highlights": [
