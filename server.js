@@ -673,6 +673,14 @@ app.post('/api/webdav/backup', rateLimit, async (req, res) => {
         } catch {}
 
         const result = await webdav.createBackup(configData, favoritesData, appVersion, generateBookmarkHtml);
+
+        // Auto cleanup: keep only latest 5 backups
+        try {
+            await webdav.cleanupOldBackups(5);
+        } catch (cleanupErr) {
+            console.error('自动清理旧备份失败:', cleanupErr.message);
+        }
+
         res.json(result);
     } catch (err) {
         console.error('WebDAV 备份失败:', err);
@@ -766,6 +774,35 @@ app.post('/api/webdav/restore', rateLimit, async (req, res) => {
     } catch (err) {
         console.error('WebDAV 恢复失败:', err);
         res.status(500).json({ error: '恢复失败: ' + err.message });
+    }
+});
+
+// Delete backup file
+app.post('/api/webdav/delete', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const { filename } = req.body;
+        if (!filename) {
+            return res.status(400).json({ error: '请指定要删除的文件' });
+        }
+
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        if (!webdav.config.url) {
+            return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
+        }
+
+        await webdav.deleteBackup(filename);
+        res.json({ success: true });
+    } catch (err) {
+        console.error('删除备份失败:', err);
+        res.status(500).json({ error: '删除失败: ' + err.message });
     }
 });
 

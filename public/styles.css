@@ -1752,7 +1752,10 @@ body {
     border: 1px solid var(--border);
     border-radius: 6px;
     margin-bottom: 8px;
-    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     transition: all var(--transition);
 }
 
@@ -1763,6 +1766,22 @@ body {
 
 .webdav-backup-item:last-child {
     margin-bottom: 0;
+}
+
+.webdav-backup-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.webdav-backup-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.webdav-backup-actions .btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
 }
 
 .webdav-backup-name {

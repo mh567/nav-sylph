@@ -1130,9 +1130,15 @@
             try {
                 const res = await API.post('/api/webdav/backup', {}, this.password);
                 if (res.success) {
-                    msgEl.textContent = `备份成功: ${res.filename}`;
-                    msgEl.className = 'webdav-message success';
-                    await this.loadWebDAVConfig();
+                    if (res.noChanges) {
+                        msgEl.textContent = res.message || '配置和收藏没有变化，无需备份';
+                        msgEl.className = 'webdav-message';
+                    } else {
+                        const files = [res.configFilename, res.bookmarksFilename].filter(Boolean);
+                        msgEl.textContent = `备份成功: ${files.join(', ')}`;
+                        msgEl.className = 'webdav-message success';
+                        await this.loadWebDAVConfig();
+                    }
                 } else {
                     msgEl.textContent = res.error || '备份失败';
                     msgEl.className = 'webdav-message error';
@@ -1171,7 +1177,7 @@
                 const dialog = html(`
                     <div class="fav-dialog-overlay" id="webdavRestoreDialog">
                         <div class="fav-dialog webdav-restore-dialog">
-                            <h3>选择要恢复的备份</h3>
+                            <h3>管理备份</h3>
                             <div class="webdav-backup-list">
                                 ${data.backups.map(b => {
                                     const isLegacy = !!b.legacyFile;
@@ -1186,16 +1192,23 @@
                                     <div class="webdav-backup-item"
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
-                                         data-legacy="${this.esc(b.legacyFile || '')}">
-                                        <div class="webdav-backup-name">${displayName}</div>
-                                        <div class="webdav-backup-meta">
-                                            ${files.join(' + ')}
+                                         data-legacy="${this.esc(b.legacyFile || '')}"
+                                         data-timestamp="${this.esc(b.timestamp)}">
+                                        <div class="webdav-backup-info">
+                                            <div class="webdav-backup-name">${displayName}</div>
+                                            <div class="webdav-backup-meta">
+                                                ${files.join(' + ')}
+                                            </div>
+                                        </div>
+                                        <div class="webdav-backup-actions">
+                                            <button class="btn btn-sm webdav-restore-btn" title="恢复">恢复</button>
+                                            <button class="btn btn-sm btn-danger webdav-delete-btn" title="删除">删除</button>
                                         </div>
                                     </div>
                                 `}).join('')}
                             </div>
                             <div class="fav-dialog-actions">
-                                <button class="btn" id="webdavRestoreCancelBtn">取消</button>
+                                <button class="btn" id="webdavRestoreCancelBtn">关闭</button>
                             </div>
                         </div>
                     </div>
@@ -1205,18 +1218,56 @@
 
                 $('#webdavRestoreCancelBtn').onclick = () => dialog.remove();
 
-                $$('.webdav-backup-item', dialog).forEach(item => {
-                    item.onclick = async () => {
+                $$('.webdav-restore-btn', dialog).forEach(btn => {
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const item = btn.closest('.webdav-backup-item');
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
                         const legacyFile = item.dataset.legacy;
 
-                        // Show restore options dialog
                         this.showRestoreOptionsDialog({
                             configFile,
                             bookmarksFile,
                             legacyFile
                         }, dialog);
+                    };
+                });
+
+                $$('.webdav-delete-btn', dialog).forEach(btn => {
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const item = btn.closest('.webdav-backup-item');
+                        const configFile = item.dataset.config;
+                        const bookmarksFile = item.dataset.bookmarks;
+                        const legacyFile = item.dataset.legacy;
+                        const timestamp = item.dataset.timestamp;
+                        const displayName = timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
+
+                        if (!confirm(`确定删除备份 ${displayName}？`)) return;
+
+                        btn.disabled = true;
+                        btn.textContent = '删除中...';
+
+                        try {
+                            const filesToDelete = [configFile, bookmarksFile, legacyFile].filter(Boolean);
+                            for (const file of filesToDelete) {
+                                await API.post('/api/webdav/delete', { filename: file }, this.password);
+                            }
+                            item.remove();
+
+                            // Check if list is empty
+                            if (!$('.webdav-backup-item', dialog)) {
+                                dialog.remove();
+                                const msgEl = $('#webdavMessage');
+                                msgEl.textContent = '没有可用的备份';
+                                msgEl.className = 'webdav-message';
+                            }
+                        } catch (err) {
+                            alert('删除失败: ' + err.message);
+                            btn.disabled = false;
+                            btn.textContent = '删除';
+                        }
                     };
                 });
             } catch (e) {
