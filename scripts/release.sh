@@ -148,13 +148,15 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 EOF
 )
 
-# 提取 highlights
-HIGHLIGHTS=$(grep -o '"highlights"[[:space:]]*:[[:space:]]*\[[^]]*\]' CHANGELOG.json | head -1 | \
-    sed 's/"highlights"[[:space:]]*:[[:space:]]*\[//; s/\]//; s/"//g' | \
-    tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
-    while read -r line; do
-        [ -n "$line" ] && echo "- $line"
-    done)
+# 提取最新版本的 highlights（遇到第一个 ] 就停止）
+HIGHLIGHTS=$(awk '
+    /"highlights"/ { in_highlights=1; next }
+    in_highlights && /\]/ { exit }
+    in_highlights && /"[^"]+/ {
+        gsub(/^[[:space:]]*"/, ""); gsub(/"[,]?[[:space:]]*$/, "");
+        if (length($0) > 0) print "- " $0
+    }
+' CHANGELOG.json)
 
 RELEASE_NOTES="${RELEASE_NOTES}${HIGHLIGHTS}
 
