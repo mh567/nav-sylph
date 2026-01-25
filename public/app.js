@@ -90,6 +90,10 @@
             this.favManagerPage = 0;
             this.favManagerPageSize = 50;
             this.favManagerFiltered = null;  // 当前过滤结果
+            // 版本管理
+            this.currentVersion = null;
+            this.changelog = null;
+            this.hasNewVersion = false;
             this.init();
         }
 
@@ -104,6 +108,8 @@
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
+                // 版本检测（在页面加载完成后）
+                await this.checkVersionUpdate();
             } catch (e) {
                 console.error('Init failed:', e);
                 $('#loader').textContent = '加载失败';
@@ -306,6 +312,84 @@
                     intraIns: 1,
                     interIns: 3,
                 });
+            }
+        }
+
+        // ========== 版本管理 ==========
+
+        async checkVersionUpdate() {
+            try {
+                // 获取当前版本信息
+                const versionData = await API.get('/api/version');
+                this.currentVersion = versionData.version;
+
+                // 获取更新日志
+                const changelogData = await API.get('/api/changelog');
+                this.changelog = changelogData.versions || [];
+
+                // 检查用户已查看的版本
+                const seenVersion = localStorage.getItem('nav-sylph-seen-version');
+
+                // 比较版本号
+                if (!seenVersion || this.compareVersions(this.currentVersion, seenVersion) > 0) {
+                    this.hasNewVersion = true;
+                    this.updateHelpButtonBadge(true);
+
+                    // 延迟弹出帮助窗口
+                    setTimeout(() => {
+                        this.showHelp();
+                    }, 500);
+                }
+            } catch (e) {
+                console.error('Version check failed:', e);
+            }
+        }
+
+        compareVersions(v1, v2) {
+            const parts1 = v1.split('.').map(Number);
+            const parts2 = v2.split('.').map(Number);
+
+            for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+                const p1 = parts1[i] || 0;
+                const p2 = parts2[i] || 0;
+                if (p1 > p2) return 1;
+                if (p1 < p2) return -1;
+            }
+            return 0;
+        }
+
+        updateHelpButtonBadge(show) {
+            const helpBtn = $('#helpBtn');
+            if (helpBtn) {
+                helpBtn.classList.toggle('has-update', show);
+            }
+        }
+
+        getNewFeatures() {
+            if (!this.changelog || this.changelog.length === 0) return null;
+
+            const seenVersion = localStorage.getItem('nav-sylph-seen-version');
+            if (!seenVersion) {
+                // 首次使用，显示最新版本的亮点
+                return this.changelog[0];
+            }
+
+            // 收集所有比已查看版本更新的版本
+            const newVersions = this.changelog.filter(v =>
+                this.compareVersions(v.version, seenVersion) > 0
+            );
+
+            if (newVersions.length === 0) return null;
+
+            // 返回最新版本的信息
+            return newVersions[0];
+        }
+
+        markVersionAsSeen() {
+            if (this.currentVersion) {
+                localStorage.setItem('nav-sylph-seen-version', this.currentVersion);
+                this.hasNewVersion = false;
+                this.updateHelpButtonBadge(false);
             }
         }
 
@@ -728,11 +812,28 @@
         }
 
         showHelp() {
+            const versionStr = this.currentVersion ? ` v${this.currentVersion}` : '';
+            const newFeatures = this.getNewFeatures();
+
+            let newFeaturesHtml = '';
+            if (this.hasNewVersion && newFeatures) {
+                const highlightsHtml = newFeatures.highlights
+                    ? newFeatures.highlights.map(h => `<li>${this.esc(h)}</li>`).join('')
+                    : '';
+                newFeaturesHtml = `
+                    <div class="help-new-features">
+                        <div class="help-new-features-header">✨ 新功能</div>
+                        <ul class="help-new-features-list">${highlightsHtml}</ul>
+                    </div>
+                `;
+            }
+
             const helpHtml = `
                 <div class="help-overlay" id="helpOverlay">
                     <div class="help-content">
                         <button class="help-close">×</button>
-                        <h3>🔍 快捷功能</h3>
+                        <h3>Nav Sylph${versionStr}</h3>
+                        ${newFeaturesHtml}
                         <div class="help-section">
                             <strong>收藏书签检索</strong>
                             <p>搜索框输入 <code>/</code> + 关键词，快速搜索收藏</p>
@@ -757,6 +858,8 @@
             overlay.onclick = (e) => {
                 if (e.target === overlay || e.target.classList.contains('help-close')) {
                     overlay.remove();
+                    // 标记版本为已查看
+                    this.markVersionAsSeen();
                 }
             };
             document.body.appendChild(overlay);

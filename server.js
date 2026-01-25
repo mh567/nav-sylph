@@ -336,6 +336,31 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ========== Version API ==========
+
+// 获取版本信息
+app.get('/api/version', async (req, res) => {
+    try {
+        const versionFile = path.join(config.rootDir, 'version.json');
+        const data = await readJSON(versionFile);
+        res.json(data);
+    } catch (err) {
+        // 如果文件不存在，返回默认版本
+        res.json({ version: '1.0.0', releaseDate: null });
+    }
+});
+
+// 获取更新日志
+app.get('/api/changelog', async (req, res) => {
+    try {
+        const changelogFile = path.join(config.rootDir, 'CHANGELOG.json');
+        const data = await readJSON(changelogFile);
+        res.json(data);
+    } catch (err) {
+        res.json({ versions: [] });
+    }
+});
+
 // ========== Favorites API ==========
 
 // 解析 Netscape Bookmark HTML 格式（Chrome/Edge/Firefox/Safari 通用）

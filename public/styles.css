@@ -1599,3 +1599,122 @@ body {
         min-width: 80px;
     }
 }
+
+/* ========== 版本更新提示 ========== */
+
+/* 帮助按钮更新徽章 */
+.fab-help.has-update::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 10px;
+    height: 10px;
+    background: #ef4444;
+    border-radius: 50%;
+    border: 2px solid var(--bg-card);
+    animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.2); opacity: 0.8; }
+}
+
+/* 新功能区块 */
+.help-new-features {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .help-new-features {
+        background: linear-gradient(135deg, #451a03 0%, #78350f 100%);
+        border-color: #b45309;
+    }
+}
+
+:root[data-theme="dark"] .help-new-features {
+    background: linear-gradient(135deg, #451a03 0%, #78350f 100%);
+    border-color: #b45309;
+}
+
+.help-new-features-header {
+    font-size: 14px;
+    font-weight: 600;
+    color: #92400e;
+    margin-bottom: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .help-new-features-header {
+        color: #fbbf24;
+    }
+}
+
+:root[data-theme="dark"] .help-new-features-header {
+    color: #fbbf24;
+}
+
+.help-new-features-list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: #78350f;
+    line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .help-new-features-list {
+        color: #fde68a;
+    }
+}
+
+:root[data-theme="dark"] .help-new-features-list {
+    color: #fde68a;
+}
+
+.help-new-features-list li {
+    margin-bottom: 4px;
+}
+
+.help-new-features-list li:last-child {
+    margin-bottom: 0;
+}
+
+/* 帮助弹窗标题优化 */
+.help-content h3 {
+    font-size: 16px;
+    margin-bottom: 16px;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .fab-help.has-update::after {
+        top: 6px;
+        right: 6px;
+        width: 8px;
+        height: 8px;
+    }
+
+    .help-new-features {
+        padding: 10px 12px;
+        margin-bottom: 14px;
+    }
+
+    .help-new-features-header {
+        font-size: 13px;
+    }
+
+    .help-new-features-list {
+        font-size: 12px;
+        padding-left: 16px;
+    }
+}

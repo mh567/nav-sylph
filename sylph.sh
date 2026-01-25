@@ -11,8 +11,11 @@ set -e
 
 # ===== 配置 =====
 APP_NAME="nav-sylph"
-REPO_URL="https://github.com/mh567/nav-sylph.git"
-BRANCH="${NAV_SYLPH_BRANCH:-main}"
+REPO_OWNER="mh567"
+REPO_NAME="nav-sylph"
+GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
+GITHUB_RELEASES="${GITHUB_API}/releases"
+RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
 # 检测脚本运行模式（远程安装 or 本地管理）
 if [ -f "$(dirname "$0")/server.js" ] 2>/dev/null; then
@@ -132,12 +135,12 @@ check_port() {
     return 1
 }
 
-# 检查依赖
+# 检查依赖（不再需要 git）
 check_dependencies() {
     local missing=()
 
-    if ! check_command git; then
-        missing+=("git")
+    if ! check_command curl && ! check_command wget; then
+        missing+=("curl 或 wget")
     fi
 
     if ! check_command node; then
@@ -154,20 +157,100 @@ check_dependencies() {
         echo "请先安装:"
         case "$OS" in
             linux|wsl)
-                echo "  Ubuntu/Debian: sudo apt update && sudo apt install -y git nodejs npm"
-                echo "  CentOS/RHEL:   sudo yum install -y git nodejs npm"
-                echo "  Arch:          sudo pacman -S git nodejs npm"
+                echo "  Ubuntu/Debian: sudo apt update && sudo apt install -y curl nodejs npm"
+                echo "  CentOS/RHEL:   sudo yum install -y curl nodejs npm"
+                echo "  Arch:          sudo pacman -S curl nodejs npm"
                 ;;
             macos)
-                echo "  Homebrew: brew install git node"
+                echo "  Homebrew: brew install node"
                 ;;
             windows)
                 echo "  下载 Node.js: https://nodejs.org/"
-                echo "  下载 Git: https://git-scm.com/"
                 ;;
         esac
         exit 1
     fi
+}
+
+# 获取最新版本信息
+get_latest_release() {
+    local api_url="${GITHUB_RELEASES}/latest"
+    local response=""
+
+    if check_command curl; then
+        response=$(curl -sL "$api_url" 2>/dev/null)
+    elif check_command wget; then
+        response=$(wget -qO- "$api_url" 2>/dev/null)
+    fi
+
+    if [ -z "$response" ]; then
+        log_error "无法获取版本信息"
+        return 1
+    fi
+
+    # 解析 JSON 获取 tag_name 和 assets
+    LATEST_TAG=$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
+    LATEST_VERSION="${LATEST_TAG#v}"
+
+    # 获取下载链接
+    DOWNLOAD_URL=$(echo "$response" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*\.tar\.gz"' | head -1 | cut -d'"' -f4)
+
+    if [ -z "$LATEST_TAG" ] || [ -z "$DOWNLOAD_URL" ]; then
+        log_error "无法解析版本信息"
+        return 1
+    fi
+
+    return 0
+}
+
+# 下载并解压 Release
+download_release() {
+    local url="$1"
+    local dest_dir="$2"
+    local temp_file="/tmp/nav-sylph-release-$$.tar.gz"
+    local temp_dir="/tmp/nav-sylph-extract-$$"
+
+    log_step "下载 ${LATEST_TAG}..."
+
+    if check_command curl; then
+        curl -fsSL "$url" -o "$temp_file"
+    elif check_command wget; then
+        wget -q "$url" -O "$temp_file"
+    fi
+
+    if [ ! -f "$temp_file" ]; then
+        log_error "下载失败"
+        return 1
+    fi
+
+    log_step "解压文件..."
+    mkdir -p "$temp_dir"
+    tar -xzf "$temp_file" -C "$temp_dir"
+
+    # 找到解压后的目录（应该是 nav-sylph-vX.X.X）
+    local extracted_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "nav-sylph-*" | head -1)
+
+    if [ -z "$extracted_dir" ]; then
+        log_error "解压失败：未找到目录"
+        rm -f "$temp_file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # 移动到目标目录
+    if [ -d "$dest_dir" ]; then
+        # 更新模式：复制新文件
+        cp -r "$extracted_dir"/* "$dest_dir/"
+    else
+        # 安装模式：移动整个目录
+        mv "$extracted_dir" "$dest_dir"
+    fi
+
+    # 清理
+    rm -f "$temp_file"
+    rm -rf "$temp_dir"
+
+    return 0
 }
 
 # ===== 核心命令 =====
@@ -179,11 +262,17 @@ do_install() {
     echo ""
 
     check_dependencies
-    log_info "Git: $(git --version | cut -d' ' -f3)"
     log_info "Node.js: $(node --version)"
     echo ""
 
-    # 远程模式：需要克隆仓库
+    # 获取最新版本
+    log_step "获取最新版本..."
+    if ! get_latest_release; then
+        exit 1
+    fi
+    log_info "最新版本: ${LATEST_VERSION}"
+
+    # 远程模式：需要下载
     if [ "$MODE" = "remote" ]; then
         if [ -d "$APP_DIR" ]; then
             log_warn "目录已存在: $APP_DIR"
@@ -200,10 +289,12 @@ do_install() {
             fi
         fi
 
-        log_step "克隆仓库..."
-        git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+        # 下载并解压
+        if ! download_release "$DOWNLOAD_URL" "$APP_DIR"; then
+            exit 1
+        fi
         cd "$APP_DIR"
-        log_info "已克隆到: $APP_DIR"
+        log_info "已安装到: $APP_DIR"
     else
         cd "$APP_DIR"
     fi
@@ -232,6 +323,7 @@ do_install() {
     # 远程安装模式：创建标记文件，用于区分开发目录
     if [ "$MODE" = "remote" ]; then
         echo "installed=$(date -Iseconds)" > "${APP_DIR}/.installed-by-script"
+        echo "version=${LATEST_VERSION}" >> "${APP_DIR}/.installed-by-script"
     fi
 
     # 启动服务
@@ -261,6 +353,7 @@ do_install() {
     echo ""
     echo -e "${CYAN}── 安装信息 ──${NC}"
     echo "  安装目录:     $APP_DIR"
+    echo "  安装版本:     v${LATEST_VERSION}"
     echo "  安装方式:     一键脚本"
     echo ""
     echo -e "${CYAN}── 服务状态 ──${NC}"
@@ -443,6 +536,26 @@ do_update() {
     print_banner
     cd "$APP_DIR"
 
+    # 获取当前版本
+    local old_version=""
+    if [ -f "version.json" ]; then
+        old_version=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' version.json | cut -d'"' -f4)
+    fi
+    log_info "当前版本: ${old_version:-未知}"
+
+    # 获取最新版本
+    log_step "检查最新版本..."
+    if ! get_latest_release; then
+        exit 1
+    fi
+    log_info "最新版本: ${LATEST_VERSION}"
+
+    # 检查是否需要更新
+    if [ "$old_version" = "$LATEST_VERSION" ]; then
+        log_info "已是最新版本，无需更新"
+        exit 0
+    fi
+
     # 停止服务
     log_step "停止服务..."
     do_stop 2>/dev/null || true
@@ -455,11 +568,35 @@ do_update() {
     [ -f ".admin-password.json" ] && cp .admin-password.json "$backup_dir/"
     [ -f ".env" ] && cp .env "$backup_dir/"
     [ -f "server-config.json" ] && cp server-config.json "$backup_dir/"
+    [ -f "favorites.json" ] && cp favorites.json "$backup_dir/"
+    [ -f ".installed-by-script" ] && cp .installed-by-script "$backup_dir/"
 
-    # 更新代码
-    log_step "拉取最新代码..."
-    git fetch origin "$BRANCH"
-    git reset --hard "origin/$BRANCH"
+    # 下载新版本
+    log_step "下载新版本..."
+    local temp_dir="/tmp/nav-sylph-update-$$"
+    mkdir -p "$temp_dir"
+
+    if ! download_release "$DOWNLOAD_URL" "$temp_dir"; then
+        log_error "下载失败，恢复备份..."
+        rm -rf "$temp_dir"
+        do_start
+        exit 1
+    fi
+
+    # 更新文件（保留用户配置目录）
+    log_step "更新文件..."
+
+    # 删除旧的程序文件（保留用户数据）
+    rm -rf public server-config
+    rm -f server.js package.json package-lock.json sylph.sh version.json CHANGELOG.json
+    rm -f .env.example server-config.example.json nav-sylph.service
+    rm -f README.md DEPLOYMENT.md
+    rm -rf docs
+    rm -rf node_modules
+
+    # 复制新文件
+    cp -r "$temp_dir"/* "$APP_DIR/"
+    rm -rf "$temp_dir"
 
     # 恢复配置
     log_step "恢复配置..."
@@ -467,6 +604,8 @@ do_update() {
     [ -f "$backup_dir/.admin-password.json" ] && cp "$backup_dir/.admin-password.json" .
     [ -f "$backup_dir/.env" ] && cp "$backup_dir/.env" .
     [ -f "$backup_dir/server-config.json" ] && cp "$backup_dir/server-config.json" .
+    [ -f "$backup_dir/favorites.json" ] && cp "$backup_dir/favorites.json" .
+    [ -f "$backup_dir/.installed-by-script" ] && cp "$backup_dir/.installed-by-script" .
     rm -rf "$backup_dir"
 
     # 更新依赖
@@ -476,12 +615,38 @@ do_update() {
     # 设置权限
     chmod +x sylph.sh
 
+    # 更新安装标记
+    if [ -f ".installed-by-script" ]; then
+        echo "version=${LATEST_VERSION}" >> .installed-by-script
+        echo "updated=$(date -Iseconds)" >> .installed-by-script
+    fi
+
     # 启动服务
     log_step "启动服务..."
     do_start
 
     echo ""
     log_info "更新完成!"
+
+    # 显示版本变化
+    echo ""
+    echo -e "${CYAN}版本更新: ${old_version:-1.0.0} → ${LATEST_VERSION}${NC}"
+
+    # 显示更新亮点
+    if [ -f "CHANGELOG.json" ]; then
+        echo ""
+        echo -e "${CYAN}── 更新亮点 ──${NC}"
+        # 提取最新版本的 highlights
+        grep -o '"highlights"[[:space:]]*:[[:space:]]*\[[^]]*\]' CHANGELOG.json | head -1 | \
+            sed 's/"highlights"[[:space:]]*:[[:space:]]*\[//; s/\]//; s/"//g; s/,/\n/g' | \
+            while read -r line; do
+                line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                [ -n "$line" ] && echo "  • $line"
+            done
+    fi
+    echo ""
+    echo "访问页面后将自动显示新功能说明"
+    echo ""
 }
 
 # 卸载
@@ -714,7 +879,7 @@ show_help() {
     echo "用法: $0 <命令>"
     echo ""
     echo "安装与部署:"
-    echo "  install     安装 Nav Sylph (远程安装时自动克隆仓库)"
+    echo "  install     安装 Nav Sylph (从 GitHub Release 下载)"
     echo "  update      更新到最新版本 (保留配置)"
     echo "  uninstall   完全卸载"
     echo ""
@@ -733,11 +898,10 @@ show_help() {
     fi
     echo "环境变量:"
     echo "  NAV_SYLPH_DIR     安装目录 (默认: ~/nav-sylph)"
-    echo "  NAV_SYLPH_BRANCH  Git 分支 (默认: main)"
     echo ""
     echo "示例:"
     echo "  # 一键安装"
-    echo "  curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/sylph.sh | bash"
     echo ""
     echo "  # 指定目录安装"
     echo "  NAV_SYLPH_DIR=/opt/nav-sylph ./sylph.sh install"
