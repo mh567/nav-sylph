@@ -337,7 +337,7 @@
         async createPaste(content, pin = null) {
             try {
                 // 先请求生成分享码
-                const codeRes = await fetch('/api/paste/code', { method: 'POST' });
+                const codeRes = await fetch('/api/p/code', { method: 'POST' });
                 const codeData = await codeRes.json();
 
                 if (!codeData.code) {
@@ -353,7 +353,7 @@
                 const body = { code, content: encryptedContent };
                 if (pin) body.pin = pin;
 
-                const res = await fetch('/api/paste', {
+                const res = await fetch('/api/p', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body)
@@ -377,7 +377,7 @@
             this.hidePasteResult();
 
             // 简洁的 URL，无需密钥
-            const url = `${location.origin}/paste/${code}`;
+            const url = `${location.origin}/p/${code}`;
             const pinInfo = hasPin ? '<div class="paste-pin-info">🔒 已设置PIN保护</div>' : '';
             const result = html(`
                 <div class="paste-result" id="pasteResult">

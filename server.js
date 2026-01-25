@@ -51,10 +51,30 @@ const NOUNS = [
 ];
 
 function generatePasteCode() {
-    const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-    const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+    // 中国人常见的简短英文单词
+    const words = [
+        // 动物
+        'cat', 'dog', 'bird', 'fish', 'bear', 'lion', 'tiger', 'panda', 'fox', 'wolf',
+        'duck', 'frog', 'deer', 'rabbit', 'mouse', 'horse', 'sheep', 'pig', 'cow', 'bee',
+        // 自然
+        'sun', 'moon', 'star', 'sky', 'rain', 'snow', 'wind', 'fire', 'ice', 'sea',
+        'lake', 'river', 'hill', 'rock', 'tree', 'leaf', 'rose', 'lily', 'grass', 'cloud',
+        // 食物
+        'apple', 'orange', 'grape', 'peach', 'mango', 'lemon', 'berry', 'candy', 'cake', 'pizza',
+        'bread', 'rice', 'noodle', 'milk', 'juice', 'tea', 'coffee', 'honey', 'sugar', 'salt',
+        // 颜色
+        'red', 'blue', 'green', 'pink', 'gold', 'silver', 'black', 'white', 'gray', 'purple',
+        // 形容词
+        'happy', 'lucky', 'cool', 'nice', 'good', 'sweet', 'smart', 'fast', 'big', 'little',
+        'hot', 'cold', 'new', 'old', 'soft', 'warm', 'bright', 'fresh', 'quiet', 'calm',
+        // 名词
+        'love', 'game', 'music', 'book', 'king', 'queen', 'baby', 'angel', 'dream', 'hope',
+        'time', 'day', 'night', 'home', 'door', 'key', 'box', 'gift', 'card', 'note',
+        'phone', 'photo', 'video', 'song', 'dance', 'smile', 'heart', 'magic', 'power', 'peace'
+    ];
+    const word = words[Math.floor(Math.random() * words.length)];
     const num = Math.floor(Math.random() * 900) + 100; // 100-999
-    const code = `${adj}-${noun}-${num}`;
+    const code = `${word}-${num}`;
 
     // 确保唯一性
     if (pasteStorage.has(code)) {
@@ -64,8 +84,8 @@ function generatePasteCode() {
 }
 
 function isPasteCodeFormat(str) {
-    // 匹配 word-word-number 格式
-    return /^[a-z]+-[a-z]+-\d{3}$/.test(str);
+    // 匹配 单词-3位数字 格式 (7-10位)
+    return /^[a-z]{2,6}-\d{3}$/.test(str);
 }
 
 // 清理过期分享
@@ -312,7 +332,7 @@ app.get('/api/health', (req, res) => {
 // ========== Paste API ==========
 
 // 生成分享码（用于客户端加密）
-app.post('/api/paste/code', (req, res) => {
+app.post('/api/p/code', (req, res) => {
     const ip = req.ip || req.connection.remoteAddress;
 
     if (!checkPasteRateLimit(ip, 'create')) {
@@ -324,7 +344,7 @@ app.post('/api/paste/code', (req, res) => {
 });
 
 // 创建分享
-app.post('/api/paste', (req, res) => {
+app.post('/api/p', (req, res) => {
     const ip = req.ip || req.connection.remoteAddress;
 
     const { code, content, pin } = req.body;
@@ -371,7 +391,7 @@ app.post('/api/paste', (req, res) => {
 });
 
 // 获取分享 (API)
-app.post('/api/paste/:code', (req, res) => {
+app.post('/api/p/:code', (req, res) => {
     const ip = req.ip || req.connection.remoteAddress;
 
     if (!checkPasteRateLimit(ip, 'get')) {
@@ -425,7 +445,7 @@ app.post('/api/paste/:code', (req, res) => {
 });
 
 // 分享页面路由
-app.get('/paste/:code', (req, res) => {
+app.get('/p/:code', (req, res) => {
     const { code } = req.params;
 
     if (!isPasteCodeFormat(code)) {
@@ -559,7 +579,7 @@ app.get('/paste/:code', (req, res) => {
         }
 
         ${exists && !requirePin ? `
-        fetch('/api/paste/' + code, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        fetch('/api/p/' + code, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
             .then(r => r.json())
             .then(data => {
                 if (data.content) {
@@ -577,7 +597,7 @@ app.get('/paste/:code', (req, res) => {
             if (!/^\\d{4}$/.test(pin)) return;
 
             try {
-                const res = await fetch('/api/paste/' + code, {
+                const res = await fetch('/api/p/' + code, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ pin })
