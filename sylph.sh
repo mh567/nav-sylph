@@ -224,11 +224,13 @@ download_release() {
     fi
 
     log_step "解压文件..."
+    rm -rf "$temp_dir"
     mkdir -p "$temp_dir"
     tar -xzf "$temp_file" -C "$temp_dir"
 
     # 找到解压后的目录（应该是 nav-sylph-vX.X.X）
-    local extracted_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "nav-sylph-*" | head -1)
+    # 使用 mindepth 1 排除 temp_dir 本身
+    local extracted_dir=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d -name "nav-sylph-*" | head -1)
 
     if [ -z "$extracted_dir" ]; then
         log_error "解压失败：未找到目录"
