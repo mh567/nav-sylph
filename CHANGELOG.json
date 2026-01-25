@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "1.1.6",
+      "date": "2025-01-25",
+      "highlights": [
+        "彻底修复 Linux 解压时的 macOS 扩展属性警告"
+      ],
+      "changes": {
+        "fix": [
+          "使用 xattr -cr 递归清除所有文件的 macOS 扩展属性"
+        ]
+      }
+    },
+    {
       "version": "1.1.5",
       "date": "2025-01-25",
       "highlights": [

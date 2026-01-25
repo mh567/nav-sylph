@@ -123,7 +123,7 @@ cd "$DIST_DIR"
 
 # 清除 macOS 扩展属性（避免 Linux 解压警告）
 if command -v xattr &> /dev/null; then
-    find "${RELEASE_NAME}" -type f -exec xattr -c {} \; 2>/dev/null || true
+    xattr -cr "${RELEASE_NAME}" 2>/dev/null || true
 fi
 
 # 使用 COPYFILE_DISABLE 环境变量排除 macOS 资源 fork
