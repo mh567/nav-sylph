@@ -1,6 +1,18 @@
 {
   "versions": [
     {
+      "version": "1.1.7",
+      "date": "2025-01-25",
+      "highlights": [
+        "修复 Linux 解压时的 macOS 扩展属性警告"
+      ],
+      "changes": {
+        "fix": [
+          "使用 ustar 格式打包，彻底避免 macOS xattr 元数据"
+        ]
+      }
+    },
+    {
       "version": "1.1.6",
       "date": "2025-01-25",
       "highlights": [

@@ -126,8 +126,8 @@ if command -v xattr &> /dev/null; then
     xattr -cr "${RELEASE_NAME}" 2>/dev/null || true
 fi
 
-# 使用 COPYFILE_DISABLE 环境变量排除 macOS 资源 fork
-COPYFILE_DISABLE=1 tar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+# 使用 ustar 格式避免 macOS 扩展属性（pax 格式会包含 xattr）
+COPYFILE_DISABLE=1 tar --format ustar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
 cd "$PROJECT_DIR"
 
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
