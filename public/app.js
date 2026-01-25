@@ -79,7 +79,7 @@
             this.password = null;
             this.dragData = null;
             this.pasteMode = false;
-            // 收藏书签检索
+            // 收藏检索
             this.favorites = [];
             this.favSearchMode = false;
             this.uf = null;  // uFuzzy 实例
@@ -101,7 +101,7 @@
             try {
                 this.config = await API.get('/api/config');
                 this.migrateConfig();
-                // 加载收藏书签
+                // 加载收藏
                 await this.loadFavorites();
                 this.applyTheme();
                 this.render();
@@ -284,7 +284,7 @@
             $('#searchInput').value = '';
         }
 
-        // ========== 收藏书签模糊检索 ==========
+        // ========== 收藏模糊检索 ==========
 
         async loadFavorites() {
             try {
@@ -423,7 +423,7 @@
             form.classList.toggle('fav-search-mode', enabled);
 
             if (enabled) {
-                input.placeholder = '搜索收藏书签...';
+                input.placeholder = '搜索收藏...';
                 $('#engineBtn').style.display = 'none';
                 searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
                 searchBtn.title = '收藏检索';
@@ -463,7 +463,7 @@
 
             // 如果没有收藏，显示提示
             if (this.favorites.length === 0) {
-                dropdown.innerHTML = '<div class="fav-empty">无收藏书签，请在管理面板中导入</div>';
+                dropdown.innerHTML = '<div class="fav-empty">无收藏，请在管理面板中导入</div>';
                 return;
             }
 
@@ -508,7 +508,7 @@
             if (!dropdown) return;
 
             if (favs.length === 0) {
-                dropdown.innerHTML = '<div class="fav-empty">无收藏书签，请在管理面板中导入</div>';
+                dropdown.innerHTML = '<div class="fav-empty">无收藏，请在管理面板中导入</div>';
                 return;
             }
 
@@ -835,7 +835,7 @@
                         <h3>Nav Sylph${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
-                            <strong>收藏书签检索</strong>
+                            <strong>收藏检索</strong>
                             <p>搜索框输入 <code>/</code> + 关键词，快速搜索收藏</p>
                             <p class="help-tip">支持标题、网址、分类、描述模糊匹配</p>
                             <p class="help-tip">↑↓ 选择，Enter 打开，Esc 退出</p>
@@ -928,23 +928,37 @@
                     </div>
                 </div>
                 <div class="section">
-                    <div class="section-title">收藏书签</div>
+                    <div class="section-title">收藏</div>
                     <div class="fav-stats">
                         共 <strong>${this.favorites.length}</strong> 个收藏
                         <span class="fav-hint">（搜索框输入 <code>/</code> 快速检索）</span>
                     </div>
                     <div class="fav-actions">
-                        <button class="btn" id="importFavBtn">📥 导入书签</button>
-                        <button class="btn" id="exportFavBtn">📤 导出书签</button>
+                        <button class="btn" id="importFavBtn">📥 导入收藏</button>
+                        <button class="btn" id="exportFavBtn">📤 导出收藏</button>
                         <button class="btn" id="addFavBtn">+ 添加收藏</button>
                         <button class="btn" id="manageFavBtn">管理收藏</button>
                     </div>
                     <input type="file" id="favFileInput" accept=".html,.htm" hidden>
                 </div>
-                <div class="section">
-                    <div class="section-title">搜索引擎</div>
-                    <div id="enginesEditor"></div>
-                    <button class="add-btn" id="addEngine">+ 添加搜索引擎</button>
+                <div class="section section-collapsible">
+                    <div class="section-header" onclick="app.toggleSection('webdav')">
+                        <span class="section-title">远程备份</span>
+                        <svg class="section-toggle-icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                    </div>
+                    <div class="section-body collapsed" id="webdavSection">
+                        <div class="webdav-loading">加载中...</div>
+                    </div>
+                </div>
+                <div class="section section-collapsible">
+                    <div class="section-header" onclick="app.toggleSection('engines')">
+                        <span class="section-title">搜索引擎</span>
+                        <svg class="section-toggle-icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                    </div>
+                    <div class="section-body collapsed" id="enginesSection">
+                        <div id="enginesEditor"></div>
+                        <button class="add-btn" id="addEngine">+ 添加搜索引擎</button>
+                    </div>
                 </div>
                 <div class="section">
                     <div class="section-title">书签分类</div>
@@ -981,12 +995,315 @@
                 this.renderCatsEditor();
             };
 
-            // 收藏书签相关绑定
+            // 收藏相关绑定
             $('#importFavBtn').onclick = () => $('#favFileInput').click();
             $('#favFileInput').onchange = (e) => this.handleFavImport(e);
             $('#addFavBtn').onclick = () => this.showAddFavDialog();
             $('#manageFavBtn').onclick = () => this.showFavManager();
             $('#exportFavBtn').onclick = () => this.exportFavorites();
+
+            // WebDAV 配置加载
+            this.loadWebDAVConfig();
+        }
+
+        // ========== WebDAV 远程备份 ==========
+
+        async loadWebDAVConfig() {
+            try {
+                const res = await fetch('/api/webdav/config', {
+                    headers: { 'X-Admin-Password': this.password }
+                });
+                if (res.ok) {
+                    this.webdavConfig = await res.json();
+                    this.renderWebDAVSection();
+                }
+            } catch (e) {
+                console.error('Load WebDAV config failed:', e);
+            }
+        }
+
+        renderWebDAVSection() {
+            const container = $('#webdavSection');
+            if (!container || !this.webdavConfig) return;
+
+            const cfg = this.webdavConfig;
+            const lastBackup = cfg.lastBackupTime
+                ? new Date(cfg.lastBackupTime).toLocaleString()
+                : '从未备份';
+
+            container.innerHTML = `
+                <div class="webdav-status">
+                    <span class="webdav-status-dot ${cfg.enabled ? 'active' : ''}"></span>
+                    <span>${cfg.enabled ? '已启用' : '未启用'}</span>
+                    ${cfg.lastBackupTime ? `<span class="webdav-last-backup">上次备份: ${lastBackup}</span>` : ''}
+                </div>
+                <div class="webdav-form">
+                    <div class="webdav-row">
+                        <label>
+                            <input type="checkbox" id="webdavEnabled" ${cfg.enabled ? 'checked' : ''}>
+                            启用 WebDAV 备份
+                        </label>
+                    </div>
+                    <div class="webdav-row">
+                        <input type="url" id="webdavUrl" placeholder="WebDAV URL (如: https://dav.example.com)" value="${this.esc(cfg.url || '')}">
+                    </div>
+                    <div class="webdav-row webdav-row-half">
+                        <input type="text" id="webdavUsername" placeholder="用户名" value="${this.esc(cfg.username || '')}">
+                        <input type="password" id="webdavPassword" placeholder="${cfg.hasPassword ? '密码 (已设置)' : '密码'}">
+                    </div>
+                    <div class="webdav-row">
+                        <input type="text" id="webdavPath" placeholder="远程路径 (默认: /nav-sylph-backups/)" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}">
+                    </div>
+                </div>
+                <div class="webdav-actions">
+                    <button class="btn" id="webdavSaveBtn">保存配置</button>
+                    <button class="btn" id="webdavTestBtn">测试连接</button>
+                    <button class="btn btn-primary" id="webdavBackupBtn">立即备份</button>
+                    <button class="btn" id="webdavRestoreBtn">从备份恢复</button>
+                </div>
+                <div class="webdav-message" id="webdavMessage"></div>
+            `;
+
+            $('#webdavSaveBtn').onclick = () => this.saveWebDAVConfig();
+            $('#webdavTestBtn').onclick = () => this.testWebDAVConnection();
+            $('#webdavBackupBtn').onclick = () => this.createWebDAVBackup();
+            $('#webdavRestoreBtn').onclick = () => this.showWebDAVRestoreDialog();
+        }
+
+        async saveWebDAVConfig() {
+            const msgEl = $('#webdavMessage');
+            msgEl.textContent = '保存中...';
+            msgEl.className = 'webdav-message';
+
+            try {
+                const data = {
+                    enabled: $('#webdavEnabled').checked,
+                    url: $('#webdavUrl').value.trim(),
+                    username: $('#webdavUsername').value.trim(),
+                    remotePath: $('#webdavPath').value.trim() || '/nav-sylph-backups/'
+                };
+
+                const pwd = $('#webdavPassword').value;
+                if (pwd) data.password = pwd;
+
+                const res = await API.post('/api/webdav/config', data, this.password);
+                if (res.success) {
+                    this.webdavConfig = res.config;
+                    msgEl.textContent = '配置已保存';
+                    msgEl.className = 'webdav-message success';
+                    this.renderWebDAVSection();
+                } else {
+                    msgEl.textContent = res.error || '保存失败';
+                    msgEl.className = 'webdav-message error';
+                }
+            } catch (e) {
+                msgEl.textContent = '保存失败: ' + e.message;
+                msgEl.className = 'webdav-message error';
+            }
+        }
+
+        async testWebDAVConnection() {
+            const msgEl = $('#webdavMessage');
+            msgEl.textContent = '测试连接中...';
+            msgEl.className = 'webdav-message';
+
+            try {
+                const res = await API.post('/api/webdav/test', {}, this.password);
+                if (res.success) {
+                    msgEl.textContent = '连接成功';
+                    msgEl.className = 'webdav-message success';
+                } else {
+                    msgEl.textContent = res.message || '连接失败';
+                    msgEl.className = 'webdav-message error';
+                }
+            } catch (e) {
+                msgEl.textContent = '连接失败: ' + e.message;
+                msgEl.className = 'webdav-message error';
+            }
+        }
+
+        async createWebDAVBackup() {
+            const msgEl = $('#webdavMessage');
+            msgEl.textContent = '备份中...';
+            msgEl.className = 'webdav-message';
+
+            try {
+                const res = await API.post('/api/webdav/backup', {}, this.password);
+                if (res.success) {
+                    msgEl.textContent = `备份成功: ${res.filename}`;
+                    msgEl.className = 'webdav-message success';
+                    await this.loadWebDAVConfig();
+                } else {
+                    msgEl.textContent = res.error || '备份失败';
+                    msgEl.className = 'webdav-message error';
+                }
+            } catch (e) {
+                msgEl.textContent = '备份失败: ' + e.message;
+                msgEl.className = 'webdav-message error';
+            }
+        }
+
+        async showWebDAVRestoreDialog() {
+            const msgEl = $('#webdavMessage');
+            msgEl.textContent = '获取备份列表...';
+            msgEl.className = 'webdav-message';
+
+            try {
+                const res = await fetch('/api/webdav/list', {
+                    headers: { 'X-Admin-Password': this.password }
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    msgEl.textContent = data.error || '获取列表失败';
+                    msgEl.className = 'webdav-message error';
+                    return;
+                }
+
+                if (data.backups.length === 0) {
+                    msgEl.textContent = '没有可用的备份';
+                    msgEl.className = 'webdav-message';
+                    return;
+                }
+
+                msgEl.textContent = '';
+
+                const dialog = html(`
+                    <div class="fav-dialog-overlay" id="webdavRestoreDialog">
+                        <div class="fav-dialog webdav-restore-dialog">
+                            <h3>选择要恢复的备份</h3>
+                            <div class="webdav-backup-list">
+                                ${data.backups.map(b => {
+                                    const isLegacy = !!b.legacyFile;
+                                    const hasConfig = !!b.configFile;
+                                    const hasBookmarks = !!b.bookmarksFile;
+                                    const displayName = b.timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
+                                    const files = [];
+                                    if (isLegacy) files.push('旧版备份');
+                                    if (hasConfig) files.push('配置');
+                                    if (hasBookmarks) files.push('收藏');
+                                    return `
+                                    <div class="webdav-backup-item"
+                                         data-config="${this.esc(b.configFile || '')}"
+                                         data-bookmarks="${this.esc(b.bookmarksFile || '')}"
+                                         data-legacy="${this.esc(b.legacyFile || '')}">
+                                        <div class="webdav-backup-name">${displayName}</div>
+                                        <div class="webdav-backup-meta">
+                                            ${files.join(' + ')}
+                                        </div>
+                                    </div>
+                                `}).join('')}
+                            </div>
+                            <div class="fav-dialog-actions">
+                                <button class="btn" id="webdavRestoreCancelBtn">取消</button>
+                            </div>
+                        </div>
+                    </div>
+                `);
+
+                document.body.appendChild(dialog);
+
+                $('#webdavRestoreCancelBtn').onclick = () => dialog.remove();
+
+                $$('.webdav-backup-item', dialog).forEach(item => {
+                    item.onclick = async () => {
+                        const configFile = item.dataset.config;
+                        const bookmarksFile = item.dataset.bookmarks;
+                        const legacyFile = item.dataset.legacy;
+
+                        // Show restore options dialog
+                        this.showRestoreOptionsDialog({
+                            configFile,
+                            bookmarksFile,
+                            legacyFile
+                        }, dialog);
+                    };
+                });
+            } catch (e) {
+                msgEl.textContent = '获取列表失败: ' + e.message;
+                msgEl.className = 'webdav-message error';
+            }
+        }
+
+        showRestoreOptionsDialog(backup, parentDialog) {
+            const hasConfig = !!(backup.configFile || backup.legacyFile);
+            const hasBookmarks = !!(backup.bookmarksFile || backup.legacyFile);
+
+            const optionsDialog = html(`
+                <div class="fav-dialog-overlay" id="restoreOptionsDialog">
+                    <div class="fav-dialog">
+                        <h3>选择恢复内容</h3>
+                        <div class="restore-options">
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="all" checked>
+                                <span>同时恢复配置和收藏</span>
+                            </label>
+                            ${hasConfig ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="config">
+                                <span>只恢复配置（主题、搜索引擎、书签分类）</span>
+                            </label>
+                            ` : ''}
+                        </div>
+                        <div class="fav-dialog-actions">
+                            <button class="btn" id="restoreOptionsCancelBtn">取消</button>
+                            <button class="btn btn-primary" id="restoreOptionsConfirmBtn">确认恢复</button>
+                        </div>
+                    </div>
+                </div>
+            `);
+
+            document.body.appendChild(optionsDialog);
+
+            $('#restoreOptionsCancelBtn').onclick = () => optionsDialog.remove();
+            $('#restoreOptionsConfirmBtn').onclick = async () => {
+                const restoreType = $('input[name="restoreType"]:checked').value;
+                const restoreConfig = restoreType === 'all' || restoreType === 'config';
+                const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
+
+                optionsDialog.querySelector('.btn-primary').disabled = true;
+                optionsDialog.querySelector('.btn-primary').textContent = '恢复中...';
+
+                try {
+                    const restoreRes = await API.post('/api/webdav/restore', {
+                        configFile: backup.configFile,
+                        bookmarksFile: backup.bookmarksFile,
+                        legacyFile: backup.legacyFile,
+                        restoreConfig,
+                        restoreBookmarks
+                    }, this.password);
+
+                    if (restoreRes.success) {
+                        optionsDialog.remove();
+                        parentDialog.remove();
+                        alert('恢复成功！页面将刷新。');
+                        location.reload();
+                    } else {
+                        alert(restoreRes.error || '恢复失败');
+                        optionsDialog.querySelector('.btn-primary').disabled = false;
+                        optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
+                    }
+                } catch (e) {
+                    alert('恢复失败: ' + e.message);
+                    optionsDialog.querySelector('.btn-primary').disabled = false;
+                    optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
+                }
+            };
+        }
+
+        formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        toggleSection(sectionId) {
+            const section = $(`#${sectionId}Section`);
+            const header = section?.previousElementSibling;
+            if (section && header) {
+                section.classList.toggle('collapsed');
+                header.classList.toggle('expanded');
+            }
         }
 
         renderEnginesEditor() {
@@ -1166,7 +1483,7 @@
             }
         }
 
-        // ========== 收藏书签管理 ==========
+        // ========== 收藏管理 ==========
 
         async handleFavImport(e) {
             const file = e.target.files[0];
@@ -1177,7 +1494,7 @@
             try {
                 const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true }, this.password);
                 if (res.success) {
-                    alert(`导入成功！新增 ${res.imported} 个书签${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
+                    alert(`导入成功！新增 ${res.imported} 个收藏${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
                     await this.loadFavorites();
                     this.renderAdminPanel();
                 } else {
@@ -1313,7 +1630,12 @@
         showFavManager() {
             const body = $('#modalBody');
             this.favManagerPage = 0;
+            // Preserve filter if already set, otherwise reset
+            if (!this.favManagerCurrentCategory) {
+                this.favManagerCurrentCategory = '';
+            }
             this.favManagerFiltered = null;
+            this.favManagerSelected = new Set();
 
             // 按分类统计
             const categoryStats = {};
@@ -1322,6 +1644,7 @@
                 categoryStats[cat] = (categoryStats[cat] || 0) + 1;
             });
             const categoryCount = Object.keys(categoryStats).length;
+            const uniqueCategories = Object.keys(categoryStats).sort();
 
             body.innerHTML = `
                 <div class="fav-manager">
@@ -1332,9 +1655,24 @@
                             <option value="">全部分类 (${categoryCount})</option>
                             ${Object.entries(categoryStats)
                                 .sort((a, b) => b[1] - a[1])
-                                .map(([cat, count]) => `<option value="${this.esc(cat)}">${this.esc(cat)} (${count})</option>`)
+                                .map(([cat, count]) => `<option value="${this.esc(cat)}" ${this.favManagerCurrentCategory === cat ? 'selected' : ''}>${this.esc(cat)} (${count})</option>`)
                                 .join('')}
                         </select>
+                    </div>
+                    <div class="fav-batch-bar" id="favBatchBar">
+                        <label class="fav-select-all">
+                            <input type="checkbox" id="selectAllFav">
+                            <span>全选</span>
+                        </label>
+                        <span class="fav-selected-count" id="favSelectedCount"></span>
+                        <button class="btn btn-danger btn-sm" id="deleteSelectedBtn" disabled>删除选中</button>
+                    </div>
+                    <div class="fav-category-zones" id="categoryDropZones">
+                        <div class="category-zones-label">拖拽收藏到分类：</div>
+                        ${uniqueCategories.map(cat => `
+                            <div class="category-drop-zone" data-category="${this.esc(cat)}">${this.esc(cat)}</div>
+                        `).join('')}
+                        <div class="category-drop-zone category-new" data-category="__new__">+ 新分类</div>
                     </div>
                     <div class="fav-manager-stats" id="favManagerStats"></div>
                     <div class="fav-manager-list" id="favManagerList"></div>
@@ -1342,11 +1680,134 @@
                 </div>
             `;
 
-            $('#backToAdmin').onclick = () => this.renderAdminPanel();
+            $('#backToAdmin').onclick = async () => {
+                // Auto-save favorites before returning
+                await this.saveFavorites();
+                this.favManagerCurrentCategory = '';
+                this.renderAdminPanel();
+            };
             $('#favManagerSearch').oninput = (e) => this.debouncedFilterFavManager(e.target.value, $('#favCategoryFilter').value);
-            $('#favCategoryFilter').onchange = (e) => this.filterFavManager($('#favManagerSearch').value, e.target.value);
+            $('#favCategoryFilter').onchange = (e) => {
+                this.favManagerCurrentCategory = e.target.value;
+                this.filterFavManager($('#favManagerSearch').value, e.target.value);
+            };
 
-            this.renderFavManagerList(this.favorites);
+            // Batch selection
+            $('#selectAllFav').onchange = (e) => this.toggleSelectAllFav(e.target.checked);
+            $('#deleteSelectedBtn').onclick = () => this.deleteSelectedFavorites();
+
+            // Category drop zones
+            this.bindCategoryDropZones();
+
+            // Apply current filter
+            if (this.favManagerCurrentCategory) {
+                this.filterFavManager('', this.favManagerCurrentCategory);
+            } else {
+                this.renderFavManagerList(this.favorites);
+            }
+        }
+
+        bindCategoryDropZones() {
+            const zones = $('#categoryDropZones');
+            if (!zones) return;
+
+            zones.ondragover = (e) => {
+                e.preventDefault();
+                const zone = e.target.closest('.category-drop-zone');
+                if (zone) zone.classList.add('drag-over');
+            };
+
+            zones.ondragleave = (e) => {
+                const zone = e.target.closest('.category-drop-zone');
+                if (zone) zone.classList.remove('drag-over');
+            };
+
+            zones.ondrop = async (e) => {
+                e.preventDefault();
+                const zone = e.target.closest('.category-drop-zone');
+                if (!zone) return;
+                zone.classList.remove('drag-over');
+
+                const favId = e.dataTransfer.getData('text/plain');
+                if (!favId) return;
+
+                let newCategory = zone.dataset.category;
+
+                if (newCategory === '__new__') {
+                    newCategory = prompt('请输入新分类名称：');
+                    if (!newCategory || !newCategory.trim()) return;
+                    newCategory = newCategory.trim();
+                }
+
+                const fav = this.favorites.find(f => f.id === favId);
+                if (fav && fav.category !== newCategory) {
+                    fav.category = newCategory;
+                    fav.updatedAt = Date.now();
+                    await this.saveFavorites();
+                    // Preserve current category filter when refreshing
+                    this.showFavManager();
+                }
+            };
+
+            // Also handle click on "+ 新分类" zone to create category
+            $$('.category-drop-zone.category-new', zones).forEach(zone => {
+                zone.onclick = () => {
+                    const newCategory = prompt('请输入新分类名称：');
+                    if (newCategory && newCategory.trim()) {
+                        const categoryName = newCategory.trim();
+                        // Add new category zone immediately
+                        const newZone = document.createElement('div');
+                        newZone.className = 'category-drop-zone';
+                        newZone.dataset.category = categoryName;
+                        newZone.textContent = categoryName;
+                        zone.before(newZone);
+                    }
+                };
+            });
+        }
+
+        toggleSelectAllFav(checked) {
+            const checkboxes = $$('.fav-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = checked;
+                const id = cb.closest('.fav-manager-item')?.dataset.id;
+                if (id) {
+                    if (checked) {
+                        this.favManagerSelected.add(id);
+                    } else {
+                        this.favManagerSelected.delete(id);
+                    }
+                }
+            });
+            this.updateBatchBar();
+        }
+
+        updateBatchBar() {
+            const count = this.favManagerSelected.size;
+            const countEl = $('#favSelectedCount');
+            const deleteBtn = $('#deleteSelectedBtn');
+            const selectAllCb = $('#selectAllFav');
+
+            if (countEl) countEl.textContent = count > 0 ? `已选 ${count} 项` : '';
+            if (deleteBtn) deleteBtn.disabled = count === 0;
+
+            const checkboxes = $$('.fav-checkbox');
+            if (selectAllCb && checkboxes.length > 0) {
+                selectAllCb.checked = checkboxes.every(cb => cb.checked);
+                selectAllCb.indeterminate = checkboxes.some(cb => cb.checked) && !selectAllCb.checked;
+            }
+        }
+
+        async deleteSelectedFavorites() {
+            const count = this.favManagerSelected.size;
+            if (count === 0) return;
+
+            if (!confirm(`确定删除选中的 ${count} 个收藏？`)) return;
+
+            this.favorites = this.favorites.filter(f => !this.favManagerSelected.has(f.id));
+            await this.saveFavorites();
+            this.favManagerSelected.clear();
+            this.showFavManager();
         }
 
         debouncedFilterFavManager(query, category) {
@@ -1423,9 +1884,11 @@
                 return;
             }
 
-            // 渲染列表项（使用 DocumentFragment 优化）
+            // 渲染列表项（带复选框和拖拽支持）
             list.innerHTML = pageFavs.map(fav => `
-                <div class="fav-manager-item" data-id="${fav.id}">
+                <div class="fav-manager-item" data-id="${fav.id}" draggable="true">
+                    <input type="checkbox" class="fav-checkbox" ${this.favManagerSelected?.has(fav.id) ? 'checked' : ''}>
+                    <span class="fav-drag-handle">⋮⋮</span>
                     <img class="fav-manager-icon" src="${this.getFavicon(fav.url)}" alt="" loading="lazy"
                          onerror="this.style.display='none'">
                     <div class="fav-manager-info">
@@ -1473,7 +1936,14 @@
                 if (!item) return;
                 const id = item.dataset.id;
 
-                if (e.target.classList.contains('del-fav')) {
+                if (e.target.classList.contains('fav-checkbox')) {
+                    if (e.target.checked) {
+                        this.favManagerSelected.add(id);
+                    } else {
+                        this.favManagerSelected.delete(id);
+                    }
+                    this.updateBatchBar();
+                } else if (e.target.classList.contains('del-fav')) {
                     if (confirm('确定删除此收藏？')) {
                         this.favorites = this.favorites.filter(f => f.id !== id);
                         this.saveFavorites();
@@ -1481,11 +1951,27 @@
                         if (this.favManagerFiltered) {
                             this.favManagerFiltered = this.favManagerFiltered.filter(f => f.id !== id);
                         }
+                        this.favManagerSelected.delete(id);
                         this.renderFavManagerList(this.favManagerFiltered || this.favorites);
+                        this.updateBatchBar();
                     }
                 } else if (e.target.classList.contains('edit-fav')) {
                     this.editFavorite(id);
                 }
+            };
+
+            // 拖拽事件
+            list.ondragstart = (e) => {
+                const item = e.target.closest('.fav-manager-item');
+                if (item) {
+                    e.dataTransfer.setData('text/plain', item.dataset.id);
+                    item.classList.add('dragging');
+                }
+            };
+
+            list.ondragend = (e) => {
+                const item = e.target.closest('.fav-manager-item');
+                if (item) item.classList.remove('dragging');
             };
         }
 
@@ -1553,10 +2039,12 @@
         }
     }
 
+    let app;
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => new App());
+        document.addEventListener('DOMContentLoaded', () => { app = new App(); window.app = app; });
     } else {
-        new App();
+        app = new App();
+        window.app = app;
     }
 
 })(window);

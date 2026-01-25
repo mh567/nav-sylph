@@ -109,6 +109,7 @@ cp README.md "$DIST_DIR/${RELEASE_NAME}/"
 # 目录
 cp -r public "$DIST_DIR/${RELEASE_NAME}/"
 cp -r server-config "$DIST_DIR/${RELEASE_NAME}/"
+cp -r lib "$DIST_DIR/${RELEASE_NAME}/"
 
 # 创建空目录
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/logs"

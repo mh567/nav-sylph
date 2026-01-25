@@ -125,6 +125,10 @@ function checkPasteRateLimit(ip, action) {
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
 const FAVORITES_FILE = path.join(config.rootDir, 'favorites.json');
 const PASSWORD_FILE = config.security.adminPasswordFile;
+const WEBDAV_CONFIG_FILE = path.join(config.rootDir, '.webdav-config.json');
+
+// WebDAV Backup module
+const { WebDAVBackup } = require('./lib/webdav-backup');
 
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
@@ -552,6 +556,216 @@ app.get('/api/favorites/export', rateLimit, async (req, res) => {
     } catch (err) {
         console.error('导出失败:', err);
         res.status(500).json({ error: '导出失败' });
+    }
+});
+
+// ========== WebDAV Backup API ==========
+
+// Helper to get password hash for WebDAV encryption
+async function getPasswordHash() {
+    try {
+        const { passwordHash } = await readJSON(PASSWORD_FILE);
+        return passwordHash;
+    } catch {
+        return null;
+    }
+}
+
+// Get WebDAV config (password masked)
+app.get('/api/webdav/config', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+        res.json(webdav.getPublicConfig());
+    } catch (err) {
+        console.error('获取 WebDAV 配置失败:', err);
+        res.status(500).json({ error: '获取配置失败' });
+    }
+});
+
+// Save WebDAV config
+app.post('/api/webdav/config', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const { url, username, password: webdavPassword, remotePath, enabled } = req.body;
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        const newConfig = { enabled: !!enabled };
+        if (url !== undefined) newConfig.url = url;
+        if (username !== undefined) newConfig.username = username;
+        if (webdavPassword !== undefined && webdavPassword !== '') {
+            newConfig.password = webdavPassword;
+        }
+        if (remotePath !== undefined) newConfig.remotePath = remotePath;
+
+        await webdav.saveConfig(newConfig);
+        res.json({ success: true, config: webdav.getPublicConfig() });
+    } catch (err) {
+        console.error('保存 WebDAV 配置失败:', err);
+        res.status(500).json({ error: '保存配置失败: ' + err.message });
+    }
+});
+
+// Test WebDAV connection
+app.post('/api/webdav/test', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        if (!webdav.config.url) {
+            return res.status(400).json({ error: '请先配置 WebDAV 服务器地址' });
+        }
+
+        const result = await webdav.testConnection();
+        res.json(result);
+    } catch (err) {
+        console.error('WebDAV 连接测试失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// Create backup
+app.post('/api/webdav/backup', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        if (!webdav.config.url) {
+            return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
+        }
+
+        // Read current config and favorites
+        const configData = await readJSON(CONFIG_FILE);
+        let favoritesData = { favorites: [] };
+        try {
+            favoritesData = await readJSON(FAVORITES_FILE);
+        } catch {}
+
+        // Get app version
+        let appVersion = '1.0.0';
+        try {
+            const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
+            appVersion = versionData.version;
+        } catch {}
+
+        const result = await webdav.createBackup(configData, favoritesData, appVersion, generateBookmarkHtml);
+        res.json(result);
+    } catch (err) {
+        console.error('WebDAV 备份失败:', err);
+        res.status(500).json({ error: '备份失败: ' + err.message });
+    }
+});
+
+// List backups
+app.get('/api/webdav/list', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        if (!webdav.config.url) {
+            return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
+        }
+
+        const result = await webdav.listBackups();
+        res.json(result);
+    } catch (err) {
+        console.error('获取备份列表失败:', err);
+        res.status(500).json({ error: '获取列表失败: ' + err.message });
+    }
+});
+
+// Restore from backup
+app.post('/api/webdav/restore', rateLimit, async (req, res) => {
+    const password = req.headers['x-admin-password'];
+    if (!await verifyPassword(password)) {
+        return res.status(401).json({ error: '密码错误' });
+    }
+
+    try {
+        const {
+            configFile,
+            bookmarksFile,
+            legacyFile,
+            restoreConfig = true,
+            restoreBookmarks = true
+        } = req.body;
+
+        if (!configFile && !bookmarksFile && !legacyFile) {
+            return res.status(400).json({ error: '请选择要恢复的备份文件' });
+        }
+
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+
+        if (!webdav.config.url) {
+            return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
+        }
+
+        const result = await webdav.restoreBackup({
+            configFile,
+            bookmarksFile,
+            legacyFile,
+            restoreConfig,
+            restoreBookmarks
+        });
+
+        // Write restored data
+        if (result.data.config && restoreConfig) {
+            await writeJSON(CONFIG_FILE, result.data.config);
+        }
+
+        if (result.data.favorites && restoreBookmarks) {
+            await writeJSON(FAVORITES_FILE, result.data.favorites);
+        }
+
+        // Parse and restore bookmarks from HTML if present
+        if (result.data.bookmarksHtml && restoreBookmarks) {
+            const imported = parseBookmarkHtml(result.data.bookmarksHtml);
+            await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
+        }
+
+        res.json({
+            success: true,
+            message: '恢复成功',
+            restoredConfig: !!(result.data.config && restoreConfig),
+            restoredBookmarks: !!(result.data.favorites || result.data.bookmarksHtml) && restoreBookmarks,
+            createdAt: result.createdAt,
+            appVersion: result.appVersion
+        });
+    } catch (err) {
+        console.error('WebDAV 恢复失败:', err);
+        res.status(500).json({ error: '恢复失败: ' + err.message });
     }
 });
 

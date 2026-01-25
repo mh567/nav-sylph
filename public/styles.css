@@ -1602,6 +1602,217 @@ body {
 
 /* ========== 版本更新提示 ========== */
 
+/* ========== WebDAV 远程备份 ========== */
+
+.webdav-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.webdav-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.webdav-status-dot.active {
+    background: #22c55e;
+}
+
+.webdav-last-backup {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.webdav-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.webdav-row {
+    display: flex;
+    gap: 8px;
+}
+
+.webdav-row input[type="url"],
+.webdav-row input[type="text"],
+.webdav-row input[type="password"] {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+}
+
+.webdav-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.webdav-row label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.webdav-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.webdav-row-half {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.webdav-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.webdav-message {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    min-height: 20px;
+}
+
+.webdav-message:empty {
+    display: none;
+}
+
+.webdav-message.success {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.webdav-message.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .webdav-message.success {
+        background: #14532d;
+        color: #86efac;
+    }
+    :root:not([data-theme="light"]) .webdav-message.error {
+        background: #450a0a;
+        color: #fca5a5;
+    }
+}
+
+:root[data-theme="dark"] .webdav-message.success {
+    background: #14532d;
+    color: #86efac;
+}
+
+:root[data-theme="dark"] .webdav-message.error {
+    background: #450a0a;
+    color: #fca5a5;
+}
+
+.webdav-loading {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* WebDAV 恢复对话框 */
+.webdav-restore-dialog {
+    max-width: 500px;
+}
+
+.webdav-backup-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+}
+
+.webdav-backup-item {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.webdav-backup-item:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
+.webdav-backup-item:last-child {
+    margin-bottom: 0;
+}
+
+.webdav-backup-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    word-break: break-all;
+}
+
+.webdav-backup-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .webdav-row-half {
+        grid-template-columns: 1fr;
+    }
+
+    .webdav-actions {
+        flex-direction: column;
+    }
+
+    .webdav-actions .btn {
+        width: 100%;
+    }
+
+    .webdav-status {
+        flex-wrap: wrap;
+    }
+
+    .webdav-last-backup {
+        flex-basis: 100%;
+        margin-left: 16px;
+        margin-top: 4px;
+    }
+
+    .webdav-restore-dialog {
+        max-width: 100%;
+    }
+
+    .webdav-backup-list {
+        max-height: 50vh;
+    }
+}
+
+/* ========== 版本更新提示 (continued) ========== */
+
 /* 帮助按钮更新徽章 */
 .fab-help.has-update::after {
     content: '';
@@ -1683,6 +1894,239 @@ body {
 
 .help-new-features-list li:last-child {
     margin-bottom: 0;
+}
+
+/* ========== 可折叠区块 ========== */
+
+.section-collapsible {
+    margin-bottom: 32px;
+}
+
+.section-collapsible:last-child {
+    margin-bottom: 0;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+}
+
+.section-header:hover {
+    color: var(--accent);
+}
+
+.section-header .section-title {
+    margin-bottom: 0;
+}
+
+.section-toggle-icon {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    transition: transform var(--transition);
+}
+
+.section-header.expanded .section-toggle-icon {
+    transform: rotate(90deg);
+}
+
+.section-body {
+    padding-top: 12px;
+}
+
+.section-body.collapsed {
+    display: none;
+}
+
+/* ========== 恢复选项 ========== */
+
+.restore-options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.restore-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.restore-option:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
+.restore-option input[type="radio"] {
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.restore-option span {
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+/* ========== 批量操作栏 ========== */
+
+.fav-batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.fav-select-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.fav-select-all input {
+    cursor: pointer;
+}
+
+.fav-selected-count {
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 500;
+}
+
+/* ========== 分类拖放区 ========== */
+
+.fav-category-zones {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.category-drop-zone {
+    padding: 6px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.category-drop-zone:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.category-drop-zone.drag-over {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+    transform: scale(1.05);
+}
+
+.category-drop-zone.category-new {
+    border-style: dashed;
+    color: var(--text-muted);
+}
+
+.category-drop-zone.category-new:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ========== 书签拖拽 ========== */
+
+.fav-drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 4px;
+    flex-shrink: 0;
+}
+
+.fav-drag-handle:active {
+    cursor: grabbing;
+}
+
+.fav-manager-item.dragging {
+    opacity: 0.5;
+    background: var(--bg-hover);
+}
+
+.fav-manager-item[draggable="true"] {
+    cursor: default;
+}
+
+.fav-checkbox {
+    flex-shrink: 0;
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .fav-batch-bar {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .fav-batch-bar .btn {
+        flex: 1;
+        min-width: 100px;
+    }
+
+    .fav-category-zones {
+        padding: 10px;
+    }
+
+    .category-drop-zone {
+        padding: 8px 14px;
+        font-size: 13px;
+    }
+
+    .restore-options {
+        gap: 10px;
+    }
+
+    .restore-option {
+        padding: 10px;
+    }
+
+    .restore-option span {
+        font-size: 13px;
+    }
+
+    .fav-drag-handle {
+        display: none;
+    }
 }
 
 /* 帮助弹窗标题优化 */
