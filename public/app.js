@@ -1834,11 +1834,13 @@
                 html += `
                     <div class="category-tree-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''}"
                          data-category="${this.esc(node.fullPath)}"
+                         data-name="${this.esc(name)}"
                          data-drop-target="true"
                          style="padding-left: ${12 + indent}px">
                         ${hasChildren ? '<span class="tree-toggle">▶</span>' : '<span class="tree-toggle-placeholder"></span>'}
                         <span class="tree-item-icon">📁</span>
                         <span class="tree-item-name">${this.esc(name)}</span>
+                        <button class="tree-item-edit" title="编辑分类名称">✎</button>
                         <span class="tree-item-count">${node.count}</span>
                     </div>
                 `;
@@ -1867,6 +1869,13 @@
                         children.classList.toggle('collapsed');
                         e.target.textContent = children.classList.contains('collapsed') ? '▶' : '▼';
                     }
+                    return;
+                }
+
+                // 点击编辑按钮
+                if (e.target.classList.contains('tree-item-edit')) {
+                    e.stopPropagation();
+                    this.editCategoryName(item);
                     return;
                 }
 
@@ -1941,6 +1950,121 @@
             };
         }
 
+        // 编辑分类名称
+        editCategoryName(item) {
+            const fullPath = item.dataset.category;
+            const currentName = item.dataset.name;
+            if (!fullPath) return;
+
+            const nameSpan = item.querySelector('.tree-item-name');
+            if (!nameSpan || nameSpan.classList.contains('editing')) return;
+
+            // 创建输入框
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'tree-item-edit-input';
+            input.value = currentName;
+
+            // 隐藏原名称，显示输入框
+            nameSpan.classList.add('editing');
+            nameSpan.parentNode.insertBefore(input, nameSpan.nextSibling);
+            input.focus();
+            input.select();
+
+            const cleanup = () => {
+                nameSpan.classList.remove('editing');
+                input.remove();
+            };
+
+            const save = async () => {
+                const newName = input.value.trim();
+
+                // 验证
+                if (!newName) {
+                    cleanup();
+                    return;
+                }
+
+                if (newName === currentName) {
+                    cleanup();
+                    return;
+                }
+
+                if (newName.includes('/')) {
+                    alert('分类名称不能包含 "/" 字符');
+                    input.focus();
+                    return;
+                }
+
+                // 计算新的完整路径
+                const pathParts = fullPath.split('/');
+                pathParts[pathParts.length - 1] = newName;
+                const newFullPath = pathParts.join('/');
+
+                // 检查是否与现有分类重名
+                const existingCategories = new Set(
+                    this.favorites.map(f => f.category).filter(Boolean)
+                );
+
+                if (existingCategories.has(newFullPath) && newFullPath !== fullPath) {
+                    if (!confirm(`分类「${newFullPath}」已存在，是否合并？`)) {
+                        input.focus();
+                        return;
+                    }
+                }
+
+                // 批量更新书签分类
+                let updated = false;
+                this.favorites.forEach(f => {
+                    if (!f.category) return;
+
+                    // 精确匹配当前分类
+                    if (f.category === fullPath) {
+                        f.category = newFullPath;
+                        f.updatedAt = Date.now();
+                        updated = true;
+                    }
+                    // 匹配子分类（以 fullPath/ 开头）
+                    else if (f.category.startsWith(fullPath + '/')) {
+                        f.category = newFullPath + f.category.slice(fullPath.length);
+                        f.updatedAt = Date.now();
+                        updated = true;
+                    }
+                });
+
+                if (updated) {
+                    await this.saveFavorites();
+                    // 更新当前选中的分类
+                    if (this.favManagerCurrentCategory === fullPath) {
+                        this.favManagerCurrentCategory = newFullPath;
+                    } else if (this.favManagerCurrentCategory?.startsWith(fullPath + '/')) {
+                        this.favManagerCurrentCategory = newFullPath + this.favManagerCurrentCategory.slice(fullPath.length);
+                    }
+                    this.showFavManager();
+                } else {
+                    cleanup();
+                }
+            };
+
+            input.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    save();
+                } else if (e.key === 'Escape') {
+                    cleanup();
+                }
+            };
+
+            input.onblur = () => {
+                // 延迟执行，避免与点击保存冲突
+                setTimeout(() => {
+                    if (document.body.contains(input)) {
+                        save();
+                    }
+                }, 100);
+            };
+        }
+
         // 新建分类
         promptNewCategory() {
             const name = prompt('请输入新分类名称（支持用 / 创建子分类，如：工具/开发）：');
@@ -2010,6 +2134,16 @@
             this.favorites = this.favorites.filter(f => !this.favManagerSelected.has(f.id));
             await this.saveFavorites();
             this.favManagerSelected.clear();
+            // 检查当前分类是否还有书签，没有则重置为全部
+            if (this.favManagerCurrentCategory) {
+                const hasRemaining = this.favorites.some(f =>
+                    f.category === this.favManagerCurrentCategory ||
+                    f.category?.startsWith(this.favManagerCurrentCategory + '/')
+                );
+                if (!hasRemaining) {
+                    this.favManagerCurrentCategory = '';
+                }
+            }
             this.showFavManager();
         }
 
@@ -2116,7 +2250,9 @@
                     <img class="fav-manager-icon" src="${this.getFavicon(fav.url)}" alt="" loading="lazy"
                          onerror="this.style.display='none'">
                     <div class="fav-manager-info">
-                        <div class="fav-manager-title">${this.esc(fav.title)}</div>
+                        <a href="${this.esc(fav.url)}" target="_blank" rel="noopener noreferrer" class="fav-manager-title-link">
+                            <div class="fav-manager-title">${this.esc(fav.title)}</div>
+                        </a>
                         <div class="fav-manager-url">${this.esc(fav.url)}</div>
                     </div>
                     ${fav.category ? `<span class="fav-manager-category">${this.esc(fav.category)}</span>` : ''}
@@ -2156,6 +2292,11 @@
 
             // 事件委托
             list.onclick = (e) => {
+                // 让链接自行处理点击
+                if (e.target.closest('.fav-manager-title-link')) {
+                    return;
+                }
+
                 const item = e.target.closest('.fav-manager-item');
                 if (!item) return;
                 const id = item.dataset.id;
@@ -2171,13 +2312,19 @@
                     if (confirm('确定删除此收藏？')) {
                         this.favorites = this.favorites.filter(f => f.id !== id);
                         this.saveFavorites();
-                        // 重新过滤并渲染
-                        if (this.favManagerFiltered) {
-                            this.favManagerFiltered = this.favManagerFiltered.filter(f => f.id !== id);
-                        }
                         this.favManagerSelected.delete(id);
-                        this.renderFavManagerList(this.favManagerFiltered || this.favorites);
-                        this.updateBatchBar();
+                        // 检查当前分类是否还有书签，没有则重置为全部
+                        if (this.favManagerCurrentCategory) {
+                            const hasRemaining = this.favorites.some(f =>
+                                f.category === this.favManagerCurrentCategory ||
+                                f.category?.startsWith(this.favManagerCurrentCategory + '/')
+                            );
+                            if (!hasRemaining) {
+                                this.favManagerCurrentCategory = '';
+                            }
+                        }
+                        // 刷新整个管理界面（包括分类树，以便空分类自动消失）
+                        this.showFavManager();
                     }
                 } else if (e.target.classList.contains('edit-fav')) {
                     this.editFavorite(id);

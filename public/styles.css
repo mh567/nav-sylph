@@ -1229,6 +1229,17 @@ body {
     text-overflow: ellipsis;
 }
 
+.fav-manager-title-link {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+}
+
+.fav-manager-title-link:hover .fav-manager-title {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
 .fav-manager-url {
     font-size: 11px;
     color: var(--text-muted);
@@ -2178,6 +2189,52 @@ body {
     border-color: var(--accent);
     color: var(--accent);
     background: transparent;
+}
+
+/* 分类编辑按钮 */
+.tree-item-edit {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 12px;
+    flex-shrink: 0;
+    margin-left: 4px;
+}
+
+.category-tree-item:hover .tree-item-edit {
+    display: inline-block;
+}
+
+.tree-item-edit:hover {
+    color: var(--accent);
+}
+
+.category-tree-item.active .tree-item-edit {
+    color: rgba(255,255,255,0.7);
+}
+
+.category-tree-item.active .tree-item-edit:hover {
+    color: white;
+}
+
+/* 分类编辑输入框 */
+.tree-item-edit-input {
+    flex: 1;
+    min-width: 60px;
+    padding: 2px 6px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+}
+
+.tree-item-name.editing {
+    display: none;
 }
 
 /* ========== 书签拖拽 ========== */
