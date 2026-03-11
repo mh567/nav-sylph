@@ -127,6 +127,9 @@
             if (this.config.theme === undefined) {
                 this.config.theme = 'auto';
             }
+            if (this.config.privacyMode === undefined) {
+                this.config.privacyMode = false;
+            }
         }
 
         applyTheme() {
@@ -297,6 +300,13 @@
             }
         }
 
+        getSearchableFavorites() {
+            if (this.privacySearchActive) {
+                return this.favorites;
+            }
+            return this.favorites.filter(f => !f.private);
+        }
+
         buildSearchIndex() {
             // 先学习所有分类和标签
             if (typeof Pinyin !== 'undefined') {
@@ -306,18 +316,16 @@
                 });
             }
 
-            // 构建搜索索引（包含拼音）
-            this.favHaystack = this.favorites.map(f => {
+            // 构建单个书签的搜索文本
+            const buildHay = (f) => {
                 let hostname = '';
                 try { hostname = new URL(f.url).hostname; } catch {}
 
-                // 基础搜索文本
                 const title = f.title || '';
                 const desc = f.description || '';
                 const category = f.category || '';
                 const tags = (f.tags || []).join(' ');
 
-                // 构建拼音索引
                 let pinyinParts = '';
                 if (typeof Pinyin !== 'undefined') {
                     pinyinParts = [
@@ -329,6 +337,19 @@
                 }
 
                 return `${title} | ${desc} | ${category} | ${hostname} | ${tags} | ${pinyinParts}`;
+            };
+
+            // 全量索引
+            this.favHaystack = this.favorites.map(buildHay);
+
+            // 非隐私索引（记录原始索引映射）
+            this.publicFavIndices = [];
+            this.publicFavHaystack = [];
+            this.favorites.forEach((f, i) => {
+                if (!f.private) {
+                    this.publicFavIndices.push(i);
+                    this.publicFavHaystack.push(this.favHaystack[i]);
+                }
             });
 
             // 初始化 uFuzzy（宽松模式，适合中英文混合）
@@ -419,6 +440,10 @@
             }
         }
 
+        isPrivacySearchEnabled() {
+            return !!(this.password && this.config.privacyMode);
+        }
+
         isFavSearchTrigger(char) {
             return char === '/' || char === '、';
         }
@@ -472,8 +497,9 @@
             dropdown.hidden = false;
             this.favSelectedIdx = 0;
 
-            // 显示最近收藏
-            this.renderFavResults(this.favorites.slice(0, 10), null, null);
+            // 根据隐私模式过滤显示
+            const favs = this.getSearchableFavorites();
+            this.renderFavResults(favs.slice(0, 10), null, null);
         }
 
         hideFavDropdown() {
@@ -487,21 +513,28 @@
             const dropdown = $('#favDropdown');
             if (!dropdown) return;
 
+            const isPrivate = this.privacySearchActive;
+            const favList = this.getSearchableFavorites();
+
             // 如果没有收藏，显示提示
-            if (this.favorites.length === 0) {
+            if (favList.length === 0) {
                 dropdown.innerHTML = '<div class="fav-empty">无收藏，请在管理面板中导入</div>';
                 return;
             }
 
             if (!query) {
-                this.renderFavResults(this.favorites.slice(0, 10), null, null, null);
+                this.renderFavResults(favList.slice(0, 10), null, null, null);
                 return;
             }
+
+            // 选择对应的 haystack
+            const haystack = isPrivate ? this.favHaystack : this.publicFavHaystack;
+            const indexMap = isPrivate ? null : this.publicFavIndices;
 
             // 如果 uFuzzy 未初始化，使用简单匹配
             if (!this.uf) {
                 const q = query.toLowerCase();
-                const filtered = this.favorites.filter(f =>
+                const filtered = favList.filter(f =>
                     f.title.toLowerCase().includes(q) ||
                     (f.description || '').toLowerCase().includes(q) ||
                     (f.category || '').toLowerCase().includes(q) ||
@@ -512,19 +545,23 @@
             }
 
             // uFuzzy 搜索
-            const idxs = this.uf.filter(this.favHaystack, query);
+            const idxs = this.uf.filter(haystack, query);
 
             if (!idxs || idxs.length === 0) {
                 dropdown.innerHTML = '<div class="fav-empty">无匹配结果</div>';
                 return;
             }
 
-            const info = this.uf.info(idxs, this.favHaystack, query);
-            const order = this.uf.sort(info, this.favHaystack, query);
+            const info = this.uf.info(idxs, haystack, query);
+            const order = this.uf.sort(info, haystack, query);
 
-            // 取前 15 个结果
+            // 取前 15 个结果，映射回 this.favorites 的索引
             const topOrder = order.slice(0, 15);
-            const results = topOrder.map(i => this.favorites[idxs[i]]);
+            const results = topOrder.map(i => {
+                const haystackIdx = idxs[i];
+                const favIdx = indexMap ? indexMap[haystackIdx] : haystackIdx;
+                return this.favorites[favIdx];
+            });
 
             this.renderFavResults(results, info, topOrder, idxs);
         }
@@ -668,16 +705,29 @@
         handleSearchInput(e) {
             const value = e.target.value;
 
-            // 检查收藏检索模式
+            // 检查收藏检索模式（/ 或 //）
             const isFavMode = value.length > 0 && this.isFavSearchTrigger(value[0]);
+
+            // 检测是否为隐私模式触发（//）
+            const isPrivacyTrigger = isFavMode && value.length >= 2 && this.isFavSearchTrigger(value[1]);
+
             if (isFavMode !== this.favSearchMode) {
                 this.favSearchMode = isFavMode;
+                this.privacySearchActive = isPrivacyTrigger && this.isPrivacySearchEnabled();
                 this.toggleFavSearchMode(isFavMode);
+            } else if (isFavMode) {
+                // 模式已激活，但需要更新隐私状态（如从 / 变为 //）
+                const newPrivacyState = isPrivacyTrigger && this.isPrivacySearchEnabled();
+                if (newPrivacyState !== this.privacySearchActive) {
+                    this.privacySearchActive = newPrivacyState;
+                }
             }
 
             // 如果在收藏检索模式，执行防抖搜索
             if (this.favSearchMode) {
-                const query = value.slice(1).trim();
+                // 隐私模式下跳过第二个 /
+                const sliceLen = (isPrivacyTrigger) ? 2 : 1;
+                const query = value.slice(sliceLen).trim();
                 this.debouncedSearchFavorites(query);
                 return;
             }
