@@ -1,6 +1,20 @@
 {
   "versions": [
     {
+      "version": "1.3.5",
+      "date": "2026-03-11",
+      "highlights": [
+        "修复镜像加速下载链接重复前缀问题",
+        "修复 Node 18 下 WebDAV 模块加载报错"
+      ],
+      "changes": {
+        "fix": [
+          "修复镜像代理返回的下载链接被重复添加前缀导致下载失败",
+          "锁定 webdav 依赖到 v4（CommonJS），修复 Node 18 下 ERR_REQUIRE_ESM 报错"
+        ]
+      }
+    },
+    {
       "version": "1.3.4",
       "date": "2026-03-11",
       "highlights": [

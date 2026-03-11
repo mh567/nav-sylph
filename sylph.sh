@@ -64,7 +64,16 @@ download_with_fallback() {
     for mirror in "${GITHUB_MIRRORS[@]}"; do
         local try_url="$url"
         if [ -n "$mirror" ]; then
-            try_url="${mirror}/${url}"
+            # 仅对 github.com 原始链接添加镜像前缀，避免重复
+            case "$url" in
+                https://github.com/*|https://api.github.com/*|https://raw.githubusercontent.com/*)
+                    try_url="${mirror}/${url}"
+                    ;;
+                *)
+                    # 非 GitHub 链接或已带镜像前缀，跳过此镜像
+                    continue
+                    ;;
+            esac
             log_info "尝试镜像: ${mirror}"
         fi
         if check_command curl; then
