@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "1.3.3",
+      "date": "2026-03-11",
+      "highlights": [
+        "管理员登录状态刷新页面保持",
+        "发布流程新增准备工作步骤"
+      ],
+      "changes": {
+        "feat": [
+          "使用 sessionStorage 持久化管理员登录状态，刷新页面无需重新输入密码，关闭标签页自动失效"
+        ],
+        "improve": [
+          "发布流程新增准备工作步骤（.gitignore 检查、README 功能说明更新）"
+        ]
+      }
+    },
+    {
       "version": "1.3.2",
       "date": "2025-01-27",
       "highlights": [

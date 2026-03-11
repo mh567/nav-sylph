@@ -73,6 +73,8 @@
         }
     };
 
+    const SESSION_PWD_KEY = 'nav-sylph-admin-password';
+
     class App {
         constructor() {
             this.config = null;
@@ -102,6 +104,11 @@
             try {
                 this.config = await API.get('/api/config');
                 this.migrateConfig();
+                // 恢复 sessionStorage 中的登录状态
+                const savedPwd = sessionStorage.getItem(SESSION_PWD_KEY);
+                if (savedPwd) {
+                    this.password = savedPwd;
+                }
                 // 加载收藏
                 await this.loadFavorites();
                 this.applyTheme();
@@ -950,6 +957,7 @@
                 const res = await API.post('/api/verify-password', {}, pwd);
                 if (!res.valid) return alert('密码错误');
                 this.password = pwd;
+                sessionStorage.setItem(SESSION_PWD_KEY, pwd);
 
                 // 检测是否为默认密码，提示修改
                 if (pwd === 'admin123') {
@@ -1101,6 +1109,7 @@
             // 登出按钮
             $('#logoutBtn').onclick = () => {
                 this.password = null;
+                sessionStorage.removeItem(SESSION_PWD_KEY);
                 this.privacySearchActive = false;
                 this.closeAdmin();
             };
@@ -2483,6 +2492,7 @@
             const res = await API.post('/api/change-password', { newPassword: newPwd }, this.password);
             if (res.success) {
                 this.password = newPwd;
+                sessionStorage.setItem(SESSION_PWD_KEY, newPwd);
                 alert('密码已修改');
             } else {
                 alert(res.error || '修改失败');

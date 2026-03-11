@@ -134,6 +134,8 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 
 > ⚠️ **首次登录会提示修改默认密码！**
 
+> 登录状态在当前标签页内保持，刷新页面无需重新输入密码；关闭标签页后自动失效。
+
 ### 管理面板
 
 点击页面 **右下角齿轮图标** 进入管理面板：
