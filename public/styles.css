@@ -973,7 +973,7 @@ body {
 }
 
 .toggle-switch input:checked + .toggle-slider {
-    background-color: #4f46e5;
+    background-color: var(--accent);
 }
 
 .toggle-switch input:checked + .toggle-slider:before {

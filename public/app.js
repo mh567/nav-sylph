@@ -82,6 +82,7 @@
             // 收藏检索
             this.favorites = [];
             this.favSearchMode = false;
+            this.privacySearchActive = false;
             this.uf = null;  // uFuzzy 实例
             this.favHaystack = [];  // 搜索索引数组
             this.favSelectedIdx = 0;  // 当前选中的下拉项
@@ -300,6 +301,7 @@
             }
         }
 
+        // 获取当前可搜索的收藏列表（仅用于搜索结果过滤，分类树视图不使用此方法）
         getSearchableFavorites() {
             if (this.privacySearchActive) {
                 return this.favorites;
@@ -513,7 +515,7 @@
             const dropdown = $('#favDropdown');
             if (!dropdown) return;
 
-            const isPrivate = this.privacySearchActive;
+            const isPrivacyMode = this.privacySearchActive;
             const favList = this.getSearchableFavorites();
 
             // 如果没有收藏，显示提示
@@ -528,8 +530,8 @@
             }
 
             // 选择对应的 haystack
-            const haystack = isPrivate ? this.favHaystack : this.publicFavHaystack;
-            const indexMap = isPrivate ? null : this.publicFavIndices;
+            const haystack = isPrivacyMode ? this.favHaystack : this.publicFavHaystack;
+            const indexMap = isPrivacyMode ? null : this.publicFavIndices;
 
             // 如果 uFuzzy 未初始化，使用简单匹配
             if (!this.uf) {
