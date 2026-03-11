@@ -17,6 +17,13 @@ GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
 GITHUB_RELEASES="${GITHUB_API}/releases"
 RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
+# GitHub 镜像加速（下载失败时自动尝试）
+GITHUB_MIRRORS=(
+    ""                      # 直连 GitHub（优先）
+    "https://ghproxy.cn"
+    "https://ghfast.top"
+)
+
 # 检测脚本运行模式（远程安装 or 本地管理）
 if [ -f "$(dirname "$0")/server.js" ] 2>/dev/null; then
     # 本地模式：脚本在项目目录中
@@ -47,6 +54,35 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
+
+# 带镜像回退的下载
+# 用法: download_with_fallback <url> [curl额外参数...]
+download_with_fallback() {
+    local url="$1"
+    shift
+
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        local try_url="$url"
+        if [ -n "$mirror" ]; then
+            try_url="${mirror}/${url}"
+            log_info "尝试镜像: ${mirror}"
+        fi
+        if check_command curl; then
+            if curl -fsSL --connect-timeout 10 --max-time 120 "$try_url" "$@" 2>/dev/null; then
+                return 0
+            fi
+        elif check_command wget; then
+            if [ "$1" = "-o" ]; then
+                if wget -q --connect-timeout=10 --timeout=120 "$try_url" -O "$2" 2>/dev/null; then return 0; fi
+            else
+                if wget -qO- --connect-timeout=10 --timeout=120 "$try_url" 2>/dev/null; then return 0; fi
+            fi
+        fi
+    done
+
+    log_error "所有下载源均失败"
+    return 1
+}
 
 print_banner() {
     echo -e "${CYAN}"
@@ -177,11 +213,7 @@ get_latest_release() {
     local api_url="${GITHUB_RELEASES}/latest"
     local response=""
 
-    if check_command curl; then
-        response=$(curl -sL "$api_url" 2>/dev/null)
-    elif check_command wget; then
-        response=$(wget -qO- "$api_url" 2>/dev/null)
-    fi
+    response=$(download_with_fallback "$api_url") || true
 
     if [ -z "$response" ]; then
         log_error "无法获取版本信息"
@@ -212,10 +244,9 @@ download_release() {
 
     log_step "下载 ${LATEST_TAG}..."
 
-    if check_command curl; then
-        curl -fsSL "$url" -o "$temp_file"
-    elif check_command wget; then
-        wget -q "$url" -O "$temp_file"
+    if ! download_with_fallback "$url" -o "$temp_file"; then
+        log_error "下载失败"
+        return 1
     fi
 
     if [ ! -f "$temp_file" ]; then

@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 
 支持 Linux / macOS / Windows (Git Bash, WSL)
 
-> 💡 安装脚本会自动从 [GitHub Releases](https://github.com/mh567/nav-sylph/releases) 下载最新版本，无需安装 Git。
+> 💡 安装脚本会自动从 [GitHub Releases](https://github.com/mh567/nav-sylph/releases) 下载最新版本，无需安装 Git。国内服务器如遇下载失败，脚本会自动尝试镜像加速。
 
 ### 系统要求
 
