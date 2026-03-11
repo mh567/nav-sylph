@@ -597,7 +597,7 @@
                         <img class="fav-icon" src="${this.getFavicon(fav.url)}" alt=""
                              onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>${fav.title[0] || '?'}</text></svg>'">
                         <div class="fav-info">
-                            <div class="fav-title">${titleHtml}</div>
+                            <div class="fav-title">${fav.private ? '<svg class="fav-private-icon" viewBox="0 0 24 24" width="12" height="12"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> ' : ''}${titleHtml}</div>
                             <div class="fav-meta">
                                 ${fav.category ? `<span class="fav-category">${this.esc(fav.category)}</span>` : ''}
                                 <span class="fav-host">${this.esc(hostname)}</span>
@@ -1002,6 +1002,15 @@
                             </select>
                         </label>
                     </div>
+                    <div class="setting-row">
+                        <label>
+                            <span>隐私模式</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="privacyModeToggle" ${this.config.privacyMode ? 'checked' : ''}>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
                 </div>
                 <div class="section">
                     <div class="section-title">收藏</div>
@@ -1041,6 +1050,9 @@
                     <div id="catsEditor"></div>
                     <button class="add-btn" id="addCat">+ 添加分类</button>
                 </div>
+                <div class="section">
+                    <button class="btn btn-danger" id="logoutBtn" style="width: 100%;">退出登录</button>
+                </div>
             `;
 
             this.renderEnginesEditor();
@@ -1077,6 +1089,19 @@
             $('#addFavBtn').onclick = () => this.showAddFavDialog();
             $('#manageFavBtn').onclick = () => this.showFavManager();
             $('#exportFavBtn').onclick = () => this.exportFavorites();
+
+            // 隐私模式开关
+            $('#privacyModeToggle').onchange = (e) => {
+                this.config.privacyMode = e.target.checked;
+                this.saveConfig();
+            };
+
+            // 登出按钮
+            $('#logoutBtn').onclick = () => {
+                this.password = null;
+                this.privacySearchActive = false;
+                this.closeAdmin();
+            };
 
             // WebDAV 配置加载
             this.loadWebDAVConfig();
@@ -1682,6 +1707,10 @@
                                 <input type="text" id="favCategory" placeholder="${existingCategories.length > 0 ? '或输入新分类' : '分类（可选）'}">
                             </div>
                             <input type="text" id="favTags" placeholder="标签（逗号分隔，可选）">
+                            <label class="fav-checkbox-row">
+                                <input type="checkbox" id="favPrivate">
+                                <span>隐私保护</span>
+                            </label>
                         </div>
                         <div class="fav-dialog-actions">
                             <button class="btn" id="favCancelBtn">取消</button>
@@ -1730,6 +1759,7 @@
                     description: $('#favDesc').value.trim(),
                     category,
                     tags: $('#favTags').value.split(',').map(t => t.trim()).filter(Boolean),
+                    private: $('#favPrivate').checked,
                     createdAt: Date.now(),
                     updatedAt: Date.now()
                 };
@@ -2410,6 +2440,10 @@
                             <input type="text" id="editFavDesc" value="${this.esc(fav.description || '')}" placeholder="描述">
                             <input type="text" id="editFavCategory" value="${this.esc(fav.category || '')}" placeholder="分类">
                             <input type="text" id="editFavTags" value="${(fav.tags || []).join(', ')}" placeholder="标签">
+                            <label class="fav-checkbox-row">
+                                <input type="checkbox" id="editFavPrivate" ${fav.private ? 'checked' : ''}>
+                                <span>隐私保护</span>
+                            </label>
                         </div>
                         <div class="fav-dialog-actions">
                             <button class="btn" id="editFavCancelBtn">取消</button>
@@ -2428,6 +2462,7 @@
                 fav.description = $('#editFavDesc').value.trim();
                 fav.category = $('#editFavCategory').value.trim();
                 fav.tags = $('#editFavTags').value.split(',').map(t => t.trim()).filter(Boolean);
+                fav.private = $('#editFavPrivate').checked;
                 fav.updatedAt = Date.now();
 
                 await this.saveFavorites();

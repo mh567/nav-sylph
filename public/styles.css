@@ -934,6 +934,62 @@ body {
     border-color: var(--accent);
 }
 
+/* ========== Toggle Switch ========== */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    border-radius: 24px;
+    transition: 0.3s;
+}
+
+.toggle-slider:before {
+    content: "";
+    position: absolute;
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: #4f46e5;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(20px);
+}
+
+.btn-danger {
+    background: #ef4444;
+    color: white;
+    border: none;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+}
+
 /* ========== Text-Only Bookmark Mode ========== */
 .bookmark-text-only {
     display: flex;
@@ -1093,6 +1149,18 @@ body {
 
 :root[data-theme="dark"] .fav-title mark {
     background: #854d0e;
+}
+
+.fav-private-icon {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.5;
+    vertical-align: middle;
+    margin-right: 2px;
+    flex-shrink: 0;
 }
 
 .fav-meta {
@@ -1331,6 +1399,21 @@ body {
 .fav-form select:focus {
     outline: none;
     border-color: var(--accent);
+}
+
+.fav-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.fav-checkbox-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
 }
 
 .fav-category-row {
