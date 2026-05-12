@@ -55,6 +55,61 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
+install_dependencies() {
+    mkdir -p "${LOG_DIR}"
+    local npm_log="${LOG_DIR}/npm-install.log"
+
+    : >"$npm_log"
+
+    log_info "尝试使用当前 npm 配置安装依赖..."
+    {
+        echo "===== npm install: default registry ====="
+        npm install --omit=dev
+    } >>"$npm_log" 2>&1 && {
+        tail -20 "$npm_log"
+        log_info "依赖安装完成"
+        return 0
+    }
+
+    if grep -Eq 'EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN' "$npm_log"; then
+        log_warn "当前 npm 源连接失败，尝试 IPv4 优先..."
+        {
+            echo ""
+            echo "===== npm install: ipv4 first ====="
+            NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first" npm install --omit=dev
+        } >>"$npm_log" 2>&1 && {
+            tail -20 "$npm_log"
+            log_info "依赖安装完成"
+            return 0
+        }
+
+        log_warn "IPv4 优先仍未成功，尝试 npm 镜像..."
+        {
+            echo ""
+            echo "===== npm install: npmmirror registry, ipv4 first ====="
+            NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first" \
+                npm install --omit=dev \
+                --registry=https://registry.npmmirror.com \
+                --replace-registry-host=always
+        } >>"$npm_log" 2>&1 && {
+            tail -20 "$npm_log"
+            log_info "依赖安装完成"
+            return 0
+        }
+    fi
+
+    log_error "依赖安装失败，日志: ${npm_log}"
+    tail -50 "$npm_log" || true
+
+    if grep -Eq 'EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN' "$npm_log"; then
+        log_warn "检测到 npm registry 网络连接失败"
+        log_warn "脚本已尝试当前源、IPv4 优先、npm 镜像"
+        log_warn "请检查服务器 DNS、IPv6 路由、防火墙或代理设置后重试"
+    fi
+
+    return 1
+}
+
 # 带镜像回退的下载
 # 用法: download_with_fallback <url> [curl额外参数...]
 download_with_fallback() {
@@ -344,8 +399,7 @@ do_install() {
 
     # 安装依赖
     log_step "安装依赖..."
-    npm install --production 2>&1 | tail -5
-    log_info "依赖安装完成"
+    install_dependencies
 
     # 创建 .env
     if [ ! -f "${APP_DIR}/.env" ] && [ -f "${APP_DIR}/.env.example" ]; then
@@ -641,7 +695,7 @@ do_update() {
 
     # 更新依赖
     log_step "更新依赖..."
-    npm install --production
+    install_dependencies
 
     # 设置权限
     chmod +x sylph.sh
