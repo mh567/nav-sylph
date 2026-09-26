@@ -258,8 +258,25 @@
                     dropdown.hidden = true;
                     engineBtn.classList.remove('active');
                     engineBtn.setAttribute('aria-expanded', 'false');
+                    this.hideFavDropdown();
                 }
             };
+
+            document.addEventListener('pointerdown', (e) => {
+                if (!e.target.closest('.search-wrapper')) this.hideFavDropdown();
+            }, { passive: true });
+
+            const reopenFavDropdown = () => {
+                if (!this.favSearchMode) return;
+                const favoritesDropdown = $('#favDropdown');
+                if (!favoritesDropdown?.hidden) return;
+                favoritesDropdown.hidden = false;
+                const value = $('#searchInput').value;
+                const skip = value.length > 1 && this.isFavSearchTrigger(value[1]) ? 2 : 1;
+                this.searchFavorites(value.slice(skip).trim());
+            };
+            $('#searchInput').onclick = reopenFavDropdown;
+            $('#searchInput').onfocus = reopenFavDropdown;
 
             document.onkeydown = (e) => {
                 // 收藏检索模式的键盘导航
@@ -797,6 +814,8 @@
 
             // 如果在收藏检索模式，执行防抖搜索
             if (this.favSearchMode) {
+                const favoritesDropdown = $('#favDropdown');
+                if (favoritesDropdown?.hidden) favoritesDropdown.hidden = false;
                 // 隐私模式下跳过第二个 /
                 const sliceLen = (isPrivacyTrigger) ? 2 : 1;
                 const query = value.slice(sliceLen).trim();

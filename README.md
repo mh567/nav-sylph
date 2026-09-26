@@ -209,11 +209,13 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 
 **备份内容：**
 - 配置文件（JSON）：主题、搜索引擎、书签分类
-- 收藏文件（HTML）：浏览器兼容格式，可直接导入 Chrome/Edge
+- 收藏文件（HTML）：浏览器兼容格式，保留 Sylph 收藏的隐私标签，可直接导入 Chrome/Edge
 
 **恢复备份：**
 - 点击「从备份恢复」选择备份时间点
 - 可选择「同时恢复配置和收藏」或「只恢复配置」
+
+旧版 HTML 备份没有保存隐私标签。如原设备仍保有完整收藏，请先在原设备更新应用并重新执行「立即备份」，再到新设备恢复最新备份。
 
 ### PWA 安装
 

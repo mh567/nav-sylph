@@ -382,10 +382,11 @@ function parseBookmarkHtml(html) {
         }
 
         // 检查是否是书签链接 <A HREF="..." ...>title</A>
-        const linkMatch = /<A\s+HREF="([^"]+)"[^>]*>([^<]+)<\/A>/i.exec(line);
+        const linkMatch = /<A\s+HREF="([^"]+)"([^>]*)>([^<]+)<\/A>/i.exec(line);
         if (linkMatch) {
             const url = linkMatch[1];
-            const title = linkMatch[2].trim();
+            const title = linkMatch[3].trim();
+            const privateMarker = /\bDATA-SYLPH-PRIVATE="([^"]*)"/i.exec(linkMatch[2]);
 
             // 跳过无效 URL
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -399,6 +400,7 @@ function parseBookmarkHtml(html) {
                 description: '',
                 category: currentCategory,
                 tags: [],
+                private: privateMarker?.[1] === '1',
                 createdAt: Date.now(),
                 updatedAt: Date.now()
             });
@@ -435,7 +437,8 @@ function generateBookmarkHtml(favorites) {
         html += `    <DL><p>\n`;
         for (const item of items) {
             const addDate = Math.floor((item.createdAt || Date.now()) / 1000);
-            html += `        <DT><A HREF="${escapeHtml(item.url)}" ADD_DATE="${addDate}">${escapeHtml(item.title)}</A>\n`;
+            const privateMarker = item.private ? ' DATA-SYLPH-PRIVATE="1"' : '';
+            html += `        <DT><A HREF="${escapeHtml(item.url)}" ADD_DATE="${addDate}"${privateMarker}>${escapeHtml(item.title)}</A>\n`;
         }
         html += `    </DL><p>\n`;
     }

@@ -1477,15 +1477,16 @@ body {
 /* 移动端适配 */
 @media (max-width: 768px) {
     .fav-dropdown {
-        max-height: 60vh;
-        position: fixed;
-        left: 12px;
-        right: 12px;
-        top: auto;
-        bottom: 0;
-        border-radius: 16px 16px 0 0;
-        box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
-        animation: slideUpMobile 0.2s ease;
+        max-height: min(60vh, 400px);
+        max-height: min(60dvh, 400px);
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 8px);
+        bottom: auto;
+        border-radius: 11px;
+        box-shadow: var(--shadow-lg);
+        animation: dropIn 0.15s ease;
     }
 
     @keyframes slideUpMobile {
@@ -1630,10 +1631,11 @@ body {
 /* 小屏手机适配 */
 @media (max-width: 480px) {
     .fav-dropdown {
-        max-height: 70vh;
+        max-height: min(55vh, 360px);
+        max-height: min(55dvh, 360px);
         left: 0;
         right: 0;
-        border-radius: 12px 12px 0 0;
+        border-radius: 11px;
     }
 
     .fav-item {
@@ -1683,14 +1685,15 @@ body {
 /* 横屏模式优化 */
 @media (max-height: 500px) and (orientation: landscape) {
     .fav-dropdown {
-        max-height: 80vh;
-        position: fixed;
-        top: 10px;
-        bottom: 10px;
-        left: 50%;
-        right: auto;
-        width: 400px;
-        transform: translateX(-50%);
+        max-height: min(55vh, 300px);
+        max-height: min(55dvh, 300px);
+        position: absolute;
+        top: calc(100% + 8px);
+        bottom: auto;
+        left: 0;
+        right: 0;
+        width: auto;
+        transform: none;
         border-radius: var(--radius);
     }
 
