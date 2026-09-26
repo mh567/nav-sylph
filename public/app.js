@@ -3,6 +3,7 @@
 
     const $ = (sel, ctx = document) => ctx.querySelector(sel);
     const $$ = (sel, ctx = document) => [...ctx.querySelectorAll(sel)];
+    const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     const html = (str) => { const t = document.createElement('template'); t.innerHTML = str.trim(); return t.content.firstChild; };
     const uid = () => 'id_' + Math.random().toString(36).slice(2, 9);
 
@@ -83,6 +84,12 @@
             this.pasteMode = false;
             // 收藏检索
             this.favorites = [];
+            this.favoritesLoading = true;
+            this.favoritesLoadError = false;
+            this.configDirty = false;
+            this.configSaving = false;
+            this.configSnapshot = null;
+            this.toastTimer = null;
             this.favSearchMode = false;
             this.privacySearchActive = false;
             this.uf = null;  // uFuzzy 实例
@@ -109,15 +116,16 @@
                 if (savedPwd) {
                     this.password = savedPwd;
                 }
-                // 加载收藏
-                await this.loadFavorites();
                 this.applyTheme();
                 this.render();
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
-                // 版本检测（在页面加载完成后）
-                await this.checkVersionUpdate();
+                // 首页先显示，收藏索引和版本信息随后加载
+                requestAnimationFrame(() => {
+                    this.loadFavorites();
+                    this.checkVersionUpdate();
+                });
             } catch (e) {
                 console.error('Init failed:', e);
                 $('#loader').textContent = '加载失败';
@@ -161,16 +169,17 @@
         renderEngines() {
             const current = this.config.searchEngines.find(e => e.id === this.config.searchEngine) || this.config.searchEngines[0];
             $('#engineName').textContent = current.name;
+            $('#engineBtn').setAttribute('aria-label', `选择搜索引擎，当前为${current.name}`);
             
             const dropdown = $('#engineDropdown');
             dropdown.innerHTML = this.config.searchEngines.map(e => 
-                `<div class="engine-option${e.id === this.config.searchEngine ? ' active' : ''}" data-id="${e.id}">${this.esc(e.name)}</div>`
+                `<button type="button" role="option" aria-selected="${e.id === this.config.searchEngine}" class="engine-option${e.id === this.config.searchEngine ? ' active' : ''}" data-id="${this.esc(e.id)}">${this.esc(e.name)}</button>`
             ).join('');
         }
 
         renderGrid() {
             const grid = $('#grid');
-            grid.innerHTML = '';
+            const fragment = document.createDocumentFragment();
             this.config.categories.forEach((cat, catIdx) => {
                 const section = html(`
                     <section class="category" data-cat="${catIdx}">
@@ -184,41 +193,34 @@
                 cat.bookmarks.forEach((bm, bmIdx) => {
                     bms.appendChild(this.createBookmark(bm, catIdx, bmIdx));
                 });
-                grid.appendChild(section);
+                fragment.appendChild(section);
             });
+            grid.replaceChildren(fragment);
         }
 
         createBookmark(bm, catIdx, bmIdx) {
-            const showIcons = this.config.showBookmarkIcons !== false;
-            const iconUrl = this.getFavicon(bm.url);
-            
-            if (showIcons) {
-                return html(`
-                    <a class="bookmark" href="${this.esc(bm.url)}" target="_blank" rel="noopener">
-                        <img class="bookmark-icon" src="${iconUrl}" alt="" loading="lazy" 
-                             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>${bm.title[0] || '?'}</text></svg>'">
-                        <span class="bookmark-title">${this.esc(bm.title)}</span>
-                    </a>
-                `);
-            } else {
-                return html(`
-                    <a class="bookmark bookmark-text-only" href="${this.esc(bm.url)}" target="_blank" rel="noopener">
-                        <span class="bookmark-title">${this.esc(bm.title)}</span>
-                    </a>
-                `);
-            }
-        }
-
-        getFavicon(url) {
-            try {
-                const u = new URL(url);
-                return `${u.origin}/favicon.ico`;
-            } catch {
-                return '';
-            }
+            return html(`
+                <a class="bookmark bookmark-text-only" href="${this.esc(bm.url)}" target="_blank" rel="noopener" title="${this.esc(bm.title)}">
+                    <span class="bookmark-title">${this.esc(bm.title)}</span>
+                </a>
+            `);
         }
 
         bind() {
+            $('#modeBtn').onclick = () => {
+                const input = $('#searchInput');
+                const value = input.value;
+                if (this.pasteMode) {
+                    this.pasteMode = false;
+                    this.togglePasteMode(false);
+                }
+                input.value = this.favSearchMode
+                    ? value.replace(/^[\/、]{1,2}/, '')
+                    : `/${this.isPasteTrigger(value[0]) ? value.slice(1) : value}`;
+                this.handleSearchInput({ target: input });
+                input.focus();
+            };
+            this.bindPointerEffects();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
             $('#searchInput').oninput = (e) => this.handleSearchInput(e);
             $('#adminBtn').onclick = () => this.openAdmin();
@@ -235,6 +237,8 @@
                 const isOpen = !dropdown.hidden;
                 dropdown.hidden = isOpen;
                 engineBtn.classList.toggle('active', !isOpen);
+                engineBtn.setAttribute('aria-expanded', String(!isOpen));
+                if (!isOpen) dropdown.querySelector('.engine-option.active')?.focus();
             };
             
             dropdown.onclick = (e) => {
@@ -244,6 +248,7 @@
                     this.renderEngines();
                     dropdown.hidden = true;
                     engineBtn.classList.remove('active');
+                    engineBtn.setAttribute('aria-expanded', 'false');
                     $('#searchInput').focus();
                 }
             };
@@ -252,6 +257,7 @@
                 if (!e.target.closest('.search-wrapper')) {
                     dropdown.hidden = true;
                     engineBtn.classList.remove('active');
+                    engineBtn.setAttribute('aria-expanded', 'false');
                 }
             };
 
@@ -265,11 +271,41 @@
                     if (!dropdown.hidden) {
                         dropdown.hidden = true;
                         engineBtn.classList.remove('active');
+                        engineBtn.setAttribute('aria-expanded', 'false');
+                        engineBtn.focus();
                     } else if (!$('#modal').hidden) {
                         this.closeAdmin();
                     }
                 }
             };
+        }
+
+        bindPointerEffects() {
+            if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+            let frame = 0;
+            const setPosition = (element, event, xName, yName) => {
+                const rect = element.getBoundingClientRect();
+                element.style.setProperty(xName, `${event.clientX - rect.left}px`);
+                element.style.setProperty(yName, `${event.clientY - rect.top}px`);
+            };
+            $('#searchForm').addEventListener('pointermove', event => {
+                if (frame) return;
+                frame = requestAnimationFrame(() => {
+                    setPosition($('#searchForm'), event, '--glow-x', '--glow-y');
+                    const control = event.target.closest('.search-mode,.search-engine,.search-btn');
+                    if (control) setPosition(control, event, '--glow-x', '--glow-y');
+                    frame = 0;
+                });
+            });
+            let gridFrame = 0;
+            $('#grid').addEventListener('pointermove', event => {
+                const bookmark = event.target.closest('.bookmark');
+                if (!bookmark || gridFrame) return;
+                gridFrame = requestAnimationFrame(() => {
+                    setPosition(bookmark, event, '--glow-x', '--glow-y');
+                    gridFrame = 0;
+                });
+            });
         }
 
         moveBookmark(fromCat, fromBm, toCat, toBm) {
@@ -278,6 +314,7 @@
             if (fromCat === toCat && fromBm < toBm) toBm--;
             cats[toCat].bookmarks.splice(toBm, 0, item);
             this.renderGrid();
+            this.markConfigDirty();
         }
 
         moveCategory(from, to) {
@@ -285,6 +322,7 @@
             const [item] = cats.splice(from, 1);
             cats.splice(to, 0, item);
             this.renderGrid();
+            this.markConfigDirty();
         }
 
         search() {
@@ -298,6 +336,8 @@
         // ========== 收藏模糊检索 ==========
 
         async loadFavorites() {
+            this.favoritesLoading = true;
+            this.favoritesLoadError = false;
             try {
                 const data = await API.get('/api/favorites');
                 this.favorites = data.favorites || [];
@@ -305,6 +345,20 @@
             } catch (e) {
                 console.error('Load favorites failed:', e);
                 this.favorites = [];
+                this.favoritesLoadError = true;
+            } finally {
+                this.favoritesLoading = false;
+                const count = $('.fav-stats strong');
+                if (count) count.textContent = this.favorites.length;
+                ['importFavBtn', 'exportFavBtn', 'addFavBtn', 'manageFavBtn'].forEach(id => {
+                    const button = $(`#${id}`);
+                    if (button) button.disabled = false;
+                });
+                if (this.favSearchMode) {
+                    const value = $('#searchInput').value;
+                    const skip = value.length > 1 && this.isFavSearchTrigger(value[1]) ? 2 : 1;
+                    this.searchFavorites(value.slice(skip).trim());
+                }
             }
         }
 
@@ -390,11 +444,6 @@
                 if (!seenVersion || this.compareVersions(this.currentVersion, seenVersion) > 0) {
                     this.hasNewVersion = true;
                     this.updateHelpButtonBadge(true);
-
-                    // 延迟弹出帮助窗口
-                    setTimeout(() => {
-                        this.showHelp();
-                    }, 500);
                 }
             } catch (e) {
                 console.error('Version check failed:', e);
@@ -481,17 +530,23 @@
             const searchBtn = $('.search-btn');
 
             form.classList.toggle('fav-search-mode', enabled);
+            const modeBtn = $('#modeBtn');
+            modeBtn.textContent = enabled ? '收藏' : '网页';
+            modeBtn.setAttribute('aria-pressed', String(enabled));
+            modeBtn.setAttribute('aria-label', `切换搜索模式，当前为${enabled ? '收藏' : '网页'}`);
 
             if (enabled) {
                 input.placeholder = '搜索收藏...';
                 $('#engineBtn').style.display = 'none';
-                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+                $('#engineDropdown').hidden = true;
+                $('#engineBtn').setAttribute('aria-expanded', 'false');
+                searchBtn.textContent = '打开';
                 searchBtn.title = '收藏检索';
                 this.showFavDropdown();
             } else {
-                input.placeholder = '搜索...';
+                input.placeholder = '搜索网页或收藏';
                 $('#engineBtn').style.display = '';
-                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>';
+                searchBtn.textContent = '搜索';
                 searchBtn.title = '搜索';
                 this.hideFavDropdown();
             }
@@ -505,6 +560,11 @@
             }
             dropdown.hidden = false;
             this.favSelectedIdx = 0;
+
+            if (this.favoritesLoading) {
+                dropdown.innerHTML = '<div class="fav-empty">收藏加载中...</div>';
+                return;
+            }
 
             // 根据隐私模式过滤显示
             const favs = this.getSearchableFavorites();
@@ -527,7 +587,7 @@
 
             // 如果没有收藏，显示提示
             if (favList.length === 0) {
-                dropdown.innerHTML = '<div class="fav-empty">无收藏，请在管理面板中导入</div>';
+                dropdown.innerHTML = `<div class="fav-empty">${this.favoritesLoading ? '收藏加载中...' : this.favoritesLoadError ? '收藏加载失败，请刷新页面' : '无收藏，请在管理面板中导入'}</div>`;
                 return;
             }
 
@@ -603,10 +663,8 @@
 
                 return `
                     <a class="fav-item${i === 0 ? ' selected' : ''}" href="${this.esc(fav.url)}" target="_blank" rel="noopener" data-idx="${i}">
-                        <img class="fav-icon" src="${this.getFavicon(fav.url)}" alt=""
-                             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>${fav.title[0] || '?'}</text></svg>'">
                         <div class="fav-info">
-                            <div class="fav-title">${fav.private ? '<svg class="fav-private-icon" viewBox="0 0 24 24" width="12" height="12"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> ' : ''}${titleHtml}</div>
+                            <div class="fav-title">${fav.private ? '<span class="fav-private-label">私密</span> ' : ''}${titleHtml}</div>
                             <div class="fav-meta">
                                 ${fav.category ? `<span class="fav-category">${this.esc(fav.category)}</span>` : ''}
                                 <span class="fav-host">${this.esc(hostname)}</span>
@@ -720,6 +778,11 @@
             // 检测是否为隐私模式触发（//）
             const isPrivacyTrigger = isFavMode && value.length >= 2 && this.isFavSearchTrigger(value[1]);
 
+            if (isFavMode && this.pasteMode) {
+                this.pasteMode = false;
+                this.togglePasteMode(false);
+            }
+
             if (isFavMode !== this.favSearchMode) {
                 this.favSearchMode = isFavMode;
                 this.privacySearchActive = isPrivacyTrigger && this.isPrivacySearchEnabled();
@@ -762,13 +825,12 @@
                 // 隐藏搜索引擎选择
                 $('#engineBtn').style.display = 'none';
                 // 更改按钮图标为发送
-                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>';
+                searchBtn.textContent = '发送';
                 searchBtn.title = '发送分享';
             } else {
-                input.placeholder = '搜索...';
+                input.placeholder = '搜索网页或收藏';
                 $('#engineBtn').style.display = '';
-                // 恢复搜索图标
-                searchBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>';
+                searchBtn.textContent = '搜索';
                 searchBtn.title = '搜索';
             }
         }
@@ -863,7 +925,7 @@
 
             // 简洁的 URL，无需密钥
             const url = `${location.origin}/p/${code}`;
-            const pinInfo = hasPin ? '<div class="paste-pin-info">🔒 已设置PIN保护</div>' : '';
+            const pinInfo = hasPin ? '<div class="paste-pin-info">已设置 PIN 保护</div>' : '';
             const result = html(`
                 <div class="paste-result" id="pasteResult">
                     <button class="paste-close" title="关闭">×</button>
@@ -897,6 +959,7 @@
         }
 
         showHelp() {
+            const returnFocus = document.activeElement;
             const versionStr = this.currentVersion ? ` v${this.currentVersion}` : '';
             const newFeatures = this.getNewFeatures();
 
@@ -907,21 +970,21 @@
                     : '';
                 newFeaturesHtml = `
                     <div class="help-new-features">
-                        <div class="help-new-features-header">✨ 新功能</div>
+                        <div class="help-new-features-header">新功能</div>
                         <ul class="help-new-features-list">${highlightsHtml}</ul>
                     </div>
                 `;
             }
 
             const helpHtml = `
-                <div class="help-overlay" id="helpOverlay">
+                <div class="help-overlay" id="helpOverlay" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
                     <div class="help-content">
-                        <button class="help-close">×</button>
-                        <h3>Nav Sylph${versionStr}</h3>
+                        <button class="help-close" type="button">关闭</button>
+                        <h3 id="helpTitle">Nav Sylph${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
                             <strong>收藏检索</strong>
-                            <p>搜索框输入 <code>/</code> + 关键词，快速搜索收藏</p>
+                            <p>点击“网页”切换到收藏，或输入 <code>/</code> + 关键词</p>
                             <p class="help-tip">支持标题、网址、分类、描述模糊匹配</p>
                             <p class="help-tip">↑↓ 选择，Enter 打开，Esc 退出</p>
                         </div>
@@ -932,7 +995,7 @@
                         </div>
                         <div class="help-section">
                             <strong>管理收藏</strong>
-                            <p>点击右下角 ⚙️ 进入管理面板</p>
+                            <p>点击右下角“管理”进入管理面板</p>
                             <p class="help-tip">支持导入/导出浏览器书签</p>
                             <p class="help-tip">兼容 Chrome、Edge、Firefox、Safari</p>
                         </div>
@@ -940,17 +1003,29 @@
                 </div>
             `;
             const overlay = html(helpHtml);
+            const closeHelp = () => {
+                overlay.remove();
+                this.markVersionAsSeen();
+                if (returnFocus?.isConnected) returnFocus.focus();
+            };
             overlay.onclick = (e) => {
                 if (e.target === overlay || e.target.classList.contains('help-close')) {
-                    overlay.remove();
-                    // 标记版本为已查看
-                    this.markVersionAsSeen();
+                    closeHelp();
+                }
+            };
+            overlay.onkeydown = (e) => {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeHelp();
                 }
             };
             document.body.appendChild(overlay);
+            overlay.querySelector('.help-close').focus();
         }
 
         async openAdmin() {
+            this.adminReturnFocus = document.activeElement;
             if (!this.password) {
                 const pwd = prompt('请输入管理密码：');
                 if (!pwd) return;
@@ -961,8 +1036,9 @@
 
                 // 检测是否为默认密码，提示修改
                 if (pwd === 'admin123') {
-                    const shouldChange = confirm('⚠️ 您正在使用默认密码，存在安全风险！\n\n强烈建议立即修改密码。\n\n点击「确定」立即修改密码，点击「取消」稍后修改。');
+                    const shouldChange = confirm('您正在使用默认密码，存在安全风险！\n\n强烈建议立即修改密码。\n\n点击「确定」立即修改密码，点击「取消」稍后修改。');
                     if (shouldChange) {
+                        this.beginConfigEdit();
                         this.renderAdminPanel();
                         $('#modal').hidden = false;
                         setTimeout(() => this.changePassword(), 100);
@@ -970,12 +1046,54 @@
                     }
                 }
             }
+            this.beginConfigEdit();
             this.renderAdminPanel();
             $('#modal').hidden = false;
+            $('#cancelBtn').focus();
         }
 
-        closeAdmin() {
+        beginConfigEdit() {
+            this.configSnapshot = JSON.stringify(this.config);
+            this.configDirty = false;
+            this.updateConfigStatus();
+        }
+
+        markConfigDirty() {
+            this.configDirty = JSON.stringify(this.config) !== this.configSnapshot;
+            this.updateConfigStatus();
+        }
+
+        updateConfigStatus(message = null, state = '') {
+            const status = $('#configSaveStatus');
+            if (!status) return;
+            status.textContent = message || (this.configDirty ? '有未保存的修改' : '修改后点击保存');
+            status.dataset.state = state || (this.configDirty ? 'pending' : '');
+        }
+
+        showToast(message, state = 'success') {
+            const toast = $('#toast');
+            if (!toast) return;
+            clearTimeout(this.toastTimer);
+            toast.textContent = message;
+            toast.dataset.state = state;
+            toast.hidden = false;
+            this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
+        }
+
+        closeAdmin(force = false) {
+            if (this.configSaving && !force) return false;
+            if (this.configDirty) {
+                if (!confirm('有未保存的修改，确定放弃吗？')) return false;
+                this.config = JSON.parse(this.configSnapshot);
+                this.applyTheme();
+                this.render();
+            }
+            this.configDirty = false;
+            this.configSnapshot = null;
+            this.updateConfigStatus();
             $('#modal').hidden = true;
+            if (this.adminReturnFocus?.isConnected) this.adminReturnFocus.focus();
+            return true;
         }
 
         renderAdminPanel() {
@@ -1005,15 +1123,6 @@
                     </div>
                     <div class="setting-row">
                         <label>
-                            <span>书签显示模式</span>
-                            <select id="iconModeSelect">
-                                <option value="true" ${this.config.showBookmarkIcons !== false ? 'selected' : ''}>图标 + 文字</option>
-                                <option value="false" ${this.config.showBookmarkIcons === false ? 'selected' : ''}>纯文字模式</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="setting-row">
-                        <label>
                             <span>隐私模式</span>
                             <div class="toggle-switch">
                                 <input type="checkbox" id="privacyModeToggle" ${this.config.privacyMode ? 'checked' : ''}>
@@ -1025,40 +1134,40 @@
                 <div class="section">
                     <div class="section-title">收藏</div>
                     <div class="fav-stats">
-                        共 <strong>${this.favorites.length}</strong> 个收藏
+                        共 <strong>${this.favoritesLoading ? '加载中' : this.favorites.length}</strong> 个收藏
                         <span class="fav-hint">（搜索框输入 <code>/</code> 快速检索）</span>
                     </div>
                     <div class="fav-actions">
-                        <button class="btn" id="importFavBtn">📥 导入收藏</button>
-                        <button class="btn" id="exportFavBtn">📤 导出收藏</button>
-                        <button class="btn" id="addFavBtn">+ 添加收藏</button>
+                        <button class="btn" id="importFavBtn">导入收藏</button>
+                        <button class="btn" id="exportFavBtn">导出收藏</button>
+                        <button class="btn" id="addFavBtn">添加收藏</button>
                         <button class="btn" id="manageFavBtn">管理收藏</button>
                     </div>
                     <input type="file" id="favFileInput" accept=".html,.htm" hidden>
                 </div>
                 <div class="section section-collapsible">
-                    <div class="section-header" onclick="app.toggleSection('webdav')">
+                    <button type="button" class="section-header" aria-expanded="false" aria-controls="webdavSection" onclick="app.toggleSection('webdav')">
                         <span class="section-title">远程备份</span>
-                        <svg class="section-toggle-icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
-                    </div>
+                        <span class="section-toggle-label">展开</span>
+                    </button>
                     <div class="section-body collapsed" id="webdavSection">
                         <div class="webdav-loading">加载中...</div>
                     </div>
                 </div>
                 <div class="section section-collapsible">
-                    <div class="section-header" onclick="app.toggleSection('engines')">
+                    <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
                         <span class="section-title">搜索引擎</span>
-                        <svg class="section-toggle-icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
-                    </div>
+                        <span class="section-toggle-label">展开</span>
+                    </button>
                     <div class="section-body collapsed" id="enginesSection">
                         <div id="enginesEditor"></div>
-                        <button class="add-btn" id="addEngine">+ 添加搜索引擎</button>
+                        <button class="add-btn" id="addEngine">添加搜索引擎</button>
                     </div>
                 </div>
                 <div class="section">
                     <div class="section-title">书签分类</div>
                     <div id="catsEditor"></div>
-                    <button class="add-btn" id="addCat">+ 添加分类</button>
+                    <button class="add-btn" id="addCat">添加分类</button>
                 </div>
                 <div class="section">
                     <button class="btn btn-danger" id="logoutBtn" style="width: 100%;">退出登录</button>
@@ -1071,26 +1180,25 @@
             $('#themeModeSelect').onchange = (e) => {
                 this.config.theme = e.target.value;
                 this.applyTheme();
+                this.markConfigDirty();
             };
 
             $('#defaultEngineSelect').onchange = (e) => {
                 this.config.searchEngine = e.target.value;
                 this.renderEngines();
-            };
-
-            $('#iconModeSelect').onchange = (e) => {
-                this.config.showBookmarkIcons = e.target.value === 'true';
-                this.renderGrid();
+                this.markConfigDirty();
             };
 
             $('#addEngine').onclick = () => {
                 this.config.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
                 this.renderEnginesEditor();
+                this.markConfigDirty();
             };
 
             $('#addCat').onclick = () => {
                 this.config.categories.push({ id: uid(), name: '新分类', bookmarks: [] });
                 this.renderCatsEditor();
+                this.markConfigDirty();
             };
 
             // 收藏相关绑定
@@ -1099,19 +1207,22 @@
             $('#addFavBtn').onclick = () => this.showAddFavDialog();
             $('#manageFavBtn').onclick = () => this.showFavManager();
             $('#exportFavBtn').onclick = () => this.exportFavorites();
+            if (this.favoritesLoading) {
+                ['importFavBtn', 'exportFavBtn', 'addFavBtn', 'manageFavBtn'].forEach(id => { $(`#${id}`).disabled = true; });
+            }
 
             // 隐私模式开关
             $('#privacyModeToggle').onchange = (e) => {
                 this.config.privacyMode = e.target.checked;
-                this.saveConfig();
+                this.markConfigDirty();
             };
 
             // 登出按钮
             $('#logoutBtn').onclick = () => {
+                if (!this.closeAdmin()) return;
                 this.password = null;
                 sessionStorage.removeItem(SESSION_PWD_KEY);
                 this.privacySearchActive = false;
-                this.closeAdmin();
             };
 
             // WebDAV 配置加载
@@ -1466,6 +1577,9 @@
             if (section && header) {
                 section.classList.toggle('collapsed');
                 header.classList.toggle('expanded');
+                const expanded = !section.classList.contains('collapsed');
+                header.setAttribute('aria-expanded', String(expanded));
+                header.querySelector('.section-toggle-label').textContent = expanded ? '收起' : '展开';
             }
         }
 
@@ -1486,7 +1600,10 @@
                 if (!item) return;
                 const idx = +item.dataset.idx;
                 const field = e.target.dataset.field;
-                if (field) this.config.searchEngines[idx][field] = e.target.value;
+                if (field) {
+                    this.config.searchEngines[idx][field] = e.target.value;
+                    this.markConfigDirty();
+                }
             };
 
             container.onclick = (e) => {
@@ -1498,6 +1615,7 @@
                         this.config.searchEngine = this.config.searchEngines[0].id;
                     }
                     this.renderEnginesEditor();
+                    this.markConfigDirty();
                 }
             };
         }
@@ -1519,8 +1637,8 @@
                 <div class="item cat-item" data-cat="${ci}">
                     <div class="item-header">
                         <span class="item-drag" draggable="true">⋮⋮</span>
-                        <button class="cat-toggle${isExpanded ? ' expanded' : ''}" data-cat="${ci}">
-                            <svg class="toggle-icon" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+                        <button class="cat-toggle${isExpanded ? ' expanded' : ''}" data-cat="${ci}" aria-expanded="${isExpanded}">
+                            ${isExpanded ? '收起' : '展开'}
                         </button>
                         <input type="text" value="${this.esc(cat.name)}" data-field="name" placeholder="分类名称">
                         <span class="cat-count">${bmCount(cat)}</span>
@@ -1535,7 +1653,7 @@
                                 <button class="btn btn-danger btn-sm del-bm">删除</button>
                             </div>
                         `).join('')}
-                        <button class="add-btn add-bm">+ 添加书签</button>
+                        <button class="add-btn add-bm">添加书签</button>
                     </div>
                 </div>
             `}).join('');
@@ -1552,6 +1670,7 @@
                 } else if (field === 'name') {
                     this.config.categories[ci].name = e.target.value;
                 }
+                if (field) this.markConfigDirty();
             };
 
             container.onclick = (e) => {
@@ -1564,6 +1683,9 @@
                     const list = catEl.querySelector('.bookmarks-list');
                     list.classList.toggle('collapsed');
                     toggleBtn.classList.toggle('expanded');
+                    const expanded = !list.classList.contains('collapsed');
+                    toggleBtn.setAttribute('aria-expanded', String(expanded));
+                    toggleBtn.textContent = expanded ? '收起' : '展开';
                     return;
                 }
 
@@ -1571,13 +1693,16 @@
                     if (this.config.categories.length <= 1) return alert('至少保留一个分类');
                     this.config.categories.splice(ci, 1);
                     this.renderCatsEditor();
+                    this.markConfigDirty();
                 } else if (e.target.classList.contains('del-bm')) {
                     const bi = +e.target.closest('.bookmark-item').dataset.bm;
                     this.config.categories[ci].bookmarks.splice(bi, 1);
                     this.renderCatsEditor(this.config.categories[ci].id);
+                    this.markConfigDirty();
                 } else if (e.target.classList.contains('add-bm')) {
                     this.config.categories[ci].bookmarks.push({ id: uid(), title: '', url: '' });
                     this.renderCatsEditor(this.config.categories[ci].id);
+                    this.markConfigDirty();
                 }
             };
 
@@ -1633,16 +1758,30 @@
         }
 
         async save() {
+            const button = $('#saveBtn');
+            if (button.disabled) return;
+            this.configSaving = true;
+            button.disabled = true;
+            $('#modalBody').inert = true;
+            button.textContent = '保存中...';
+            this.updateConfigStatus('正在保存到服务器', 'pending');
             try {
                 const res = await API.post('/api/config', this.config, this.password);
                 if (res.success) {
+                    this.configDirty = false;
                     this.render();
-                    this.closeAdmin();
+                    this.closeAdmin(true);
+                    this.showToast('设置已保存到服务器');
                 } else {
-                    alert(res.error || '保存失败');
+                    this.updateConfigStatus(res.error || '保存失败，请重试', 'error');
                 }
             } catch (e) {
-                alert('保存失败: ' + e.message);
+                this.updateConfigStatus('保存失败，请检查连接后重试', 'error');
+            } finally {
+                this.configSaving = false;
+                $('#modalBody').inert = false;
+                button.disabled = false;
+                button.textContent = '保存';
             }
         }
 
@@ -1775,8 +1914,16 @@
                     updatedAt: Date.now()
                 };
 
+                const button = $('#favSaveBtn');
+                button.disabled = true;
+                button.textContent = '保存中...';
                 this.favorites.unshift(newFav);
-                await this.saveFavorites();
+                if (!await this.saveFavorites()) {
+                    this.favorites.shift();
+                    button.disabled = false;
+                    button.textContent = '保存';
+                    return;
+                }
                 dialog.remove();
                 this.renderAdminPanel();
             };
@@ -1787,12 +1934,15 @@
                 const res = await API.post('/api/favorites', { favorites: this.favorites }, this.password);
                 if (res.success) {
                     this.buildSearchIndex();
+                    this.showToast('收藏已保存到服务器');
+                    return true;
                 } else {
                     alert(res.error || '保存失败');
                 }
             } catch (err) {
                 alert('保存失败: ' + err.message);
             }
+            return false;
         }
 
         showFavManager() {
@@ -2338,8 +2488,6 @@
                 <div class="fav-manager-item" data-id="${fav.id}" draggable="true">
                     <input type="checkbox" class="fav-checkbox" ${this.favManagerSelected?.has(fav.id) ? 'checked' : ''}>
                     <span class="fav-drag-handle">⋮⋮</span>
-                    <img class="fav-manager-icon" src="${this.getFavicon(fav.url)}" alt="" loading="lazy"
-                         onerror="this.style.display='none'">
                     <div class="fav-manager-info">
                         <a href="${this.esc(fav.url)}" target="_blank" rel="noopener noreferrer" class="fav-manager-title-link">
                             <div class="fav-manager-title">${this.esc(fav.title)}</div>
@@ -2468,6 +2616,10 @@
 
             $('#editFavCancelBtn').onclick = () => dialog.remove();
             $('#editFavSaveBtn').onclick = async () => {
+                const previous = { ...fav };
+                const button = $('#editFavSaveBtn');
+                button.disabled = true;
+                button.textContent = '保存中...';
                 fav.title = $('#editFavTitle').value.trim();
                 fav.url = $('#editFavUrl').value.trim();
                 fav.description = $('#editFavDesc').value.trim();
@@ -2476,7 +2628,12 @@
                 fav.private = $('#editFavPrivate').checked;
                 fav.updatedAt = Date.now();
 
-                await this.saveFavorites();
+                if (!await this.saveFavorites()) {
+                    Object.assign(fav, previous);
+                    button.disabled = false;
+                    button.textContent = '保存';
+                    return;
+                }
                 dialog.remove();
                 this.showFavManager();
             };
@@ -2500,10 +2657,7 @@
         }
 
         esc(str) {
-            if (!str) return '';
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
+            return String(str ?? '').replace(/[&<>"']/g, char => ESC_MAP[char]);
         }
     }
 

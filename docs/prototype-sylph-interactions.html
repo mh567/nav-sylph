@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sylph 材质与交互原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --ink: #302b27;
+      --sub: #655e57;
+      --muted: #817970;
+      --page: #efede8;
+      --card: #faf8f4;
+      --card-bottom: #f0ede7;
+      --stroke: rgba(92, 76, 64, .17);
+      --glass: rgba(252,250,246,.58);
+      --glass-strong: rgba(252,250,246,.88);
+      --accent: #945e4a;
+      --accent-soft: rgba(148,94,74,.095);
+      --control-top: #fcfaf6;
+      --control-bottom: #eee9e1;
+      --control-hover-top: #fffdf9;
+      --control-hover-bottom: #f4eee6;
+      --control-pressed-top: #e9e2d9;
+      --control-pressed-bottom: #f1ece5;
+      --press-shadow: inset 0 2px 5px rgba(91,70,55,.20), inset 0 -1px rgba(255,255,255,.55);
+      --glint: rgba(179,111,73,.34);
+      --search-glint: rgba(179,111,73,.20);
+      --glint-white: rgba(255,255,255,.90);
+      --primary: #71513f;
+      --primary-hover: #825d47;
+      --primary-text: #fffaf5;
+      --shadow: 0 2px 4px rgba(67,51,39,.035), 0 10px 26px rgba(67,51,39,.055);
+      --shadow-hover: 0 4px 8px rgba(67,51,39,.055), 0 16px 30px rgba(67,51,39,.12);
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #f3eee8;
+      --sub: #c9beb3;
+      --muted: #a89c90;
+      --page: #211f1c;
+      --card: #3a3530;
+      --card-bottom: #2c2925;
+      --stroke: rgba(222,203,185,.18);
+      --glass: rgba(65,58,51,.57);
+      --glass-strong: rgba(57,51,46,.88);
+      --accent: #dfa98c;
+      --accent-soft: rgba(223,169,140,.13);
+      --control-top: #625951;
+      --control-bottom: #3c3630;
+      --control-hover-top: #71655b;
+      --control-hover-bottom: #4a4139;
+      --control-pressed-top: #292521;
+      --control-pressed-bottom: #39312b;
+      --press-shadow: inset 0 3px 7px rgba(0,0,0,.45), inset 0 -1px rgba(255,255,255,.08);
+      --glint: rgba(243,180,135,.28);
+      --search-glint: rgba(243,180,135,.18);
+      --glint-white: rgba(255,244,226,.18);
+      --primary: #d4a181;
+      --primary-hover: #e0b293;
+      --primary-text: #271e18;
+      --shadow: 0 2px 4px rgba(0,0,0,.12), 0 10px 28px rgba(0,0,0,.20);
+      --shadow-hover: 0 5px 10px rgba(0,0,0,.18), 0 18px 34px rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body { min-height: 100vh; margin: 0; color: var(--ink); background: var(--page); }
+    body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(ellipse 520px 280px at 50% 4%, rgba(255,255,255,.68), transparent 82%), radial-gradient(ellipse 500px 330px at 96% 88%, rgba(200,177,155,.13), transparent 83%); }
+    [data-theme="dark"] body::before { background: radial-gradient(ellipse 530px 320px at 50% 0%, rgba(177,139,110,.09), transparent 82%), radial-gradient(ellipse 440px 300px at 94% 80%, rgba(121,93,72,.11), transparent 80%); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    input:focus-visible { outline: none; }
+    .trial-label { margin: 32px 0 0; color: var(--muted); text-align: center; font-size: 10px; }
+    .app { width: min(1040px, calc(100% - 44px)); margin: 0 auto; padding: 35px 0 110px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 32px; margin-bottom: 27px; }
+    .identity { display: flex; align-items: center; font-size: 14px; font-weight: 700; letter-spacing: .065em; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .round-control { position: relative; min-width: 42px; height: 29px; padding: 0 9px; border: 1px solid var(--stroke); border-radius: 8px; background: var(--glass); color: var(--sub); box-shadow: inset 0 1px rgba(255,255,255,.65), 0 2px 5px rgba(67,51,39,.05); backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%); font-size: 11px; transition: transform 120ms, box-shadow 160ms, border-color 160ms; }
+    .round-control:hover { transform: translateY(-1px); border-color: rgba(148,94,74,.45); box-shadow: inset 0 1px rgba(255,255,255,.76), 0 5px 12px rgba(67,51,39,.12); }
+    .round-control:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
+    .search-wrap { position: relative; width: min(560px, 100%); margin: 0 auto 41px; }
+    .search-shell { --sx: 50%; --sy: 0%; position: relative; display: flex; align-items: center; gap: 4px; min-height: 48px; padding: 5px; overflow: hidden; border: 1px solid rgba(132,109,92,.24); border-radius: 13px; background: linear-gradient(165deg,var(--glass-strong),var(--glass)); box-shadow: inset 0 1px rgba(255,255,255,.76), inset 0 -1px rgba(105,81,63,.08), 0 3px 8px rgba(67,51,39,.045), 0 12px 27px rgba(67,51,39,.065); backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%); transition: border-color 160ms, box-shadow 160ms, background 160ms; }
+    .search-shell::before { content: ""; position: absolute; left: 11px; right: 11px; top: 0; height: 1px; background: linear-gradient(90deg,transparent,rgba(255,255,255,.95),transparent); pointer-events: none; }
+    .search-shell::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 105px 52px at var(--sx) var(--sy),var(--search-glint),transparent 82%); opacity: 0; transition: opacity 160ms; }
+    .search-shell:hover { border-color: rgba(148,94,74,.33); box-shadow: inset 0 1px rgba(255,255,255,.82), inset 0 -1px rgba(105,81,63,.07), 0 4px 10px rgba(67,51,39,.055), 0 13px 27px rgba(67,51,39,.07); }
+    .search-shell:hover::after { opacity: .44; }
+    .search-shell:active { box-shadow: inset 0 2px 6px rgba(91,70,55,.13), 0 3px 9px rgba(67,51,39,.07); }
+    .search-shell:focus-within { border-color: rgba(148,94,74,.46); box-shadow: inset 0 2px 5px rgba(91,70,55,.10), inset 0 0 0 1px rgba(255,255,255,.52), 0 4px 12px rgba(67,51,39,.07), 0 0 0 3px rgba(148,94,74,.065); }
+    [data-theme="dark"] .search-shell:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34), inset 0 0 0 1px rgba(255,255,255,.06), 0 0 0 3px rgba(223,169,140,.08); }
+    .mode-toggle, .engine, .search-submit { --mx: 50%; --my: 0%; position: relative; overflow: hidden; flex: 0 0 auto; height: 36px; border: 1px solid var(--stroke); border-radius: 9px; color: var(--ink); font-size: 12px; font-weight: 600; transition: transform 110ms, border-color 140ms, box-shadow 140ms, background 140ms; }
+    .mode-toggle::before, .engine::before, .search-submit::before, .dialog-actions button::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 65px 42px at var(--mx) var(--my),var(--glint),transparent 83%); opacity: 0; transition: opacity 140ms; }
+    .mode-toggle:hover::before, .engine:hover::before, .search-submit:hover::before, .dialog-actions button:not(#failButton):hover::before { opacity: .9; }
+    .mode-toggle { min-width: 48px; padding: 0 9px; background: transparent; color: var(--sub); box-shadow: none; }
+    .mode-toggle:hover { border-color: rgba(148,94,74,.42); background: var(--accent-soft); color: var(--ink); }
+    .mode-toggle[aria-pressed="true"] { border-color: rgba(148,94,74,.44); background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 1px 3px rgba(91,70,55,.10); }
+    .mode-toggle:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+    .engine { min-width: 66px; padding: 0 9px; background: linear-gradient(175deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.84), 0 2px 3px rgba(67,51,39,.09); }
+    .engine[hidden] { display: none; }
+    .engine:hover { transform: translateY(-1px); border-color: rgba(148,94,74,.45); background: linear-gradient(175deg,var(--control-hover-top),var(--control-hover-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.85), 0 4px 8px rgba(67,51,39,.14); }
+    .engine[aria-expanded="true"] { border-color: rgba(148,94,74,.45); color: var(--accent); box-shadow: inset 0 2px 4px rgba(91,70,55,.12); }
+    .engine:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
+    .search-input { flex: 1; min-width: 0; height: 36px; padding: 0 12px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
+    .search-input::placeholder { color: var(--muted); opacity: 1; }
+    .search-submit { min-width: 47px; padding: 0 10px; background: linear-gradient(160deg,var(--control-top),var(--control-bottom)); color: var(--accent); box-shadow: inset 0 1px rgba(255,255,255,.9), 0 2px 4px rgba(67,51,39,.10); font-weight: 700; }
+    .search-submit:hover { transform: translateY(-1px); border-color: rgba(148,94,74,.50); background: linear-gradient(160deg,var(--control-hover-top),var(--control-hover-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.93), 0 4px 9px rgba(67,51,39,.15); }
+    .search-submit:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
+    .search-caption { display: flex; justify-content: space-between; margin: 7px 4px 0; color: var(--muted); font-size: 11px; }
+    kbd { padding: 1px 4px; border: 1px solid var(--stroke); border-radius: 4px; background: var(--glass); font: inherit; }
+    .engine-menu { position: absolute; top: 54px; left: 58px; z-index: 12; width: 148px; padding: 5px; border: 1px solid var(--stroke); border-radius: 10px; background: var(--glass-strong); box-shadow: 0 12px 28px rgba(67,51,39,.13), inset 0 1px rgba(255,255,255,.66); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+    .engine-menu[hidden] { display: none; }
+    .engine-choice { display: block; width: 100%; min-height: 31px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font-size: 12px; }
+    .engine-choice:hover, .engine-choice:focus-visible { background: var(--accent-soft); }
+    .engine-choice[aria-selected="true"] { color: var(--accent); font-weight: 700; }
+    .engine-choice:active { box-shadow: var(--press-shadow); }
+    .results { position: absolute; top: 57px; left: 0; right: 0; z-index: 10; padding: 6px; border: 1px solid rgba(255,255,255,.76); border-radius: 13px; background: var(--glass-strong); box-shadow: var(--shadow-hover); backdrop-filter: blur(25px) saturate(150%); -webkit-backdrop-filter: blur(25px) saturate(150%); }
+    .results[hidden] { display: none; }
+    .result { display: flex; align-items: center; width: 100%; gap: 10px; padding: 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; transition: background 120ms, border-color 120ms, box-shadow 120ms; }
+    .result:hover, .result.selected, .result:focus-visible { border-color: var(--stroke); background: var(--accent-soft); box-shadow: inset 0 1px rgba(255,255,255,.18); }
+    .result:active { background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+    .result small { margin-left: auto; color: var(--muted); font-size: 11px; }
+    .empty { padding: 14px 10px; color: var(--sub); font-size: 12px; }
+    .category + .category { margin-top: 26px; }
+    .category-heading { display: flex; align-items: center; gap: 11px; margin: 0 0 12px; }
+    .category-heading h2 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .045em; }
+    .category-heading span { color: var(--muted); font-size: 11px; }
+    .category-heading::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg,var(--stroke),transparent); }
+    .bookmarks { display: grid; grid-template-columns: repeat(auto-fill,minmax(114px,1fr)); gap: 10px; }
+    .bookmark { --rx: 0deg; --ry: 0deg; --mx: 50%; --my: 0%; position: relative; display: grid; place-items: center; min-width: 0; min-height: 55px; padding: 8px 10px; overflow: hidden; border: 1px solid var(--stroke); border-radius: 10px; background: linear-gradient(165deg,var(--card),var(--card-bottom)); color: var(--ink); box-shadow: inset 0 1px rgba(255,255,255,.84), inset 0 -1px rgba(108,87,69,.08), var(--shadow); transform: perspective(550px) rotateX(var(--rx)) rotateY(var(--ry)); transition: transform 160ms cubic-bezier(.2,.8,.2,1), box-shadow 170ms, border-color 170ms; }
+    .bookmark::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(ellipse 77px 51px at var(--mx) var(--my),var(--glint-white),transparent 68%), radial-gradient(ellipse 103px 69px at var(--mx) var(--my),var(--glint),transparent 82%); opacity: .20; pointer-events: none; transition: opacity 160ms; }
+    .bookmark::after { content: ""; position: absolute; left: 12px; right: 12px; top: 0; height: 1px; background: linear-gradient(90deg,transparent,rgba(255,255,255,.96),transparent); pointer-events: none; }
+    .bookmark:hover, .bookmark:focus-visible { z-index: 2; border-color: rgba(148,94,74,.37); box-shadow: inset 0 1px rgba(255,255,255,.96), inset 0 -1px rgba(108,87,69,.08), var(--shadow-hover); transform: perspective(550px) translateY(-2px) rotateX(var(--rx)) rotateY(var(--ry)); }
+    .bookmark:hover::before, .bookmark:focus-visible::before { opacity: .94; }
+    .bookmark:active { transform: perspective(550px) translateY(1px) scale(.99); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); transition-duration: 55ms; }
+    .bookmark-name { position: relative; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+    .glass-dock { position: fixed; right: 21px; bottom: 19px; z-index: 12; display: flex; gap: 5px; padding: 5px; border: 1px solid rgba(255,255,255,.72); border-radius: 13px; background: var(--glass); box-shadow: inset 0 1px rgba(255,255,255,.78), var(--shadow-hover); backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%); }
+    .dock-button { min-width: 36px; height: 33px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 12px; transition: background 130ms, transform 100ms, box-shadow 130ms; }
+    .dock-button:hover { background: var(--accent-soft); box-shadow: inset 0 1px rgba(255,255,255,.20); }
+    .dock-button:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+    .toast { position: fixed; left: 50%; bottom: 18px; z-index: 20; max-width: calc(100% - 32px); padding: 9px 13px; border: 1px solid rgba(255,255,255,.75); border-radius: 9px; background: var(--glass-strong); color: var(--ink); box-shadow: var(--shadow-hover); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); transform: translateX(-50%); font-size: 12px; }
+    .toast[hidden], .modal[hidden] { display: none; }
+    .modal { position: fixed; inset: 0; z-index: 25; display: grid; place-items: center; padding: 18px; background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+    .dialog { width: min(390px,100%); padding: 22px; border: 1px solid var(--stroke); border-radius: 13px; background: var(--glass-strong); box-shadow: inset 0 1px rgba(255,255,255,.64), 0 20px 48px rgba(35,27,21,.21); backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%); }
+    .dialog h2 { margin: 0 0 6px; font-size: 17px; letter-spacing: .01em; }
+    .dialog p { margin: 0 0 19px; color: var(--sub); font-size: 12px; line-height: 1.6; }
+    .dialog label { display: grid; gap: 6px; color: var(--sub); font-size: 12px; }
+    .dialog input { width: 100%; height: 37px; padding: 0 10px; border: 1px solid var(--stroke); border-radius: 8px; background: var(--glass); color: var(--ink); }
+    .dialog input:hover { border-color: rgba(148,94,74,.35); }
+    .dialog input:focus-visible { border-color: rgba(148,94,74,.48); box-shadow: inset 0 2px 4px rgba(91,70,55,.08), 0 0 0 3px var(--accent-soft); }
+    .dialog-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 19px; padding-top: 14px; border-top: 1px solid var(--stroke); }
+    .dialog-actions button { --mx: 50%; --my: 0%; position: relative; overflow: hidden; min-height: 34px; padding: 0 13px; border: 1px solid var(--stroke); border-radius: 7px; background: var(--glass); color: var(--ink); box-shadow: inset 0 1px rgba(255,255,255,.54), 0 1px 3px rgba(67,51,39,.055); font-size: 12px; transition: transform 100ms, background 140ms, border-color 140ms, box-shadow 140ms; }
+    .dialog-actions button:hover:not(:disabled) { transform: translateY(-1px); border-color: rgba(148,94,74,.40); background: var(--control-hover-top); box-shadow: inset 0 1px rgba(255,255,255,.72), 0 3px 7px rgba(67,51,39,.10); }
+    .dialog-actions button:active:not(:disabled) { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+    .dialog-actions button:disabled { opacity: .65; cursor: wait; }
+    .dialog-actions .primary { border-color: var(--primary); background: var(--primary); color: var(--primary-text); font-weight: 700; box-shadow: inset 0 1px rgba(255,255,255,.18), 0 2px 5px rgba(67,51,39,.12); }
+    .dialog-actions .primary:hover:not(:disabled) { border-color: var(--primary-hover); background: var(--primary-hover); color: var(--primary-text); box-shadow: inset 0 1px rgba(255,255,255,.23), 0 4px 9px rgba(67,51,39,.17); }
+    .dialog-actions .primary:active:not(:disabled) { background: var(--control-pressed-top); color: var(--ink); box-shadow: var(--press-shadow); }
+    .dialog-actions #failButton { margin-right: auto; padding-inline: 4px; border-color: transparent; background: transparent; box-shadow: none; color: var(--sub); }
+    .dialog-actions #failButton:hover { border-color: transparent; background: transparent; box-shadow: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+    .dialog-status { min-height: 16px; margin-top: 11px; color: var(--sub); font-size: 11px; }
+    .dialog-status.error { color: #a33e3e; }
+    [data-theme="dark"] .dialog-status.error { color: #ffa3a3; }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search-shell, .engine-menu, .results, .glass-dock, .dialog, .toast { background: var(--glass-strong); } }
+    @media (prefers-reduced-transparency: reduce) { .search-shell, .engine-menu, .results, .glass-dock, .dialog, .toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--card); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark, .bookmark:hover, .bookmark:focus-visible, .bookmark:active { transform: none; } }
+    @media (hover: none) {
+      .search-shell:hover:not(:focus-within) { background: var(--glass); border-color: rgba(255,255,255,.82); box-shadow: inset 0 1px rgba(255,255,255,.92), var(--shadow); }
+      .search-shell:hover::after, .mode-toggle:hover::before, .engine:hover::before, .search-submit:hover::before, .dialog-actions button:hover::before { opacity: 0; }
+      .round-control:hover:not(:active) { transform: none; border-color: var(--stroke); background: var(--glass); box-shadow: inset 0 1px rgba(255,255,255,.65), 0 2px 5px rgba(67,51,39,.05); }
+      .mode-toggle:hover:not(:active) { transform: none; border-color: var(--stroke); background: transparent; box-shadow: none; }
+      .mode-toggle[aria-pressed="true"]:hover:not(:active) { border-color: rgba(148,94,74,.44); background: var(--accent-soft); box-shadow: inset 0 1px 3px rgba(91,70,55,.10); }
+      .engine:hover:not(:active), .search-submit:hover:not(:active) { transform: none; border-color: var(--stroke); background: linear-gradient(160deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.84), 0 2px 4px rgba(67,51,39,.09); }
+      .dialog-actions button:hover:not(:active) { transform: none; border-color: var(--stroke); background: var(--glass); box-shadow: inset 0 1px rgba(255,255,255,.54), 0 1px 3px rgba(67,51,39,.055); }
+      .dialog-actions .primary:hover:not(:active) { border-color: var(--primary); background: var(--primary); color: var(--primary-text); }
+      .bookmark:hover:not(:active):not(:focus-visible) { transform: none; border-color: var(--stroke); box-shadow: inset 0 1px rgba(255,255,255,.84), var(--shadow); }
+      .bookmark:hover:not(:focus-visible)::before { opacity: .18; }
+      .result:hover:not(.selected):not(:focus-visible):not(:active) { border-color: transparent; background: transparent; box-shadow: none; }
+      .dock-button:hover:not(:active) { background: transparent; box-shadow: none; }
+    }
+    @media (max-width: 600px) { .app { width: calc(100% - 24px); padding-top: 25px; } .topbar { margin-bottom: 22px; } .search-wrap { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,minmax(94px,1fr)); gap: 8px; } .bookmark { min-height: 51px; } .glass-dock { right: 12px; bottom: 12px; } .search-caption { font-size: 10px; } }
+    @media (max-width: 370px) { .search-shell { gap: 2px; } .mode-toggle { min-width: 43px; padding-inline: 6px; } .engine { min-width: 55px; padding-inline: 5px; } .search-input { padding-inline: 5px; } .search-submit { min-width: 43px; padding-inline: 6px; } .engine-menu { left: 49px; } }
+  </style>
+</head>
+<body>
+  <!-- 独立设计原型，所有书签、搜索和保存行为仅演示前台状态。 -->
+  <div class="app">
+    <header class="topbar">
+      <div class="identity">Sylph</div>
+      <div class="top-actions">
+        <button id="themeButton" class="round-control" type="button" title="切换明暗主题">深色</button>
+      </div>
+    </header>
+    <section class="search-wrap" aria-label="搜索">
+      <form id="searchForm" class="search-shell" autocomplete="off">
+        <button id="modeButton" class="mode-toggle" type="button" aria-label="切换搜索模式，当前为网页" aria-pressed="false">网页</button>
+        <button id="engineButton" class="engine" type="button" aria-label="选择搜索引擎，当前为 Google" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineMenu">Google</button>
+        <input id="searchInput" class="search-input" type="text" placeholder="搜索网页或收藏" aria-label="搜索网页或收藏">
+        <button class="search-submit" type="submit">搜索</button>
+      </form>
+      <div id="engineMenu" class="engine-menu" role="listbox" aria-label="搜索引擎" hidden></div>
+      <div class="search-caption"><span>输入 <kbd>/</kbd> 查收藏</span><span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 打开</span></div>
+      <div id="results" class="results" hidden></div>
+    </section>
+    <main id="categories"></main>
+    <p class="trial-label">交互原型 · 无真实跳转或保存</p>
+  </div>
+  <nav class="glass-dock" aria-label="原型操作"><button id="dockManage" class="dock-button" type="button">管理</button><button id="dockHelp" class="dock-button" type="button">说明</button></nav>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div id="modal" class="modal" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+      <h2 id="dialogTitle">编辑书签</h2>
+      <p>观察轻拟物按钮与透明弹层中的状态反馈。</p>
+      <label>书签名称<input id="nameInput" type="text" value="设计参考"></label>
+      <div id="dialogStatus" class="dialog-status" role="status" aria-live="polite"></div>
+      <div class="dialog-actions"><button id="cancelButton" type="button">取消</button><button id="failButton" type="button">模拟失败</button><button id="saveButton" class="primary" type="button">保存修改</button></div>
+    </div>
+  </div>
+  <script>
+    const items = [
+      { title: '设计参考', group: '常用', url: 'design.example' },
+      { title: '开发文档', group: '常用', url: 'docs.example' },
+      { title: '项目看板', group: '常用', url: 'project.example' },
+      { title: '电子邮箱', group: '常用', url: 'mail.example' },
+      { title: '阅读清单', group: '常用', url: 'read.example' },
+      { title: '工具集合', group: '常用', url: 'tools.example' },
+      { title: '写作空间', group: '常用', url: 'write.example' },
+      { title: '日程安排', group: '常用', url: 'calendar.example' },
+      { title: '图片素材', group: '资料', url: 'image.example' },
+      { title: '技术笔记', group: '资料', url: 'notes.example' },
+      { title: '数据分析', group: '资料', url: 'data.example' },
+      { title: '知识地图', group: '资料', url: 'knowledge.example' }
+    ];
+    const input = document.getElementById('searchInput');
+    const results = document.getElementById('results');
+    const engineButton = document.getElementById('engineButton');
+    const engineMenu = document.getElementById('engineMenu');
+    const modal = document.getElementById('modal');
+    const engines = ['Google', 'Bing', 'DuckDuckGo'];
+    let mode = '网页', engine = 'Google', selected = 0, toastTimer, returnFocus, saveTimer;
+    const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    document.getElementById('categories').innerHTML = ['常用','资料'].map(group => `<section class="category"><div class="category-heading"><h2>${group}</h2><span>${items.filter(item => item.group === group).length} 个</span></div><div class="bookmarks">${items.map((item,index) => item.group === group ? `<button class="bookmark" type="button" data-index="${index}" aria-label="打开 ${esc(item.title)} 的交互示例"><span class="bookmark-name">${esc(item.title)}</span></button>` : '').join('')}</div></section>`).join('');
+    function notify(message) { const toast = document.getElementById('toast'); clearTimeout(toastTimer); toast.textContent = message; toast.hidden = false; toastTimer = setTimeout(() => toast.hidden = true, 2400); }
+    function selectItem(index) { const item = items[index]; if (!item) return; results.hidden = true; notify(`已按下 ${item.title} · 原型未跳转`); }
+    function showResults() {
+      const query = input.value.trim().toLowerCase();
+      if (mode !== '收藏' || !query) { results.hidden = true; return; }
+      const matched = items.map((item,index) => ({...item,index})).filter(item => `${item.title} ${item.group} ${item.url}`.toLowerCase().includes(query));
+      selected = Math.min(selected, Math.max(0,matched.length - 1));
+      results.hidden = false;
+      results.innerHTML = matched.length ? matched.map((item,n) => `<button class="result ${n === selected ? 'selected' : ''}" type="button" data-result="${item.index}"><span>${esc(item.title)}</span><small>${esc(item.url)}</small></button>`).join('') : `<div class="empty">没有找到相关收藏，换个词试试。</div>`;
+    }
+    function closeEngineMenu(returnToButton = false) { engineMenu.hidden = true; engineButton.setAttribute('aria-expanded', 'false'); if (returnToButton) engineButton.focus(); }
+    function openEngineMenu() { if (mode !== '网页') return; results.hidden = true; engineMenu.innerHTML = engines.map(name => `<button class="engine-choice" type="button" role="option" data-engine="${name}" aria-selected="${name === engine}">${name}</button>`).join(''); engineMenu.hidden = false; engineButton.setAttribute('aria-expanded', 'true'); engineMenu.querySelector('[aria-selected="true"]').focus(); }
+    function chooseEngine(name) { if (!engines.includes(name)) return; engine = name; engineButton.textContent = name; engineButton.setAttribute('aria-label', `选择搜索引擎，当前为 ${name}`); closeEngineMenu(true); notify(`搜索引擎：${name}`); }
+    function setMode(next) { mode = next; const button = document.getElementById('modeButton'); button.textContent = mode; button.setAttribute('aria-label', `切换搜索模式，当前为${mode}`); button.setAttribute('aria-pressed', mode === '收藏' ? 'true' : 'false'); closeEngineMenu(); engineButton.hidden = mode === '收藏'; selected = 0; showResults(); input.focus(); notify(`当前模式：${mode}`); }
+    function openModal() { returnFocus = document.activeElement; modal.hidden = false; const status = document.getElementById('dialogStatus'); status.className = 'dialog-status'; status.textContent = ''; document.getElementById('nameInput').focus(); }
+    function closeModal() { clearTimeout(saveTimer); modal.hidden = true; document.getElementById('saveButton').disabled = false; document.getElementById('saveButton').textContent = '保存修改'; if (returnFocus?.isConnected) returnFocus.focus(); }
+    document.querySelectorAll('.bookmark').forEach(button => {
+      button.addEventListener('click', () => selectItem(Number(button.dataset.index)));
+      button.addEventListener('pointermove', event => {
+        if (event.pointerType !== 'mouse' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const rect = button.getBoundingClientRect();
+        const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
+        button.style.setProperty('--mx', `${x * 100}%`); button.style.setProperty('--my', `${y * 100}%`);
+        button.style.setProperty('--rx', `${(0.5 - y) * 1.4}deg`); button.style.setProperty('--ry', `${(x - 0.5) * 1.4}deg`);
+      });
+      button.addEventListener('pointerleave', () => { button.style.removeProperty('--rx'); button.style.removeProperty('--ry'); button.style.removeProperty('--mx'); button.style.removeProperty('--my'); });
+    });
+    document.querySelectorAll('.search-shell, .mode-toggle, .engine, .search-submit, .dialog-actions button').forEach(target => {
+      target.addEventListener('pointermove', event => {
+        if (event.pointerType !== 'mouse' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const rect = target.getBoundingClientRect();
+        const x = `${((event.clientX - rect.left) / rect.width) * 100}%`;
+        const y = `${((event.clientY - rect.top) / rect.height) * 100}%`;
+        target.style.setProperty(target.classList.contains('search-shell') ? '--sx' : '--mx', x);
+        target.style.setProperty(target.classList.contains('search-shell') ? '--sy' : '--my', y);
+      });
+      target.addEventListener('pointerleave', () => { for (const property of ['--sx','--sy','--mx','--my']) target.style.removeProperty(property); });
+    });
+    document.getElementById('modeButton').onclick = () => setMode(mode === '网页' ? '收藏' : '网页');
+    engineButton.onclick = () => engineMenu.hidden ? openEngineMenu() : closeEngineMenu(true);
+    engineButton.onkeydown = event => { if (event.key === 'ArrowDown') { event.preventDefault(); openEngineMenu(); } };
+    engineMenu.onclick = event => { const option = event.target.closest('[data-engine]'); if (option) chooseEngine(option.dataset.engine); };
+    engineMenu.onkeydown = event => {
+      const options = [...engineMenu.querySelectorAll('[data-engine]')];
+      const index = options.indexOf(document.activeElement);
+      if (event.key === 'Escape') { event.preventDefault(); closeEngineMenu(true); }
+      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); options[(index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length].focus(); }
+      else if (event.key === 'Home') { event.preventDefault(); options[0].focus(); }
+      else if (event.key === 'End') { event.preventDefault(); options[options.length - 1].focus(); }
+    };
+    document.addEventListener('pointerdown', event => { if (!engineMenu.hidden && !engineMenu.contains(event.target) && event.target !== engineButton) closeEngineMenu(); });
+    input.onfocus = () => closeEngineMenu();
+    input.oninput = () => { selected = 0; showResults(); };
+    input.onkeydown = event => {
+      if (event.key === '/' && !input.value) { event.preventDefault(); setMode('收藏'); return; }
+      if (mode === '收藏' && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { const count = results.querySelectorAll('[data-result]').length; if (count) { event.preventDefault(); selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + count) % count; showResults(); } }
+      if (event.key === 'Escape') { results.hidden = true; closeEngineMenu(); }
+    };
+    document.getElementById('searchForm').onsubmit = event => { event.preventDefault(); if (!input.value.trim()) { notify('先输入搜索内容'); return; } const chosen = results.hidden ? null : results.querySelectorAll('[data-result]')[selected]; if (mode === '收藏') { if (chosen) selectItem(Number(chosen.dataset.result)); else { showResults(); notify('没有找到相关收藏'); } } else { closeEngineMenu(); results.hidden = true; notify(`使用 ${engine} 搜索「${input.value.trim()}」· 原型未跳转`); } };
+    results.onclick = event => { const item = event.target.closest('[data-result]'); if (item) selectItem(Number(item.dataset.result)); };
+    document.getElementById('themeButton').onclick = event => { document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; event.currentTarget.textContent = document.documentElement.dataset.theme === 'dark' ? '浅色' : '深色'; };
+    document.getElementById('dockManage').onclick = openModal;
+    document.getElementById('dockHelp').onclick = () => notify('悬停书签观察光泽与层次，按下观察回弹。搜索与保存均为模拟。');
+    document.getElementById('cancelButton').onclick = closeModal;
+    modal.onclick = event => { if (event.target === modal) closeModal(); };
+    document.getElementById('failButton').onclick = () => { clearTimeout(saveTimer); const button = document.getElementById('saveButton'); button.disabled = false; button.textContent = '保存修改'; const status = document.getElementById('dialogStatus'); status.className = 'dialog-status error'; status.textContent = '模拟保存失败，输入已保留，可以重试。'; };
+    document.getElementById('saveButton').onclick = () => { const button = document.getElementById('saveButton'); const status = document.getElementById('dialogStatus'); button.disabled = true; button.textContent = '保存中…'; status.className = 'dialog-status'; status.textContent = '正在模拟保存'; saveTimer = setTimeout(() => { button.disabled = false; button.textContent = '保存修改'; status.textContent = '模拟保存完成，未写入服务器'; notify('模拟保存完成 · 未写入服务器'); },700); };
+    document.addEventListener('keydown', event => {
+      if (modal.hidden) return;
+      if (event.key === 'Escape') { closeModal(); return; }
+      if (event.key !== 'Tab') return;
+      const focusable = [...modal.querySelectorAll('input,button')].filter(el => !el.disabled);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+  </script>
+</body>
+</html>
