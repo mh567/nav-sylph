@@ -76,6 +76,16 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 
 > 💡 更新后可点击页面右下角“说明”查看新功能；有新版本时入口会显示提示。
 
+若从 v1.5.0 更新时遇到“服务未运行”后又提示端口 4000 被占用，且服务由 systemd 管理，请先在安装目录获取新版管理脚本，再执行更新：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh -o sylph.sh
+chmod +x sylph.sh
+./sylph.sh update
+```
+
+新版脚本会通过 systemd 停止并启动当前安装目录的服务。若安装目录需要管理员写入权限，下载到临时文件后再由管理员复制到安装目录。
+
 ### 开机自启
 
 | 系统 | 命令 |

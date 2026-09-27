@@ -179,6 +179,27 @@ has_systemd() {
     [ "$OS" = "linux" ] && command -v systemctl > /dev/null 2>&1 && systemctl --version > /dev/null 2>&1
 }
 
+# 只管理指向当前安装目录的 systemd 服务
+has_app_systemd_service() {
+    has_systemd || return 1
+    local unit="${APP_NAME}.service"
+    local load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null) || return 1
+    [ "$load_state" = "loaded" ] || return 1
+    local work_dir=$(systemctl show --property=WorkingDirectory --value "$unit" 2>/dev/null) || return 1
+    [ "${work_dir%/}" = "${APP_DIR%/}" ]
+}
+
+control_systemd_service() {
+    if [ "$(id -u)" = "0" ]; then
+        systemctl "$1" "${APP_NAME}.service"
+    elif check_command sudo; then
+        sudo systemctl "$1" "${APP_NAME}.service"
+    else
+        log_error "管理 systemd 服务需要 sudo 权限"
+        return 1
+    fi
+}
+
 # 检查命令是否存在
 check_command() {
     command -v "$1" > /dev/null 2>&1
@@ -484,6 +505,24 @@ do_install() {
 do_start() {
     get_config
 
+    if has_app_systemd_service; then
+        if systemctl is-active --quiet "${APP_NAME}.service"; then
+            log_warn "systemd 服务已在运行"
+            return 0
+        fi
+        log_step "启动 systemd 服务..."
+        if ! control_systemd_service start; then
+            log_error "systemd 服务启动失败"
+            return 1
+        fi
+        if ! systemctl is-active --quiet "${APP_NAME}.service"; then
+            log_error "systemd 服务启动后未进入运行状态"
+            return 1
+        fi
+        log_info "systemd 服务启动成功"
+        return 0
+    fi
+
     if is_running; then
         log_warn "服务已在运行 (PID: $(cat ${PID_FILE}))"
         return 0
@@ -517,6 +556,24 @@ do_start() {
 
 # 停止服务
 do_stop() {
+    if has_app_systemd_service; then
+        if ! systemctl is-active --quiet "${APP_NAME}.service"; then
+            log_warn "systemd 服务未运行"
+            return 0
+        fi
+        log_step "停止 systemd 服务..."
+        if ! control_systemd_service stop; then
+            log_error "systemd 服务停止失败"
+            return 1
+        fi
+        if systemctl is-active --quiet "${APP_NAME}.service"; then
+            log_error "systemd 服务仍在运行，更新已取消"
+            return 1
+        fi
+        log_info "systemd 服务已停止"
+        return 0
+    fi
+
     if ! is_running; then
         log_warn "服务未运行"
         [ -f "${PID_FILE}" ] && rm -f "${PID_FILE}"
@@ -645,7 +702,10 @@ do_update() {
 
     # 停止服务
     log_step "停止服务..."
-    do_stop 2>/dev/null || true
+    if ! do_stop; then
+        log_error "服务未能停止，更新已取消"
+        return 1
+    fi
 
     # 备份配置
     log_step "备份配置..."
