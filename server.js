@@ -1,4 +1,5 @@
 const express = require('express');
+const compression = require('compression');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
@@ -134,6 +135,7 @@ const { WebDAVBackup } = require('./lib/webdav-backup');
 app.disable('x-powered-by');
 
 app.use(express.json());
+app.use(compression({ threshold: 1024 }));
 
 // 安全头 (必须在静态文件之前)
 app.use((req, res, next) => {

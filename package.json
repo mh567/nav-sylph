@@ -1,6 +1,6 @@
 {
   "name": "nav-sylph",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "A minimal personal navigation page with bookmark management",
   "main": "server.js",
   "scripts": {
@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.18.2",

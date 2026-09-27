@@ -1,5 +1,17 @@
-const CACHE = 'nav-v18';
-const ASSETS = ['/', '/index.html', '/styles.css', '/admin.css', '/app.js', '/favicon.svg', '/icon.svg', '/manifest.json'];
+const CACHE = 'nav-v19';
+const ASSETS = [
+    '/',
+    '/index.html',
+    '/styles.css',
+    '/admin.css',
+    '/app.js',
+    '/lib/uFuzzy.iife.min.js',
+    '/lib/pinyin.js',
+    '/favicon.svg',
+    '/icon.svg',
+    '/manifest.json'
+];
+const ASSET_PATHS = new Set(ASSETS);
 
 self.addEventListener('install', e => {
     e.waitUntil(
@@ -19,12 +31,9 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
     const url = new URL(e.request.url);
-    
-    if (url.pathname.startsWith('/api/')) {
-        e.respondWith(fetch(e.request));
-        return;
-    }
-    
+
+    if (e.request.method !== 'GET' || url.origin !== self.location.origin || url.search || !ASSET_PATHS.has(url.pathname)) return;
+
     e.respondWith(
         caches.match(e.request).then(cached => {
             const fetched = fetch(e.request).then(res => {

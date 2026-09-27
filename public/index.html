@@ -7,6 +7,13 @@
     <meta name="theme-color" content="#efede8" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#211f1c" media="(prefers-color-scheme: dark)">
     <title>导航</title>
+    <script>
+        window.__navSylphConfigPromise = fetch('/api/config', { cache: 'no-store' }).then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        });
+        window.__navSylphConfigPromise.catch(() => {});
+    </script>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="apple-touch-icon" href="icon.svg">
     <link rel="manifest" href="manifest.json">

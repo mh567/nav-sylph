@@ -109,7 +109,7 @@
 
         async init() {
             try {
-                this.config = await API.get('/api/config');
+                this.config = await (window.__navSylphConfigPromise || API.get('/api/config'));
                 this.migrateConfig();
                 // 恢复 sessionStorage 中的登录状态
                 const savedPwd = sessionStorage.getItem(SESSION_PWD_KEY);
@@ -126,6 +126,18 @@
                     this.loadFavorites();
                     this.checkVersionUpdate();
                 });
+                const registerServiceWorker = () => {
+                    if ('serviceWorker' in navigator) {
+                        navigator.serviceWorker.register('/sw.js').catch(error => {
+                            console.warn('Service worker registration failed:', error);
+                        });
+                    }
+                };
+                if (document.readyState === 'complete') {
+                    registerServiceWorker();
+                } else {
+                    window.addEventListener('load', registerServiceWorker, { once: true });
+                }
             } catch (e) {
                 console.error('Init failed:', e);
                 $('#loader').textContent = '加载失败';
