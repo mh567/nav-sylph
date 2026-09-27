@@ -1,6 +1,19 @@
 {
   "versions": [
     {
+      "version": "1.5.6",
+      "date": "2026-09-28",
+      "summary": "首页脚本统一由本站提供",
+      "highlights": [
+        "浏览器拒绝加载站外 JavaScript"
+      ],
+      "changes": {
+        "improve": [
+          "增加同源脚本策略，锁定首页与分享页的脚本来源"
+        ]
+      }
+    },
+    {
       "version": "1.5.5",
       "date": "2026-09-27",
       "summary": "优化了首页加载速度",

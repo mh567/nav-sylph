@@ -1,4 +1,4 @@
-const CACHE = 'nav-v19';
+const CACHE = 'nav-v20';
 const ASSETS = [
     '/',
     '/index.html',

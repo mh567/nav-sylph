@@ -143,6 +143,7 @@ app.use((req, res, next) => {
     res.header('X-Frame-Options', 'SAMEORIGIN');
     res.header('X-XSS-Protection', '1; mode=block');
     res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.header('Content-Security-Policy', "script-src 'self' 'unsafe-inline'");
     
     // CORS
     const origin = req.headers.origin;
