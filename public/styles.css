@@ -2023,30 +2023,21 @@ body {
     color: #fbbf24;
 }
 
-.help-new-features-list {
+.help-new-features-summary {
     margin: 0;
-    padding-left: 18px;
     font-size: 13px;
     color: #78350f;
     line-height: 1.6;
 }
 
 @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .help-new-features-list {
+    :root:not([data-theme="light"]) .help-new-features-summary {
         color: #fde68a;
     }
 }
 
-:root[data-theme="dark"] .help-new-features-list {
+:root[data-theme="dark"] .help-new-features-summary {
     color: #fde68a;
-}
-
-.help-new-features-list li {
-    margin-bottom: 4px;
-}
-
-.help-new-features-list li:last-child {
-    margin-bottom: 0;
 }
 
 /* ========== 可折叠区块 ========== */
@@ -2483,9 +2474,8 @@ body {
         font-size: 13px;
     }
 
-    .help-new-features-list {
+    .help-new-features-summary {
         font-size: 12px;
-        padding-left: 16px;
     }
 }
 

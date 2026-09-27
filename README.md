@@ -269,6 +269,8 @@ nav-sylph/
 
 查看 [CHANGELOG.json](CHANGELOG.json) 或 [Releases](https://github.com/mh567/nav-sylph/releases) 页面。
 
+首页更新说明使用每个版本的 `summary` 字段，只展示一句简短概述，例如“优化了界面显示效果”。具体变更继续记录在 `highlights` 和 `changes` 字段中。
+
 ## 📄 许可证
 
 MIT License

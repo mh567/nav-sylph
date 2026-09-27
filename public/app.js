@@ -1035,15 +1035,15 @@
 
             let newFeaturesHtml = '';
             if (this.hasNewVersion && newFeatures) {
-                const highlightsHtml = newFeatures.highlights
-                    ? newFeatures.highlights.map(h => `<li>${this.esc(h)}</li>`).join('')
-                    : '';
-                newFeaturesHtml = `
-                    <div class="help-new-features">
-                        <div class="help-new-features-header">新功能</div>
-                        <ul class="help-new-features-list">${highlightsHtml}</ul>
-                    </div>
-                `;
+                const updateSummary = newFeatures.summary || newFeatures.highlights?.[0] || '';
+                if (updateSummary) {
+                    newFeaturesHtml = `
+                        <div class="help-new-features">
+                            <div class="help-new-features-header">更新说明</div>
+                            <p class="help-new-features-summary">${this.esc(updateSummary)}</p>
+                        </div>
+                    `;
+                }
             }
 
             const helpHtml = `

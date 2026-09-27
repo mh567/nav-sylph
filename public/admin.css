@@ -323,8 +323,8 @@
 }
 :root .help-new-features-header,
 :root:not([data-theme="light"]) .help-new-features-header { color: var(--accent); }
-:root .help-new-features-list,
-:root:not([data-theme="light"]) .help-new-features-list { color: var(--text-secondary); }
+:root .help-new-features-summary,
+:root:not([data-theme="light"]) .help-new-features-summary { color: var(--text-secondary); }
 .paste-result { border-radius: 14px; }
 .paste-close,
 .paste-link,
