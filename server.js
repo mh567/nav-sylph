@@ -945,62 +945,91 @@ app.get('/p/:code', (req, res) => {
     <title>分享内容</title>
     <style>
         :root {
-            --bg: #fafafa; --bg-card: #ffffff; --text: #1a1a1a;
-            --text-secondary: #666; --border: #e5e5e5; --accent: #4a5568;
+            color-scheme: light;
+            --bg: #efede8; --panel: rgba(252,250,246,.91); --text: #302b27;
+            --text-secondary: #655e57; --border: rgba(92,76,64,.18); --accent: #945e4a;
+            --accent-hover: #79503f; --focus: rgba(148,94,74,.58);
+            --control-top: #fcfaf6; --control-bottom: #eee9e1;
+            --control-hover-top: #fffdf9; --control-hover-bottom: #f4eee6;
+            --control-pressed-top: #e9e2d9; --control-pressed-bottom: #f1ece5;
+            --input-top: #f1ece5; --input-bottom: #fcfaf6;
+            --inner-light: rgba(255,255,255,.67); --inner-dark: rgba(91,70,55,.13);
+            --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
         }
         @media (prefers-color-scheme: dark) {
             :root {
-                --bg: #0a0a0a; --bg-card: #161616; --text: #f0f0f0;
-                --text-secondary: #a0a0a0; --border: #2a2a2a; --accent: #a0aec0;
+                color-scheme: dark;
+                --bg: #211f1c; --panel: rgba(57,51,46,.93); --text: #f3eee8;
+                --text-secondary: #c9beb3; --border: rgba(222,203,185,.18); --accent: #c28d70;
+                --accent-hover: #d4a181; --focus: rgba(223,169,140,.68);
+                --control-top: #625951; --control-bottom: #3c3630;
+                --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
+                --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
+                --input-top: #292521; --input-bottom: #39312b;
+                --inner-light: rgba(255,255,255,.09); --inner-dark: rgba(0,0,0,.24);
+                --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
             }
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: var(--bg); color: var(--text); min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+            background: var(--bg); color: var(--text); min-height: 100dvh;
             display: flex; align-items: center; justify-content: center; padding: 20px;
         }
         .container {
-            width: 100%; max-width: 600px; background: var(--bg-card);
-            border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+            width: 100%; max-width: 560px; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 16px; padding: 24px;
+            box-shadow: inset 0 1px var(--inner-light), 0 20px 48px rgba(35,27,21,.21);
+            backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%);
         }
-        .title { font-size: 14px; color: var(--text-secondary); margin-bottom: 16px; }
+        .title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 15px; }
         .content {
-            background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-            padding: 16px; font-family: monospace; font-size: 14px; line-height: 1.6;
+            background: linear-gradient(180deg,var(--input-top),var(--input-bottom)); border: 1px solid var(--border); border-radius: 9px;
+            box-shadow: inset 0 1px 2px var(--inner-dark), inset 0 -1px var(--inner-light);
+            padding: 16px; font-family: 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 1.6;
             white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;
         }
         .btn {
             display: inline-flex; align-items: center; gap: 8px;
-            padding: 12px 24px; background: var(--accent); color: white;
-            border: none; border-radius: 8px; font-size: 14px; font-weight: 500;
-            cursor: pointer; margin-top: 16px; transition: opacity 0.2s;
+            min-height: 38px; padding: 7px 15px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text);
+            border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 12px; font-weight: 600;
+            box-shadow: inset 0 1px var(--inner-light); cursor: pointer; margin-top: 16px;
+            transition: transform 110ms, border-color 140ms, background 140ms, box-shadow 140ms;
         }
-        .btn:hover { opacity: 0.9; }
+        .btn:hover { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); }
+        .btn:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); transition-duration: 35ms; }
+        .btn:focus-visible, .pin-input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
         .notice { font-size: 13px; color: var(--text-secondary); margin-top: 12px; }
         .error { text-align: center; color: var(--text-secondary); }
         .pin-form { display: flex; gap: 12px; flex-wrap: wrap; }
         .pin-input {
-            flex: 1; min-width: 120px; padding: 12px 16px; font-size: 18px;
+            flex: 1; min-width: 120px; padding: 10px 16px; font-size: 18px;
             text-align: center; letter-spacing: 8px; border: 1px solid var(--border);
-            border-radius: 8px; background: var(--bg); color: var(--text);
+            border-radius: 8px; background: linear-gradient(180deg,var(--input-top),var(--input-bottom)); color: var(--text);
+            box-shadow: inset 0 1px 2px var(--inner-dark), inset 0 -1px var(--inner-light);
         }
-        .pin-input:focus { outline: none; border-color: var(--accent); }
+        .pin-input:focus { border-color: var(--accent); }
         .msg { padding: 12px; border-radius: 8px; margin-top: 12px; font-size: 14px; }
-        .msg.error-msg { background: #fee; color: #c00; }
-        @media (prefers-color-scheme: dark) { .msg.error-msg { background: #400; color: #faa; } }
+        .msg.error-msg { border: 1px solid var(--border); background: var(--input-top); color: var(--accent); }
+        .expired-mark { font-size: 32px; line-height: 1; color: var(--text-secondary); margin-bottom: 14px; }
+        .error .btn { text-decoration: none; margin-top: 22px; }
+        .pin-form .btn { margin-top: 0; }
+        @media (max-width: 480px) { body { padding: 14px; } .container { padding: 20px 17px; } .pin-form .btn { min-height: 44px; } }
+        @media (prefers-reduced-motion: reduce) { .btn { transition: none; } .btn:hover, .btn:active { transform: none; } }
+        @media (prefers-reduced-transparency: reduce) { .container { background: var(--input-bottom); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+        @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .container { background: var(--input-bottom); } }
     </style>
 </head>
 <body>
     <div class="container">
         ${!exists ? `
             <div class="error">
-                <p style="font-size: 48px; margin-bottom: 16px;">😕</p>
+                <p class="expired-mark" aria-hidden="true">◇</p>
                 <p>分享不存在或已过期</p>
-                <a href="/" class="btn" style="text-decoration: none; margin-top: 24px;">返回首页</a>
+                <a href="/" class="btn">返回首页</a>
             </div>
         ` : requirePin ? `
-            <div class="title">🔐 此分享需要验证 PIN</div>
+            <div class="title">此分享需要验证 PIN</div>
             <form class="pin-form" id="pinForm">
                 <input type="text" class="pin-input" id="pinInput" maxlength="4" pattern="\\d{4}"
                        placeholder="••••" autocomplete="off" inputmode="numeric">
@@ -1010,7 +1039,7 @@ app.get('/p/:code', (req, res) => {
         ` : `
             <div class="title">分享内容</div>
             <div class="content" id="content">加载中...</div>
-            <button class="btn" id="copyBtn">📋 复制内容</button>
+            <button class="btn" id="copyBtn">复制内容</button>
             <p class="notice">此内容已从服务器删除</p>
         `}
     </div>
@@ -1049,8 +1078,8 @@ app.get('/p/:code', (req, res) => {
                 document.getElementById('content').textContent = decryptedText;
                 document.getElementById('copyBtn').onclick = () => {
                     navigator.clipboard.writeText(decryptedText).then(() => {
-                        document.getElementById('copyBtn').textContent = '✅ 已复制';
-                        setTimeout(() => { document.getElementById('copyBtn').textContent = '📋 复制内容'; }, 2000);
+                        document.getElementById('copyBtn').textContent = '已复制';
+                        setTimeout(() => { document.getElementById('copyBtn').textContent = '复制内容'; }, 2000);
                     });
                 };
             } catch {
@@ -1088,7 +1117,7 @@ app.get('/p/:code', (req, res) => {
                     document.querySelector('.container').innerHTML =
                         '<div class="title">分享内容</div>' +
                         '<div class="content" id="content">解密中...</div>' +
-                        '<button class="btn" id="copyBtn">📋 复制内容</button>' +
+                        '<button class="btn" id="copyBtn">复制内容</button>' +
                         '<p class="notice">此内容已从服务器删除</p>';
                     showContent(data.content);
                 } else {

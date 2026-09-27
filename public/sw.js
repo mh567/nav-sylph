@@ -1,5 +1,5 @@
-const CACHE = 'nav-v12';
-const ASSETS = ['/', '/index.html', '/styles.css', '/app.js', '/favicon.svg', '/icon.svg', '/manifest.json'];
+const CACHE = 'nav-v15';
+const ASSETS = ['/', '/index.html', '/styles.css', '/admin.css', '/app.js', '/favicon.svg', '/icon.svg', '/manifest.json'];
 
 self.addEventListener('install', e => {
     e.waitUntil(

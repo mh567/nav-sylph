@@ -14,10 +14,12 @@
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#efede8;min-height:100vh}
         @media(prefers-color-scheme:dark){body{background:#211f1c}}
-        .loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:32px;height:32px;border:2px solid #e0e0e0;border-top-color:#666;border-radius:50%;animation:spin .6s linear infinite}
+        .loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:32px;height:32px;border:2px solid rgba(92,76,64,.18);border-top-color:#945e4a;border-radius:50%;animation:spin .6s linear infinite}
+        @media(prefers-color-scheme:dark){.loader{border-color:rgba(222,203,185,.18);border-top-color:#c28d70}}
         @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
     </style>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="admin.css">
 </head>
 <body>
     <div class="loader" id="loader"></div>

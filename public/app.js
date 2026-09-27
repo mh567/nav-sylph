@@ -221,6 +221,7 @@
                 input.focus();
             };
             this.bindPointerEffects();
+            this.bindBookmarkPress();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
             $('#searchInput').oninput = (e) => this.handleSearchInput(e);
             $('#adminBtn').onclick = () => this.openAdmin();
@@ -228,6 +229,14 @@
             $('#modalBackdrop').onclick = () => this.closeAdmin();
             $('#cancelBtn').onclick = () => this.closeAdmin();
             $('#saveBtn').onclick = () => this.save();
+            $('#modal .modal-content').addEventListener('keydown', event => {
+                if (event.key !== 'Tab' || $('#modal').hidden || $('.ui-dialog-overlay, .fav-dialog-overlay')) return;
+                const focusables = [...$('#modal .modal-content').querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]')]
+                    .filter(el => el.getClientRects().length > 0);
+                const first = focusables[0], last = focusables.at(-1);
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+            });
 
             const engineBtn = $('#engineBtn');
             const dropdown = $('#engineDropdown');
@@ -322,6 +331,48 @@
                     setPosition(bookmark, event, '--glow-x', '--glow-y');
                     gridFrame = 0;
                 });
+            });
+        }
+
+        bindBookmarkPress() {
+            const grid = $('#grid');
+            const releaseTimers = new WeakMap();
+            let pressedBookmark = null;
+            const press = (bookmark) => {
+                clearTimeout(releaseTimers.get(bookmark));
+                bookmark.classList.add('is-pressed');
+            };
+            const release = (bookmark) => {
+                if (!bookmark) return;
+                clearTimeout(releaseTimers.get(bookmark));
+                releaseTimers.set(bookmark, setTimeout(() => bookmark.classList.remove('is-pressed'), 135));
+            };
+            grid.addEventListener('pointerdown', (event) => {
+                if (event.button !== 0) return;
+                if (pressedBookmark) pressedBookmark.classList.remove('is-pressed');
+                pressedBookmark = event.target.closest('.bookmark');
+                if (pressedBookmark) press(pressedBookmark);
+            });
+            grid.addEventListener('pointerout', (event) => {
+                if (event.pointerType === 'touch' || !pressedBookmark) return;
+                if (pressedBookmark.contains(event.target) && !pressedBookmark.contains(event.relatedTarget)) {
+                    pressedBookmark.classList.remove('is-pressed');
+                    pressedBookmark = null;
+                }
+            });
+            window.addEventListener('pointerup', () => {
+                release(pressedBookmark);
+                pressedBookmark = null;
+            });
+            window.addEventListener('pointercancel', () => {
+                pressedBookmark?.classList.remove('is-pressed');
+                pressedBookmark = null;
+            });
+            grid.addEventListener('click', (event) => {
+                const bookmark = event.target.closest('.bookmark');
+                if (!bookmark) return;
+                press(bookmark);
+                release(bookmark);
             });
         }
 
@@ -885,15 +936,15 @@
 
         async showPasteOptions(content) {
             // 简单确认是否需要 PIN
-            const usePin = confirm('是否设置4位PIN码保护？\n\n点击「确定」设置PIN，点击「取消」直接分享');
+            const usePin = !!(await this.showUiDialog({
+                title: '分享保护',
+                message: '是否设置 4 位 PIN 码保护？取消后将直接分享。',
+                closeOnBackdrop: false
+            }));
 
             let pin = null;
             if (usePin) {
-                pin = prompt('请输入4位数字PIN码：');
-                if (pin && !/^\d{4}$/.test(pin)) {
-                    alert('PIN码必须是4位数字');
-                    return;
-                }
+                pin = await this.promptValue('设置 PIN', '4 位数字 PIN 码', { type: 'password', validate: ([value]) => /^\d{4}$/.test(value) ? '' : 'PIN 码必须是 4 位数字' });
                 if (!pin) return; // 用户取消
             }
 
@@ -907,7 +958,7 @@
                 const codeData = await codeRes.json();
 
                 if (!codeData.code) {
-                    alert(codeData.error || '创建分享失败');
+                    this.showToast(codeData.error || '创建分享失败', 'error');
                     return;
                 }
 
@@ -932,10 +983,10 @@
                     this.togglePasteMode(false);
                     this.showPasteResult(code, !!pin);
                 } else {
-                    alert(data.error || '创建分享失败');
+                    this.showToast(data.error || '创建分享失败', 'error');
                 }
             } catch (e) {
-                alert('创建分享失败: ' + e.message);
+                this.showToast('创建分享失败: ' + e.message, 'error');
             }
         }
 
@@ -947,10 +998,10 @@
             const pinInfo = hasPin ? '<div class="paste-pin-info">已设置 PIN 保护</div>' : '';
             const result = html(`
                 <div class="paste-result" id="pasteResult">
-                    <button class="paste-close" title="关闭">×</button>
+                    <button class="paste-close" type="button" aria-label="关闭分享结果">×</button>
                     <div class="paste-code">${this.esc(code)}</div>
                     ${pinInfo}
-                    <div class="paste-link" data-url="${this.esc(url)}">📋 复制链接</div>
+                    <button class="paste-link" type="button" data-url="${this.esc(url)}">复制链接</button>
                     <div class="paste-expiry">5分钟后过期</div>
                 </div>
             `);
@@ -962,10 +1013,10 @@
                 const copyUrl = link.dataset.url;
                 try {
                     await navigator.clipboard.writeText(copyUrl);
-                    link.textContent = '✅ 已复制';
-                    setTimeout(() => { link.textContent = '📋 复制链接'; }, 2000);
+                    link.textContent = '已复制';
+                    setTimeout(() => { link.textContent = '复制链接'; }, 2000);
                 } catch {
-                    prompt('复制链接:', copyUrl);
+                    await this.promptValue('复制链接', '分享链接', { value: copyUrl, readonly: true, confirmText: '关闭' });
                 }
             };
 
@@ -1037,6 +1088,11 @@
                     e.preventDefault();
                     e.stopPropagation();
                     closeHelp();
+                } else if (e.key === 'Tab') {
+                    const focusables = [...overlay.querySelectorAll('button, a[href]')];
+                    const first = focusables[0], last = focusables.at(-1);
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
                 }
             };
             document.body.appendChild(overlay);
@@ -1046,16 +1102,16 @@
         async openAdmin() {
             this.adminReturnFocus = document.activeElement;
             if (!this.password) {
-                const pwd = prompt('请输入管理密码：');
+                const pwd = await this.promptValue('进入管理', '管理密码', { type: 'password' });
                 if (!pwd) return;
                 const res = await API.post('/api/verify-password', {}, pwd);
-                if (!res.valid) return alert('密码错误');
+                if (!res.valid) { await this.notice('密码错误', '无法进入管理'); return; }
                 this.password = pwd;
                 sessionStorage.setItem(SESSION_PWD_KEY, pwd);
 
                 // 检测是否为默认密码，提示修改
                 if (pwd === 'admin123') {
-                    const shouldChange = confirm('您正在使用默认密码，存在安全风险！\n\n强烈建议立即修改密码。\n\n点击「确定」立即修改密码，点击「取消」稍后修改。');
+                    const shouldChange = await this.confirmAction('您正在使用默认密码，建议立即修改。', '修改默认密码');
                     if (shouldChange) {
                         this.beginConfigEdit();
                         this.renderAdminPanel();
@@ -1099,10 +1155,118 @@
             this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
         }
 
-        closeAdmin(force = false) {
+        showUiDialog({ title, message = '', fields = [], confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
+            const previousFocus = document.activeElement;
+            const overlay = html(`
+                <div class="ui-dialog-overlay">
+                    <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="uiDialogTitle">
+                        <h3 id="uiDialogTitle">${this.esc(title)}</h3>
+                        ${message ? `<p class="ui-dialog-message">${this.esc(message)}</p>` : ''}
+                        <form class="ui-dialog-form">
+                            ${fields.map((field, index) => `<label class="ui-dialog-field">
+                                <span>${this.esc(field.label)}</span>
+                                <input name="field${index}" type="${field.type === 'password' ? 'password' : 'text'}" value="${this.esc(field.value || '')}" placeholder="${this.esc(field.placeholder || '')}" ${field.readonly ? 'readonly' : ''} autocomplete="off">
+                            </label>`).join('')}
+                            <div class="ui-dialog-error" role="alert"></div>
+                            <div class="ui-dialog-actions">
+                                ${notice ? '' : `<button class="btn" type="button" data-action="cancel">${this.esc(cancelText)}</button>`}
+                                <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" type="submit">${this.esc(confirmText)}</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `);
+            document.body.appendChild(overlay);
+            const dialog = overlay.querySelector('.ui-dialog');
+            const form = overlay.querySelector('form');
+            const inputs = [...overlay.querySelectorAll('input')];
+            const focusables = [...overlay.querySelectorAll('input, button')];
+            (inputs[0] || focusables.at(-1)).focus();
+
+            return new Promise(resolve => {
+                const close = value => {
+                    overlay.remove();
+                    if (previousFocus?.isConnected) previousFocus.focus();
+                    resolve(value);
+                };
+                overlay.addEventListener('click', event => {
+                    if ((closeOnBackdrop && event.target === overlay) || event.target.closest('[data-action="cancel"]')) close(null);
+                });
+                dialog.addEventListener('keydown', event => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        close(null);
+                    } else if (event.key === 'Tab') {
+                        const first = focusables[0];
+                        const last = focusables.at(-1);
+                        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+                    }
+                });
+                form.addEventListener('submit', event => {
+                    event.preventDefault();
+                    const values = inputs.map(input => input.value);
+                    const error = validate?.(values);
+                    if (error) {
+                        overlay.querySelector('.ui-dialog-error').textContent = error;
+                        (inputs[0] || form.querySelector('button[type="submit"]')).focus();
+                        return;
+                    }
+                    close(fields.length ? values : true);
+                });
+            });
+        }
+
+        async confirmAction(message, title = '确认操作', danger = false) {
+            return !!(await this.showUiDialog({ title, message, danger, confirmText: danger ? '确认删除' : '确定' }));
+        }
+
+        async promptValue(title, label, options = {}) {
+            const result = await this.showUiDialog({ title, fields: [{ label, ...options }], confirmText: options.confirmText || '确定', validate: options.validate });
+            return result ? result[0] : null;
+        }
+
+        async notice(message, title = '提示') {
+            await this.showUiDialog({ title, message, notice: true, confirmText: '知道了' });
+        }
+
+        mountLayer(overlay) {
+            overlay.returnFocus = document.activeElement;
+            const panel = overlay.querySelector('.fav-dialog');
+            const heading = panel.querySelector('h3');
+            heading.id = `${overlay.id}Title`;
+            panel.setAttribute('role', 'dialog');
+            panel.setAttribute('aria-modal', 'true');
+            panel.setAttribute('aria-labelledby', heading.id);
+            document.body.appendChild(overlay);
+            (panel.querySelector('input:not([type="hidden"]), button') || panel).focus();
+            overlay.addEventListener('click', event => {
+                if (event.target === overlay) this.closeLayer(overlay);
+            });
+            panel.addEventListener('keydown', event => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.closeLayer(overlay);
+                } else if (event.key === 'Tab') {
+                    const focusables = [...panel.querySelectorAll('input:not([type="hidden"]), select, textarea, button')].filter(el => !el.disabled);
+                    const first = focusables[0], last = focusables.at(-1);
+                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                    if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+                }
+            });
+        }
+
+        closeLayer(overlay) {
+            overlay.remove();
+            if (overlay.returnFocus?.isConnected) overlay.returnFocus.focus();
+        }
+
+        async closeAdmin(force = false) {
             if (this.configSaving && !force) return false;
             if (this.configDirty) {
-                if (!confirm('有未保存的修改，确定放弃吗？')) return false;
+                if (!force && !await this.confirmAction('有未保存的修改，确定放弃吗？', '放弃修改')) return false;
                 this.config = JSON.parse(this.configSnapshot);
                 this.applyTheme();
                 this.render();
@@ -1237,8 +1401,8 @@
             };
 
             // 登出按钮
-            $('#logoutBtn').onclick = () => {
-                if (!this.closeAdmin()) return;
+            $('#logoutBtn').onclick = async () => {
+                if (!await this.closeAdmin()) return;
                 this.password = null;
                 sessionStorage.removeItem(SESSION_PWD_KEY);
                 this.privacySearchActive = false;
@@ -1287,14 +1451,14 @@
                         </label>
                     </div>
                     <div class="webdav-row">
-                        <input type="url" id="webdavUrl" placeholder="WebDAV URL (如: https://dav.example.com)" value="${this.esc(cfg.url || '')}">
+                        <label class="field-label">WebDAV 地址<input type="url" id="webdavUrl" placeholder="https://dav.example.com" value="${this.esc(cfg.url || '')}"></label>
                     </div>
                     <div class="webdav-row webdav-row-half">
-                        <input type="text" id="webdavUsername" placeholder="用户名" value="${this.esc(cfg.username || '')}">
-                        <input type="password" id="webdavPassword" placeholder="${cfg.hasPassword ? '密码 (已设置)' : '密码'}">
+                        <label class="field-label">用户名<input type="text" id="webdavUsername" value="${this.esc(cfg.username || '')}"></label>
+                        <label class="field-label">密码<input type="password" id="webdavPassword" placeholder="${cfg.hasPassword ? '已设置，留空保持原密码' : '输入密码'}"></label>
                     </div>
                     <div class="webdav-row">
-                        <input type="text" id="webdavPath" placeholder="远程路径 (默认: /nav-sylph-backups/)" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}">
+                        <label class="field-label">远程路径<input type="text" id="webdavPath" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}"></label>
                     </div>
                 </div>
                 <div class="webdav-actions">
@@ -1456,9 +1620,9 @@
                     </div>
                 `);
 
-                document.body.appendChild(dialog);
+                this.mountLayer(dialog);
 
-                $('#webdavRestoreCancelBtn').onclick = () => dialog.remove();
+                $('#webdavRestoreCancelBtn').onclick = () => this.closeLayer(dialog);
 
                 $$('.webdav-restore-btn', dialog).forEach(btn => {
                     btn.onclick = async (e) => {
@@ -1486,7 +1650,7 @@
                         const timestamp = item.dataset.timestamp;
                         const displayName = timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
 
-                        if (!confirm(`确定删除备份 ${displayName}？`)) return;
+                        if (!await this.confirmAction(`确定删除备份 ${displayName}？`, '删除备份', true)) return;
 
                         btn.disabled = true;
                         btn.textContent = '删除中...';
@@ -1500,13 +1664,13 @@
 
                             // Check if list is empty
                             if (!$('.webdav-backup-item', dialog)) {
-                                dialog.remove();
+                                this.closeLayer(dialog);
                                 const msgEl = $('#webdavMessage');
                                 msgEl.textContent = '没有可用的备份';
                                 msgEl.className = 'webdav-message';
                             }
                         } catch (err) {
-                            alert('删除失败: ' + err.message);
+                            this.showToast('删除失败: ' + err.message, 'error');
                             btn.disabled = false;
                             btn.textContent = '删除';
                         }
@@ -1527,14 +1691,22 @@
                     <div class="fav-dialog">
                         <h3>选择恢复内容</h3>
                         <div class="restore-options">
+                            ${hasConfig && hasBookmarks ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="all" checked>
                                 <span>同时恢复配置和收藏</span>
                             </label>
+                            ` : ''}
                             ${hasConfig ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="config">
+                                <input type="radio" name="restoreType" value="config" ${hasBookmarks ? '' : 'checked'}>
                                 <span>只恢复配置（主题、搜索引擎、书签分类）</span>
+                            </label>
+                            ` : ''}
+                            ${hasBookmarks ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="bookmarks" ${hasConfig ? '' : 'checked'}>
+                                <span>只恢复收藏</span>
                             </label>
                             ` : ''}
                         </div>
@@ -1546,13 +1718,14 @@
                 </div>
             `);
 
-            document.body.appendChild(optionsDialog);
+            this.mountLayer(optionsDialog);
 
-            $('#restoreOptionsCancelBtn').onclick = () => optionsDialog.remove();
+            $('#restoreOptionsCancelBtn').onclick = () => this.closeLayer(optionsDialog);
             $('#restoreOptionsConfirmBtn').onclick = async () => {
                 const restoreType = $('input[name="restoreType"]:checked').value;
                 const restoreConfig = restoreType === 'all' || restoreType === 'config';
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
+                if (!await this.confirmAction('恢复将覆盖当前对应的数据，确定继续吗？', '确认恢复')) return;
 
                 optionsDialog.querySelector('.btn-primary').disabled = true;
                 optionsDialog.querySelector('.btn-primary').textContent = '恢复中...';
@@ -1567,17 +1740,17 @@
                     }, this.password);
 
                     if (restoreRes.success) {
-                        optionsDialog.remove();
-                        parentDialog.remove();
-                        alert('恢复成功！页面将刷新。');
+                        this.closeLayer(optionsDialog);
+                        this.closeLayer(parentDialog);
+                        await this.notice('恢复成功，页面即将刷新。', '恢复完成');
                         location.reload();
                     } else {
-                        alert(restoreRes.error || '恢复失败');
+                        this.showToast(restoreRes.error || '恢复失败', 'error');
                         optionsDialog.querySelector('.btn-primary').disabled = false;
                         optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
                     }
                 } catch (e) {
-                    alert('恢复失败: ' + e.message);
+                    this.showToast('恢复失败: ' + e.message, 'error');
                     optionsDialog.querySelector('.btn-primary').disabled = false;
                     optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
                 }
@@ -1628,7 +1801,7 @@
             container.onclick = (e) => {
                 if (e.target.classList.contains('del-engine')) {
                     const idx = +e.target.closest('.item').dataset.idx;
-                    if (this.config.searchEngines.length <= 1) return alert('至少保留一个');
+                    if (this.config.searchEngines.length <= 1) { this.showToast('至少保留一个搜索引擎', 'error'); return; }
                     const deleted = this.config.searchEngines.splice(idx, 1)[0];
                     if (this.config.searchEngine === deleted.id) {
                         this.config.searchEngine = this.config.searchEngines[0].id;
@@ -1709,7 +1882,7 @@
                 }
 
                 if (e.target.classList.contains('del-cat')) {
-                    if (this.config.categories.length <= 1) return alert('至少保留一个分类');
+                    if (this.config.categories.length <= 1) { this.showToast('至少保留一个分类', 'error'); return; }
                     this.config.categories.splice(ci, 1);
                     this.renderCatsEditor();
                     this.markConfigDirty();
@@ -1789,7 +1962,7 @@
                 if (res.success) {
                     this.configDirty = false;
                     this.render();
-                    this.closeAdmin(true);
+                    await this.closeAdmin(true);
                     this.showToast('设置已保存到服务器');
                 } else {
                     this.updateConfigStatus(res.error || '保存失败，请重试', 'error');
@@ -1815,14 +1988,14 @@
             try {
                 const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true }, this.password);
                 if (res.success) {
-                    alert(`导入成功！新增 ${res.imported} 个收藏${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
+                    this.showToast(`导入成功，新增 ${res.imported} 个收藏${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
                     await this.loadFavorites();
                     this.renderAdminPanel();
                 } else {
-                    alert(res.error || '导入失败');
+                    this.showToast(res.error || '导入失败', 'error');
                 }
             } catch (err) {
-                alert('导入失败: ' + err.message);
+                this.showToast('导入失败: ' + err.message, 'error');
             }
 
             e.target.value = '';
@@ -1835,7 +2008,7 @@
                 });
                 if (!res.ok) {
                     const data = await res.json();
-                    alert(data.error || '导出失败');
+                    this.showToast(data.error || '导出失败', 'error');
                     return;
                 }
                 const blob = await res.blob();
@@ -1846,7 +2019,7 @@
                 a.click();
                 URL.revokeObjectURL(url);
             } catch (err) {
-                alert('导出失败: ' + err.message);
+                this.showToast('导出失败: ' + err.message, 'error');
             }
         }
 
@@ -1862,20 +2035,20 @@
                     <div class="fav-dialog">
                         <h3>添加收藏</h3>
                         <div class="fav-form">
-                            <input type="text" id="favTitle" placeholder="标题 *">
-                            <input type="url" id="favUrl" placeholder="URL *">
-                            <input type="text" id="favDesc" placeholder="描述（可选）">
+                            <label class="field-label">标题<input type="text" id="favTitle" required></label>
+                            <label class="field-label">URL<input type="url" id="favUrl" required></label>
+                            <label class="field-label">描述<input type="text" id="favDesc"></label>
                             <div class="fav-category-row">
                                 ${existingCategories.length > 0 ? `
-                                    <select id="favCategorySelect">
+                                    <label class="field-label">已有分类<select id="favCategorySelect">
                                         <option value="">-- 选择分类 --</option>
                                         ${categoryOptions}
                                         <option value="__new__">+ 新建分类</option>
-                                    </select>
+                                    </select></label>
                                 ` : ''}
-                                <input type="text" id="favCategory" placeholder="${existingCategories.length > 0 ? '或输入新分类' : '分类（可选）'}">
+                                <label class="field-label">${existingCategories.length > 0 ? '新分类' : '分类'}<input type="text" id="favCategory" placeholder="${existingCategories.length > 0 ? '或输入新分类' : '可选'}"></label>
                             </div>
-                            <input type="text" id="favTags" placeholder="标签（逗号分隔，可选）">
+                            <label class="field-label">标签<input type="text" id="favTags" placeholder="逗号分隔，可选"></label>
                             <label class="fav-checkbox-row">
                                 <input type="checkbox" id="favPrivate">
                                 <span>隐私保护</span>
@@ -1889,7 +2062,7 @@
                 </div>
             `);
 
-            document.body.appendChild(dialog);
+            this.mountLayer(dialog);
 
             // 分类选择联动
             const categorySelect = $('#favCategorySelect');
@@ -1905,13 +2078,13 @@
                 };
             }
 
-            $('#favCancelBtn').onclick = () => dialog.remove();
+            $('#favCancelBtn').onclick = () => this.closeLayer(dialog);
             $('#favSaveBtn').onclick = async () => {
                 const title = $('#favTitle').value.trim();
                 const url = $('#favUrl').value.trim();
 
                 if (!title || !url) {
-                    alert('标题和 URL 不能为空');
+                    this.showToast('标题和 URL 不能为空', 'error');
                     return;
                 }
 
@@ -1943,7 +2116,7 @@
                     button.textContent = '保存';
                     return;
                 }
-                dialog.remove();
+                this.closeLayer(dialog);
                 this.renderAdminPanel();
             };
         }
@@ -1956,10 +2129,10 @@
                     this.showToast('收藏已保存到服务器');
                     return true;
                 } else {
-                    alert(res.error || '保存失败');
+                    this.showToast(res.error || '保存失败', 'error');
                 }
             } catch (err) {
-                alert('保存失败: ' + err.message);
+                this.showToast('保存失败: ' + err.message, 'error');
             }
             return false;
         }
@@ -1999,14 +2172,20 @@
                         <div class="category-tree" id="categoryTree">
                             <div class="category-tree-item ${!this.favManagerCurrentCategory ? 'active' : ''}"
                                  data-category="" data-drop-target="true">
-                                <span class="tree-item-icon">📁</span>
-                                <span class="tree-item-name">全部收藏</span>
+                                <span class="tree-toggle-placeholder" aria-hidden="true"></span>
+                                <button class="category-tree-select" type="button" aria-label="全部收藏" aria-current="${!this.favManagerCurrentCategory ? 'true' : 'false'}">
+                                    <span class="tree-item-icon" aria-hidden="true">▦</span>
+                                    <span class="tree-item-name">全部收藏</span>
+                                </button>
                                 <span class="tree-item-count">${this.favorites.length}</span>
                             </div>
                             ${this.renderCategoryTree(categoryTree, 0)}
                             <div class="category-tree-item category-tree-new" data-category="__new__" data-drop-target="true">
-                                <span class="tree-item-icon">➕</span>
-                                <span class="tree-item-name">新建分类...</span>
+                                <span class="tree-toggle-placeholder" aria-hidden="true"></span>
+                                <button class="category-tree-select" type="button" aria-label="新建分类">
+                                    <span class="tree-item-icon" aria-hidden="true">＋</span>
+                                    <span class="tree-item-name">新建分类...</span>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -2090,6 +2269,7 @@
                 const hasChildren = Object.keys(node.children).length > 0;
                 const isActive = this.favManagerCurrentCategory === node.fullPath;
                 const indent = level * 16;
+                const childrenId = hasChildren ? uid() : '';
 
                 html += `
                     <div class="category-tree-item ${isActive ? 'active' : ''} ${hasChildren ? 'has-children' : ''}"
@@ -2097,16 +2277,18 @@
                          data-name="${this.esc(name)}"
                          data-drop-target="true"
                          style="padding-left: ${12 + indent}px">
-                        ${hasChildren ? '<span class="tree-toggle">▶</span>' : '<span class="tree-toggle-placeholder"></span>'}
-                        <span class="tree-item-icon">📁</span>
-                        <span class="tree-item-name">${this.esc(name)}</span>
-                        <button class="tree-item-edit" title="编辑分类名称">✎</button>
+                        ${hasChildren ? `<button class="tree-toggle" type="button" aria-label="折叠分类 ${this.esc(node.fullPath)}" aria-expanded="true" aria-controls="${childrenId}">▼</button>` : '<span class="tree-toggle-placeholder" aria-hidden="true"></span>'}
+                        <button class="category-tree-select" type="button" aria-label="分类 ${this.esc(node.fullPath)}" aria-current="${isActive ? 'true' : 'false'}">
+                            <span class="tree-item-icon" aria-hidden="true">▦</span>
+                            <span class="tree-item-name">${this.esc(name)}</span>
+                        </button>
+                        <button class="tree-item-edit" type="button" title="编辑分类名称" aria-label="编辑分类 ${this.esc(node.fullPath)}">✎</button>
                         <span class="tree-item-count">${node.count}</span>
                     </div>
                 `;
 
                 if (hasChildren) {
-                    html += `<div class="category-tree-children">${this.renderCategoryTree(node.children, level + 1)}</div>`;
+                    html += `<div class="category-tree-children" id="${childrenId}">${this.renderCategoryTree(node.children, level + 1)}</div>`;
                 }
             }
             return html;
@@ -2123,11 +2305,15 @@
                 if (!item) return;
 
                 // 点击展开/折叠按钮
-                if (e.target.classList.contains('tree-toggle')) {
+                const toggle = e.target.closest('.tree-toggle');
+                if (toggle) {
                     const children = item.nextElementSibling;
                     if (children && children.classList.contains('category-tree-children')) {
                         children.classList.toggle('collapsed');
-                        e.target.textContent = children.classList.contains('collapsed') ? '▶' : '▼';
+                        const expanded = !children.classList.contains('collapsed');
+                        toggle.textContent = expanded ? '▼' : '▶';
+                        toggle.setAttribute('aria-expanded', String(expanded));
+                        toggle.setAttribute('aria-label', `${expanded ? '折叠' : '展开'}分类 ${item.dataset.category}`);
                     }
                     return;
                 }
@@ -2138,6 +2324,8 @@
                     this.editCategoryName(item);
                     return;
                 }
+
+                if (!e.target.closest('.category-tree-select')) return;
 
                 // 新建分类
                 if (item.classList.contains('category-tree-new')) {
@@ -2150,7 +2338,7 @@
                 // 如果有选中的书签，询问是否移动到该分类
                 if (this.favManagerSelected && this.favManagerSelected.size > 0 && category) {
                     const count = this.favManagerSelected.size;
-                    if (confirm(`是否将选中的 ${count} 个书签移动到「${category || '未分类'}」？`)) {
+                    if (await this.confirmAction(`是否将选中的 ${count} 个书签移动到「${category || '未分类'}」？`, '移动收藏')) {
                         this.favorites.forEach(f => {
                             if (this.favManagerSelected.has(f.id)) {
                                 f.category = category;
@@ -2167,7 +2355,9 @@
                 // 选择分类筛选
                 this.favManagerCurrentCategory = category;
                 $$('.category-tree-item', tree).forEach(el => el.classList.remove('active'));
+                $$('.category-tree-select[aria-current="true"]', tree).forEach(el => el.setAttribute('aria-current', 'false'));
                 item.classList.add('active');
+                item.querySelector('.category-tree-select').setAttribute('aria-current', 'true');
                 this.filterFavManager($('#favManagerSearch')?.value || '', category);
             };
 
@@ -2195,7 +2385,7 @@
                 let newCategory = item.dataset.category;
 
                 if (newCategory === '__new__') {
-                    newCategory = prompt('请输入新分类名称：');
+                    newCategory = await this.promptValue('新建分类', '分类名称');
                     if (!newCategory || !newCategory.trim()) return;
                     newCategory = newCategory.trim();
                 }
@@ -2227,82 +2417,94 @@
 
             // 隐藏原名称，显示输入框
             nameSpan.classList.add('editing');
-            nameSpan.parentNode.insertBefore(input, nameSpan.nextSibling);
+            const selectButton = item.querySelector('.category-tree-select');
+            selectButton.hidden = true;
+            item.insertBefore(input, item.querySelector('.tree-item-edit'));
             input.focus();
             input.select();
 
             const cleanup = () => {
                 nameSpan.classList.remove('editing');
+                selectButton.hidden = false;
                 input.remove();
             };
 
+            let saving = false;
+            let blurTimer;
             const save = async () => {
-                const newName = input.value.trim();
+                if (saving) return;
+                saving = true;
+                clearTimeout(blurTimer);
+                try {
+                    const newName = input.value.trim();
 
-                // 验证
-                if (!newName) {
-                    cleanup();
-                    return;
-                }
+                    // 验证
+                    if (!newName) {
+                        cleanup();
+                        return;
+                    }
 
-                if (newName === currentName) {
-                    cleanup();
-                    return;
-                }
+                    if (newName === currentName) {
+                        cleanup();
+                        return;
+                    }
 
-                if (newName.includes('/')) {
-                    alert('分类名称不能包含 "/" 字符');
-                    input.focus();
-                    return;
-                }
-
-                // 计算新的完整路径
-                const pathParts = fullPath.split('/');
-                pathParts[pathParts.length - 1] = newName;
-                const newFullPath = pathParts.join('/');
-
-                // 检查是否与现有分类重名
-                const existingCategories = new Set(
-                    this.favorites.map(f => f.category).filter(Boolean)
-                );
-
-                if (existingCategories.has(newFullPath) && newFullPath !== fullPath) {
-                    if (!confirm(`分类「${newFullPath}」已存在，是否合并？`)) {
+                    if (newName.includes('/')) {
+                        this.showToast('分类名称不能包含 "/" 字符', 'error');
                         input.focus();
                         return;
                     }
-                }
 
-                // 批量更新书签分类
-                let updated = false;
-                this.favorites.forEach(f => {
-                    if (!f.category) return;
+                    // 计算新的完整路径
+                    const pathParts = fullPath.split('/');
+                    pathParts[pathParts.length - 1] = newName;
+                    const newFullPath = pathParts.join('/');
 
-                    // 精确匹配当前分类
-                    if (f.category === fullPath) {
-                        f.category = newFullPath;
-                        f.updatedAt = Date.now();
-                        updated = true;
-                    }
-                    // 匹配子分类（以 fullPath/ 开头）
-                    else if (f.category.startsWith(fullPath + '/')) {
-                        f.category = newFullPath + f.category.slice(fullPath.length);
-                        f.updatedAt = Date.now();
-                        updated = true;
-                    }
-                });
+                    // 检查是否与现有分类重名
+                    const existingCategories = new Set(
+                        this.favorites.map(f => f.category).filter(Boolean)
+                    );
 
-                if (updated) {
-                    await this.saveFavorites();
-                    // 更新当前选中的分类
-                    if (this.favManagerCurrentCategory === fullPath) {
-                        this.favManagerCurrentCategory = newFullPath;
-                    } else if (this.favManagerCurrentCategory?.startsWith(fullPath + '/')) {
-                        this.favManagerCurrentCategory = newFullPath + this.favManagerCurrentCategory.slice(fullPath.length);
+                    if (existingCategories.has(newFullPath) && newFullPath !== fullPath) {
+                        if (!await this.confirmAction(`分类「${newFullPath}」已存在，是否合并？`, '合并分类')) {
+                            input.focus();
+                            return;
+                        }
                     }
-                    this.showFavManager();
-                } else {
-                    cleanup();
+
+                    // 批量更新书签分类
+                    let updated = false;
+                    this.favorites.forEach(f => {
+                        if (!f.category) return;
+
+                        // 精确匹配当前分类
+                        if (f.category === fullPath) {
+                            f.category = newFullPath;
+                            f.updatedAt = Date.now();
+                            updated = true;
+                        }
+                        // 匹配子分类（以 fullPath/ 开头）
+                        else if (f.category.startsWith(fullPath + '/')) {
+                            f.category = newFullPath + f.category.slice(fullPath.length);
+                            f.updatedAt = Date.now();
+                            updated = true;
+                        }
+                    });
+
+                    if (updated) {
+                        await this.saveFavorites();
+                        // 更新当前选中的分类
+                        if (this.favManagerCurrentCategory === fullPath) {
+                            this.favManagerCurrentCategory = newFullPath;
+                        } else if (this.favManagerCurrentCategory?.startsWith(fullPath + '/')) {
+                            this.favManagerCurrentCategory = newFullPath + this.favManagerCurrentCategory.slice(fullPath.length);
+                        }
+                        this.showFavManager();
+                    } else {
+                        cleanup();
+                    }
+                } finally {
+                    saving = false;
                 }
             };
 
@@ -2316,9 +2518,10 @@
             };
 
             input.onblur = () => {
+                if (saving) return;
                 // 延迟执行，避免与点击保存冲突
-                setTimeout(() => {
-                    if (document.body.contains(input)) {
+                blurTimer = setTimeout(() => {
+                    if (document.body.contains(input) && !saving) {
                         save();
                     }
                 }, 100);
@@ -2326,8 +2529,8 @@
         }
 
         // 新建分类
-        promptNewCategory() {
-            const name = prompt('请输入新分类名称（支持用 / 创建子分类，如：工具/开发）：');
+        async promptNewCategory() {
+            const name = await this.promptValue('新建分类', '分类名称', { placeholder: '例如 工具/开发' });
             if (!name || !name.trim()) return;
 
             const categoryName = name.trim();
@@ -2341,7 +2544,7 @@
                     }
                 });
                 this.favManagerSelected.clear();
-                this.saveFavorites();
+                await this.saveFavorites();
             }
 
             // 设置当前分类并刷新
@@ -2389,7 +2592,7 @@
             const count = this.favManagerSelected.size;
             if (count === 0) return;
 
-            if (!confirm(`确定删除选中的 ${count} 个收藏？`)) return;
+            if (!await this.confirmAction(`确定删除选中的 ${count} 个收藏？`, '批量删除', true)) return;
 
             this.favorites = this.favorites.filter(f => !this.favManagerSelected.has(f.id));
             await this.saveFavorites();
@@ -2549,7 +2752,7 @@
             }
 
             // 事件委托
-            list.onclick = (e) => {
+            list.onclick = async (e) => {
                 // 让链接自行处理点击
                 if (e.target.closest('.fav-manager-title-link')) {
                     return;
@@ -2567,9 +2770,9 @@
                     }
                     this.updateBatchBar();
                 } else if (e.target.classList.contains('del-fav')) {
-                    if (confirm('确定删除此收藏？')) {
+                    if (await this.confirmAction('确定删除此收藏？', '删除收藏', true)) {
                         this.favorites = this.favorites.filter(f => f.id !== id);
-                        this.saveFavorites();
+                        await this.saveFavorites();
                         this.favManagerSelected.delete(id);
                         // 检查当前分类是否还有书签，没有则重置为全部
                         if (this.favManagerCurrentCategory) {
@@ -2613,11 +2816,11 @@
                     <div class="fav-dialog">
                         <h3>编辑收藏</h3>
                         <div class="fav-form">
-                            <input type="text" id="editFavTitle" value="${this.esc(fav.title)}" placeholder="标题">
-                            <input type="url" id="editFavUrl" value="${this.esc(fav.url)}" placeholder="URL">
-                            <input type="text" id="editFavDesc" value="${this.esc(fav.description || '')}" placeholder="描述">
-                            <input type="text" id="editFavCategory" value="${this.esc(fav.category || '')}" placeholder="分类">
-                            <input type="text" id="editFavTags" value="${(fav.tags || []).join(', ')}" placeholder="标签">
+                            <label class="field-label">标题<input type="text" id="editFavTitle" value="${this.esc(fav.title)}" required></label>
+                            <label class="field-label">URL<input type="url" id="editFavUrl" value="${this.esc(fav.url)}" required></label>
+                            <label class="field-label">描述<input type="text" id="editFavDesc" value="${this.esc(fav.description || '')}"></label>
+                            <label class="field-label">分类<input type="text" id="editFavCategory" value="${this.esc(fav.category || '')}"></label>
+                            <label class="field-label">标签<input type="text" id="editFavTags" value="${this.esc((fav.tags || []).join(', '))}"></label>
                             <label class="fav-checkbox-row">
                                 <input type="checkbox" id="editFavPrivate" ${fav.private ? 'checked' : ''}>
                                 <span>隐私保护</span>
@@ -2631,9 +2834,9 @@
                 </div>
             `);
 
-            document.body.appendChild(dialog);
+            this.mountLayer(dialog);
 
-            $('#editFavCancelBtn').onclick = () => dialog.remove();
+            $('#editFavCancelBtn').onclick = () => this.closeLayer(dialog);
             $('#editFavSaveBtn').onclick = async () => {
                 const previous = { ...fav };
                 const button = $('#editFavSaveBtn');
@@ -2653,25 +2856,31 @@
                     button.textContent = '保存';
                     return;
                 }
-                dialog.remove();
+                this.closeLayer(dialog);
                 this.showFavManager();
             };
         }
 
         async changePassword() {
-            if (!this.password) return alert('请先进入管理模式');
-            const newPwd = prompt('输入新密码（至少8位）：');
-            if (!newPwd || newPwd.length < 8) return alert('密码至少8位');
-            const confirm = prompt('再次输入新密码：');
-            if (newPwd !== confirm) return alert('两次输入不一致');
+            if (!this.password) { await this.notice('请先进入管理模式'); return; }
+            const values = await this.showUiDialog({
+                title: '修改管理密码',
+                fields: [
+                    { label: '新密码', type: 'password' },
+                    { label: '再次输入新密码', type: 'password' }
+                ],
+                validate: ([newPwd, repeated]) => newPwd.length < 8 ? '密码至少 8 位' : newPwd !== repeated ? '两次输入不一致' : ''
+            });
+            if (!values) return;
+            const newPwd = values[0];
 
             const res = await API.post('/api/change-password', { newPassword: newPwd }, this.password);
             if (res.success) {
                 this.password = newPwd;
                 sessionStorage.setItem(SESSION_PWD_KEY, newPwd);
-                alert('密码已修改');
+                this.showToast('密码已修改');
             } else {
-                alert(res.error || '修改失败');
+                this.showToast(res.error || '修改失败', 'error');
             }
         }
 
