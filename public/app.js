@@ -311,7 +311,9 @@
                 e.stopPropagation();
                 const isOpen = !dropdown.hidden;
                 dropdown.hidden = isOpen;
-                engineBtn.classList.toggle('active', !isOpen);
+                // 只用 aria-expanded 驱动展开态：此前还并行 toggle 一个 .active 类，
+                // 但该类已无任何 CSS 消费者（.search-engine.active 规则已删），
+                // 留着会让展开状态有两个真相来源。
                 engineBtn.setAttribute('aria-expanded', String(!isOpen));
                 if (!isOpen) dropdown.querySelector('.engine-option.active')?.focus();
             };
@@ -322,7 +324,6 @@
                     this.config.searchEngine = option.dataset.id;
                     this.renderEngines();
                     dropdown.hidden = true;
-                    engineBtn.classList.remove('active');
                     engineBtn.setAttribute('aria-expanded', 'false');
                     $('#searchInput').focus();
                 }
@@ -331,7 +332,6 @@
             document.onclick = (e) => {
                 if (!e.target.closest('.search-wrapper')) {
                     dropdown.hidden = true;
-                    engineBtn.classList.remove('active');
                     engineBtn.setAttribute('aria-expanded', 'false');
                     this.hideFavDropdown();
                 }
@@ -362,7 +362,6 @@
                 if (e.key === 'Escape') {
                     if (!dropdown.hidden) {
                         dropdown.hidden = true;
-                        engineBtn.classList.remove('active');
                         engineBtn.setAttribute('aria-expanded', 'false');
                         engineBtn.focus();
                     } else if (!$('#modal').hidden) {

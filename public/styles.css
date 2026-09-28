@@ -2554,16 +2554,16 @@ body {
     --bookmark-hover-face: linear-gradient(180deg,rgba(255,255,255,.62),rgba(255,255,255,.12) 40%,rgba(121,105,91,.035)),linear-gradient(165deg,rgba(253,251,247,.92),rgba(237,233,227,.94));
     --bookmark-pressed-face: linear-gradient(180deg,rgba(101,81,64,.17),rgba(255,255,255,.02) 54%,rgba(255,255,255,.11)),linear-gradient(165deg,#e8e3dc,#f5f1eb);
     --bookmark-border: rgba(116,100,85,.20);
-    --bookmark-hover-border: rgba(116,100,85,.28);
+    --bookmark-hover-border: rgba(148,94,74,.37);
     --bookmark-pressed-border: rgba(103,85,69,.34);
     --bookmark-idle-shadow: inset 0 1px rgba(255,255,255,.74),inset 0 -1px rgba(120,102,86,.11),inset 1px 0 rgba(255,255,255,.12);
     --bookmark-hover-shadow: inset 0 1px rgba(255,255,255,.87),inset 0 -1px rgba(120,102,86,.16),inset 1px 0 rgba(255,255,255,.18),0 2px 5px rgba(67,51,39,.06),0 9px 18px rgba(67,51,39,.09);
     --bookmark-press-shadow: inset 0 3px 6px rgba(91,72,56,.26),inset 0 0 0 1px rgba(121,98,77,.09),inset 0 -1px rgba(255,255,255,.48);
-    --bookmark-glint: rgba(184,150,124,.16);
+    --bookmark-glint: var(--glint);
     --bookmark-lift: -1px;
     --bookmark-press-depth: 1px;
     --bookmark-press-scale: .975;
-    --bookmark-glow-opacity: .46;
+    --bookmark-glow-opacity: .32;
     --bookmark-glow-motion: 85ms;
     --bookmark-motion: 90ms;
     --bookmark-press-motion: 35ms;
@@ -2581,6 +2581,9 @@ body {
     --control-pressed-bottom: #f1ece5;
     --glint: rgba(179,111,73,.34);
     --search-glint: rgba(179,111,73,.20);
+    /* 悬浮光感的高光层：与仿真一致，书签与搜索框的 ::before/::after 共用。
+       缺这一层时两层光晕叠在一起显得灰、糊，正是「说不上哪里不精致」的来源。 */
+    --glint-white: rgba(255,255,255,.90);
     --shadow: 0 2px 4px rgba(67,51,39,.035),0 10px 26px rgba(67,51,39,.055);
     --shadow-lg: 0 5px 12px rgba(67,51,39,.08),0 18px 34px rgba(67,51,39,.13);
     --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
@@ -2636,6 +2639,7 @@ body {
         --control-pressed-bottom: #39312b;
         --glint: rgba(243,180,135,.28);
         --search-glint: rgba(243,180,135,.18);
+        --glint-white: rgba(255,244,226,.18);
         --shadow: 0 2px 4px rgba(0,0,0,.12),0 10px 28px rgba(0,0,0,.20);
         --shadow-lg: 0 5px 10px rgba(0,0,0,.18),0 18px 34px rgba(0,0,0,.35);
         --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
@@ -2689,6 +2693,7 @@ body {
     --control-pressed-bottom: #39312b;
     --glint: rgba(243,180,135,.28);
     --search-glint: rgba(243,180,135,.18);
+    --glint-white: rgba(255,244,226,.18);
     --shadow: 0 2px 4px rgba(0,0,0,.12),0 10px 28px rgba(0,0,0,.20);
     --shadow-lg: 0 5px 10px rgba(0,0,0,.18),0 18px 34px rgba(0,0,0,.35);
     --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
@@ -2714,9 +2719,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
        漏写 min-height/padding/border-radius 会让展开动画整条失效 */
     transition: min-height var(--transition), padding var(--transition), border-radius var(--transition), border-color 160ms, box-shadow 160ms, background 160ms;
 }
-.search::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 105px 52px at var(--glow-x) var(--glow-y),var(--search-glint),transparent 82%); opacity: 0; transition: opacity 160ms; }
+/* 光感与 .bookmark::before 同构：中性白高光 + 色相光晕。
+   单层时两层光晕叠在一起偏灰；仿真就是双层，这里对齐。 */
+.search::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 77px 51px at var(--glow-x) var(--glow-y),var(--glint-white),transparent 68%),radial-gradient(ellipse 105px 52px at var(--glow-x) var(--glow-y),var(--search-glint),transparent 82%); opacity: 0; transition: opacity 85ms; }
 .search:hover { border-color: rgba(148,94,74,.33); box-shadow: inset 0 1px rgba(255,255,255,.82),0 4px 10px rgba(67,51,39,.055),0 13px 27px rgba(67,51,39,.07); }
-.search:hover::after { opacity: .44; }
+.search:hover::after { opacity: .40; }
 .search:focus-within { border-color: var(--focus); box-shadow: inset 0 2px 5px rgba(91,70,55,.10),inset 0 0 0 1px rgba(255,255,255,.52),0 4px 12px rgba(67,51,39,.07),0 0 0 3px rgba(148,94,74,.065); }
 :root[data-theme="dark"] .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); } }
@@ -2778,7 +2785,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 引擎下拉与收藏下拉在仿真里本就是两套材质（引擎 10px 圆角 + 轻阴影，
    收藏是 13px + --shadow-hover），不再共用一条规则。
    原先合写时改一处会连带改动另一处。 */
-.fav-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 11px; box-shadow: var(--shadow-lg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.fav-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 13px; box-shadow: 0 4px 8px rgba(67,51,39,.055),0 16px 30px rgba(67,51,39,.12); backdrop-filter: blur(25px) saturate(150%); -webkit-backdrop-filter: blur(25px) saturate(150%); }
 .engine-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(67,51,39,.13),inset 0 1px rgba(255,255,255,.66); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .engine-option { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; padding: 6px 10px; min-height: 31px; font-size: 12px; }
 .engine-option::before { display: none; }
@@ -2811,10 +2818,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .category-title { color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }
 .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; }
 .bookmark,.bookmark-text-only { --glow-x: 50%; --glow-y: 0%; position: relative; display: grid; place-items: center; min-height: 42px; padding: 6px 8px; overflow: hidden; border: 1px solid var(--bookmark-border); border-radius: 7px; background: var(--bookmark-face); box-shadow: var(--bookmark-idle-shadow); transition: transform var(--bookmark-motion) cubic-bezier(.2,.8,.25,1),border-color var(--bookmark-motion),box-shadow var(--bookmark-motion),background var(--bookmark-motion); }
-.bookmark::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 77px 51px at var(--glow-x) var(--glow-y),rgba(255,255,255,.54),transparent 68%),radial-gradient(ellipse 103px 69px at var(--glow-x) var(--glow-y),var(--bookmark-glint),transparent 82%); opacity: .17; transition: opacity var(--bookmark-glow-motion); }
+.bookmark::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 77px 51px at var(--glow-x) var(--glow-y),var(--glint-white),transparent 68%),radial-gradient(ellipse 103px 69px at var(--glow-x) var(--glow-y),var(--bookmark-glint),transparent 82%); opacity: .17; transition: opacity var(--bookmark-glow-motion); }
 /* 顶边 1px 高光：让卡片在浅色背景上有「被从上方照亮」的边缘，
-   与搜索框外壳、按钮的顶部 inset 高光同一套语言 */
-.bookmark::after { content: ''; position: absolute; left: 8px; right: 8px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.92) 30%,rgba(255,255,255,.92) 70%,transparent); }
+   与搜索框外壳、按钮的顶部 inset 高光同一套语言。
+   左右各内缩 12px，与仿真一致——缩得太贴角会显得像描边而非受光。 */
+.bookmark::after { content: ''; position: absolute; left: 12px; right: 12px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.96) 30%,rgba(255,255,255,.96) 70%,transparent); }
 .bookmark:hover,.bookmark-text-only:hover { z-index: 1; transform: translateY(var(--bookmark-lift)); border-color: var(--bookmark-hover-border); background: var(--bookmark-hover-face); box-shadow: var(--bookmark-hover-shadow); }
 .bookmark:hover::before,.bookmark:focus-visible::before { opacity: var(--bookmark-glow-opacity); }
 .bookmark:active,.bookmark-text-only:active,.bookmark.is-pressed { transform: translateY(var(--bookmark-press-depth)) scale(var(--bookmark-press-scale)); border-color: var(--bookmark-pressed-border); background: var(--bookmark-pressed-face); box-shadow: var(--bookmark-press-shadow); transition-duration: var(--bookmark-press-motion); }

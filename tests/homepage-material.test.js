@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public/index.html'), 'utf8');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'public/app.js'), 'utf8');
 
 // 剥掉整行注释与块注释。源码形状断言曾因 `/* (reverted) .app.set(...) */`
 // 这类「注释里提到了标识符」的写法而假绿。
@@ -303,10 +304,63 @@ test('下拉选中项不铺底色', () => {
 });
 
 test('下拉容器与收藏下拉各自成条，不共用规则', () => {
-    // 两者材质不同（引擎 10px 圆角，收藏 11px），合写后改一处会连带改动另一处。
+    // 两者材质不同（引擎 10px 圆角，收藏 13px），合写后改一处会连带改动另一处。
     // 断言的是「分开声明」，不是具体数值——数值另有断言。
     assert.equal(/\.engine-dropdown\s*,\s*\.fav-dropdown\s*\{/.test(code), false,
         '.engine-dropdown 与 .fav-dropdown 不应再共用一条规则');
     assert.match(code, /^\.engine-dropdown\s*\{/m, '引擎下拉有独立规则');
     assert.match(code, /^\.fav-dropdown\s*\{/m, '收藏下拉有独立规则');
+});
+
+test('悬浮光感是双层：中性白高光 + 色相光晕', () => {
+    // 缺了白色高光层，两层色相光晕叠在一起偏灰发糊——
+    // 这是「说不上哪里不精致」的观感来源，只能靠数值钉住。
+    for (const name of ['--glint-white', '--glint', '--search-glint']) {
+        const n = (fullCode.match(new RegExp(`${name}\\s*:`, 'g')) || []).length;
+        assert.equal(n, 3, `${name} 必须在三处主题块各定义一次，实际 ${n}`);
+    }
+
+    const searchAfter = /^\.search::after\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(searchAfter, '存在 .search::after 规则');
+    const gradients = searchAfter[1].match(/radial-gradient/g) || [];
+    assert.equal(gradients.length, 2, `.search::after 应为双层光感，实际 ${gradients.length} 层`);
+    assert.match(searchAfter[1], /var\(--glint-white\)/, '搜索框光感含中性白高光层');
+    assert.match(searchAfter[1], /var\(--search-glint\)/, '搜索框光感含色相光晕层');
+
+    const bmBefore = /^\.bookmark::before\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(bmBefore, '存在 .bookmark::before 规则');
+    assert.match(bmBefore[1], /var\(--glint-white\)/, '书签光感同样含中性白高光层');
+    // 白色层不能写死一个偏暗的 rgba——那正是上一版「显得灰」的原因
+    assert.equal(/rgba\(255,\s*255,\s*255,\s*\.5\d\)/.test(bmBefore[1]), false,
+        '书签白色高光层应用 --glint-white 变量，不要写死偏暗的 rgba');
+});
+
+test('书签光晕强度不再靠提透明度补偿', () => {
+    // 仿真用 --glint-white + --glint 两层本身就是 .32；上一版把单层调成 .46
+    // 来补颜色，方向反了——该换的是颜色而不是透明度。
+    const glow = /--bookmark-glow-opacity:\s*([\d.]+)/.exec(fullCode);
+    assert.ok(glow, '定义了 --bookmark-glow-opacity');
+    assert.equal(Number(glow[1]), 0.32, `浅色光晕应为仿真的 .32，实际 ${glow[1]}`);
+});
+
+test('书签顶边高光与悬停描边按仿真取值', () => {
+    const after = /^\.bookmark::after\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(after, '存在 .bookmark::after 规则');
+    assert.match(after[1], /left:\s*12px/, '高光左右各内缩 12px');
+    assert.match(after[1], /right:\s*12px/, '高光左右各内缩 12px');
+
+    const hoverBorder = /--bookmark-hover-border:\s*([^;]+);/.exec(fullCode);
+    assert.ok(hoverBorder, '定义了 --bookmark-hover-border');
+    assert.match(hoverBorder[1], /rgba\(148,94,74,\.37\)/, '悬停描边为仿真的陶土色 rgba(148,94,74,.37)');
+});
+
+test('引擎按钮的展开态只有一个真相来源', () => {
+    // .active 类已无 CSS 消费者，JS 不应再 toggle 它——两个真相来源会各自驱动。
+    assert.equal(/engineBtn\.classList/.test(appSource), false,
+        'app.js 不应再操作 engineBtn 的 classList');
+    assert.equal(/search-engine\.active/.test(fullCode.replace(/\/\*[\s\S]*?\*\//g, '')), false,
+        'CSS 不应再有 .search-engine.active 规则');
+    // aria-expanded 是唯一驱动，且四处设置都保留
+    const sets = (appSource.match(/engineBtn\.setAttribute\('aria-expanded'/g) || []).length;
+    assert.ok(sets >= 4, `aria-expanded 应在所有关闭路径上都被设置，实际 ${sets} 处`);
 });
