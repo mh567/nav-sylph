@@ -95,12 +95,12 @@ function createDocument() {
             .filter(i => i.parent.cls.includes('ui-dialog-option'))
             .map(i => new El('input', i));
 
-        // 浏览器中同组的 radio 互斥，勾选其中一个即取消同组其他项
-        // 分组依据是外层容器的 data-name（选项语义名），而非 input 的 name（模板序号）
+        // 浏览器按 input 的 name 分组实现 radio 原生互斥，因此这里也按 name 分组。
+        // 若生产代码给同组选项生成了不同 name，这个桩会暴露互斥失效，测试随即失败。
         const radioGroups = new Map();
         optionInputs.forEach(input => {
             if (input.type !== 'radio') return;
-            const group = input.parent.name;
+            const group = input.name;
             if (!radioGroups.has(group)) radioGroups.set(group, []);
             radioGroups.get(group).push(input);
         });
@@ -108,7 +108,7 @@ function createDocument() {
             if (input.type !== 'radio') return;
             input.addEventListener('change', () => {
                 if (!input.checked) return;
-                radioGroups.get(input.parent.name).forEach(other => { if (other !== input) other.checked = false; });
+                radioGroups.get(input.name).forEach(other => { if (other !== input) other.checked = false; });
             });
         });
 
@@ -207,7 +207,7 @@ test('PIN and expiry selections are forwarded to createPaste', async () => {
 
     pinBox.checked = true;
     pinInput.value = '4321';
-    // 勾选有效期 1 天，浏览器中会触发 change 并取消同组其他项
+    // 像真实用户一样点选「1 天」：置为 checked 并触发 change，由浏览器语义负责互斥
     const day = ttlRadios.find(r => r.value === '1440');
     day.checked = true;
     day.fire('change', {});
@@ -253,6 +253,34 @@ test('a non-numeric PIN is rejected before the share is created', async () => {
     assert.equal(shares.length, 1);
     assert.deepEqual(shares[0].slice(0, 2), ['secret', '1234']);
     assert.equal(shares[0][2].ttlMinutes, 5);
+});
+
+test('expiry radios share one name so the browser enforces mutual exclusion', async () => {
+    const { document, state } = createDocument();
+    const app = loadApp(document);
+    const shares = [];
+    app.createPaste = async (...args) => { shares.push(args); };
+
+    const pending = app.showPasteOptions('text');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const overlay = state.dialog;
+    const ttlRadios = overlay.querySelectorAll('.ui-dialog-option input').filter(i => i.type === 'radio');
+    assert.equal(ttlRadios.length, 4);
+
+    // 同组必须共用同一个 name，否则浏览器不会实现原生互斥
+    const names = new Set(ttlRadios.map(radio => radio.name));
+    assert.equal(names.size, 1, `有效期单选项应共用一个 name，实际得到: ${[...names].join(', ')}`);
+
+    // 模拟浏览器：勾选 30 分钟后，同组其余项应自动取消
+    const thirty = ttlRadios.find(radio => radio.value === '30');
+    thirty.checked = true;
+    thirty.fire('change', {});
+    assert.equal(ttlRadios.filter(radio => radio.checked).length, 1);
+
+    overlay.querySelector('form').fire('submit', { preventDefault() {} });
+    await pending;
+    assert.equal(shares[0][2].ttlMinutes, 30);
 });
 
 test('promptValue still returns the first field value', async () => {

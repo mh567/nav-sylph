@@ -1026,6 +1026,7 @@
                 ],
                 confirmText: '分享',
                 closeOnBackdrop: false,
+                reveal: { label: '4 位数字 PIN 码', maxlength: 4 },
                 validate: (values, choices) => choices.pin && !/^\d{4}$/.test(values[0] || '') ? 'PIN 码必须是 4 位数字' : ''
             });
 
@@ -1274,8 +1275,9 @@
             this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
         }
 
-        showUiDialog({ title, message = '', fields = [], options = [], confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
+        showUiDialog({ title, message = '', fields = [], options = [], reveal = null, confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
             const previousFocus = document.activeElement;
+            const revealOption = options.find(option => option.reveal) ? reveal : null;
             const overlay = html(`
                 <div class="ui-dialog-overlay">
                     <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="uiDialogTitle">
@@ -1286,17 +1288,20 @@
                                 <span>${this.esc(field.label)}</span>
                                 <input name="field${index}" type="${field.type === 'password' ? 'password' : 'text'}" value="${this.esc(field.value || '')}" placeholder="${this.esc(field.placeholder || '')}" ${field.readonly ? 'readonly' : ''} autocomplete="off">
                             </label>`).join('')}
-                            ${options.map((option, index) => `<div class="ui-dialog-option" data-kind="${this.esc(option.kind)}" data-name="${this.esc(option.name)}">
+                            ${options.map(option => {
+                                // 同组选项共用 name，浏览器才能实现 radio 原生互斥
+                                return `<div class="ui-dialog-option" data-kind="${this.esc(option.kind)}" data-name="${this.esc(option.name)}">
                                 <label class="ui-dialog-choice">
-                                    <input type="${option.kind === 'checkbox' ? 'checkbox' : 'radio'}" name="opt${index}" value="${this.esc(option.value)}" ${option.checked ? 'checked' : ''}>
+                                    <input type="${option.kind === 'checkbox' ? 'checkbox' : 'radio'}" name="opt_${this.esc(option.name)}" value="${this.esc(option.value)}" ${option.checked ? 'checked' : ''}>
                                     <span>${this.esc(option.label)}</span>
                                 </label>
                                 ${option.hint ? `<p class="ui-dialog-hint">${this.esc(option.hint)}</p>` : ''}
-                            </div>`).join('')}
-                            ${options.some(option => option.reveal) ? `<div class="ui-dialog-reveal" data-reveal-for="${this.esc(options.find(option => option.reveal).name)}" hidden>
+                            </div>`;
+                            }).join('')}
+                            ${revealOption ? `<div class="ui-dialog-reveal" hidden>
                                 <label class="ui-dialog-field">
-                                    <span>4 位数字 PIN 码</span>
-                                    <input name="revealPin" type="password" inputmode="numeric" maxlength="4" placeholder="••••" autocomplete="off">
+                                    <span>${this.esc(revealOption.label)}</span>
+                                    <input name="revealField" type="password" inputmode="numeric" maxlength="${this.esc(revealOption.maxlength || '')}" placeholder="••••" autocomplete="off">
                                 </label>
                             </div>` : ''}
                             <div class="ui-dialog-error" role="alert"></div>
@@ -1317,16 +1322,16 @@
             (fieldInputs[0] || optionInputs[0] || focusables.at(-1)).focus();
 
             // 复选框可展开同弹窗内的附加区域（如 PIN 输入框）
-            const reveal = overlay.querySelector('.ui-dialog-reveal');
-            if (reveal) {
+            const revealBox = overlay.querySelector('.ui-dialog-reveal');
+            if (revealBox) {
                 const owner = optionInputs[options.findIndex(option => option.reveal)];
                 const syncReveal = () => {
-                    reveal.hidden = !owner?.checked;
+                    revealBox.hidden = !owner?.checked;
                     // 展开时把焦点交给 PIN 输入框，收起时交还复选框
-                    if (owner?.checked) reveal.querySelector('input')?.focus();
+                    if (owner?.checked) revealBox.querySelector('input')?.focus();
                 };
                 owner?.addEventListener('change', syncReveal);
-                reveal.hidden = !owner?.checked;
+                revealBox.hidden = !owner?.checked;
             }
 
             return new Promise(resolve => {

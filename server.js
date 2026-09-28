@@ -16,13 +16,21 @@ const pasteStorage = new Map();
 // 结构: { code: { content, pin, expiresAt, attempts } }
 
 // 有效期白名单：键为分钟数，值为毫秒。只接受这些档位，未知值回落到 5 分钟。
-const PASTE_TTL_OPTIONS = {
+// 用 Object.create(null) 断开原型链，避免 ttl="constructor" 之类取到原型属性，
+// 把 expiresAt 变成 NaN 或字符串，导致条目永不过期、永不被清理。
+const PASTE_TTL_OPTIONS = Object.assign(Object.create(null), {
     5: 5 * 60 * 1000,
     30: 30 * 60 * 1000,
     1440: 24 * 60 * 60 * 1000,
     10080: 7 * 24 * 60 * 60 * 1000
-};
+});
 const PASTE_DEFAULT_TTL_MINUTES = 5;
+
+// 只接受白名单自身的键；数字以外的键（如 "5"）也视为非法，避免类型混淆
+function resolvePasteTtlMinutes(ttl) {
+    if (typeof ttl !== 'number' || !Number.isInteger(ttl)) return PASTE_DEFAULT_TTL_MINUTES;
+    return Object.hasOwn(PASTE_TTL_OPTIONS, ttl) ? ttl : PASTE_DEFAULT_TTL_MINUTES;
+}
 
 // 词表用于生成易记的分享码
 const ADJECTIVES = [
@@ -941,8 +949,8 @@ app.post('/api/p', (req, res) => {
     }
 
     // 有效期只接受白名单档位；缺失或非法值按 5 分钟处理
-    const ttlMs = PASTE_TTL_OPTIONS[ttl] ?? PASTE_TTL_OPTIONS[PASTE_DEFAULT_TTL_MINUTES];
-    const expiresAt = Date.now() + ttlMs;
+    const ttlMinutes = resolvePasteTtlMinutes(ttl);
+    const expiresAt = Date.now() + PASTE_TTL_OPTIONS[ttlMinutes];
 
     pasteStorage.set(code, {
         content,
@@ -951,7 +959,7 @@ app.post('/api/p', (req, res) => {
         attempts: 0
     });
 
-    console.log(`[Paste] Created: ${code} (expires in ${Math.round(ttlMs / 60000)}min)`);
+    console.log(`[Paste] Created: ${code} (expires in ${ttlMinutes}min)`);
 
     res.json({
         success: true,
