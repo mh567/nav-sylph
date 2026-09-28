@@ -2748,8 +2748,14 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search-mode::before,.search-engine::before,.search-btn::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 62px 40px at var(--glow-x) var(--glow-y),rgba(255,255,255,.86),transparent 66%),radial-gradient(ellipse 66px 43px at var(--glow-x) var(--glow-y),rgba(var(--HUE),.40),transparent 82%); opacity: 0; transition: opacity 85ms; }
 .search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: .52; }
 .search-mode:hover,.search-engine:hover,.search-btn:hover { transform: translateY(-1px); border-color: rgba(var(--HUE),.46); background: linear-gradient(172deg,rgba(var(--HUE),.14),rgba(var(--HUE),.055) 62%,rgba(var(--HUE),.09)); box-shadow: inset 0 1px rgba(255,255,255,.90),inset 0 -1px rgba(105,81,63,.11),0 5px 10px rgba(67,51,39,.12); }
-/* 点击凹陷比书签（inset 0 3px 6px）更深，过渡也更短 */
-.search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(1px); border-color: rgba(var(--HUE),.38); background: linear-gradient(180deg,rgba(var(--HUE),.18),rgba(var(--HUE),.07)); box-shadow: var(--ctl-press-shadow); transition-duration: var(--ctl-press-motion); }
+/* 按下：做出「按键行程」而不只是内阴影。
+   之前只 translateY(1px)，按钮几乎没离开原平面，看着像贴纸在变暗；
+   2px 位移 + .985 缩放才有琴键被按下去的实感。
+   缩放幅度刻意压在 .985：44px 按钮缩后仍有 43.3px，可点区域不被牺牲。
+   过渡 28ms 比 hover 的 110ms 短，制造干脆的「按下去」而非「淡入」。
+   box-shadow 只写内阴影、不留悬停那层外投影——按钮已离开平面，
+   外投影会与位移打架，让「沉下去」的读数变浑。 */
+.search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(2px) scale(.985); border-color: rgba(var(--HUE),.38); background: linear-gradient(180deg,rgba(var(--HUE),.18),rgba(var(--HUE),.07)); box-shadow: var(--ctl-press-shadow); transition-duration: var(--ctl-press-motion); }
 .search-mode:active::before,.search-engine:active::before,.search-btn:active::before { opacity: 0; transition-duration: 20ms; }
 .search-mode { --HUE: var(--mode-hue); min-width: 48px; color: var(--text-secondary); }
 /* 选中态做成「点亮」而非「凹陷」：inset 阴影留给 :active，

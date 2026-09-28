@@ -130,6 +130,20 @@ test('按钮的点击凹陷比书签更深，且过渡更短', () => {
     assert.ok(Number(motion[1]) <= Number(bmMotion[1]), `按钮按压过渡 ${motion[1]}ms 应不慢于书签 ${bmMotion[1]}ms`);
 });
 
+test('按钮按下有可见的按键行程', () => {
+    // 只靠内阴影的「凹陷」读起来像贴纸在变暗，缺少离开平面的实感。
+    // 2px 位移 + .985 缩放才有琴键被按下去的行程；1px 几乎看不出来。
+    const active = /^\.search-mode:active,\.search-engine:active,\.search-btn:active\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(active, '存在三按钮共用的 :active 规则');
+    const t = /transform:\s*translateY\((\d+)px\)\s*scale\(([\d.]+)\)/.exec(active[1]);
+    assert.ok(t, '按下态应为 translateY + scale 组合');
+    assert.ok(Number(t[1]) >= 2, `按键行程至少 2px，当前 ${t[1]}px（1px 视觉上几乎读不出来）`);
+    // 缩放不能吃掉触摸目标：44px × .985 ≈ 43.3px，仍高于 40px
+    const scale = Number(t[2]);
+    assert.ok(scale >= 0.98 && scale < 1, `缩放应在 [.98, 1) 之间，当前 ${scale}`);
+    assert.ok(44 * scale >= 40, `缩放后高度 ${(44 * scale).toFixed(1)}px 不应低于 40px`);
+});
+
 test('模式按钮的选中态用外投影，不与点击凹陷共用 inset', () => {
     const pressed = /\.search-mode\[aria-pressed="true"\]\s*\{([^}]*)\}/.exec(code);
     assert.ok(pressed, '存在 [aria-pressed="true"] 规则');
