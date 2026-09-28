@@ -180,6 +180,46 @@ test('主操作按钮在网页态与收藏态是同一种材质', () => {
     assert.equal(amber, false, '收藏态不再覆写主按钮底色（琥珀底会盖掉实心陶土）');
 });
 
+test('引擎按钮带下拉箭头，并在展开时翻转', () => {
+    // 箭头是引擎按钮可点开的唯一视觉线索。曾整块丢失：
+    // 标记里没有 <svg>，而 .engine-arrow 的旧样式还留着，成为死代码。
+    assert.match(indexHtml, /class="search-engine"[\s\S]*?class="engine-arrow"/,
+        '引擎按钮内应有 .engine-arrow 箭头');
+
+    const arrow = ruleBlock(code, '.engine-arrow', 'stroke-width');
+    assert.match(arrow, /stroke-width/, '箭头用描边绘制');
+    assert.match(arrow, /stroke:\s*currentColor/, '箭头跟随按钮文字色');
+
+    // 展开态靠 aria-expanded 驱动，不是 .active 类——
+    // 旧样式里的 `.search-engine.active .engine-arrow` 永远不命中。
+    const expanded = /\.search-engine\[aria-expanded="true"\]\s+\.engine-arrow\s*\{([^}]*)\}/.exec(code);
+    assert.ok(expanded, '存在展开态的箭头翻转规则');
+    assert.match(expanded[1], /rotate\(180deg\)/, '展开时箭头翻转');
+
+    // 同一选择器的基础块只能有一处定义，否则同特异性下后写的会静默覆盖。
+    // 只数行首无缩进的块：`.search-engine:hover .engine-arrow {` 这类派生规则不算。
+    const sites = code.match(/^\.engine-arrow\s*\{/gm) || [];
+    assert.equal(sites.length, 1, `.engine-arrow 基础块应只定义一次，实际 ${sites.length}`);
+});
+
+test('搜索按钮按下态显式设置边框色', () => {
+    // 指针按下时仍停在按钮上，:hover 依然命中。若 :active 不写 border-color，
+    // 悬停时的浅色描边会保留在深色实心底上，凹陷读不出来。
+    const active = /^\.search-btn:active\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(active, '存在 .search-btn:active 规则');
+    assert.match(active[1], /border-color:\s*rgba\(var\(--submit-hue\)/,
+        '按下态必须自己给 border-color，不能依赖 :hover 的浅色描边');
+});
+
+test('搜索按钮实心填充的中间停靠点与仿真一致', () => {
+    // 仿真用 #71513f（它的 --primary）；移植时误用了 --accent-hover (#79503f)，
+    // 语义与取值都不对——--accent-hover 是悬停色，不是常态底色。
+    const btn = /^\.search-btn\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(btn, '存在 .search-btn 基础规则');
+    assert.match(btn[1], /linear-gradient\(172deg,#85604e,#71513f 58%,#66483a\)/,
+        '三档渐变与仿真逐字一致，中间档不得改用 --accent-hover');
+});
+
 test('背板包住搜索区与收藏网格，操作条留在外面', () => {
     const board = /<div class="backboard">([\s\S]*?)<nav class="utility-dock"/.exec(indexHtml);
     assert.ok(board, '背板包裹层应存在并终止于 .utility-dock 之前');

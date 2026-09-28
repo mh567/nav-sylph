@@ -119,18 +119,9 @@ body {
 
 .engine-name { max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
 
-.engine-arrow {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transition: transform var(--transition);
-}
-
-.search-engine.active .engine-arrow { transform: rotate(180deg); }
+/* .engine-arrow 的定义已统一到文件尾部的材质层。
+   这里原先还有一条 `.search-engine.active .engine-arrow { transform: rotate(180deg) }`，
+   它永远不会命中：JS 设的是 aria-expanded，不是 .active 类。已删除。 */
 
 .search-input {
     flex: 1;
@@ -2745,22 +2736,30 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 选中态做成「点亮」而非「凹陷」：inset 阴影留给 :active，
    两种语义共用 inset 会让用户分不清「已切换」和「正在按」 */
 .search-mode[aria-pressed="true"] { border-color: rgba(var(--mode-hue),.60); background: linear-gradient(172deg,rgba(var(--mode-hue),.30),rgba(var(--mode-hue),.17) 60%,rgba(var(--mode-hue),.24)); color: rgb(var(--mode-hue)); box-shadow: inset 0 1px rgba(255,255,255,.62),0 2px 5px rgba(67,51,39,.10); }
-.search-engine { --HUE: var(--engine-hue); min-width: 66px; justify-content: center; }
+.search-engine { --HUE: var(--engine-hue); display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 68px; }
+/* 下拉指示箭头：与 aria-expanded 联动，展开时翻转。
+   .engine-arrow 的旧样式在 122/133 行，那条 .search-engine.active 选择器
+   永远不会命中（JS 设的是 aria-expanded），已在本次改为这里的写法。 */
+.engine-arrow { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: .55; transition: transform 160ms, opacity 140ms; }
+.search-engine:hover .engine-arrow { opacity: .85; }
+.search-engine[aria-expanded="true"] .engine-arrow { transform: rotate(180deg); opacity: .85; }
 .search-engine[aria-expanded="true"] { border-color: rgba(var(--engine-hue),.52); color: rgb(var(--engine-hue)); box-shadow: inset 0 2px 5px rgba(91,70,55,.14),inset 0 0 0 1px rgba(255,255,255,.30); }
 /* 搜索是主操作：实心陶土，凹陷靠加深填充而非 inset 才读得出 */
 .search-btn {
-    --HUE: var(--submit-hue); width: auto; min-width: 47px; font-weight: 700; color: #fffaf5;
+    --HUE: var(--submit-hue); width: auto; min-width: 49px; padding: 0 11px; font-weight: 700; color: #fffaf5;
     border-color: rgba(var(--submit-hue),.55);
-    background: linear-gradient(172deg,#85604e,var(--accent-hover) 58%,#66483a);
+    background: linear-gradient(172deg,#85604e,#71513f 58%,#66483a);
     box-shadow: inset 0 1px rgba(255,255,255,.24),inset 0 -1px rgba(0,0,0,.14),0 2px 5px rgba(67,51,39,.17),0 5px 12px rgba(67,51,39,.10);
 }
 .search-btn::before { background: radial-gradient(ellipse 62px 40px at var(--glow-x) var(--glow-y),rgba(255,255,255,.42),transparent 66%),radial-gradient(ellipse 66px 43px at var(--glow-x) var(--glow-y),rgba(255,214,180,.30),transparent 82%); }
 .search-btn:hover { border-color: rgba(214,161,129,.70); background: linear-gradient(172deg,#96705c,#825d47 58%,#70503f); box-shadow: inset 0 1px rgba(255,255,255,.30),inset 0 -1px rgba(0,0,0,.14),0 6px 14px rgba(67,51,39,.22); }
-.search-btn:active { background: linear-gradient(180deg,#5c4034,#4e352b); color: rgba(255,250,245,.92); box-shadow: inset 0 5px 11px rgba(46,28,20,.52),inset 0 0 0 1px rgba(40,24,16,.28),inset 0 -1px rgba(255,255,255,.16); }
-:root[data-theme="dark"] .search-btn { background: linear-gradient(172deg,#e0b293,var(--accent) 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; }
-:root[data-theme="dark"] .search-btn:hover { background: linear-gradient(172deg,#eec3a6,var(--accent-hover) 58%,#d4a181); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn { background: linear-gradient(172deg,#e0b293,var(--accent) 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; } }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn:hover { background: linear-gradient(172deg,#eec3a6,var(--accent-hover) 58%,#d4a181); } }
+/* 按下态必须显式给 border-color：否则指针仍停在按钮上时 :hover 的浅色描边
+   会保留下来，深色实心底配一条亮边，凹陷读不出来 */
+.search-btn:active { border-color: rgba(var(--submit-hue),.62); background: linear-gradient(180deg,#5c4034,#4e352b); color: rgba(255,250,245,.92); box-shadow: inset 0 5px 11px rgba(46,28,20,.52),inset 0 0 0 1px rgba(40,24,16,.28),inset 0 -1px rgba(255,255,255,.16); }
+:root[data-theme="dark"] .search-btn { background: linear-gradient(172deg,#e0b293,#d4a181 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; }
+:root[data-theme="dark"] .search-btn:hover { background: linear-gradient(172deg,#eec3a6,#e0b293 58%,#d4a181); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn { background: linear-gradient(172deg,#e0b293,#d4a181 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn:hover { background: linear-gradient(172deg,#eec3a6,#e0b293 58%,#d4a181); } }
 /* font-size 不能低于 16px：iOS Safari 焦点时小于该值会自动缩放整页。
    583/603 行的移动端 16px 规则被这里覆盖过，改成 15px 会让点击输入框时页面跳动。 */
 .search-input { position: relative; z-index: 1; min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit; line-height: 44px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }

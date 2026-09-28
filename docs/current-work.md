@@ -19,18 +19,34 @@
 | 项 | 位置 | 说明 |
 | --- | --- | --- |
 | 删站点标识 | `index.html:35` | `.site-identity` 元素连同两条 CSS 规则一并删除，不留死代码。 |
-| 三色按钮 | `styles.css:2728` 起 | 网页/收藏=青灰、引擎=琥珀、搜索=实心陶土。各自 `--HUE` 派生底色与光感，三者共用一条规则。 |
-| 快捷键说明行 | `index.html:53`、`styles.css:2830` | 桌面显示，`≤600px` 隐藏（`styles.css:2832`）。 |
-| 书签光影 | `styles.css:2798` | 新增 `::after` 顶边高光；浅色光晕 `.32→.46`、悬浮加外投影。**尺寸 96×42 与圆角 7px 一律未动。** |
-| 宽屏背板 | `index.html:35`、`styles.css:2844` | `≥1024px` 收进 936px 玻璃面；`≤1023px` 兜底（`styles.css:2858`）完全退回原布局。 |
+| 三色按钮 | `styles.css:2719` 起 | 网页/收藏=青灰、引擎=琥珀、搜索=实心陶土。各自 `--HUE` 派生底色与光感，三者共用一条规则。 |
+| 快捷键说明行 | `index.html:54`、`styles.css:2829` | 桌面显示，`≤600px` 隐藏（`styles.css:2831`）。 |
+| 书签光影 | `styles.css:2797` | 新增 `::after` 顶边高光；浅色光晕 `.32→.46`、悬浮加外投影。**尺寸 96×42 与圆角 7px 一律未动。** |
+| 宽屏背板 | `index.html:35`、`styles.css:2843` | `≥1024px` 收进 936px 玻璃面；`≤1023px` 兜底（`styles.css:2857`）完全退回原布局。 |
 
-### 三个浏览器实测才发现的缺陷（单测与源码形状断言都没抓到）
+### 发布后按用户反馈补正的四处（v1.5.13 已含前三处的错误版本）
 
-**已修 1：收藏态的「打开」按钮是琥珀色。** 旧样式有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`，特异性 `(0,3,0)` 压过新材质层的 `.search-btn` `(0,1,0)`，实心陶土被换成琥珀底。只在真实浏览器截图里看得出来——单测与 `getComputedStyle` 在未进入收藏态时都测不到。已**删除**该规则（不是覆盖），原位留了解释性注释（`styles.css:1154`），并在 `tests/homepage-material.test.js` 加断言钉住。
+用户比对后发现引擎按钮与搜索按钮的观感与仿真不一致。用「真实指针悬停/按下 + 逐属性 dump」在两种主题下比对，定位到四处差异：
 
-**已修 2：说明行在手机上照样显示。** 基础规则 `.search-caption { display:flex }` 原本写在文件末尾的 `≤600px` 块**之后**，同特异性下把块里的 `display:none` 压掉。390×844 实测 `display` 仍为 `flex`。已把基础规则移到 `≤600px` 块之前，并补了一条**断言相对源码位置**的测试——两条规则都「存在」时只有顺序能区分对错。
+**已修 1：引擎按钮丢失下拉箭头。** 标记里只有 `<span class="engine-name">`，没有箭头 `<svg>`；而旧样式 `.engine-arrow`（原 `styles.css:122`）还留着定义，成为死代码——箭头是「这个按钮能点开」的唯一视觉线索。已补 `<svg class="engine-arrow">`，并把箭头定义整块收进材质层（`styles.css:2743`），删掉旧的那条永远不命中的 `.search-engine.active .engine-arrow`。
 
-**已修 3：验证过程中自己的测试是假绿的。** 上面第 2 条最初没被测出来，因为断言只检查「基础规则有 `display:flex`」和「`≤600px` 块里有 `display:none`」，两条都满足，但层叠结果是错的。另外加琥珀色断言时，它匹配到了我自己写的解释性注释里的 `#f59e0b` 字样——剥注释后才是正确判定。
+**已修 2：搜索按钮按下态没有边框色。** `:active` 未写 `border-color`，而指针按下时仍停在按钮上、`:hover` 依然命中，于是悬停的浅色描边 `rgba(214,161,129,.7)` 留在了深色实心底上（正确值是 `rgba(148,94,74,.62)`）。**只在按住不放时才看得见**，单击太快根本捕捉不到。已显式补上。
+
+**已修 3：搜索按钮常态渐变的中间档取错值。** 移植时用了 `var(--accent-hover)` = `#79503f`，仿真的 `#71513f`；语义也不对（`--accent-hover` 是悬停色，不是常态底色）。深色档同样整体错位一档：`--accent`/`--accent-hover` 换成了仿真用的 `#d4a181`/`#e0b293`。已全部对齐。
+
+**已修 4：最小宽度与内边距。** 引擎 66→68px（要容纳箭头）、搜索 47→49px、`padding` 0 10px→0 11px。
+
+**有意保留的差异：按钮高度 44px（仿真 40px）。** 44px 是触摸目标下限，改回 40px 等于重新引入上一轮列为 P1 的缺陷。除高度外，色相、渐变、描边、阴影、位移、内边距、最小宽度已与仿真**逐属性一致**（浅色与深色两套均验证）。
+
+### 四处旧样式残留（浏览器实测才暴露）
+
+**已修 A：收藏态的「打开」按钮是琥珀色。** 旧样式有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`，特异性 `(0,3,0)` 压过新材质层的 `.search-btn` `(0,1,0)`，实心陶土被换成琥珀底。只在真实浏览器截图里看得出来——单测与 `getComputedStyle` 在未进入收藏态时都测不到。已**删除**该规则（不是覆盖），原位留了解释性注释（`styles.css:1145`），并在 `tests/homepage-material.test.js` 加断言钉住。
+
+**已修 B：说明行在手机上照样显示。** 基础规则 `.search-caption { display:flex }` 原本写在文件末尾的 `≤600px` 块**之后**，同特异性下把块里的 `display:none` 压掉。390×844 实测 `display` 仍为 `flex`。已把基础规则移到 `≤600px` 块之前，并补了一条**断言相对源码位置**的测试——两条规则都「存在」时只有顺序能区分对错。
+
+**已修 C：验证过程中自己的测试是假绿的。** 上面第 B 条最初没被测出来，因为断言只检查「基础规则有 `display:flex`」和「`≤600px` 块里有 `display:none`」，两条都满足，但层叠结果是错的。另外加琥珀色断言时，它匹配到了我自己写的解释性注释里的 `#f59e0b` 字样——剥注释后才是正确判定。
+
+**已修 D：`--kb-inset` 的验证夹具漏字段。** 两次手写 fixture 都漏了 `searchEngines`，页面直接白屏「加载失败」（`app.js:193` 读 `config.searchEngines.find`），报错只出现在浏览器控制台。**对策：fixture 应从服务端默认配置派生，而不是手写。** 手写的那次还误把服务器配置写进了 `config.json`（书签数据文件），并一度用不完整的 `server-config.json` 覆盖默认配置导致 `paths` 丢失——端口改用环境变量 `PORT=` 传递，不要写配置文件。
 
 ### 验证记录
 
@@ -61,7 +77,7 @@ git diff --check                     → 无空白问题
 
 - **深色三色相区分度 —— 已确认可用**。1280×800 深色截图肉眼比对：网页=浅青灰、引擎=琥珀金、搜索=亮陶土，三者边界清晰。数值上三色锚点（`138,160,168`/`208,162,96`/`223,169,140`）亮度差足够，原先的顾虑不成立。
 - **书签 hover 态 —— 已确认**。`agent-browser` 真实指针悬停：`:hover` 命中、`transform: translateY(-1px)` 生效、`box-shadow` 含新增外投影（`0 2px 5px` + `0 9px 18px`）、`::after` 顶边渐变生效、`::before` 光晕 `opacity: 0.46`。截图可见该卡片明显浮起且边缘更亮，与同排静止项对比清晰。
-- **软键盘让位 —— 接线已验证，但「键盘本身」仍未复测**。无头浏览器不会真的弹出软键盘，因此直接驱动机制输入：把 `--kb-inset` 置为 300px 后，分享编辑区 `max-height` 从 `420px` 收到 `120px`（`styles.css:639`）。另有两条消费点同样在 `calc()` 内：`styles.css:1631/1639`（收藏弹窗）与 `admin.css:294/295`（UI 对话框）。**这证明接线正确，不证明真机键盘行为一致**——真机仍需看一眼分享编辑区底部按钮是否被键盘遮住。
+- **软键盘让位 —— 接线已验证，但「键盘本身」仍未复测**。无头浏览器不会真的弹出软键盘，因此直接驱动机制输入：把 `--kb-inset` 置为 300px 后，分享编辑区 `max-height` 从 `420px` 收到 `120px`（`styles.css:630`）。另有两条消费点同样在 `calc()` 内：`styles.css:1622/1630`（收藏弹窗）与 `admin.css:294/295`（UI 对话框）。**这证明接线正确，不证明真机键盘行为一致**——真机仍需看一眼分享编辑区底部按钮是否被键盘遮住。
 
 ### 仍未验证（本地造不出该环境）
 
@@ -96,7 +112,7 @@ git diff --check                     → 无空白问题
 
 | # | 位置 | 缺陷 |
 | --- | --- | --- |
-| 1 | `styles.css:2726` | `.search-input` 在文件**末尾**声明 `font-size: 15px`，覆盖了 583/603 行的移动端 `16px`。15px 低于 iOS Safari 自动缩放阈值 → 点击输入框整页被放大。改为 16px。 |
+| 1 | `styles.css:2765` | `.search-input` 在文件**末尾**声明 `font-size: 15px`，覆盖了 583/603 行的移动端 `16px`。15px 低于 iOS Safari 自动缩放阈值 → 点击输入框整页被放大。改为 16px。 |
 | 2 | `admin.css:401` | ≤480px 的 `align-items: end` 把弹窗变底部抽屉，被地址栏与 Home 指示条遮挡。 |
 | 3 | `styles.css:2783` | `.utility-dock` 与 `.toast` 均无 `env(safe-area-inset-bottom)`。页面已声明 `viewport-fit=cover`，底部固定元素会压住 iOS Home 指示条。 |
 | 4 | `server.js:1114` | 分享接收页 viewport meta **缺 `viewport-fit=cover`**，刘海屏直接留白。补上后 `body` 的 `padding` 也改为 `max(20px, env(safe-area-inset-*))`，否则该 meta 无实际作用。 |
@@ -105,11 +121,11 @@ git diff --check                     → 无空白问题
 
 | # | 位置 | 缺陷 |
 | --- | --- | --- |
-| 5 | `styles.css:2730` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px（本次改版后由 `--ctl-h: 44px` 统一提供）。 |
-| 6 | `styles.css:1729`（横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄（现值 54px，`styles.css:1770`）。 |
+| 5 | `styles.css:2721` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px（本次改版后由 `--ctl-h: 44px` 统一提供）。 |
+| 6 | `styles.css:1720`（横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄（现值 54px，`styles.css:1761`）。 |
 | 7 | `index.html:5`、`styles.css:58/67` | `100vh` 在 iOS Safari 中是地址栏收起时的高度，展开时底部出现空白带。改为 `100vh` + `100dvh` 双声明（不支持 dvh 的浏览器沿用前者）。`admin.css` 早已全面改用 dvh，首页是漏网的。 |
-| 8 | `styles.css:2766` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
-| 9 | `styles.css:2836` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 `≤600px` 块里的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
+| 8 | `styles.css:2765` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
+| 9 | `styles.css:2835` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 `≤600px` 块里的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
 
 ### 三、代码审计（基线 `382c89e`...工作区）
 
@@ -139,7 +155,7 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 
 **已修 7（Spec）：`server.js` 容器内边距漏改。** 计划里写了「容器 `padding: 24px` 改用 `max(24px, env(...))`」，实际只改了 `body`。已补。
 
-**已推翻 1：「≤480px 的 `height: 32px` 覆盖了 44px 触摸目标」。** 审查认为 ≤480px 块的 `height: 32px`（`styles.css:584/587/604/607`）会压过末尾的 `min-height: 44px`，理由是"更specific/更早"。**不成立**：`min-height` 与 `height` 不是同一属性，永远同时生效，**与源码顺序无关**，且 `min-height` 优先。真实 Chrome 在 390×844 实测四个控件全为 **44px**（`modeBtn` / `engineBtn` / `searchBtn` / `searchInput`），并非 32px。
+**已推翻 1：「≤480px 的 `height: 32px` 覆盖了 44px 触摸目标」。** 审查认为 ≤480px 块的 `height: 32px`（`styles.css:595/598/604/607`）会压过末尾的 `min-height: 44px`，理由是"更specific/更早"。**不成立**：`min-height` 与 `height` 不是同一属性，永远同时生效，**与源码顺序无关**，且 `min-height` 优先。真实 Chrome 在 390×844 实测四个控件全为 **44px**（`modeBtn` / `engineBtn` / `searchBtn` / `searchInput`），并非 32px。
 
 **已推翻 2：「PIN 输入框在 PIN 提示文字上方」。** 审查只做了模板字符串的 `indexOf` 比较，断言 reveal 区块排在 `opt_pin` 之后就算通过，因而误判视觉顺序。真实浏览器实测 y 坐标：复选框文案 280 → 提示文字 309.8~326.3 → **PIN 输入框 345.3** → 「有效期」标题 424.3，完全符合「紧跟在 PIN 码提示下面」。
 
@@ -310,7 +326,7 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 
 用真实 Chrome（agent-browser）在临时副本上做了 A/B/C 三组核验，截图与测量值留在 scratchpad。**三条最严重的问题，两条属实已修，一条被推翻。**
 
-**已修 1：展开动画整条失效（`styles.css:2700` 覆盖 `:619`）**。`.search` 被声明三次，最后一条整块覆盖了「Paste 分享模式」区块里的 `transition`。实测 `getComputedStyle().transitionProperty` 只剩 `border-color, box-shadow, background`——`min-height` / `padding` / `border-radius` 全部没有参与过渡。`:617-618` 专门写的注释解释了「height:auto 不可过渡，故过渡 min-height」，而这段设计从未运行过。这与改版前修的是**同一类错误**（尾段新版区块覆盖前面），而当时的守卫只覆盖了 `.search.paste-mode` 后代规则，漏了 `.search` 自身。已把 `:2700` 的 transition 补齐，并新增守卫断言：最后生效的 `.search` transition 必须含 `min-height` / `padding` / `border-radius`，且与 composer 区块声明的完全一致。
+**已修 1：展开动画整条失效（`styles.css:2700` 覆盖 `:610`）**。`.search` 被声明三次，最后一条整块覆盖了「Paste 分享模式」区块里的 `transition`。实测 `getComputedStyle().transitionProperty` 只剩 `border-color, box-shadow, background`——`min-height` / `padding` / `border-radius` 全部没有参与过渡。`:617-618` 专门写的注释解释了「height:auto 不可过渡，故过渡 min-height」，而这段设计从未运行过。这与改版前修的是**同一类错误**（尾段新版区块覆盖前面），而当时的守卫只覆盖了 `.search.paste-mode` 后代规则，漏了 `.search` 自身。已把 `:2700` 的 transition 补齐，并新增守卫断言：最后生效的 `.search` transition 必须含 `min-height` / `padding` / `border-radius`，且与 composer 区块声明的完全一致。
 
 **已修 2：一次失败的拖拽会永久锁死自增高**。`pointerdown` 命中把手就无条件置 `pasteUserResized = true`，不区分拖拽是否真的成功。实测把把手向上拖 60px（撞上 `min-height`）后，inline height 被写成 `36px`（被 CSS 钳到 96px，永不生效的死值），自增高就此关闭；之后输入 10 行内容，高度**永久停在 96px** 而 `scrollHeight` 涨到 300px，全部转入内部滚动。对照组（不做失败拖拽）同样 10 行，高度正常长到 492px。修法：`pointerup` 时读回实际渲染高度，若未高于 `min-height` 则清掉标记与内联高度并重新自增高；真正拖成功的仍保留用户选择。
 
@@ -512,7 +528,7 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 ### 本次明确不在范围内（移动端）
 
-19. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:352` vs `admin.css:52`）；`.category-tree-children` 在 `styles.css:2485`（≤768px 块内）是 `display: none`，`admin.css:383` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
+19. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:343` vs `admin.css:52`）；`.category-tree-children` 在 `styles.css:2476`（≤768px 块内）是 `display: none`，`admin.css:383` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
 20. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
 21. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
 22. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
@@ -520,8 +536,8 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 ## 已排除的误判（本次移动端审计）
 
 - **「分享弹窗没有 CSS 定位，所以掉到页面最底部」** —— 不成立。`.ui-dialog-overlay` 在 `admin.css:290` 一直有 `position: fixed; inset: 0; display: grid; place-items: center`，桌面端表现正常。真因是 `admin.css:401` 的 ≤480px 规则写了 `align-items: end` 覆盖成底部抽屉。**不要**去 `styles.css` 里补一份 `.ui-dialog` 定位，那会变成第三处声明。
-- **「`styles.css:2783` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2787 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2787 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
-- **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2726` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
+- **「`styles.css:2831` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2787 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2787 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
+- **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2765` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
 - **「引擎下拉在横屏下可能超出视口」** —— 记录严重性被低估。实测 12 个引擎时横屏 844×390 下超出视口 199px，且 `max-height: none` + `overflow: visible` 无法滚动，**6 个引擎完全选不中**。已修（v1.5.12）。教训：写「可能」之前先量一次。
 
 ## 发布流程漏了两步（已补齐）
