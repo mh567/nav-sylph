@@ -10,7 +10,7 @@
 
 ## 本次完成的内容（分享弹窗紧凑化 + 移动端适配审计）
 
-已提交为 `a5a2e00`（含双轴审查修复），本次发布 **v1.5.10**。
+分享弹窗与移动端适配提交为 `a5a2e00`、v1.5.10 发布为 `b4522e2`；收藏弹窗的同类修复为 `7779a64`，本次发布 **v1.5.11**。
 
 ### 一、分享弹窗
 
@@ -18,9 +18,9 @@
 
 **有效期改为 2×2 两横两竖**。`showUiDialog` 新增可选 `groups` 参数承载分组选项，四档有效期装进 `.ui-dialog-options` 网格容器并加「有效期」分组标题。实测网格 `grid-template-columns: 164.5px 164.5px`，两行两列，每格 46px 高（≥44px 触摸标准），「30 分钟」单行不折行。
 
-**弹窗在窄屏被浏览器遮挡**，根因不是缺少 `position: fixed`（`.ui-dialog-overlay` 一直在 `admin.css:290` 有 `position: fixed; place-items: center`），而是 `admin.css:395` 的 ≤480px 规则写了 `align-items: end`，**把居中弹窗改成了底部抽屉**。已删除该规则，窄屏恢复居中，改为四边 `env(safe-area-inset-*)` 内边距。5 档视口实测上下留白完全相等（见下表）。
+**弹窗在窄屏被浏览器遮挡**，根因不是缺少 `position: fixed`（`.ui-dialog-overlay` 一直在 `admin.css:290` 有 `position: fixed; place-items: center`），而是 `admin.css:397` 的 ≤480px 规则写了 `align-items: end`，**把居中弹窗改成了底部抽屉**。已删除该规则，窄屏恢复居中，改为四边 `env(safe-area-inset-*)` 内边距。5 档视口实测上下留白完全相等（见下表）。
 
-**收紧弹窗布局**：`admin.css:301` 的 `.ui-dialog-hint` 负边距 `-4px` 改为 `-2px`（原值让提示文字贴住复选框）；`.ui-dialog-choice` 补 `min-height: 40px`（窄屏 44px）。
+**收紧弹窗布局**：`admin.css:302` 的 `.ui-dialog-hint` 负边距 `-4px` 改为 `-2px`（原值让提示文字贴住复选框）；`.ui-dialog-choice` 补 `min-height: 40px`（窄屏 44px）。
 
 ### 二、移动端适配审计（4 项确认破损 + 6 项体验缺陷）
 
@@ -30,20 +30,20 @@
 
 | # | 位置 | 缺陷 |
 | --- | --- | --- |
-| 1 | `styles.css:2702` | `.search-input` 在文件**末尾**声明 `font-size: 15px`，覆盖了 583/603 行的移动端 `16px`。15px 低于 iOS Safari 自动缩放阈值 → 点击输入框整页被放大。改为 16px。 |
-| 2 | `admin.css:395` | ≤480px 的 `align-items: end` 把弹窗变底部抽屉，被地址栏与 Home 指示条遮挡。 |
-| 3 | `styles.css:2759` | `.utility-dock` 与 `.toast` 均无 `env(safe-area-inset-bottom)`。页面已声明 `viewport-fit=cover`，底部固定元素会压住 iOS Home 指示条。 |
+| 1 | `styles.css:2715` | `.search-input` 在文件**末尾**声明 `font-size: 15px`，覆盖了 583/603 行的移动端 `16px`。15px 低于 iOS Safari 自动缩放阈值 → 点击输入框整页被放大。改为 16px。 |
+| 2 | `admin.css:397` | ≤480px 的 `align-items: end` 把弹窗变底部抽屉，被地址栏与 Home 指示条遮挡。 |
+| 3 | `styles.css:2772` | `.utility-dock` 与 `.toast` 均无 `env(safe-area-inset-bottom)`。页面已声明 `viewport-fit=cover`，底部固定元素会压住 iOS Home 指示条。 |
 | 4 | `server.js:1114` | 分享接收页 viewport meta **缺 `viewport-fit=cover`**，刘海屏直接留白。补上后 `body` 的 `padding` 也改为 `max(20px, env(safe-area-inset-*))`，否则该 meta 无实际作用。 |
 
 **P1（明确体验缺陷，本次已修）**
 
 | # | 位置 | 缺陷 |
 | --- | --- | --- |
-| 5 | `styles.css:2685/2736` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px。 |
-| 6 | `styles.css:2763`（新增横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄到 48px。 |
+| 5 | `styles.css:2698/2749` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px。 |
+| 6 | `styles.css:2776`（新增横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄到 48px。 |
 | 7 | `index.html:22`、`styles.css:56/66` | `100vh` 在 iOS Safari 中是地址栏收起时的高度，展开时底部出现空白带。改为 `100vh` + `100dvh` 双声明（不支持 dvh 的浏览器沿用前者）。`admin.css` 早已全面改用 dvh，首页是漏网的。 |
-| 8 | `styles.css:2700` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
-| 9 | `styles.css:2763` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 2759 行的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
+| 8 | `styles.css:2715` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
+| 9 | `styles.css:2776` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 2759 行的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
 
 ### 三、代码审计（基线 `382c89e`...工作区）
 
@@ -79,7 +79,33 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 
 **未采纳：`groups` 是 Speculative Generality。** 审查提出 `.ui-dialog-options` 只有一个调用方、且只有一个分组，怀疑过度设计。**不采纳**：2×2 网格正是用户明确选定的排布（而非四档横排一行），`groups` 承载的正是这个需求；`confirmAction` / `notice` / `promptValue` / `changePassword` 传空数组时行为与改动前逐字节一致，不构成为想象中的需求预留钩子。
 
-**仍未处理（Spec 指出，本轮不扩大范围）**：`.fav-dialog` 在 ≤480px 仍是底部抽屉（`admin.css:392`），与本次修掉的 `.ui-dialog` 属同一类缺陷，但收藏面板不在本次范围内；原需求点名的「大折叠」机型未纳入实测视口。两者均记入后续项。
+**当时仍未处理、经确认后补做**：`.fav-dialog` 在窄屏也是底部抽屉（真因在 `styles.css` 的 ≤768px 块而非 `admin.css`——我最初把它记成了后者，行号也写错了），已按 `.ui-dialog` 同款处理修掉，见下节。原需求点名的「大折叠」机型仍未纳入实测视口，记入后续项。
+
+### 五、收藏弹窗的同类修复（`7779a64`，发布为 v1.5.11）
+
+审查指出 `.fav-dialog` 与本次修掉的 `.ui-dialog` 属同一类缺陷。经确认后一并修掉，并暴露出**我把根因记错了文件**：不是 `admin.css` 的 ≤480px 块，而是 **`styles.css` 的 ≤768px 块**——断点都不同，因此此前只搜 `admin.css` 根本没找到它。真正的贴底声明在 `styles.css:1630`（`align-items: flex-end` + `border-radius: 16px 16px 0 0`）。
+
+改动：`styles.css` 的 ≤768px 块改为 `align-items: center` + 四边安全区内边距 + `border-radius: 14px` + `max-height: 88dvh; overflow-y: auto`；`admin.css` 的 ≤480px 块里那条重复的底部抽屉声明删除，改为注释指向唯一定义处。`slideUpMobile` 动画随之不再被使用，但保留在原处（`@keyframes` 仍在 768px 块内，若确认无其他引用可再清理）。
+
+新增守卫：`every overlay dialog stays vertically centred on narrow screens` 同时断言**两个**弹窗——`.ui-dialog-overlay`（≤480px）与 `.fav-dialog-overlay`（≤768px），并额外断言 ≤480px 块内不得再出现 `.fav-dialog` 声明（防止第二处覆盖重新长出来）。
+
+**测试桩自身的一个坑**：`mediaBlock()` 原本用 `indexOf` 取**第一个**同查询块，而 `styles.css` 里有多个 `@media (max-width: 768px)`，取到的不是要断言的那个，测试直接报「规则不存在」。已改为 `mediaBlocks()` 收集全部同查询块，再用 `requiredIn` 按内容定位。**这是一条会给出误导性失败的断言**，值得记住。
+
+红绿验证：把 `.fav-dialog-overlay` 改回 `align-items: flex-end` 后该测试变红，恢复后 75 项全绿。
+
+真实 Chrome 验收（进入管理面板 → 「添加收藏」打开 `.fav-dialog`，5 档视口）：
+
+| 视口 | 弹窗高 | 上留白 | 下留白 | 居中 | 完整在视口内 | 内部滚动 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 390×844 | 624.0 | 110.0 | 110.0 | ✅ | ✅ | 否（622/622） |
+| 360×640 | 563.2 | 38.4 | 38.4 | ✅ | ✅ | 是 |
+| 844×390 | 351.0 | 19.5 | 19.5 | ✅ | ✅ | 是 |
+| 834×1112 | 581.5 | 265.3 | 265.3 | ✅ | ✅ | 否 |
+| 1280×800 | 581.5 | 109.3 | 109.3 | ✅ | ✅ | 否 |
+
+390×844 下另测：圆角 14px、`align-items: center`、按钮 44px、五个文本框 50px 高且 `font-size: 16px`。console 零消息。
+
+**搜索框桌面高度保持 56px（经确认）**：桌面 `.search` 由 48px 变 56px 是「按钮抬到 44px」的必然结果（44 + 5×2 内边距 = 54px），不是独立改动。已确认保留，不再回退。
 
 ## 发布前代码审查发现并修复的缺陷
 
@@ -370,18 +396,17 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 ### 本次明确不在范围内（移动端）
 
 19. **软键盘弹出时弹窗与编辑框会被顶飞**。`vh` 与 `dvh` **都不跟随软键盘收缩**，只有 `visualViewport` 能反映可视区域。`styles.css:637` 的 `max-height: 60vh`（分享编辑器）与 `.ui-dialog` 的 `max-height: 88dvh` 在键盘弹出时都可能超出可视区。彻底解决需监听 `visualViewport` 的 `resize`/`scroll` 并据此改高度，属架构级改动。**真机键盘未验证。**
-20. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:371/384`）；`.category-tree-children` 在 `styles.css:2465` 是 `display: none`，`admin.css:378` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
+20. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:372/385`）；`.category-tree-children` 在 `styles.css:2478` 是 `display: none`，`admin.css:379` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
 21. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
-22. **`.fav-dialog` 在窄屏仍是底部抽屉**。`admin.css:392` 的 `.fav-dialog { border-radius: 16px 16px 0 0 }` 与本次修掉的 `.ui-dialog` 属**完全相同的一类缺陷**（居中弹窗被改成贴底），只是收藏面板不在本次范围内。收藏管理的新增/编辑弹窗在手机上仍会被地址栏与 Home 指示条遮挡，改法与 `.ui-dialog` 相同（去掉 `align-items: end`、恢复居中圆角）。
-23. **`.engine-dropdown` 没有横屏兜底**，引擎较多时横屏可能超出视口。`styles.css` 现有的横屏块（`max-height: 500px`）只覆盖 `.help-content`、`.paste-result` 与搜索栏。
-24. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
-25. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
+22. **`.engine-dropdown` 没有横屏兜底**，引擎较多时横屏可能超出视口。`styles.css` 现有的横屏块（`max-height: 500px`）只覆盖 `.help-content`、`.paste-result` 与搜索栏。
+23. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
+24. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
 
 ## 已排除的误判（本次移动端审计）
 
-- **「分享弹窗没有 CSS 定位，所以掉到页面最底部」** —— 不成立。`.ui-dialog-overlay` 在 `admin.css:290` 一直有 `position: fixed; inset: 0; display: grid; place-items: center`，桌面端表现正常。真因是 `admin.css:395` 的 ≤480px 规则写了 `align-items: end` 覆盖成底部抽屉。**不要**去 `styles.css` 里补一份 `.ui-dialog` 定位，那会变成第三处声明。
-- **「`styles.css:2759` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2763 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2763 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
-- **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2702` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
+- **「分享弹窗没有 CSS 定位，所以掉到页面最底部」** —— 不成立。`.ui-dialog-overlay` 在 `admin.css:290` 一直有 `position: fixed; inset: 0; display: grid; place-items: center`，桌面端表现正常。真因是 `admin.css:397` 的 ≤480px 规则写了 `align-items: end` 覆盖成底部抽屉。**不要**去 `styles.css` 里补一份 `.ui-dialog` 定位，那会变成第三处声明。
+- **「`styles.css:2772` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2763 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2763 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
+- **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2715` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
 
 ## 下一位 Agent 的启动步骤
 
