@@ -10,7 +10,7 @@
 
 ## 本次完成的内容（分享弹窗紧凑化 + 移动端适配审计）
 
-分享弹窗与移动端适配提交为 `a5a2e00`、v1.5.10 发布为 `b4522e2`；收藏弹窗的同类修复为 `7779a64`，本次发布 **v1.5.11**。
+分享弹窗与移动端适配提交为 `a5a2e00`、v1.5.10 发布为 `b4522e2`；收藏弹窗的同类修复为 `7779a64`、v1.5.11 发布为 `49f9f28`；引擎下拉与软键盘修复见下节，本次发布 **v1.5.12**。
 
 ### 一、分享弹窗
 
@@ -106,6 +106,57 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 390×844 下另测：圆角 14px、`align-items: center`、按钮 44px、五个文本框 50px 高且 `font-size: 16px`。console 零消息。
 
 **搜索框桌面高度保持 56px（经确认）**：桌面 `.search` 由 48px 变 56px 是「按钮抬到 44px」的必然结果（44 + 5×2 内边距 = 54px），不是独立改动。已确认保留，不再回退。
+
+### 六、引擎下拉与软键盘（本次发布 v1.5.12）
+
+这两项原本是交接文档里的后续项，调查后发现**第一项的严重性被记错了**。
+
+**引擎下拉不是「体验缺陷」，是功能在特定视口下直接失效。** 上一版把它写成「引擎较多时横屏可能超出视口」。实测（12 个搜索引擎，横屏 844×390）后确认：下拉框高 **442px**，超出视口 **199px**，且基础规则是 `max-height: none` + `overflow: visible` —— **既不能滚动也够不到**。12 个引擎里 **6 个完全选不中**（Startpage、Ecosia、Qwant、搜狗、360 搜索、头条搜索），界面上没有任何提示。「可能」两个字掩盖的是一个静默的功能失效。
+
+修复照抄 `.fav-dropdown` 已有范式，只加在横屏块（`max-height: 500px` 那个）：
+
+```css
+.engine-dropdown {
+    max-height: min(60dvh, 300px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+```
+
+**基础规则刻意不加 `max-height`**：竖屏实测 442px < 640px 本就不溢出，加了只是无谓的限制。守卫测试同时断言「横屏块必须有上限且能滚动」与「基础规则不得有上限」。
+
+实测复验（12 引擎）：
+
+| 视口 | 下拉高 | 上限 | 完整在视口内 | 需滚动 |
+| --- | --- | --- | --- | --- |
+| 844×390 | 234.0 | 234px | ✅ | 是（440/232） |
+| 390×844 | 442.0 | none | ✅ | 否 |
+| 360×640 | 442.0 | none | ✅ | 否 |
+| 834×1112 | 442.0 | none | ✅ | 否 |
+| 1280×800 | 442.0 | none | ✅ | 否 |
+
+横屏滚到底后实测最后一个引擎「头条搜索」底边 **374 ≤ 390**，12 个全部可达（修复前 6 个不可达）。
+
+**软键盘适配（`visualViewport`）**。`vh` 与 `dvh` 都不跟随软键盘收缩——这是规范事实，不是本项目的疏漏，因此此前所有 `dvh` 写法都无法解决。新增 `bindKeyboardViewport()`（`app.js:381`）：监听 `visualViewport` 的 `resize` 与 `scroll`，用 `requestAnimationFrame` 合并同一帧内的重复事件，把被遮挡高度写进 CSS 变量 `--kb-inset`；再由各处 `calc()` 消费：
+
+- `.ui-dialog` / `.fav-dialog` 的 `max-height` 减去该值
+- 两个 overlay 的 `padding-bottom` 加上该值（**与 `env(safe-area-inset-bottom)` 叠加**，否则键盘上方那条手势条又会压住按钮）
+- `.search.paste-mode .search-input` 的 `max-height` 改为 `calc(60vh - var(--kb-inset, 0px))`
+- 写入变量后调用 `autoGrowPasteInput()` 重算编辑区高度，否则会停在键盘弹出前算出的值上
+
+不支持 `visualViewport` 的浏览器 `--kb-inset` 恒为 0，行为与改动前完全一致。
+
+**已验证的部分**：用 `element.style.setProperty('--kb-inset', ...)` 模拟键盘（headless 无法模拟真实软键盘），实测 `.ui-dialog` 的 `max-height` 由 **742.72px → 442.72px**（恰好 −300px），overlay `padding-bottom` 由 12px → 312px；弹窗 410.5px 完整落在 532px 可用区内，操作按钮可见。键盘更大（450px）时弹窗收矮至 292.7px 并转为内部滚动，不溢出。console 零消息。
+
+**未验证的部分（重要）**：**真机软键盘从未实测。** headless Chrome 不会触发 `visualViewport` 的键盘行为，因此以下三点**都没有答案**：
+
+1. `offsetTop` 在 iOS Safari 与 Android Chrome 上是否语义一致；
+2. 键盘弹出时 `window.innerHeight` 是否同步收缩（部分浏览器不收缩，公式会算出 0）；
+3. 输入框聚焦后浏览器自动滚动页面是否让 `offsetTop` 变成非零值。
+
+第 3 点尤其可疑：当前实现把 `offsetTop` 算进遮挡高度，**在会自动滚动的浏览器上可能过度收矮弹窗**。上线前需在真机确认，必要时改为只取 `height` 差值。
+
+**测试桩的一个坑（第二次踩到同类问题）**：新加的键盘守卫最初用 `assert.match(source, /visualViewport/)` 匹配整个 `app.js`，但 `bindKeyboardViewport` 上方那句注释里就写着「只有 visualViewport 反映」——**把实现代码删空后测试依然全绿**。已改为先剥掉整行注释与块注释再匹配可执行代码。这与本仓库此前「源码形状断言只匹配可执行代码」的教训相同，区别只在于这次是自己新写的守卫。
 
 ## 发布前代码审查发现并修复的缺陷
 
@@ -395,12 +446,10 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 ### 本次明确不在范围内（移动端）
 
-19. **软键盘弹出时弹窗与编辑框会被顶飞**。`vh` 与 `dvh` **都不跟随软键盘收缩**，只有 `visualViewport` 能反映可视区域。`styles.css:637` 的 `max-height: 60vh`（分享编辑器）与 `.ui-dialog` 的 `max-height: 88dvh` 在键盘弹出时都可能超出可视区。彻底解决需监听 `visualViewport` 的 `resize`/`scroll` 并据此改高度，属架构级改动。**真机键盘未验证。**
-20. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:372/385`）；`.category-tree-children` 在 `styles.css:2478` 是 `display: none`，`admin.css:379` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
-21. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
-22. **`.engine-dropdown` 没有横屏兜底**，引擎较多时横屏可能超出视口。`styles.css` 现有的横屏块（`max-height: 500px`）只覆盖 `.help-content`、`.paste-result` 与搜索栏。
-23. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
-24. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
+19. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:372/385`）；`.category-tree-children` 在 `styles.css:2478` 是 `display: none`，`admin.css:379` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
+20. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
+21. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
+22. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
 
 ## 已排除的误判（本次移动端审计）
 
