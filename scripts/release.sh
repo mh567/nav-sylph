@@ -181,11 +181,29 @@ echo "$RELEASE_NOTES"
 
 # 创建 Git Tag
 log_step "创建 Git Tag..."
-git tag -a "v${VERSION}" -m "Release v${VERSION}"
-git push origin "v${VERSION}"
+if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+    # tag 已存在（补发历史版本，或上次跑到一半中断）时不要直接失败，
+    # 但必须确认它指向当前 HEAD，否则 Release 会挂到错误的提交上。
+    # 注意：这是顶层脚本而非函数，不能用 local（set -e 下会直接退出）。
+    tag_commit=$(git rev-list -n 1 "v${VERSION}")
+    head_commit=$(git rev-parse HEAD)
+    if [ "$tag_commit" != "$head_commit" ]; then
+        log_error "tag v${VERSION} 已存在但指向 ${tag_commit:0:7}，与当前 HEAD ${head_commit:0:7} 不一致"
+        log_error "请先删除该 tag（git tag -d v${VERSION}）或确认版本号是否正确"
+        exit 1
+    fi
+    log_warn "tag v${VERSION} 已存在且指向当前提交，跳过创建"
+else
+    git tag -a "v${VERSION}" -m "Release v${VERSION}"
+fi
+git push origin "v${VERSION}" 2>/dev/null || log_warn "tag v${VERSION} 推送失败（可能已存在），继续"
 
-# 发布到 GitHub
+# 发布到 GitHub Release
 log_step "发布到 GitHub Release..."
+if gh release view "v${VERSION}" >/dev/null 2>&1; then
+    log_error "Release v${VERSION} 已存在，请先删除：gh release delete v${VERSION}"
+    exit 1
+fi
 gh release create "v${VERSION}" \
     --title "Nav Sylph v${VERSION}" \
     --notes "$RELEASE_NOTES" \
