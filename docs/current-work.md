@@ -458,21 +458,40 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 - **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2726` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
 - **「引擎下拉在横屏下可能超出视口」** —— 记录严重性被低估。实测 12 个引擎时横屏 844×390 下超出视口 199px，且 `max-height: none` + `overflow: visible` 无法滚动，**6 个引擎完全选不中**。已修（v1.5.12）。教训：写「可能」之前先量一次。
 
-## 本次遗漏的发布步骤（已补，记此备忘）
+## 发布流程漏了两步（已补齐）
 
-本次连续发布 v1.5.10、v1.5.11、v1.5.12 **三轮都只做了「提交 + 推送分支」，没有打 tag**。本仓库每个 `release:` 提交都应有一个同名 tag（`v1.5.7`~`v1.5.9` 全部如此），三轮之后才由用户追问发现并补齐。
+**现象**：服务器执行 `./sylph.sh update` 提示「已是最新版本」，而仓库已是 1.5.12。
 
-已做：补 `v1.5.10` / `v1.5.11` / `v1.5.12` 三个 tag 并推送；`AGENTS.md` 新增第 6 条，把「提交 → 打 tag → 推送分支 → 推送 tag」四步写死为发布流程。
+**根因不是 tag，是 GitHub Release。** `sylph.sh:297` 的 `get_latest_release()` 请求 `${GITHUB_RELEASES}/latest`，从 JSON 里取 `tag_name` 与 `.tar.gz` 的 `browser_download_url`；`sylph.sh:698` 拿它和**服务器上的** `version.json`（`sylph.sh:686`）比较。两者都停在 1.5.9 —— 服务器旧版本与缺失的 Release 互相掩盖，看起来像"已经是最新"。
 
-**校验方法**（下次发布前后可跑）：
+git tag 与 GitHub Release 是两套东西：推 tag 不产生 Release。当时 `gh release list` 最新仍是 v1.5.9，`/releases/latest` 也就仍返回 v1.5.9。
+
+**本次连续三轮发布（v1.5.10 / v1.5.11 / v1.5.12）都只做了「提交 + 推分支」，既没打 tag 也没建 Release。** 仓库本来就有 `scripts/release.sh` 一次做完打包、打 tag、建 Release 三件事，一次都没跑过；而 `AGENTS.md` 当时也没写这条。
+
+**已做**：
+
+1. 补推 v1.5.10 / v1.5.11 / v1.5.12 三个 tag；
+2. 用 `scripts/release.sh` 补建三个 GitHub Release 并上传 `.tar.gz`；
+3. 修 `scripts/release.sh` 使其可重跑：tag 已存在时先校验它是否指向 HEAD（不一致就停，否则 Release 会挂在错误的提交上），Release 已存在时给出明确的删除命令而不是让 `gh` 报一句看不懂的错。顺带修掉新代码在顶层脚本里用 `local` 的问题（`set -e` 下会直接退出）；
+4. 重写 `AGENTS.md` 第 6 条：**发布一律跑 `scripts/release.sh`**，并写明 `sylph.sh` 查的是 Release 而非 tag。
+
+**补发后的核验**：`/releases/latest` 返回 `v1.5.12`，附件 `nav-sylph-v1.5.12.tar.gz`；下载该压缩包确认内含 `version.json` 为 1.5.12，且含本次的 `visualViewport`、引擎下拉上限与搜索框 16px 三处修复（打包的是各版本真实代码，非最新版）。
+
+**校验方法**（发布后跑）：
 
 ```bash
+# 远端最新 Release 与附件
+gh release list --limit 3
+curl -s https://api.github.com/repos/mh567/nav-sylph/releases/latest \
+  | grep -o '"tag_name"[^,]*'
+
+# 本地 release 提交是否都有 tag
 for c in $(git log --format=%H --grep="^release: v" -6); do
   printf "%s  %s\n" "$(git log -1 --format=%h:%s $c | cut -c1-46)" "$(git tag --points-at $c | head -1)"
 done
 ```
 
-出现空 tag 即说明漏打。
+**教训**：这个仓库有自动化发布脚本，且用户的 `update` 入口依赖 GitHub Release 而非 tag。以后发布不要手写 `git` / `gh` —— 直接 `bash scripts/release.sh`。
 
 ## 下一位 Agent 的启动步骤
 
@@ -480,4 +499,4 @@ done
 2. 核对 `git status --short --branch`、`git log -5 --oneline`、`package.json` 和与新任务相关的代码。
 3. 明确本次目标与完成条件，实施后运行定向检查及 `node --test tests/*.test.js`。
 4. 在交接前记录实际修改、验证命令与结果、未完成事项。只有发生稳定架构变化时才更新 `docs/architecture.md`。
-5. 发布时按 `AGENTS.md` 第 6 条走完四步，并用上面的循环确认每个 `release:` 提交都有同名 tag。
+5. 发布时按 `AGENTS.md` 第 6 条跑 `bash scripts/release.sh`（**不要手写 `git` / `gh`**），完成后用上面的命令确认远端 Release 与本地 tag 都到位——只推分支或只打 tag 都会让 `./sylph.sh update` 停在旧版本。
