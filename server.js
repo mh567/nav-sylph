@@ -116,29 +116,68 @@ function cleanExpiredPastes() {
     }
 }
 
-// 每60秒清理过期分享
-setInterval(cleanExpiredPastes, 60000);
-
-// Paste 速率限制
+// 分享限流：取码与创建是两个独立入口，用不同 key 分别计数，
+// 避免互相消耗配额
 const pasteRateLimitMap = new Map();
-const PASTE_CREATE_LIMIT = 10; // 每小时创建限制
-const PASTE_GET_LIMIT = 30;    // 每小时获取限制
+const PASTE_CODE_LIMIT = 10;     // 每小时取码次数
+const PASTE_CREATE_LIMIT = 20;   // 每小时创建次数
+const PASTE_GET_LIMIT = 30;      // 每小时读取次数
 const PASTE_RATE_WINDOW = 3600000; // 1小时
 
-function checkPasteRateLimit(ip, action) {
-    const now = Date.now();
-    const key = `${ip}:paste:${action}`;
-    const limit = action === 'create' ? PASTE_CREATE_LIMIT : PASTE_GET_LIMIT;
+// 分享全局容量上限：限流按 IP 计数，多个 IP 仍可能共同堆高内存
+const PASTE_MAX_ENTRIES = 500;
+const PASTE_MAX_BYTES = 50 * 1024 * 1024;
 
-    let record = pasteRateLimitMap.get(key);
-    if (!record || now - record.start > PASTE_RATE_WINDOW) {
-        record = { start: now, count: 0 };
+// 纯函数形式：store 与 now 由调用方传入，便于注入时钟做确定性测试
+function consumeRateLimit(store, key, now, windowMs, limit) {
+    const record = store.get(key);
+    if (!record || now - record.start > windowMs) {
+        store.set(key, { start: now, count: 1 });
+        return { allowed: true, remaining: limit - 1, resetAt: now + windowMs };
     }
     record.count++;
-    pasteRateLimitMap.set(key, record);
-
-    return record.count <= limit;
+    store.set(key, record);
+    return {
+        allowed: record.count <= limit,
+        remaining: Math.max(0, limit - record.count),
+        resetAt: record.start + windowMs
+    };
 }
+
+function sweepRateLimitStore(store, now, windowMs) {
+    for (const [key, record] of store.entries()) {
+        if (now - record.start > windowMs) store.delete(key);
+    }
+}
+
+function isOverPasteCapacity(count, totalBytes) {
+    return count >= PASTE_MAX_ENTRIES || totalBytes >= PASTE_MAX_BYTES;
+}
+
+// 限流用的客户端标识。已开启 trust proxy，req.ip 即为反代回填的真实地址；
+// 兜底取 socket 地址仅用于完全没有 req.ip 的极端情况。
+function resolveClientIp(req) {
+    return req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
+}
+
+// 当前已占用的字节数：内容均为密文 base64，字符数即可近似
+function pasteStorageBytes() {
+    let total = 0;
+    for (const data of pasteStorage.values()) {
+        total += data.content.length;
+    }
+    return total;
+}
+
+// 每60秒清理过期分享与过期限流记录。
+// 限流记录不清理会随 IP 数量无限增长；开启 trust proxy 后 key 等于访问者数量。
+// unref 避免该定时器阻止进程自然退出。
+setInterval(() => {
+    const now = Date.now();
+    cleanExpiredPastes();
+    sweepRateLimitStore(pasteRateLimitMap, now, PASTE_RATE_WINDOW);
+    sweepRateLimitStore(rateLimitMap, now, RATE_LIMIT_WINDOW);
+}, 60000).unref();
 
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
 const FAVORITES_FILE = path.join(config.rootDir, 'favorites.json');
@@ -151,8 +190,26 @@ const { WebDAVBackup } = require('./lib/webdav-backup');
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
 
+// 信任反代写入的 X-Forwarded-For，使限流能拿到真实客户端 IP。
+// 必须用跳数而非 true：true 会信任客户端自带的该头，任何能直连端口的
+// 客户端都能伪造 IP 轮换绕过限流。1 表示只信任最右侧一跳。
+app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(compression({ threshold: 1024 }));
+
+// 全局错误处理：统一返回 JSON，并屏蔽 Express 默认处理器会回显的
+// err.stack（其中包含 node_modules 路径与服务器绝对目录）。
+// 必须紧跟 body-parser 之后，否则捕获不到 PayloadTooLargeError。
+app.use((err, req, res, next) => {
+    const status = err.status || err.statusCode || 500;
+    if (status >= 500) {
+        console.error(`[Server] ${req.method} ${req.path} 处理失败:`, err.message);
+        return res.status(status).json({ error: '服务器内部错误' });
+    }
+    if (status === 413) return res.status(413).json({ error: '内容过大' });
+    res.status(status).json({ error: '请求无效' });
+});
 
 // 安全头 (必须在静态文件之前)
 app.use((req, res, next) => {
@@ -910,9 +967,9 @@ app.post('/api/webdav/delete', rateLimit, async (req, res) => {
 
 // 生成分享码（用于客户端加密）
 app.post('/api/p/code', (req, res) => {
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip = resolveClientIp(req);
 
-    if (!checkPasteRateLimit(ip, 'create')) {
+    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:code`, Date.now(), PASTE_RATE_WINDOW, PASTE_CODE_LIMIT).allowed) {
         return res.status(429).json({ error: '创建过于频繁，请稍后再试' });
     }
 
@@ -922,7 +979,12 @@ app.post('/api/p/code', (req, res) => {
 
 // 创建分享
 app.post('/api/p', (req, res) => {
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip = resolveClientIp(req);
+
+    // 创建入口必须独立限流：否则可绕开 /api/p/code 直接自造分享码创建
+    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:create`, Date.now(), PASTE_RATE_WINDOW, PASTE_CREATE_LIMIT).allowed) {
+        return res.status(429).json({ error: '创建过于频繁，请稍后再试' });
+    }
 
     const { code, content, pin, ttl } = req.body;
 
@@ -952,6 +1014,12 @@ app.post('/api/p', (req, res) => {
     const ttlMinutes = resolvePasteTtlMinutes(ttl);
     const expiresAt = Date.now() + PASTE_TTL_OPTIONS[ttlMinutes];
 
+    // 全局容量兜底：限流按 IP 计数，多个 IP 仍可能共同堆高内存。
+    // 不做最旧条目驱逐，避免静默清掉他人仍在有效期内的分享。
+    if (isOverPasteCapacity(pasteStorage.size + 1, pasteStorageBytes() + content.length)) {
+        return res.status(503).json({ error: '分享服务繁忙，请稍后再试' });
+    }
+
     pasteStorage.set(code, {
         content,
         pin: pin || null,
@@ -971,9 +1039,9 @@ app.post('/api/p', (req, res) => {
 
 // 获取分享 (API)
 app.post('/api/p/:code', (req, res) => {
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip = resolveClientIp(req);
 
-    if (!checkPasteRateLimit(ip, 'get')) {
+    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:get`, Date.now(), PASTE_RATE_WINDOW, PASTE_GET_LIMIT).allowed) {
         return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
     }
 
@@ -1287,8 +1355,14 @@ app.get('/p/:code', (req, res) => {
                         '<p class="notice">此内容已从服务器删除</p>';
                     showContent(data.content);
                 } else {
-                    document.getElementById('errorMsg').innerHTML =
-                        '<div class="msg error-msg">' + (data.error || '验证失败') + '</div>';
+                    // 用 textContent 而非拼接 innerHTML：不必依赖「服务端错误文案恒为
+                    // 固定字符串」这一隐含前提，将来任何把用户输入拼进 error 的改动
+                    // 都不会因此变成 XSS
+                    const errorBox = document.getElementById('errorMsg');
+                    const msg = document.createElement('div');
+                    msg.className = 'msg error-msg';
+                    msg.textContent = data.error || '验证失败';
+                    errorBox.replaceChildren(msg);
                     if (data.error && data.error.includes('销毁')) {
                         document.getElementById('pinForm').style.display = 'none';
                     }
