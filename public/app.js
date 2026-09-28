@@ -61,8 +61,9 @@
     };
 
     const API = {
-        async get(url) {
-            const res = await fetch(url);
+        async get(url, password) {
+            const options = password ? { headers: { 'X-Admin-Password': password } } : undefined;
+            const res = await fetch(url, options);
             if (!res.ok) throw new Error(res.statusText);
             return res.json();
         },
@@ -92,6 +93,8 @@
             this.toastTimer = null;
             this.favSearchMode = false;
             this.privacySearchActive = false;
+            this.adminFavorites = null;  // 带密码取回的全量收藏，私密检索与管理面板使用
+            this.adminFavoritesLoading = false;
             this.uf = null;  // uFuzzy 实例
             this.favHaystack = [];  // 搜索索引数组
             this.favSelectedIdx = 0;  // 当前选中的下拉项
@@ -121,6 +124,13 @@
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
+                // privacyMode 不在公开配置视图里，后台取回真实值以启用私密检索，
+                // 不阻塞首屏渲染
+                if (this.password) {
+                    this.loadPrivacyMode().then(privacyMode => {
+                        if (privacyMode !== null) this.config.privacyMode = privacyMode;
+                    });
+                }
                 // 首页先显示，收藏索引和版本信息随后加载
                 requestAnimationFrame(() => {
                     this.loadFavorites();
@@ -442,10 +452,52 @@
             }
         }
 
+        // privacyMode 属于管理端设置，不在公开配置视图里。
+        // 带管理密码取回；失败时保持现状。
+        async loadPrivacyMode() {
+            if (!this.password) return null;
+            try {
+                const res = await fetch('/api/config', {
+                    headers: { 'X-Admin-Password': this.password }
+                });
+                if (!res.ok) return null;
+                const cfg = await res.json();
+                return typeof cfg.privacyMode === 'boolean' ? cfg.privacyMode : null;
+            } catch (e) {
+                console.error('Load privacy mode failed:', e);
+                return null;
+            }
+        }
+
+        // 匿名列表只含公开条目。私密检索与管理面板需要全量，
+        // 用管理密码取回。成功后让 this.favorites 指向全量，
+        // 使搜索索引与结果取值保持同源。
+        async loadAdminFavorites() {
+            if (!this.password) return false;
+            if (this.adminFavoritesLoading) return false;
+            this.adminFavoritesLoading = true;
+            try {
+                const data = await API.get('/api/favorites', this.password);
+                this.adminFavorites = data.favorites || [];
+                this.favorites = this.adminFavorites;
+                return true;
+            } catch (e) {
+                console.error('Load admin favorites failed:', e);
+                return false;
+            } finally {
+                this.adminFavoritesLoading = false;
+            }
+        }
+
+        // 管理态下 this.favorites 需要是全量，否则保存会丢掉私密条目
+        async ensureAdminFavorites() {
+            return this.loadAdminFavorites();
+        }
+
         // 获取当前可搜索的收藏列表（仅用于搜索结果过滤，分类树视图不使用此方法）
         getSearchableFavorites() {
-            if (this.privacySearchActive) {
-                return this.favorites;
+            if (this.privacySearchActive && this.adminFavorites) {
+                return this.adminFavorites;
             }
             return this.favorites.filter(f => !f.private);
         }
@@ -875,6 +927,17 @@
                 }
             }
 
+            // 匿名列表不含私密条目，私密检索需要按需取回全量
+            if (this.privacySearchActive && !this.adminFavorites && !this.adminFavoritesLoading) {
+                this.loadAdminFavorites().then(loaded => {
+                    if (!loaded) return;
+                    this.buildSearchIndex();
+                    const current = $('#searchInput').value;
+                    const len = this.isFavSearchTrigger(current[0]) && this.isFavSearchTrigger(current[1]) ? 2 : 1;
+                    this.searchFavorites(current.slice(len).trim());
+                });
+            }
+
             // 如果在收藏检索模式，执行防抖搜索
             if (this.favSearchMode) {
                 const favoritesDropdown = $('#favDropdown');
@@ -1134,6 +1197,11 @@
                 }
             }
             this.beginConfigEdit();
+            // 收藏管理器需要全量列表，否则保存会丢掉私密条目
+            await this.ensureAdminFavorites();
+            // privacyMode 不在公开配置视图里，这里取回真实值
+            const privacyMode = await this.loadPrivacyMode();
+            if (privacyMode !== null) this.config.privacyMode = privacyMode;
             this.renderAdminPanel();
             $('#modal').hidden = false;
             $('#cancelBtn').focus();
@@ -1418,6 +1486,9 @@
                 this.password = null;
                 sessionStorage.removeItem(SESSION_PWD_KEY);
                 this.privacySearchActive = false;
+                // 丢弃全量缓存，页面回到匿名可见的公开子集
+                this.adminFavorites = null;
+                await this.loadFavorites();
             };
 
             // WebDAV 配置加载

@@ -283,7 +283,11 @@ async function init() {
 app.get('/api/config', async (req, res) => {
     try {
         const cfg = await readJSON(CONFIG_FILE);
-        res.json(cfg);
+        // 带正确管理密码时返回完整配置，供管理面板读取 privacyMode
+        if (await verifyPassword(req.headers['x-admin-password'])) {
+            return res.json(cfg);
+        }
+        res.json(toPublicConfig(cfg));
     } catch (err) {
         console.error('读取配置失败:', err);
         res.status(500).json({ error: '读取配置失败' });
@@ -302,8 +306,15 @@ app.post('/api/config', rateLimit, async (req, res) => {
         if (!cfg.categories || !Array.isArray(cfg.categories)) {
             return res.status(400).json({ error: '无效的配置格式' });
         }
-        
-        await writeJSON(CONFIG_FILE, cfg);
+
+        // 客户端持有的配置来自公开视图，不含 privacyMode，
+        // 整份覆盖会静默抹掉该设置，因此以现有文件为基底合并。
+        let existing = {};
+        try {
+            existing = await readJSON(CONFIG_FILE);
+        } catch {}
+
+        await writeJSON(CONFIG_FILE, mergeConfig(existing, cfg));
         res.json({ success: true });
     } catch (err) {
         console.error('保存配置失败:', err);
@@ -459,11 +470,68 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+// ========== 公开视图 ==========
+// 匿名请求只返回首页需要渲染的部分。管理端设置和私密收藏不下发，
+// 浏览器端的隐藏状态不构成访问控制。
+
+function toPublicConfig(cfg) {
+    const { privacyMode, ...rest } = cfg || {};
+    return rest;
+}
+
+function toPublicFavorites(data) {
+    const list = Array.isArray(data?.favorites) ? data.favorites : [];
+    return {
+        version: data?.version || 1,
+        favorites: list
+            .filter(fav => fav && !fav.private)
+            .map(({ private: _private, ...rest }) => rest)
+    };
+}
+
+// 按 id 合并收藏写入。客户端可能只持有公开子集（私密条目不下发），
+// 因此既有的私密条目在请求体缺席时必须保留，不能当作删除。
+function mergeFavorites(existing, incoming) {
+    const current = Array.isArray(existing?.favorites) ? existing.favorites : [];
+    const updates = Array.isArray(incoming) ? incoming : [];
+    const byId = new Map(current.map(fav => [fav.id, fav]));
+    const submitted = new Set(updates.map(fav => fav.id).filter(Boolean));
+
+    const merged = current.filter(fav => {
+        if (submitted.has(fav.id)) return true;
+        return fav.private === true;
+    });
+
+    for (const fav of updates) {
+        if (fav && fav.id && byId.has(fav.id)) {
+            const index = merged.findIndex(item => item.id === fav.id);
+            if (index >= 0) merged[index] = fav;
+        } else if (fav) {
+            merged.push(fav);
+        }
+    }
+
+    return merged;
+}
+
+// 合并配置写入。公开视图不携带 privacyMode，客户端回传的配置里没有它，
+// 直接整份覆盖会静默抹掉该设置。
+function mergeConfig(existing, incoming) {
+    return { ...(existing || {}), ...(incoming || {}) };
+}
+
 // 获取收藏书签
 app.get('/api/favorites', async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
-        res.json(data);
+        // 带正确管理密码时返回完整列表，供管理面板与私密检索使用
+        if (await verifyPassword(req.headers['x-admin-password'])) {
+            return res.json({
+                version: data?.version || 1,
+                favorites: Array.isArray(data?.favorites) ? data.favorites : []
+            });
+        }
+        res.json(toPublicFavorites(data));
     } catch (err) {
         console.error('读取收藏失败:', err);
         res.status(500).json({ error: '读取收藏失败' });
@@ -484,8 +552,17 @@ app.post('/api/favorites', rateLimit, async (req, res) => {
             return res.status(400).json({ error: '无效的数据格式' });
         }
 
-        await writeJSON(FAVORITES_FILE, { version: 1, favorites });
-        res.json({ success: true });
+        let existing = { favorites: [] };
+        try {
+            existing = await readJSON(FAVORITES_FILE);
+        } catch {}
+
+        const merged = mergeFavorites(existing, favorites);
+        await writeJSON(FAVORITES_FILE, { version: 1, favorites: merged });
+        res.json({
+            success: true,
+            privatePreserved: merged.filter(fav => fav.private === true).length
+        });
     } catch (err) {
         console.error('保存收藏失败:', err);
         res.status(500).json({ error: '保存收藏失败' });

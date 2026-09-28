@@ -20,6 +20,7 @@ favorites.json
 # AI assistant files
 CLAUDE.md
 .claude/
+.commandcode/
 
 # Logs
 logs/
