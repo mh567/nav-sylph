@@ -1115,14 +1115,20 @@
             const result = await this.showUiDialog({
                 title: '分享保护',
                 options: [
-                    { kind: 'checkbox', name: 'pin', value: 'on', label: '设置 PIN 码保护', hint: '接收方需输入 PIN 才能查看内容', reveal: true },
-                    ...Object.entries(PASTE_TTL_LABELS).map(([minutes, label], index) => ({
-                        kind: 'radio',
-                        name: 'ttl',
-                        value: minutes,
-                        label,
-                        checked: index === 0
-                    }))
+                    { kind: 'checkbox', name: 'pin', value: 'on', label: '设置 PIN 码保护', hint: '接收方需输入 PIN 才能查看内容', reveal: true }
+                ],
+                // 四档有效期排成 2×2：单行「30 分钟」不折行，触摸目标也够大
+                groups: [
+                    {
+                        label: '有效期',
+                        options: Object.entries(PASTE_TTL_LABELS).map(([minutes, label], index) => ({
+                            kind: 'radio',
+                            name: 'ttl',
+                            value: minutes,
+                            label,
+                            checked: index === 0
+                        }))
+                    }
                 ],
                 confirmText: '分享',
                 closeOnBackdrop: false,
@@ -1377,9 +1383,20 @@
             this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
         }
 
-        showUiDialog({ title, message = '', fields = [], options = [], reveal = null, confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
+        showUiDialog({ title, message = '', fields = [], options = [], groups = [], reveal = null, confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
             const previousFocus = document.activeElement;
-            const revealOption = options.find(option => option.reveal) ? reveal : null;
+            // 分组内的选项同样计入取值与焦点流转，否则 choices.ttl 会永远读不到。
+            // 顺序必须与模板渲染顺序一致（options 先、groups 后），allOptions 依赖这一点。
+            const allOptions = [...options, ...groups.flatMap(group => group.options)];
+            const revealOption = allOptions.find(option => option.reveal) ? reveal : null;
+            // 平铺选项与分组内的选项是同一份标记，两处各自维护一份模板必然漂移
+            const renderOption = option => `<div class="ui-dialog-option" data-kind="${this.esc(option.kind)}" data-name="${this.esc(option.name)}">
+                <label class="ui-dialog-choice">
+                    <input type="${option.kind === 'checkbox' ? 'checkbox' : 'radio'}" name="opt_${this.esc(option.name)}" value="${this.esc(option.value)}" ${option.checked ? 'checked' : ''}>
+                    <span>${this.esc(option.label)}</span>
+                </label>
+                ${option.hint ? `<p class="ui-dialog-hint">${this.esc(option.hint)}</p>` : ''}
+            </div>`;
             const overlay = html(`
                 <div class="ui-dialog-overlay">
                     <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="uiDialogTitle">
@@ -1390,22 +1407,19 @@
                                 <span>${this.esc(field.label)}</span>
                                 <input name="field${index}" type="${field.type === 'password' ? 'password' : 'text'}" value="${this.esc(field.value || '')}" placeholder="${this.esc(field.placeholder || '')}" ${field.readonly ? 'readonly' : ''} autocomplete="off">
                             </label>`).join('')}
-                            ${options.map(option => {
-                                // 同组选项共用 name，浏览器才能实现 radio 原生互斥
-                                return `<div class="ui-dialog-option" data-kind="${this.esc(option.kind)}" data-name="${this.esc(option.name)}">
-                                <label class="ui-dialog-choice">
-                                    <input type="${option.kind === 'checkbox' ? 'checkbox' : 'radio'}" name="opt_${this.esc(option.name)}" value="${this.esc(option.value)}" ${option.checked ? 'checked' : ''}>
-                                    <span>${this.esc(option.label)}</span>
-                                </label>
-                                ${option.hint ? `<p class="ui-dialog-hint">${this.esc(option.hint)}</p>` : ''}
-                            </div>`;
-                            }).join('')}
+                            ${options.map(renderOption).join('')}
                             ${revealOption ? `<div class="ui-dialog-reveal" hidden>
                                 <label class="ui-dialog-field">
                                     <span>${this.esc(revealOption.label)}</span>
                                     <input name="revealField" type="password" inputmode="numeric" maxlength="${this.esc(revealOption.maxlength || '')}" placeholder="••••" autocomplete="off">
                                 </label>
                             </div>` : ''}
+                            ${groups.map(group => `<div class="ui-dialog-group">
+                                <p class="ui-dialog-group-label">${this.esc(group.label)}</p>
+                                <div class="ui-dialog-options">
+                                    ${group.options.map(renderOption).join('')}
+                                </div>
+                            </div>`).join('')}
                             <div class="ui-dialog-error" role="alert"></div>
                             <div class="ui-dialog-actions">
                                 ${notice ? '' : `<button class="btn" type="button" data-action="cancel">${this.esc(cancelText)}</button>`}
@@ -1426,7 +1440,7 @@
             // 复选框可展开同弹窗内的附加区域（如 PIN 输入框）
             const revealBox = overlay.querySelector('.ui-dialog-reveal');
             if (revealBox) {
-                const owner = optionInputs[options.findIndex(option => option.reveal)];
+                const owner = optionInputs[allOptions.findIndex(option => option.reveal)];
                 const syncReveal = () => {
                     revealBox.hidden = !owner?.checked;
                     // 展开时把焦点交给 PIN 输入框，收起时交还复选框
@@ -1472,7 +1486,7 @@
                         (fieldInputs[0] || optionInputs[0] || form.querySelector('button[type="submit"]')).focus();
                         return;
                     }
-                    close(options.length || fields.length ? payload : true);
+                    close(allOptions.length || fields.length ? payload : true);
                 });
             });
         }

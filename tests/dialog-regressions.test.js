@@ -5,8 +5,26 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'public/app.js'), 'utf8');
+const adminCss = fs.readFileSync(path.join(__dirname, '..', 'public/admin.css'), 'utf8');
+const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'), 'utf8');
 const exportPoint = '    let app;\n';
 assert.equal(source.split(exportPoint).length, 2);
+
+// 取出某个 @media 块的正文，用于在正确的断点范围内做源码形状断言
+function mediaBlock(css, query) {
+    const start = css.indexOf(query);
+    assert.ok(start > -1, `样式表里存在 ${query}`);
+    const open = css.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+        if (css[i] === '{') depth++;
+        else if (css[i] === '}') {
+            depth--;
+            if (depth === 0) return css.slice(open + 1, i);
+        }
+    }
+    assert.fail(`${query} 块未闭合`);
+}
 
 function loadApp(document) {
     const window = {};
@@ -19,7 +37,9 @@ function loadApp(document) {
     return Object.create(window.AppForTest.prototype);
 }
 
-// 解析对话框模板，收集输入项及其所属区块
+// 解析对话框模板，收集输入项及其所属区块。
+// 记录完整的祖先链（ancestors），因为选项可能嵌在 .ui-dialog-group 之类的
+// 包装层里，浏览器按最近的 .ui-dialog-option 判定归属，不能只看最内层 div。
 function parseInputs(htmlString) {
     const tokenRe = /<div\b[^>]*>|<\/div>|<input\b([^>]*)>/g;
     const stack = [];
@@ -37,7 +57,12 @@ function parseInputs(htmlString) {
         const attrRe = /([a-z-]+)="([^"]*)"/g;
         let attr;
         while ((attr = attrRe.exec(match[1]))) attrs[attr[1]] = attr[2];
-        inputs.push({ attrs, parent: stack[stack.length - 1] || { cls: '', name: '', dataset: { name: '' } } });
+        const ancestors = stack.slice();
+        // 归属取链上最近的 .ui-dialog-option，与浏览器语义一致
+        const owner = ancestors.slice().reverse().find(node => node.cls.includes('ui-dialog-option'))
+            || ancestors.at(-1)
+            || { cls: '', name: '', dataset: { name: '' } };
+        inputs.push({ attrs, parent: owner, ancestors });
     }
     return inputs;
 }
@@ -68,7 +93,12 @@ function createDocument() {
         fire(name, event) { (this.listeners[name] || []).forEach(fn => fn(event)); }
         remove() { this.removed = true; }
         focus() { this.focused = true; state.activeElement = this; }
-        closest(selector) { return selector === '.ui-dialog-option' ? this.parent : null; }
+        // 分组内的选项向上找最近的 .ui-dialog-option，模拟浏览器的祖先匹配
+        closest(selector) {
+            if (selector !== '.ui-dialog-option') return null;
+            const chain = this.ancestors || [this.parent];
+            return chain.slice().reverse().find(node => node.cls.includes('ui-dialog-option')) || null;
+        }
     }
 
     const document = {
@@ -88,6 +118,8 @@ function createDocument() {
 
     function buildOverlay(htmlString) {
         const parsed = parseInputs(htmlString);
+        // 保留原始模板，供断言 DOM 顺序（PIN 输入框必须紧跟它的复选框）
+        parsed.markup = htmlString;
         const fieldInputs = parsed
             .filter(i => (i.attrs.name || '').startsWith('field') || i.parent.cls.includes('ui-dialog-reveal'))
             .map(i => new El('input', i));
@@ -142,6 +174,7 @@ function createDocument() {
             return [];
         };
         overlay.closest = () => null;
+        overlay.markup = htmlString;
         return overlay;
     }
 
@@ -281,6 +314,103 @@ test('expiry radios share one name so the browser enforces mutual exclusion', as
     overlay.querySelector('form').fire('submit', { preventDefault() {} });
     await pending;
     assert.equal(shares[0][2].ttlMinutes, 30);
+});
+
+test('the dialog stays vertically centred on narrow screens', () => {
+    // 曾经这里写的是 align-items: end，把居中弹窗变成了底部抽屉，
+    // 结果在移动端被浏览器地址栏与 Home 指示条盖住。
+    const narrow = mediaBlock(adminCss, '@media (max-width: 480px)');
+    const overlayRule = /\.ui-dialog-overlay\s*\{([^}]*)\}/.exec(narrow);
+    assert.ok(overlayRule, '窄屏仍有 .ui-dialog-overlay 规则');
+    assert.equal(/align-items:\s*end/.test(overlayRule[1]), false, '窄屏不得把弹窗改成底部抽屉');
+    assert.equal(/place-items:\s*[^;]*end/.test(overlayRule[1]), false, 'place-items 也不得指定 end');
+
+    // 基础规则负责居中，窄屏只调内边距与尺寸
+    // 注意：基础规则出现在文件中第一个 @media 之后，不能用 indexOf 判定它在前
+    const base = /\.ui-dialog-overlay\s*\{([^}]*)\}/.exec(adminCss);
+    assert.ok(base, '存在 .ui-dialog-overlay 规则');
+    assert.match(base[1], /place-items:\s*center/, '弹窗在基础规则里居中');
+});
+
+test('the expiry grid is a two-column layout declared exactly once', () => {
+    const all = [...adminCss.matchAll(/^\.ui-dialog-options\s*\{([^}]*)\}/gm)];
+    assert.equal(all.length, 1, `.ui-dialog-options 应只定义一次，实际 ${all.length} 次`);
+    assert.match(all[0][1], /grid-template-columns:\s*1fr 1fr/, '有效期排成 2×2');
+});
+
+test('the search input font size never drops below the iOS zoom threshold', () => {
+    // 15px 位于 iOS Safari 的自动缩放阈值之下，聚焦时整页会被放大。
+    // 583/603 行已写 16px，若末尾的新版样式块再写更小的值就会把它们覆盖掉。
+    const declarations = [...stylesCss.matchAll(/^\.search-input\s*\{([^}]*)\}/gm)]
+        .map(match => /font-size:\s*(\d+)px/.exec(match[1]))
+        .filter(Boolean)
+        .map(match => Number(match[1]));
+    assert.ok(declarations.length > 0, '存在 .search-input 的 font-size 声明');
+    declarations.forEach(size => {
+        assert.ok(size >= 16, `.search-input 的 font-size 不得低于 16px，实际出现 ${size}px`);
+    });
+});
+
+test('the utility dock and toast clear the home indicator', () => {
+    // viewport-fit=cover 之后，固定在底部的元素必须自己让位
+    const narrow = mediaBlock(stylesCss, '@media (max-width: 600px)');
+    assert.match(narrow, /\.utility-dock\s*\{[^}]*bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/, '底部工具条避让 Home 指示条');
+    assert.match(narrow, /\.toast\s*\{[^}]*bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/, '提示条避让 Home 指示条');
+});
+
+test('the share receive page declares viewport-fit=cover', () => {
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const meta = /<meta name="viewport" content="([^"]*)">/.exec(server);
+    assert.ok(meta, '分享页有 viewport meta');
+    assert.match(meta[1], /viewport-fit=cover/, '分享页必须声明 viewport-fit=cover');
+});
+
+test('the PIN field sits directly under its checkbox, not below the expiry options', async () => {
+    const { document, state } = createDocument();
+    const app = loadApp(document);
+    app.createPaste = async () => {};
+
+    const pending = app.showPasteOptions('text');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const markup = state.dialog.markup;
+    const checkboxAt = markup.indexOf('opt_pin');
+    const pinFieldAt = markup.indexOf('revealField');
+    const firstRadioAt = markup.indexOf('opt_ttl');
+
+    assert.ok(checkboxAt > -1 && pinFieldAt > -1 && firstRadioAt > -1, '面板含 PIN 复选框、PIN 输入框与有效期单选项');
+    assert.ok(pinFieldAt > checkboxAt, 'PIN 输入框必须排在 PIN 复选框之后');
+    assert.ok(pinFieldAt < firstRadioAt, 'PIN 输入框必须排在有效期单选项之前，否则视觉上会掉到弹窗最下面');
+
+    // 弹窗只在提交或取消时 resolve，这里只需要模板内容，按取消收尾
+    state.dialog.fire('click', { target: { closest: s => (s === '[data-action="cancel"]' ? {} : null) } });
+    await pending;
+});
+
+test('the four expiry options share one grid container', async () => {
+    const { document, state } = createDocument();
+    const app = loadApp(document);
+    app.createPaste = async () => {};
+
+    const pending = app.showPasteOptions('text');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const markup = state.dialog.markup;
+    assert.match(markup, /class="ui-dialog-options"/, '有效期需要独立的网格容器才能排成 2×2');
+    assert.match(markup, /class="ui-dialog-group-label">有效期</, '分组需要标题说明这一组是什么');
+
+    // 四个单选项必须都在同一个 .ui-dialog-options 内，否则网格只作用于第一项
+    const gridAt = markup.indexOf('ui-dialog-options');
+    assert.ok(gridAt > -1, '网格容器存在');
+
+    const radios = [...markup.matchAll(/name="opt_ttl"/g)];
+    assert.equal(radios.length, 4, '四档有效期都存在');
+    radios.forEach(match => {
+        assert.ok(match.index > gridAt, '每个有效期单选项都渲染在网格容器之内');
+    });
+
+    state.dialog.fire('click', { target: { closest: s => (s === '[data-action="cancel"]' ? {} : null) } });
+    await pending;
 });
 
 test('promptValue still returns the first field value', async () => {

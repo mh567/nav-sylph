@@ -54,6 +54,8 @@ body {
     color: var(--text);
     line-height: 1.5;
     min-height: 100vh;
+    /* dvh 跟随地址栏展开/收起：不支持 dvh 的浏览器沿用上一行的 100vh */
+    min-height: 100dvh;
     -webkit-font-smoothing: antialiased;
 }
 
@@ -62,6 +64,7 @@ body {
     margin: 0 auto;
     padding: 48px 24px;
     min-height: 100vh;
+    min-height: 100dvh;
 }
 
 .header {
@@ -1745,6 +1748,17 @@ body {
         max-height: 90vh;
         overflow-y: auto;
     }
+
+    /* 帮助与分享结果面板原本没有高度上限，500px 以下的横屏会溢出视口，
+       关闭按钮随内容滚走。 */
+    .help-content,
+    .paste-result {
+        max-height: 88dvh;
+        overflow-y: auto;
+    }
+
+    /* 搜索栏保留 44px 触摸高度（横屏也需可点），只把行高收到按钮加内边距的下限。 */
+    .search { min-height: 54px; }
 }
 
 /* 触摸优化 */
@@ -2663,7 +2677,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .header { margin-bottom: 34px; }
 .search-wrapper { max-width: 560px; }
 .search {
-    --glow-x: 50%; --glow-y: 0%; position: relative; min-height: 48px;
+    --glow-x: 50%; --glow-y: 0%; position: relative; min-height: 56px;
     padding: 5px; border-color: rgba(132,109,92,.24); border-radius: 13px;
     background: linear-gradient(165deg,var(--glass-strong),var(--glass));
     box-shadow: inset 0 1px rgba(255,255,255,.76),inset 0 -1px rgba(105,81,63,.08),0 3px 8px rgba(67,51,39,.045),0 12px 27px rgba(67,51,39,.065);
@@ -2679,7 +2693,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 :root[data-theme="dark"] .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); } }
 .search-mode,.search-engine,.search-btn {
-    --glow-x: 50%; --glow-y: 0%; position: relative; z-index: 1; flex: 0 0 auto; height: 36px; padding: 0 10px; overflow: hidden;
+    --glow-x: 50%; --glow-y: 0%; position: relative; z-index: 1; flex: 0 0 auto; min-height: 44px; padding: 0 10px; overflow: hidden;
     border: 1px solid var(--border); border-radius: 9px; color: var(--text);
     font-size: 12px; font-weight: 600; cursor: pointer;
     transition: transform 110ms,border-color 140ms,box-shadow 140ms,background 140ms,color 140ms;
@@ -2694,7 +2708,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search-engine:hover,.search-btn:hover { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.73),0 4px 9px rgba(67,51,39,.15); }
 .search-btn { width: auto; min-width: 47px; border-radius: 9px; color: var(--accent); }
 .search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
-.search-input { position: relative; z-index: 1; min-height: 36px; padding: 8px 10px; font-size: 15px; font-family: inherit; line-height: 20px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }
+/* font-size 不能低于 16px：iOS Safari 焦点时小于该值会自动缩放整页。
+   583/603 行的移动端 16px 规则被这里覆盖过，改成 15px 会让点击输入框时页面跳动。 */
+.search-input { position: relative; z-index: 1; min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit; line-height: 44px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }
 .search-input:focus-visible { outline: none; }
 .search.fav-search-mode { border-color: var(--focus); }
 .search.fav-search-mode .search-btn { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--accent); }
@@ -2728,7 +2744,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .bookmark:active::before,.bookmark.is-pressed::before { opacity: 0; transition-duration: 20ms; }
 .bookmark-title,.bookmark-text-only .bookmark-title { position: relative; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
 .utility-dock { position: fixed; right: 21px; bottom: 19px; z-index: 100; display: flex; gap: 3px; padding: 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--glass); box-shadow: inset 0 1px rgba(255,255,255,.68),var(--shadow-lg); backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%); }
-.utility-dock .fab,.utility-dock .fab-help { position: relative; inset: auto; width: auto; min-width: 52px; height: 31px; padding: 0 13px; border: 0; border-radius: 999px; background: transparent; color: var(--text); box-shadow: none; font-size: 12px; font-weight: 500; transition: transform 90ms,background 110ms,box-shadow 110ms,color 110ms; }
+.utility-dock .fab,.utility-dock .fab-help { position: relative; inset: auto; width: auto; min-width: 52px; min-height: 44px; padding: 0 15px; border: 0; border-radius: 999px; background: transparent; color: var(--text); box-shadow: none; font-size: 12px; font-weight: 500; transition: transform 90ms,background 110ms,box-shadow 110ms,color 110ms; }
 .utility-dock .fab:hover { background: rgba(148,94,74,.12); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.25); }
 .utility-dock .fab:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
 .modal-backdrop,.help-overlay { background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
@@ -2751,7 +2767,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 @media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark:hover,.btn:hover,.search-engine:hover,.search-btn:hover { transform: none; } }
 @media (hover: none) { .search:hover::after,.bookmark:hover::before,.search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: 0; } .bookmark:hover,.bookmark-text-only:hover,.btn:hover:not(:disabled),.search-engine:hover,.search-btn:hover { transform: none; } }
-@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .site-identity { margin-bottom: 22px; } .header { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: 12px; } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
+@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .site-identity { margin-bottom: 22px; } .header { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
 @media (max-width: 480px) { .modal-header { flex-wrap: wrap; gap: 8px; } .modal-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; } .config-save-status { margin-right: auto; } }
-@media (max-width: 480px) { .bookmarks { max-width: 304px; grid-template-columns: repeat(3,minmax(0,1fr)); } }
+/* 三列铺满可用宽度：原先的 max-width:304px 在 390px 宽的机型上右侧留出大片空白，
+   且使上一条 ≤600px 规则里的 auto-fill 96px 变成死代码（同为 ≤480px 且同特异性，后者在后）。 */
+@media (max-width: 480px) { .bookmarks { max-width: 100%; grid-template-columns: repeat(3,minmax(0,1fr)); } }
 @media (max-width: 370px) { .search { gap: 2px; } .search-mode { min-width: 43px; padding: 0 6px; } .search-engine { min-width: 55px; padding: 0 5px; } .search-input { padding: 0 5px; } .search-btn { min-width: 43px; padding: 0 6px; } }

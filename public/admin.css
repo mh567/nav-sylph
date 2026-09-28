@@ -296,9 +296,15 @@
 .ui-dialog-option { margin-bottom: 8px; border: 1px solid var(--admin-edge); border-radius: 9px; background: var(--admin-row); }
 .ui-dialog-option:has(input:checked) { border-color: var(--focus); background: var(--admin-active); }
 .ui-dialog-option:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
-.ui-dialog-choice { display: flex; align-items: center; gap: 9px; padding: 10px 12px; cursor: pointer; color: var(--text); font-size: 13px; }
+/* 44px 是触摸目标下限：弹窗内的选项在桌面端同样保持可点，不按断点降级 */
+.ui-dialog-choice { display: flex; align-items: center; gap: 9px; min-height: 44px; padding: 9px 12px; cursor: pointer; color: var(--text); font-size: 13px; }
 .ui-dialog-choice input { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
-.ui-dialog-hint { margin: -4px 12px 11px 33px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.ui-dialog-hint { margin: -2px 12px 10px 33px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+/* 分组容器：有效期四档排成 2×2，单行「30 分钟」不折行，触摸目标也够大 */
+.ui-dialog-group { margin-bottom: 12px; }
+.ui-dialog-group-label { margin: 0 0 7px; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.ui-dialog-options { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.ui-dialog-options .ui-dialog-option { margin-bottom: 0; }
 .ui-dialog-reveal { margin-bottom: 12px; }
 .ui-dialog-reveal[hidden] { display: none; }
 .ui-dialog-reveal .ui-dialog-field { margin-bottom: 0; }
@@ -385,8 +391,10 @@
     .modal .fav-manager-item { gap: 8px; }
     .modal .category-tree-item { min-height: 40px; }
     .fav-dialog { border-radius: 16px 16px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
-    .ui-dialog-overlay { align-items: end; padding: 0; }
-    .ui-dialog { width: 100%; max-height: 90dvh; border-radius: 16px 16px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
+    /* 弹窗在窄屏同样居中：改成底部抽屉会被移动端浏览器的地址栏与 Home 指示条盖住。
+       四边内边距吃安全区，max-height 改用 dvh 以便地址栏展开/收起时自适应。 */
+    .ui-dialog-overlay { padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); }
+    .ui-dialog { width: 100%; max-height: 88dvh; border-radius: 14px; padding: 16px 14px; }
     :is(.modal, .fav-dialog, .ui-dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) { min-height: 44px; font-size: 16px; }
     :is(.modal, .fav-dialog, .ui-dialog) .btn { min-height: 44px; }
     .fav-form .fav-category-row { display: block; }

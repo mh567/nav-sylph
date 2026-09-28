@@ -360,7 +360,10 @@ test('the search row itself stays single-height and not draggable', () => {
     assert.ok(all.length > 0, '.search-input base rule exists');
 
     const base = all[all.length - 1][1];
-    assert.match(base, /min-height:\s*36px/, 'base row keeps the 36px height');
+    // 44px 是触摸目标下限，不能退回 36px（低于手指可点尺寸）
+    assert.match(base, /min-height:\s*44px/, 'base row keeps the 44px touch-target height');
+    // 低于 16px 时 iOS Safari 聚焦会自动缩放整页
+    assert.match(base, /font-size:\s*16px/, 'base row must not trigger the iOS focus zoom');
     assert.match(base, /resize:\s*none/, 'base row must not be draggable');
     // A bare `height` (not min-height) would pin the box and block growth
     assert.equal(/(^|;)\s*height\s*:/.test(base), false, 'a fixed height would block content growth');

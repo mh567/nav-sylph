@@ -1111,7 +1111,7 @@ app.get('/p/:code', (req, res) => {
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>分享内容</title>
     <style>
         :root {
@@ -1150,11 +1150,18 @@ app.get('/p/:code', (req, res) => {
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
             background: var(--bg); color: var(--text); min-height: 100dvh;
-            display: flex; align-items: center; justify-content: center; padding: 20px;
+            display: flex; align-items: center; justify-content: center;
+            /* 刘海屏与 Home 指示条：viewport-fit=cover 之后必须由内边距让位 */
+            padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+                     max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
         }
         .container {
             width: 100%; max-width: 560px; background: var(--panel);
-            border: 1px solid var(--border); border-radius: 16px; padding: 24px;
+            border: 1px solid var(--border); border-radius: 16px;
+            padding: 24px;
+            /* 与 body 同理：内容本身也要避开刘海与 Home 指示条 */
+            padding-top: max(24px, env(safe-area-inset-top));
+            padding-bottom: max(24px, env(safe-area-inset-bottom));
             box-shadow: inset 0 1px var(--inner-light), 0 20px 48px rgba(35,27,21,.21);
             backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%);
         }
