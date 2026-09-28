@@ -1151,14 +1151,10 @@ body {
     border-color: var(--accent);
 }
 
-.search.fav-search-mode .search-btn {
-    background: #f59e0b;
-}
-
-.search.fav-search-mode .search-btn svg {
-    fill: currentColor;
-    stroke: none;
-}
+/* 原本这里有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`：
+   收藏态的「打开」按钮是琥珀色。它是旧按钮的配色，材质层改成实心陶土后
+   它以 (0,3,0) 的特异性压过 (0,1,0) 的 .search-btn，实心底被换成琥珀底。
+   主操作在网页态与收藏态应是同一种材质，删除而非覆盖。 */
 
 /* 检索下拉 */
 .fav-dropdown {
@@ -2563,13 +2559,13 @@ body {
     --bookmark-hover-border: rgba(116,100,85,.28);
     --bookmark-pressed-border: rgba(103,85,69,.34);
     --bookmark-idle-shadow: inset 0 1px rgba(255,255,255,.74),inset 0 -1px rgba(120,102,86,.11),inset 1px 0 rgba(255,255,255,.12);
-    --bookmark-hover-shadow: inset 0 1px rgba(255,255,255,.87),inset 0 -1px rgba(120,102,86,.16),inset 1px 0 rgba(255,255,255,.18);
+    --bookmark-hover-shadow: inset 0 1px rgba(255,255,255,.87),inset 0 -1px rgba(120,102,86,.16),inset 1px 0 rgba(255,255,255,.18),0 2px 5px rgba(67,51,39,.06),0 9px 18px rgba(67,51,39,.09);
     --bookmark-press-shadow: inset 0 3px 6px rgba(91,72,56,.26),inset 0 0 0 1px rgba(121,98,77,.09),inset 0 -1px rgba(255,255,255,.48);
     --bookmark-glint: rgba(184,150,124,.16);
     --bookmark-lift: -1px;
     --bookmark-press-depth: 1px;
     --bookmark-press-scale: .975;
-    --bookmark-glow-opacity: .32;
+    --bookmark-glow-opacity: .46;
     --bookmark-glow-motion: 85ms;
     --bookmark-motion: 90ms;
     --bookmark-press-motion: 35ms;
@@ -2591,6 +2587,14 @@ body {
     --shadow-lg: 0 5px 12px rgba(67,51,39,.08),0 18px 34px rgba(67,51,39,.13);
     --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
     --radius: 10px;
+    /* 搜索栏三按钮的色相锚点：同族拟物，仅色相微偏以区分功能。
+       深浅两套必须成对改，见下方两个深色块。 */
+    --mode-hue: 106,124,132;      /* 网页/收藏：青灰 */
+    --engine-hue: 168,128,78;     /* 引擎：琥珀 */
+    --submit-hue: 148,94,74;      /* 搜索：陶土 */
+    --ctl-h: 44px;                /* 触摸目标下限，不可下调 */
+    --ctl-press-shadow: inset 0 4px 9px rgba(88,66,50,.32),inset 0 0 0 1px rgba(121,98,77,.12),inset 0 -1px rgba(255,255,255,.42);
+    --ctl-press-motion: 28ms;
 }
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -2637,6 +2641,13 @@ body {
         --shadow: 0 2px 4px rgba(0,0,0,.12),0 10px 28px rgba(0,0,0,.20);
         --shadow-lg: 0 5px 10px rgba(0,0,0,.18),0 18px 34px rgba(0,0,0,.35);
         --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
+        /* 与 :root 的三色锚点成对定义，缺一份则手动深色与系统深色表现分叉 */
+        --mode-hue: 138,160,168;
+        --engine-hue: 208,162,96;
+        --submit-hue: 223,169,140;
+        --ctl-h: 44px;
+        --ctl-press-shadow: inset 0 5px 11px rgba(0,0,0,.55),inset 0 0 0 1px rgba(0,0,0,.16),inset 0 -1px rgba(255,255,255,.07);
+        --ctl-press-motion: 28ms;
     }
 }
 :root[data-theme="dark"] {
@@ -2683,10 +2694,16 @@ body {
     --shadow: 0 2px 4px rgba(0,0,0,.12),0 10px 28px rgba(0,0,0,.20);
     --shadow-lg: 0 5px 10px rgba(0,0,0,.18),0 18px 34px rgba(0,0,0,.35);
     --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
+    /* 与上面 prefers-color-scheme 块逐字一致，两处必须同步 */
+    --mode-hue: 138,160,168;
+    --engine-hue: 208,162,96;
+    --submit-hue: 223,169,140;
+    --ctl-h: 44px;
+    --ctl-press-shadow: inset 0 5px 11px rgba(0,0,0,.55),inset 0 0 0 1px rgba(0,0,0,.16),inset 0 -1px rgba(255,255,255,.07);
+    --ctl-press-motion: 28ms;
 }
 body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
 .app { max-width: 1040px; padding: 35px 22px 100px; }
-.site-identity { margin-bottom: 27px; font-size: 14px; font-weight: 700; letter-spacing: .065em; }
 .header { margin-bottom: 34px; }
 .search-wrapper { max-width: 560px; }
 .search {
@@ -2705,28 +2722,53 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search:focus-within { border-color: var(--focus); box-shadow: inset 0 2px 5px rgba(91,70,55,.10),inset 0 0 0 1px rgba(255,255,255,.52),0 4px 12px rgba(67,51,39,.07),0 0 0 3px rgba(148,94,74,.065); }
 :root[data-theme="dark"] .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34),inset 0 0 0 1px rgba(255,255,255,.06),0 0 0 3px rgba(223,169,140,.08); } }
+/* 搜索栏三按钮：同族拟物 + 三色相偏移。
+   各自的 --HUE 是唯一的色相来源，光感与按压阴影都从它派生，
+   三个按钮因此共享同一套结构、只在色相与明度上分层。 */
 .search-mode,.search-engine,.search-btn {
-    --glow-x: 50%; --glow-y: 0%; position: relative; z-index: 1; flex: 0 0 auto; min-height: 44px; padding: 0 10px; overflow: hidden;
-    border: 1px solid var(--border); border-radius: 9px; color: var(--text);
+    --glow-x: 50%; --glow-y: 0%; position: relative; z-index: 1; flex: 0 0 auto;
+    height: var(--ctl-h); min-height: var(--ctl-h); padding: 0 10px; overflow: hidden;
+    border: 1px solid rgba(var(--HUE),.26); border-radius: 9px; color: var(--text);
     font-size: 12px; font-weight: 600; cursor: pointer;
+    background: linear-gradient(172deg,rgba(var(--HUE),.085),rgba(var(--HUE),.032) 62%,rgba(var(--HUE),.055));
+    box-shadow: inset 0 1px rgba(255,255,255,.80),inset 0 -1px rgba(105,81,63,.09),0 2px 4px rgba(67,51,39,.075);
     transition: transform 110ms,border-color 140ms,box-shadow 140ms,background 140ms,color 140ms;
 }
-.search-mode::before,.search-engine::before,.search-btn::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 65px 42px at var(--glow-x) var(--glow-y),var(--glint),transparent 83%); opacity: 0; transition: opacity 140ms; }
+/* 光感与 .bookmark::before 同构：中性白高光 + 各自色相光晕 */
+.search-mode::before,.search-engine::before,.search-btn::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 62px 40px at var(--glow-x) var(--glow-y),rgba(255,255,255,.86),transparent 66%),radial-gradient(ellipse 66px 43px at var(--glow-x) var(--glow-y),rgba(var(--HUE),.40),transparent 82%); opacity: 0; transition: opacity 85ms; }
 .search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: .52; }
-.search-mode { min-width: 48px; background: transparent; color: var(--text-secondary); }
-.search-mode:hover { border-color: var(--focus); background: rgba(148,94,74,.10); color: var(--text); }
-.search-mode[aria-pressed="true"] { border-color: var(--focus); background: rgba(148,94,74,.12); color: var(--accent); box-shadow: inset 0 1px 3px rgba(91,70,55,.10); }
-.search-engine,.search-btn { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.68),0 2px 4px rgba(67,51,39,.09); }
-.search-engine { min-width: 66px; justify-content: center; }
-.search-engine:hover,.search-btn:hover { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.73),0 4px 9px rgba(67,51,39,.15); }
-.search-btn { width: auto; min-width: 47px; border-radius: 9px; color: var(--accent); }
-.search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
+.search-mode:hover,.search-engine:hover,.search-btn:hover { transform: translateY(-1px); border-color: rgba(var(--HUE),.46); background: linear-gradient(172deg,rgba(var(--HUE),.14),rgba(var(--HUE),.055) 62%,rgba(var(--HUE),.09)); box-shadow: inset 0 1px rgba(255,255,255,.90),inset 0 -1px rgba(105,81,63,.11),0 5px 10px rgba(67,51,39,.12); }
+/* 点击凹陷比书签（inset 0 3px 6px）更深，过渡也更短 */
+.search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(1px); border-color: rgba(var(--HUE),.38); background: linear-gradient(180deg,rgba(var(--HUE),.18),rgba(var(--HUE),.07)); box-shadow: var(--ctl-press-shadow); transition-duration: var(--ctl-press-motion); }
+.search-mode:active::before,.search-engine:active::before,.search-btn:active::before { opacity: 0; transition-duration: 20ms; }
+.search-mode { --HUE: var(--mode-hue); min-width: 48px; color: var(--text-secondary); }
+/* 选中态做成「点亮」而非「凹陷」：inset 阴影留给 :active，
+   两种语义共用 inset 会让用户分不清「已切换」和「正在按」 */
+.search-mode[aria-pressed="true"] { border-color: rgba(var(--mode-hue),.60); background: linear-gradient(172deg,rgba(var(--mode-hue),.30),rgba(var(--mode-hue),.17) 60%,rgba(var(--mode-hue),.24)); color: rgb(var(--mode-hue)); box-shadow: inset 0 1px rgba(255,255,255,.62),0 2px 5px rgba(67,51,39,.10); }
+.search-engine { --HUE: var(--engine-hue); min-width: 66px; justify-content: center; }
+.search-engine[aria-expanded="true"] { border-color: rgba(var(--engine-hue),.52); color: rgb(var(--engine-hue)); box-shadow: inset 0 2px 5px rgba(91,70,55,.14),inset 0 0 0 1px rgba(255,255,255,.30); }
+/* 搜索是主操作：实心陶土，凹陷靠加深填充而非 inset 才读得出 */
+.search-btn {
+    --HUE: var(--submit-hue); width: auto; min-width: 47px; font-weight: 700; color: #fffaf5;
+    border-color: rgba(var(--submit-hue),.55);
+    background: linear-gradient(172deg,#85604e,var(--accent-hover) 58%,#66483a);
+    box-shadow: inset 0 1px rgba(255,255,255,.24),inset 0 -1px rgba(0,0,0,.14),0 2px 5px rgba(67,51,39,.17),0 5px 12px rgba(67,51,39,.10);
+}
+.search-btn::before { background: radial-gradient(ellipse 62px 40px at var(--glow-x) var(--glow-y),rgba(255,255,255,.42),transparent 66%),radial-gradient(ellipse 66px 43px at var(--glow-x) var(--glow-y),rgba(255,214,180,.30),transparent 82%); }
+.search-btn:hover { border-color: rgba(214,161,129,.70); background: linear-gradient(172deg,#96705c,#825d47 58%,#70503f); box-shadow: inset 0 1px rgba(255,255,255,.30),inset 0 -1px rgba(0,0,0,.14),0 6px 14px rgba(67,51,39,.22); }
+.search-btn:active { background: linear-gradient(180deg,#5c4034,#4e352b); color: rgba(255,250,245,.92); box-shadow: inset 0 5px 11px rgba(46,28,20,.52),inset 0 0 0 1px rgba(40,24,16,.28),inset 0 -1px rgba(255,255,255,.16); }
+:root[data-theme="dark"] .search-btn { background: linear-gradient(172deg,#e0b293,var(--accent) 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; }
+:root[data-theme="dark"] .search-btn:hover { background: linear-gradient(172deg,#eec3a6,var(--accent-hover) 58%,#d4a181); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn { background: linear-gradient(172deg,#e0b293,var(--accent) 58%,#c08e70); border-color: rgba(223,169,140,.42); color: #271e18; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .search-btn:hover { background: linear-gradient(172deg,#eec3a6,var(--accent-hover) 58%,#d4a181); } }
 /* font-size 不能低于 16px：iOS Safari 焦点时小于该值会自动缩放整页。
    583/603 行的移动端 16px 规则被这里覆盖过，改成 15px 会让点击输入框时页面跳动。 */
 .search-input { position: relative; z-index: 1; min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit; line-height: 44px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }
 .search-input:focus-visible { outline: none; }
 .search.fav-search-mode { border-color: var(--focus); }
-.search.fav-search-mode .search-btn { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--accent); }
+/* 收藏态下按钮文字换成「打开」但材质不变：这里原本会把实心陶土压回
+   浅色渐变 + 陶土文字，那是旧按钮的配色，套在实心底上会看不清。
+   主操作在两种模式下都应是同一个视觉重量。 */
 .engine-dropdown,.fav-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 11px; box-shadow: var(--shadow-lg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .engine-option { font-size: 12px; }
 .engine-option { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; }
@@ -2751,6 +2793,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; }
 .bookmark,.bookmark-text-only { --glow-x: 50%; --glow-y: 0%; position: relative; display: grid; place-items: center; min-height: 42px; padding: 6px 8px; overflow: hidden; border: 1px solid var(--bookmark-border); border-radius: 7px; background: var(--bookmark-face); box-shadow: var(--bookmark-idle-shadow); transition: transform var(--bookmark-motion) cubic-bezier(.2,.8,.25,1),border-color var(--bookmark-motion),box-shadow var(--bookmark-motion),background var(--bookmark-motion); }
 .bookmark::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 77px 51px at var(--glow-x) var(--glow-y),rgba(255,255,255,.54),transparent 68%),radial-gradient(ellipse 103px 69px at var(--glow-x) var(--glow-y),var(--bookmark-glint),transparent 82%); opacity: .17; transition: opacity var(--bookmark-glow-motion); }
+/* 顶边 1px 高光：让卡片在浅色背景上有「被从上方照亮」的边缘，
+   与搜索框外壳、按钮的顶部 inset 高光同一套语言 */
+.bookmark::after { content: ''; position: absolute; left: 8px; right: 8px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.92) 30%,rgba(255,255,255,.92) 70%,transparent); }
 .bookmark:hover,.bookmark-text-only:hover { z-index: 1; transform: translateY(var(--bookmark-lift)); border-color: var(--bookmark-hover-border); background: var(--bookmark-hover-face); box-shadow: var(--bookmark-hover-shadow); }
 .bookmark:hover::before,.bookmark:focus-visible::before { opacity: var(--bookmark-glow-opacity); }
 .bookmark:active,.bookmark-text-only:active,.bookmark.is-pressed { transform: translateY(var(--bookmark-press-depth)) scale(var(--bookmark-press-scale)); border-color: var(--bookmark-pressed-border); background: var(--bookmark-pressed-face); box-shadow: var(--bookmark-press-shadow); transition-duration: var(--bookmark-press-motion); }
@@ -2776,13 +2821,39 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .bookmark:focus-visible,.btn:focus-visible,.fab:focus-visible,.search-mode:focus-visible,.search-btn:focus-visible,.search-engine:focus-visible,.fav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .item-row input:focus,.setting-row select:focus,.fav-form input:focus,.fav-form select:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px rgba(148,94,74,.09); }
 .toast { border: 1px solid var(--border); background: var(--glass-strong); color: var(--text); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast { background: var(--bg-card); } }
-@media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast,.backboard { background: var(--bg-card); } }
+@media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast,.backboard { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark:hover,.btn:hover,.search-engine:hover,.search-btn:hover { transform: none; } }
 @media (hover: none) { .search:hover::after,.bookmark:hover::before,.search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: 0; } .bookmark:hover,.bookmark-text-only:hover,.btn:hover:not(:disabled),.search-engine:hover,.search-btn:hover { transform: none; } }
-@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .site-identity { margin-bottom: 22px; } .header { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
+/* 快捷键说明行：只桌面显示。
+   移动端的 display:none 唯一写在下面那条 ≤600px 块里。 */
+.search-caption { display: flex; justify-content: center; gap: 14px; margin: 11px 0 0; color: var(--text-muted); font-size: 11px; }
+.search-caption kbd { padding: 1px 4px; margin: 0 1px; border: 1px solid var(--border); border-radius: 4px; background: var(--glass); font: inherit; }
+@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .header { margin-bottom: 30px; } .search-caption { display: none; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
 @media (max-width: 480px) { .modal-header { flex-wrap: wrap; gap: 8px; } .modal-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; } .config-save-status { margin-right: auto; } }
 /* 三列铺满可用宽度：原先的 max-width:304px 在 390px 宽的机型上右侧留出大片空白，
    且使上一条 ≤600px 规则里的 auto-fill 96px 变成死代码（同为 ≤480px 且同特异性，后者在后）。 */
 @media (max-width: 480px) { .bookmarks { max-width: 100%; grid-template-columns: repeat(3,minmax(0,1fr)); } }
 @media (max-width: 370px) { .search { gap: 2px; } .search-mode { min-width: 43px; padding: 0 6px; } .search-engine { min-width: 55px; padding: 0 5px; } .search-input { padding: 0 5px; } .search-btn { min-width: 43px; padding: 0 6px; } }
+
+/* ========== 宽屏背板 + 快捷键说明行 ==========
+   背板是本次新增的元素。文件尾段不再重复声明本区块的规则，
+   与上面「Paste 分享模式」区块同一条纪律：同特异性下后写的会覆盖先前。 */
+
+/* 收束视觉：比 .app 窄一档，让宽屏下背景不再一览无余。 */
+.backboard { position: relative; width: min(100%,936px); margin: 0 auto; padding: 24px 30px 30px; border-radius: 18px;
+    background: linear-gradient(168deg,var(--glass-strong),var(--glass));
+    box-shadow: inset 0 1px rgba(255,255,255,.72),inset 0 -1px rgba(105,81,63,.07),0 2px 6px rgba(67,51,39,.035),0 20px 48px rgba(67,51,39,.07);
+    backdrop-filter: blur(20px) saturate(122%); -webkit-backdrop-filter: blur(20px) saturate(122%); }
+/* 顶边受光高光 */
+.backboard::before { content: ''; position: absolute; left: 30px; right: 30px; top: 0; height: 1px; pointer-events: none;
+    background: linear-gradient(90deg,transparent,rgba(255,255,255,.95) 22%,rgba(255,255,255,.95) 78%,transparent); }
+/* 四边发丝线：与 .category-header 分割线同一套 --divider-rgb 渐变语法 */
+.backboard::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; padding: 1px;
+    background: linear-gradient(90deg,transparent 0%,rgba(var(--divider-rgb),.10) 14%,rgba(var(--divider-rgb),.21) 50%,rgba(var(--divider-rgb),.10) 86%,transparent 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); mask-composite: exclude; }
+
+/* 窄屏完全退回现状：透明、无描边、无模糊、无圆角、无内边距 */
+@media (max-width: 1023px) { .backboard { width: auto; padding: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .backboard::before,.backboard::after { display: none; } }

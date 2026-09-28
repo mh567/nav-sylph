@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sylph 仿真 v2 · 去标识 / 三色按钮 / PC 背板</title>
+  <style>
+    /* ============================================================
+       Sylph 仿真 v2
+       1) 删除顶部 "Sylph" 站点标识
+       2) 搜索框三按钮：同族拟物 + 三色相偏移（模式青灰 / 引擎琥珀 / 搜索陶土），
+          点击凹陷比收藏按钮更深
+       3) PC 端（≥1024px）整块内容收进居中玻璃背板，边线与分割线同质感
+       ============================================================ */
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --ink: #302b27;
+      --sub: #655e57;
+      --muted: #817970;
+      --page: #efede8;
+      --card: #faf8f4;
+      --card-bottom: #f0ede7;
+      --divider-rgb: 92, 76, 64;
+      --stroke: rgba(92, 76, 64, .17);
+      --glass: rgba(252, 250, 246, .58);
+      --glass-strong: rgba(252, 250, 246, .88);
+      --accent: #945e4a;
+      --accent-soft: rgba(148, 94, 74, .095);
+      --control-top: #fcfaf6;
+      --control-bottom: #eee9e1;
+      --control-hover-top: #fffdf9;
+      --control-hover-bottom: #f4eee6;
+      --control-pressed-top: #e9e2d9;
+      --control-pressed-bottom: #f1ece5;
+      --press-shadow: inset 0 2px 5px rgba(91, 70, 55, .20), inset 0 -1px rgba(255, 255, 255, .55);
+      --glint: rgba(179, 111, 73, .34);
+      --search-glint: rgba(179, 111, 73, .20);
+      --glint-white: rgba(255, 255, 255, .90);
+      --primary: #71513f;
+      --primary-hover: #825d47;
+      --primary-text: #fffaf5;
+      --shadow: 0 2px 4px rgba(67, 51, 39, .035), 0 10px 26px rgba(67, 51, 39, .055);
+      --shadow-hover: 0 4px 8px rgba(67, 51, 39, .055), 0 16px 30px rgba(67, 51, 39, .12);
+
+      /* --- 三个按钮各自的色相锚点（同族拟物，仅色相微偏） --- */
+      --mode-hue: 106, 124, 132;      /* 青灰 */
+      --engine-hue: 168, 128, 78;     /* 琥珀 */
+      --submit-hue: 148, 94, 74;      /* 陶土 */
+
+      /* --- 按钮统一尺寸与凹陷参数（背板不改变控件高度） --- */
+      --ctl-h: 40px;
+      --ctl-r: 9px;
+      /* 点击凹陷：比收藏按钮（inset 0 3px 6px）更深、过渡更快 */
+      --ctl-press-shadow: inset 0 4px 9px rgba(88, 66, 50, .32), inset 0 0 0 1px rgba(121, 98, 77, .12), inset 0 -1px rgba(255, 255, 255, .42);
+      --ctl-press-motion: 28ms;
+      --ctl-lift: -1px;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #f3eee8;
+      --sub: #c9beb3;
+      --muted: #a89c90;
+      --page: #211f1c;
+      --card: #3a3530;
+      --card-bottom: #2c2925;
+      --divider-rgb: 222, 203, 185;
+      --stroke: rgba(222, 203, 185, .18);
+      --glass: rgba(65, 58, 51, .57);
+      --glass-strong: rgba(57, 51, 46, .88);
+      --accent: #dfa98c;
+      --accent-soft: rgba(223, 169, 140, .13);
+      --control-top: #625951;
+      --control-bottom: #3c3630;
+      --control-hover-top: #71655b;
+      --control-hover-bottom: #4a4139;
+      --control-pressed-top: #292521;
+      --control-pressed-bottom: #39312b;
+      --press-shadow: inset 0 3px 7px rgba(0, 0, 0, .45), inset 0 -1px rgba(255, 255, 255, .08);
+      --glint: rgba(243, 180, 135, .28);
+      --search-glint: rgba(243, 180, 135, .18);
+      --glint-white: rgba(255, 244, 226, .18);
+      --primary: #d4a181;
+      --primary-hover: #e0b293;
+      --primary-text: #271e18;
+      --shadow: 0 2px 4px rgba(0, 0, 0, .12), 0 10px 28px rgba(0, 0, 0, .20);
+      --shadow-hover: 0 5px 10px rgba(0, 0, 0, .18), 0 18px 34px rgba(0, 0, 0, .35);
+      --mode-hue: 138, 160, 168;
+      --engine-hue: 208, 162, 96;
+      --submit-hue: 223, 169, 140;
+      --ctl-press-shadow: inset 0 5px 11px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(0, 0, 0, .16), inset 0 -1px rgba(255, 255, 255, .07);
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body { min-height: 100vh; margin: 0; color: var(--ink); background: var(--page); }
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background: radial-gradient(ellipse 520px 280px at 50% 4%, rgba(255,255,255,.68), transparent 82%), radial-gradient(ellipse 500px 330px at 96% 88%, rgba(200,177,155,.13), transparent 83%);
+    }
+    [data-theme="dark"] body::before { background: radial-gradient(ellipse 530px 320px at 50% 0%, rgba(177,139,110,.09), transparent 82%), radial-gradient(ellipse 440px 300px at 94% 80%, rgba(121,93,72,.11), transparent 80%); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    input:focus-visible { outline: none; }
+
+    /* ---------- 布局：PC 背板 ---------- */
+    .app {
+      width: min(1040px, calc(100% - 44px));
+      margin: 0 auto;
+      padding: 35px 0 110px;
+    }
+    /* 背板本体。PC 端比内容列再窄一档，视觉上把背景「收」进来 */
+    .backboard {
+      position: relative;
+      width: min(100%, 936px);
+      margin: 0 auto;
+      padding: 24px 30px 30px;
+      border-radius: 18px;
+      background: linear-gradient(168deg, var(--glass-strong), var(--glass));
+      box-shadow:
+        inset 0 1px rgba(255, 255, 255, .72),
+        inset 0 -1px rgba(105, 81, 63, .07),
+        0 2px 6px rgba(67, 51, 39, .035),
+        0 20px 48px rgba(67, 51, 39, .07);
+      backdrop-filter: blur(20px) saturate(122%);
+      -webkit-backdrop-filter: blur(20px) saturate(122%);
+    }
+    /* 顶边高光：把背板和收藏按钮的「上方受光」质感统一 */
+    .backboard::before {
+      content: ""; position: absolute; left: 30px; right: 30px; top: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.95) 22%, rgba(255,255,255,.95) 78%, transparent);
+      pointer-events: none;
+    }
+    /* 四边发丝线：与 .category-heading 的分割线同一套 --divider-rgb 渐变质感 */
+    .backboard::after {
+      content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+      padding: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(var(--divider-rgb), .10) 14%, rgba(var(--divider-rgb), .21) 50%, rgba(var(--divider-rgb), .10) 86%, transparent 100%);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask-composite: exclude;
+    }
+    @media (max-width: 1023px) {
+      .backboard { width: auto; padding: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .backboard::before, .backboard::after { display: none; }
+    }
+
+    /* ---------- 顶部：站点标识已删除，仅留一段留白 ---------- */
+    .topbar { display: flex; align-items: center; justify-content: center; min-height: 4px; margin-bottom: 20px; }
+
+    /* ---------- 搜索框外壳：与收藏按钮同族的光感 ---------- */
+    .search-wrap { position: relative; width: min(560px, 100%); margin: 0 auto 26px; }
+    .search-shell {
+      --sx: 50%; --sy: 0%;
+      position: relative; display: flex; align-items: center; gap: 4px;
+      min-height: 52px; padding: 5px;
+      border: 1px solid rgba(132, 109, 92, .24); border-radius: 13px;
+      background: linear-gradient(165deg, var(--glass-strong), var(--glass));
+      box-shadow: inset 0 1px rgba(255,255,255,.76), inset 0 -1px rgba(105,81,63,.08), 0 3px 8px rgba(67,51,39,.045), 0 12px 27px rgba(67,51,39,.065);
+      backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
+      transition: border-color 160ms, box-shadow 160ms, background 160ms;
+    }
+    .search-shell::before {
+      content: ""; position: absolute; left: 11px; right: 11px; top: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.95), transparent);
+      pointer-events: none;
+    }
+    /* 悬浮光感：与收藏按钮 ::before 同构（双层径向：白色高光 + 色相光晕） */
+    .search-shell::after {
+      content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+      background: radial-gradient(ellipse 77px 51px at var(--sx) var(--sy), var(--glint-white), transparent 68%), radial-gradient(ellipse 105px 52px at var(--sx) var(--sy), var(--search-glint), transparent 82%);
+      opacity: 0; transition: opacity 85ms;
+    }
+    .search-shell:hover { border-color: rgba(148,94,74,.33); box-shadow: inset 0 1px rgba(255,255,255,.82), inset 0 -1px rgba(105,81,63,.07), 0 4px 10px rgba(67,51,39,.055), 0 13px 27px rgba(67,51,39,.07); }
+    .search-shell:hover::after { opacity: .40; }
+    .search-shell:focus-within {
+      border-color: rgba(148,94,74,.46);
+      box-shadow: inset 0 2px 5px rgba(91,70,55,.10), inset 0 0 0 1px rgba(255,255,255,.52), 0 4px 12px rgba(67,51,39,.07), 0 0 0 3px rgba(148,94,74,.065);
+    }
+    [data-theme="dark"] .search-shell:focus-within { background: rgba(44,39,35,.83); box-shadow: inset 0 3px 8px rgba(0,0,0,.34), inset 0 0 0 1px rgba(255,255,255,.06), 0 0 0 3px rgba(223,169,140,.08); }
+
+    /* ---------- 三个按钮：同族拟物 + 三色相偏移 ---------- */
+    .mode-toggle, .engine, .search-submit {
+      --mx: 50%; --my: 0%;
+      position: relative; overflow: hidden; flex: 0 0 auto;
+      height: var(--ctl-h); min-height: var(--ctl-h);
+      border-radius: var(--ctl-r);
+      font-size: 12px; font-weight: 600;
+      color: var(--ink);
+      border: 1px solid rgba(var(--HUE), .26);
+      background: linear-gradient(172deg, rgba(var(--HUE), .085), rgba(var(--HUE), .032) 62%, rgba(var(--HUE), .055));
+      box-shadow: inset 0 1px rgba(255,255,255,.80), inset 0 -1px rgba(105,81,63,.09), 0 2px 4px rgba(67,51,39,.075);
+      transition: transform 110ms, border-color 140ms, box-shadow 140ms, background 140ms, color 140ms;
+    }
+    .mode-toggle { --HUE: var(--mode-hue); }
+    .engine      { --HUE: var(--engine-hue); }
+    .search-submit { --HUE: var(--submit-hue); }
+
+    /* 光感：每层用各自色相，高光仍为中性白，结构与收藏按钮一致 */
+    .mode-toggle::before, .engine::before, .search-submit::before {
+      content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+      background:
+        radial-gradient(ellipse 62px 40px at var(--mx) var(--my), var(--glint-white), transparent 66%),
+        radial-gradient(ellipse 66px 43px at var(--mx) var(--my), rgba(var(--HUE), .40), transparent 82%);
+      opacity: 0; transition: opacity 85ms;
+    }
+    .mode-toggle:hover::before, .engine:hover::before, .search-submit:hover::before { opacity: .52; }
+    .mode-toggle:hover, .engine:hover, .search-submit:hover {
+      transform: translateY(var(--ctl-lift));
+      border-color: rgba(var(--HUE), .46);
+      background: linear-gradient(172deg, rgba(var(--HUE), .14), rgba(var(--HUE), .055) 62%, rgba(var(--HUE), .09));
+      box-shadow: inset 0 1px rgba(255,255,255,.90), inset 0 -1px rgba(105,81,63,.11), 0 5px 10px rgba(67,51,39,.12);
+    }
+    /* 点击：比收藏按钮更深的凹陷（4px 9px vs 3px 6px），过渡 28ms（收藏 35ms） */
+    .mode-toggle:active, .engine:active, .search-submit:active {
+      transform: translateY(1px);
+      border-color: rgba(var(--HUE), .38);
+      background: linear-gradient(180deg, rgba(var(--HUE), .18), rgba(var(--HUE), .07));
+      box-shadow: var(--ctl-press-shadow);
+      transition-duration: var(--ctl-press-motion);
+    }
+    .mode-toggle:active::before, .engine:active::before, .search-submit:active::before { opacity: 0; transition-duration: 20ms; }
+
+    /* 模式按钮：青灰，几乎透明底，文字次级色 */
+    .mode-toggle { min-width: 48px; padding: 0 10px; color: var(--sub); }
+    /* 选中态做成「点亮」而不是「凹陷」——凹陷专属于点击反馈，
+       两种语义若共用 inset 阴影，用户无法区分「已切换」和「正在按」 */
+    .mode-toggle[aria-pressed="true"] {
+      border-color: rgba(var(--mode-hue), .60);
+      background: linear-gradient(172deg, rgba(var(--mode-hue), .30), rgba(var(--mode-hue), .17) 60%, rgba(var(--mode-hue), .24));
+      color: rgb(var(--mode-hue));
+      box-shadow: inset 0 1px rgba(255,255,255,.62), 0 2px 5px rgba(67,51,39,.10);
+    }
+    /* 引擎按钮：琥珀，略重于模式 */
+    .engine { min-width: 68px; padding: 0 10px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); }
+    .engine[hidden] { display: none; }
+    .engine[aria-expanded="true"] { border-color: rgba(var(--engine-hue), .52); color: rgb(var(--engine-hue)); box-shadow: inset 0 2px 5px rgba(91,70,55,.14), inset 0 0 0 1px rgba(255,255,255,.30); }
+    .engine-caret { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: .55; transition: transform 160ms, opacity 140ms; }
+    .engine[aria-expanded="true"] .engine-caret { transform: rotate(180deg); opacity: .85; }
+    .engine:hover .engine-caret { opacity: .85; }
+    /* 搜索按钮：陶土实心，三者中最重的主操作 */
+    .search-submit {
+      min-width: 49px; padding: 0 11px; font-weight: 700;
+      color: var(--primary-text);
+      border-color: rgba(var(--submit-hue), .55);
+      background: linear-gradient(172deg, #85604e, var(--primary) 58%, #66483a);
+      box-shadow: inset 0 1px rgba(255,255,255,.24), inset 0 -1px rgba(0,0,0,.14), 0 2px 5px rgba(67,51,39,.17), 0 5px 12px rgba(67,51,39,.10);
+    }
+    .search-submit::before { background: radial-gradient(ellipse 62px 40px at var(--mx) var(--my), rgba(255,255,255,.42), transparent 66%), radial-gradient(ellipse 66px 43px at var(--mx) var(--my), rgba(255, 214, 180, .30), transparent 82%); }
+    .search-submit:hover {
+      border-color: rgba(214, 161, 129, .70);
+      background: linear-gradient(172deg, #96705c, var(--primary-hover) 58%, #70503f);
+      box-shadow: inset 0 1px rgba(255,255,255,.30), inset 0 -1px rgba(0,0,0,.14), 0 6px 14px rgba(67,51,39,.22);
+    }
+    .search-submit:active {
+      border-color: rgba(var(--submit-hue), .62);
+      background: linear-gradient(180deg, #5c4034, #4e352b);
+      color: rgba(255,250,245,.92);
+      box-shadow: inset 0 5px 11px rgba(46, 28, 20, .52), inset 0 0 0 1px rgba(40, 24, 16, .28), inset 0 -1px rgba(255,255,255,.16);
+    }
+    [data-theme="dark"] .search-submit { background: linear-gradient(172deg, #e0b293, var(--primary) 58%, #c08e70); border-color: rgba(223,169,140,.42); }
+    [data-theme="dark"] .search-submit:hover { background: linear-gradient(172deg, #eec3a6, var(--primary-hover) 58%, #d4a181); }
+
+    .search-input { flex: 1; min-width: 0; height: var(--ctl-h); padding: 0 12px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
+    .search-input::placeholder { color: var(--muted); opacity: 1; }
+
+    .search-caption { display: flex; justify-content: center; gap: 14px; margin: 11px 5px 0; color: var(--muted); font-size: 11px; }
+    kbd { padding: 1px 4px; border: 1px solid var(--stroke); border-radius: 4px; background: var(--glass); font: inherit; }
+
+    .engine-menu {
+      position: absolute; top: 56px; left: 60px; z-index: 12; width: 152px; padding: 5px;
+      border: 1px solid var(--stroke); border-radius: 10px; background: var(--glass-strong);
+      box-shadow: 0 12px 28px rgba(67,51,39,.13), inset 0 1px rgba(255,255,255,.66);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    }
+    .engine-menu[hidden] { display: none; }
+    .engine-choice { display: block; width: 100%; min-height: 31px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font-size: 12px; }
+    .engine-choice:hover, .engine-choice:focus-visible { background: var(--accent-soft); }
+    .engine-choice[aria-selected="true"] { color: var(--accent); font-weight: 700; }
+    .engine-choice:active { box-shadow: var(--press-shadow); }
+
+    .results {
+      position: absolute; top: 58px; left: 0; right: 0; z-index: 10; padding: 6px;
+      border: 1px solid rgba(255,255,255,.76); border-radius: 13px; background: var(--glass-strong);
+      box-shadow: var(--shadow-hover);
+      backdrop-filter: blur(25px) saturate(150%); -webkit-backdrop-filter: blur(25px) saturate(150%);
+    }
+    .results[hidden] { display: none; }
+    .result { display: flex; align-items: center; width: 100%; gap: 10px; padding: 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--ink); text-align: left; transition: background 120ms, border-color 120ms, box-shadow 120ms; }
+    .result:hover, .result.selected, .result:focus-visible { border-color: var(--stroke); background: var(--accent-soft); box-shadow: inset 0 1px rgba(255,255,255,.18); }
+    .result:active { background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+    .result small { margin-left: auto; color: var(--muted); font-size: 11px; }
+
+    /* ---------- 收藏网格 ---------- */
+    .category + .category { margin-top: 26px; }
+    .category-heading { display: flex; align-items: center; gap: 11px; margin: 0 0 12px; }
+    .category-heading h2 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .045em; }
+    .category-heading span { color: var(--muted); font-size: 11px; }
+    /* 分割线：背板边线用的就是这一套渐变语法 */
+    .category-heading::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(var(--divider-rgb),.08) 0%, rgba(var(--divider-rgb),.18) 18%, rgba(var(--divider-rgb),.18) 50%, rgba(var(--divider-rgb),.08) 82%, transparent 100%); }
+    .bookmarks { display: grid; grid-template-columns: repeat(auto-fill, minmax(114px, 1fr)); gap: 10px; }
+    .bookmark {
+      --mx: 50%; --my: 0%;
+      position: relative; display: grid; place-items: center; min-width: 0; min-height: 55px; padding: 8px 10px;
+      overflow: hidden; border: 1px solid var(--stroke); border-radius: 10px; text-decoration: none;
+      background: linear-gradient(165deg, var(--card), var(--card-bottom));
+      color: var(--ink); box-shadow: inset 0 1px rgba(255,255,255,.84), inset 0 -1px rgba(108,87,69,.08), var(--shadow);
+      transition: transform 90ms cubic-bezier(.2,.8,.25,1), box-shadow 90ms, border-color 90ms, background 90ms;
+    }
+    .bookmark::before {
+      content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+      background: radial-gradient(ellipse 77px 51px at var(--mx) var(--my), var(--glint-white), transparent 68%), radial-gradient(ellipse 103px 69px at var(--mx) var(--my), var(--glint), transparent 82%);
+      opacity: .17; transition: opacity 85ms;
+    }
+    .bookmark::after {
+      content: ""; position: absolute; left: 12px; right: 12px; top: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.96), transparent); pointer-events: none;
+    }
+    .bookmark:hover, .bookmark:focus-visible { z-index: 2; border-color: rgba(148,94,74,.37); box-shadow: inset 0 1px rgba(255,255,255,.96), inset 0 -1px rgba(108,87,69,.08), var(--shadow-hover); transform: translateY(-1px); }
+    .bookmark:hover::before, .bookmark:focus-visible::before { opacity: .32; }
+    .bookmark:active { transform: translateY(1px) scale(.975); background: linear-gradient(180deg, var(--control-pressed-top), var(--control-pressed-bottom)); box-shadow: inset 0 3px 6px rgba(91,72,56,.26), inset 0 0 0 1px rgba(121,98,77,.09), inset 0 -1px rgba(255,255,255,.48); transition-duration: 35ms; }
+    .bookmark:active::before { opacity: 0; transition-duration: 20ms; }
+    .bookmark-name { position: relative; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+
+    .trial-label { margin: 26px 0 0; color: var(--muted); text-align: center; font-size: 10px; }
+
+    /* ---------- 右下角 dock ---------- */
+    .glass-dock {
+      position: fixed; right: 21px; bottom: 19px; z-index: 12; display: flex; gap: 5px; padding: 5px;
+      border: 1px solid rgba(255,255,255,.72); border-radius: 13px; background: var(--glass);
+      box-shadow: inset 0 1px rgba(255,255,255,.78), var(--shadow-hover);
+      backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
+    }
+    .dock-button { min-width: 36px; height: 33px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font-size: 12px; transition: background 130ms, transform 100ms, box-shadow 130ms; }
+    .dock-button:hover { background: var(--accent-soft); box-shadow: inset 0 1px rgba(255,255,255,.20); }
+    .dock-button:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+
+    /* ---------- 仿真控制面板 ---------- */
+    .stage-bar {
+      position: fixed; left: 50%; bottom: 18px; z-index: 40; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 6px; padding: 6px;
+      border: 1px solid var(--stroke); border-radius: 999px; background: var(--glass-strong);
+      box-shadow: inset 0 1px rgba(255,255,255,.7), var(--shadow-hover);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); font-size: 11px;
+    }
+    .stage-bar button { min-height: 28px; padding: 0 11px; border: 1px solid var(--stroke); border-radius: 999px; background: var(--control-top); color: var(--sub); font-size: 11px; }
+    .stage-bar button:hover { border-color: var(--focus, rgba(148,94,74,.45)); color: var(--ink); }
+    .stage-bar button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+    .stage-bar .sep { width: 1px; height: 17px; background: linear-gradient(180deg, transparent, rgba(var(--divider-rgb),.22), transparent); }
+    .stage-bar .lbl { padding: 0 3px; color: var(--muted); }
+
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search-shell, .engine-menu, .results, .glass-dock, .backboard, .stage-bar { background: var(--glass-strong); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark, .bookmark:hover, .bookmark:focus-visible, .bookmark:active, .mode-toggle:hover, .engine:hover, .search-submit:hover { transform: none; } }
+    @media (hover: none) {
+      .search-shell:hover:not(:focus-within)::after, .mode-toggle:hover::before, .engine:hover::before, .search-submit:hover::before, .bookmark:hover::before { opacity: 0; }
+      .mode-toggle:hover:not(:active), .engine:hover:not(:active), .search-submit:hover:not(:active) { transform: none; }
+      .bookmark:hover:not(:active):not(:focus-visible) { transform: none; }
+      .bookmark:hover:not(:focus-visible)::before { opacity: .17; }
+    }
+    @media (max-width: 1023px) { .app { padding-top: 25px; } .topbar { margin-bottom: 12px; } }
+    @media (max-width: 600px) {
+      .app { width: calc(100% - 24px); }
+      .search-wrap { margin-bottom: 22px; }
+      .bookmarks { grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); gap: 8px; }
+      .bookmark { min-height: 51px; }
+      .glass-dock { right: 12px; bottom: 12px; }
+      .search-caption { font-size: 10px; }
+      .stage-bar { display: none; }
+    }
+    @media (max-width: 370px) {
+      .search-shell { gap: 2px; }
+      .mode-toggle { min-width: 43px; padding-inline: 6px; }
+      .engine { min-width: 55px; padding-inline: 5px; }
+      .search-input { padding-inline: 5px; }
+      .search-submit { min-width: 43px; padding-inline: 6px; }
+      .engine-menu { left: 49px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- 背板：PC 端收束整块内容；窄屏退回为透明容器 -->
+    <div class="backboard">
+      <!-- 站点标识已删除，此处只留留白 -->
+      <div class="topbar"></div>
+
+      <section class="search-wrap" aria-label="搜索">
+        <form id="searchForm" class="search-shell" autocomplete="off">
+          <button id="modeButton" class="mode-toggle" type="button" aria-label="切换搜索模式，当前为网页" aria-pressed="false">网页</button>
+          <button id="engineButton" class="engine" type="button" aria-label="选择搜索引擎，当前为 Google" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineMenu">
+            <span id="engineName">Google</span>
+            <svg class="engine-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <input id="searchInput" class="search-input" type="text" placeholder="搜索网页或收藏" aria-label="搜索网页或收藏">
+          <button class="search-submit" type="submit">搜索</button>
+        </form>
+        <div class="search-caption"><span>输入 <kbd>/</kbd> 查收藏</span><span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 打开</span></div>
+        <div id="engineMenu" class="engine-menu" role="listbox" aria-label="搜索引擎" hidden></div>
+        <div id="results" class="results" hidden></div>
+      </section>
+
+      <main id="categories"></main>
+    </div>
+    <p class="trial-label">仿真 v2 · 移动鼠标查看悬浮光感与点击凹陷 · 无真实跳转或保存</p>
+  </div>
+
+  <nav class="glass-dock" aria-label="页面操作"><button class="dock-button" type="button">管理</button></nav>
+
+  <div class="stage-bar" role="group" aria-label="仿真控制">
+    <button id="btnTheme" type="button" aria-pressed="false">深色</button>
+    <span class="sep"></span>
+    <span class="lbl">对比</span>
+    <button id="btnBackboard" type="button" aria-pressed="true">背板 开</button>
+    <button id="btnState" type="button" aria-pressed="false">常亮</button>
+    <span class="sep"></span>
+    <span class="lbl">宽度</span>
+    <button id="btnWide" type="button" aria-pressed="false">1280</button>
+    <button id="btnNarrow" type="button" aria-pressed="false">900</button>
+  </div>
+
+  <script>
+    const ENGINES = ['Google', 'Bing', 'DuckDuckGo', '百度', '搜狗', '必应', 'Yandex', 'Naver', 'Yahoo', 'Yandex', 'Ecosia', 'Startpage'];
+    const FAVS = {
+      '常用': ['GitHub', 'Gmail', 'Google 日历', 'ChatGPT', 'Figma', 'Notion', 'Linear', 'Vercel', 'MDN', 'Stack Overflow', 'npm', 'RegExr'],
+      '工具': ['JSON 格式化', '时间戳', 'Base64', '颜色转换', 'Diff 对比', '正则测试', 'Cron 表达式', '短链', 'DNS 查询', 'Whois', '截图标注', '密码生成']
+    };
+
+    const $ = s => document.querySelector(s);
+    const $$ = s => [...document.querySelectorAll(s)];
+
+    // 分类 + 收藏
+    $('#categories').innerHTML = Object.entries(FAVS).map(([name, items]) => `
+      <section class="category">
+        <div class="category-heading"><h2>${name}</h2><span>${items.length}</span></div>
+        <div class="bookmarks">
+          ${items.map(t => `<a class="bookmark" href="#" onclick="return false"><span class="bookmark-name">${t}</span></a>`).join('')}
+        </div>
+      </section>`).join('');
+
+    // 引擎菜单
+    const engineMenu = $('#engineMenu');
+    engineMenu.innerHTML = ENGINES.map((e, i) => `<button class="engine-choice" type="button" role="option" aria-selected="${i === 0}">${e}</button>`).join('');
+    $('#engineButton').addEventListener('click', e => {
+      e.stopPropagation();
+      const open = engineMenu.hidden;
+      engineMenu.hidden = !open;
+      $('#engineButton').setAttribute('aria-expanded', String(open));
+    });
+    engineMenu.addEventListener('click', e => {
+      const b = e.target.closest('.engine-choice');
+      if (!b) return;
+      $$('.engine-choice').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+      $('#engineName').textContent = b.textContent;
+      engineMenu.hidden = true;
+      $('#engineButton').setAttribute('aria-expanded', 'false');
+      $('#searchInput').focus();
+    });
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.search-wrap')) { engineMenu.hidden = true; $('#engineButton').setAttribute('aria-expanded', 'false'); }
+    });
+
+    // 模式切换
+    $('#modeButton').addEventListener('click', () => {
+      const b = $('#modeButton');
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', String(on));
+      b.textContent = on ? '收藏' : '网页';
+      $('#searchInput').placeholder = on ? '搜索收藏...' : '搜索网页或收藏';
+      $('#engineButton').hidden = on;
+      $('.search-submit').textContent = on ? '打开' : '搜索';
+    });
+
+    // 收藏下拉
+    const results = $('#results');
+    const input = $('#searchInput');
+    const FAV_FLAT = Object.values(FAVS).flat();
+    function renderResults(q) {
+      const hits = FAV_FLAT.filter(t => t.toLowerCase().includes(q.toLowerCase())).slice(0, 6);
+      if (!hits.length) { results.hidden = true; return; }
+      results.hidden = false;
+      results.innerHTML = hits.map((t, i) => `<a class="result${i === 0 ? ' selected' : ''}" href="#" onclick="return false">${t}<small>${Object.keys(FAVS).find(k => FAVS[k].includes(t))}</small></a>`).join('');
+    }
+    input.addEventListener('input', () => {
+      const v = input.value;
+      if (v.startsWith('/')) { $('#modeButton').setAttribute('aria-pressed', 'true'); $('#modeButton').textContent = '收藏'; renderResults(v.slice(1)); }
+      else { if (v.startsWith('/')) return; $('#modeButton').setAttribute('aria-pressed', 'false'); $('#modeButton').textContent = '网页'; renderResults(v); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { results.hidden = true; }, 160));
+    $('#searchForm').addEventListener('submit', e => e.preventDefault());
+
+    // 光标跟随光感（与 app.js bindPointerEffects 同构）
+    let frame = 0;
+    document.addEventListener('pointermove', e => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const el = e.target.closest('.search-shell, .bookmark, .mode-toggle, .engine, .search-submit');
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const x = ((e.clientX - r.left) / r.width) * 100;
+        const y = ((e.clientY - r.top) / r.height) * 100;
+        el.style.setProperty('--mx', x + '%');
+        el.style.setProperty('--my', y + '%');
+        const sx = el.classList.contains('search-shell') ? '--sx' : '--glow-x';
+        const sy = el.classList.contains('search-shell') ? '--sy' : '--glow-y';
+        el.style.setProperty(sx, x + '%');
+        el.style.setProperty(sy, y + '%');
+      });
+    });
+
+    // 仿真控制
+    $('#btnTheme').addEventListener('click', e => {
+      const dark = document.documentElement.dataset.theme !== 'dark';
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      e.currentTarget.textContent = dark ? '浅色' : '深色';
+      e.currentTarget.setAttribute('aria-pressed', String(dark));
+    });
+    $('#btnBackboard').addEventListener('click', e => {
+      const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+      e.currentTarget.setAttribute('aria-pressed', String(on));
+      document.querySelector('.backboard').classList.toggle('off', !on);
+      e.currentTarget.textContent = on ? '背板 开' : '背板 关';
+    });
+    $('#btnState').addEventListener('click', e => {
+      const on = e.currentTarget.getAttribute('aria-pressed') !== 'true';
+      e.currentTarget.setAttribute('aria-pressed', String(on));
+      e.currentTarget.textContent = on ? '凹陷态' : '常亮';
+      $$('.bookmark').forEach(b => b.classList.toggle('is-demo-active', on));
+      $$('.mode-toggle, .engine, .search-submit').forEach(b => b.classList.toggle('is-demo-active', on));
+    });
+    $('#btnWide').addEventListener('click', () => setWidth(1280));
+    $('#btnNarrow').addEventListener('click', () => setWidth(900));
+    function setWidth(w) {
+      document.body.style.maxWidth = w + 'px';
+      document.body.style.margin = '0 auto';
+      document.body.style.boxShadow = '0 0 0 1px rgba(148,94,74,.2)';
+      $$('#btnWide, #btnNarrow').forEach(b => b.setAttribute('aria-pressed', String(b.textContent === String(w))));
+    }
+  </script>
+  <style>
+    /* 演示用：把 :active 状态钉住，方便截图对比凹陷深度 */
+    .bookmark.is-demo-active { transform: translateY(1px) scale(.975); background: linear-gradient(180deg, var(--control-pressed-top), var(--control-pressed-bottom)); box-shadow: inset 0 3px 6px rgba(91,72,56,.26), inset 0 0 0 1px rgba(121,98,77,.09), inset 0 -1px rgba(255,255,255,.48); }
+    .bookmark.is-demo-active::before { opacity: 0; }
+    .mode-toggle.is-demo-active, .engine.is-demo-active, .search-submit.is-demo-active { transform: translateY(1px); }
+    .mode-toggle.is-demo-active { background: linear-gradient(180deg, rgba(var(--mode-hue), .18), rgba(var(--mode-hue), .07)); border-color: rgba(var(--mode-hue), .38); box-shadow: var(--ctl-press-shadow); }
+    .engine.is-demo-active { background: linear-gradient(180deg, rgba(var(--engine-hue), .18), rgba(var(--engine-hue), .07)); border-color: rgba(var(--engine-hue), .38); box-shadow: var(--ctl-press-shadow); }
+    .search-submit.is-demo-active { background: linear-gradient(180deg, #5c4034, #4e352b); color: rgba(255,250,245,.92); border-color: rgba(var(--submit-hue), .62); box-shadow: inset 0 5px 11px rgba(46, 28, 20, .52), inset 0 0 0 1px rgba(40, 24, 16, .28), inset 0 -1px rgba(255,255,255,.16); }
+    .mode-toggle.is-demo-active[aria-pressed="true"] { background: linear-gradient(180deg, rgba(var(--mode-hue), .30), rgba(var(--mode-hue), .14)); border-color: rgba(var(--mode-hue), .38); box-shadow: var(--ctl-press-shadow); }
+    /* 背板关闭对比 */
+    .backboard.off { background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .backboard.off::before, .backboard.off::after { display: none; }
+  </style>
+</body>
+</html>

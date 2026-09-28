@@ -31,7 +31,8 @@
 <body>
     <div class="loader" id="loader"></div>
     <div class="app" id="app" hidden>
-        <div class="site-identity">Sylph</div>
+        <!-- 宽屏背板：收束整块内容；≤1023px 由 CSS 退回为透明容器 -->
+        <div class="backboard">
         <header class="header">
             <div class="search-wrapper">
                 <form class="search" id="searchForm">
@@ -49,7 +50,12 @@
                 <div class="engine-dropdown" id="engineDropdown" role="listbox" aria-label="搜索引擎" hidden></div>
             </div>
         </header>
+        <div class="search-caption" aria-hidden="true">
+            <span>输入 <kbd>/</kbd> 查收藏</span>
+            <span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 打开</span>
+        </div>
         <main class="grid" id="grid"></main>
+        </div>
         <nav class="utility-dock" aria-label="页面操作">
             <button class="fab fab-help" id="helpBtn" title="帮助">说明</button>
             <button class="fab" id="adminBtn" title="管理 (Alt+A)">管理</button>

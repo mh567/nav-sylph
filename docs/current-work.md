@@ -6,9 +6,70 @@
 
 修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `9ecc720`；`package.json` 版本 `1.5.6`。
 
-分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`。
+分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`，分享弹窗紧凑化 `a5a2e00`/v1.5.10 `b4522e2`，收藏弹窗 `7779a64`/v1.5.11 `49f9f28`，横屏与软键盘修复为 v1.5.12，**首页材质改版为 v1.5.13**。
 
-## 本次完成的内容（分享弹窗紧凑化 + 移动端适配审计）
+首页材质改版（删站点标识、搜索栏三色按钮、快捷键说明行、书签光影、PC 背板）**已提交并发布为 v1.5.13**，`sw.js` 缓存同步升到 `nav-v22`。设计仿真留在 `docs/mockup-v2.html`，回归测试在 `tests/homepage-material.test.js`（11 条，均经红绿验证）。
+
+## 本次完成的内容（首页材质改版：仿真 v2 落地）
+
+以 `docs/mockup-v2.html` 为准，落到 `public/index.html` 与 `public/styles.css`。**已提交、已发布 v1.5.13**。
+
+### 改了什么
+
+| 项 | 位置 | 说明 |
+| --- | --- | --- |
+| 删站点标识 | `index.html:35` | `.site-identity` 元素连同两条 CSS 规则一并删除，不留死代码。 |
+| 三色按钮 | `styles.css:2728` 起 | 网页/收藏=青灰、引擎=琥珀、搜索=实心陶土。各自 `--HUE` 派生底色与光感，三者共用一条规则。 |
+| 快捷键说明行 | `index.html:53`、`styles.css:2830` | 桌面显示，`≤600px` 隐藏（`styles.css:2832`）。 |
+| 书签光影 | `styles.css:2798` | 新增 `::after` 顶边高光；浅色光晕 `.32→.46`、悬浮加外投影。**尺寸 96×42 与圆角 7px 一律未动。** |
+| 宽屏背板 | `index.html:35`、`styles.css:2844` | `≥1024px` 收进 936px 玻璃面；`≤1023px` 兜底（`styles.css:2858`）完全退回原布局。 |
+
+### 三个浏览器实测才发现的缺陷（单测与源码形状断言都没抓到）
+
+**已修 1：收藏态的「打开」按钮是琥珀色。** 旧样式有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`，特异性 `(0,3,0)` 压过新材质层的 `.search-btn` `(0,1,0)`，实心陶土被换成琥珀底。只在真实浏览器截图里看得出来——单测与 `getComputedStyle` 在未进入收藏态时都测不到。已**删除**该规则（不是覆盖），原位留了解释性注释（`styles.css:1154`），并在 `tests/homepage-material.test.js` 加断言钉住。
+
+**已修 2：说明行在手机上照样显示。** 基础规则 `.search-caption { display:flex }` 原本写在文件末尾的 `≤600px` 块**之后**，同特异性下把块里的 `display:none` 压掉。390×844 实测 `display` 仍为 `flex`。已把基础规则移到 `≤600px` 块之前，并补了一条**断言相对源码位置**的测试——两条规则都「存在」时只有顺序能区分对错。
+
+**已修 3：验证过程中自己的测试是假绿的。** 上面第 2 条最初没被测出来，因为断言只检查「基础规则有 `display:flex`」和「`≤600px` 块里有 `display:none`」，两条都满足，但层叠结果是错的。另外加琥珀色断言时，它匹配到了我自己写的解释性注释里的 `#f59e0b` 字样——剥注释后才是正确判定。
+
+### 验证记录
+
+```
+node --test tests/*.test.js          → 88 tests, 88 pass, 0 fail
+for f in $(find public scripts -name '*.js'); do node --check "$f"; done   → 无输出
+grep -c 'max-width: 1023px' public/styles.css  → 1
+git diff --check                     → 无空白问题
+```
+
+新增 `tests/homepage-material.test.js` 共 11 条。**每条都做过红绿验证**：改坏实现后确认对应测试转红，再恢复并 `diff` 确认文件逐字复原。覆盖层叠顺序、深色双块一致性、按钮唯一声明、凹陷深度对比、书签尺寸未偏移、背板兜底唯一性、琥珀覆写不存在。
+
+**五视口实测（真实服务器 + fixture，非 file://）**
+
+| 视口 | 背板 | 书签 | 说明行 | 左右留白 | 横向滚动 |
+| --- | --- | --- | --- | --- | --- |
+| 1280×860 | 936px 可见 | 96×42 | flex | 172/172 相等 | 无 |
+| 1024×768 | 936px 可见 | 96×42 | flex | 44/44 相等 | 无 |
+| 1023×767 | 979px 消失 | 96×42 | flex | 22/22 相等 | 无 |
+| 834×1112 | 790px 消失 | 96×42 | flex | 22/22 相等 | 无 |
+| 390×844 | 366px 消失 | 116.66×44 | **none** | 12/12 相等 | 无 |
+
+**交互实测**：书签 `--glow-x/y` 被 `app.js` 写入 px 值（46.8px / 20.5px）；`pointerdown` 加 `.is-pressed`，`window` 上 `pointerup` 后移除，260ms 后为 `false`（无卡住）；分享态 `>` 展开正常（56→116px、`transition` 六项属性完整、退出后回落）；模式按钮选中态为外投影「点亮」，与 `:active` 凹陷可区分；**系统深色与手动 `data-theme="dark"` 逐字一致**（三色、凹陷、悬浮阴影、按钮渐变五项 `cmp` 全等）。
+
+### 未验证项
+
+- **Service Worker 缓存**：验证期间浏览器两次命中旧缓存导致误判（一次显示说明行仍在、一次显示琥珀按钮），每次都靠 `unregister()` + `caches.delete()` 绕过。`sw.js` 的 `CACHE` 已从 `nav-v21` 升到 `nav-v22`，**升级后的用户会拿到新样式**。
+- **真机 Safari / 微信内置浏览器**：`mask-composite: exclude` 的背板发丝线在旧 WebKit 上的表现未验证。
+- **iOS 软键盘**：分享态编辑区未在真机键盘弹出时复测（无头浏览器不产生软键盘）。
+- **深色下三色相区分度**：数值正确，但深色背景上青灰与琥珀的对比是否足够，需肉眼在真机确认。
+- **hover 态视觉**：书签悬浮外投影与顶边高光的实际观感只做了数值确认，未做逐帧视觉比对。
+
+### 下一步
+
+1. ~~用户确认视觉后提交~~ → 已发布 v1.5.13。
+2. ~~发布前把 `sw.js` 的 `CACHE` 升到 `nav-v22`~~ → 已升。
+3. **仍待真机确认**：深色模式下青灰/琥珀/陶土三色的区分度、旧版 WebKit 上的背板发丝线（`mask-composite: exclude`）、iOS 软键盘下的分享编辑区。这三项本地无法验证，已列入「未验证项」。
+
+## 上一轮：分享弹窗紧凑化 + 移动端适配审计
 
 分享弹窗与移动端适配提交为 `a5a2e00`、v1.5.10 发布为 `b4522e2`；收藏弹窗的同类修复为 `7779a64`、v1.5.11 发布为 `49f9f28`；引擎下拉与软键盘修复见下节，本次发布 **v1.5.12**。
 
@@ -39,11 +100,11 @@
 
 | # | 位置 | 缺陷 |
 | --- | --- | --- |
-| 5 | `styles.css:2709/2760` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px。 |
-| 6 | `styles.css:2787`（新增横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄到 48px。 |
-| 7 | `index.html:22`、`styles.css:56/66` | `100vh` 在 iOS Safari 中是地址栏收起时的高度，展开时底部出现空白带。改为 `100vh` + `100dvh` 双声明（不支持 dvh 的浏览器沿用前者）。`admin.css` 早已全面改用 dvh，首页是漏网的。 |
-| 8 | `styles.css:2726` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
-| 9 | `styles.css:2787` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 2783 行的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
+| 5 | `styles.css:2730` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px（本次改版后由 `--ctl-h: 44px` 统一提供）。 |
+| 6 | `styles.css:1729`（横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄（现值 54px，`styles.css:1770`）。 |
+| 7 | `index.html:5`、`styles.css:58/67` | `100vh` 在 iOS Safari 中是地址栏收起时的高度，展开时底部出现空白带。改为 `100vh` + `100dvh` 双声明（不支持 dvh 的浏览器沿用前者）。`admin.css` 早已全面改用 dvh，首页是漏网的。 |
+| 8 | `styles.css:2766` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
+| 9 | `styles.css:2836` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 `≤600px` 块里的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
 
 ### 三、代码审计（基线 `382c89e`...工作区）
 
@@ -83,7 +144,7 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 
 ### 五、收藏弹窗的同类修复（`7779a64`，发布为 v1.5.11）
 
-审查指出 `.fav-dialog` 与本次修掉的 `.ui-dialog` 属同一类缺陷。经确认后一并修掉，并暴露出**我把根因记错了文件**：不是 `admin.css` 的 ≤480px 块，而是 **`styles.css` 的 ≤768px 块**——断点都不同，因此此前只搜 `admin.css` 根本没找到它。真正的贴底声明在 `styles.css:1634`（`align-items: flex-end` + `border-radius: 16px 16px 0 0`）。
+审查指出 `.fav-dialog` 与本次修掉的 `.ui-dialog` 属同一类缺陷。经确认后一并修掉，并暴露出**我把根因记错了文件**：不是 `admin.css` 的 ≤480px 块，而是 **`styles.css` 的 ≤768px 块**——断点都不同，因此此前只搜 `admin.css` 根本没找到它。真正的贴底声明在 `styles.css:1630` 起的 `.fav-dialog-overlay`（原为 `align-items: flex-end` + `border-radius: 16px 16px 0 0`，现已改为 `align-items: center`，见 1632 行）。
 
 改动：`styles.css` 的 ≤768px 块改为 `align-items: center` + 四边安全区内边距 + `border-radius: 14px` + `max-height: 88dvh; overflow-y: auto`；`admin.css` 的 ≤480px 块里那条重复的底部抽屉声明删除，改为注释指向唯一定义处。`slideUpMobile` 动画随之不再被使用，但保留在原处（`@keyframes` 仍在 768px 块内，若确认无其他引用可再清理）。
 
@@ -446,7 +507,7 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 ### 本次明确不在范围内（移动端）
 
-19. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:376/389`）；`.category-tree-children` 在 `styles.css:2489` 是 `display: none`，`admin.css:383` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
+19. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:352` vs `admin.css:52`）；`.category-tree-children` 在 `styles.css:2485`（≤768px 块内）是 `display: none`，`admin.css:383` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
 20. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
 21. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
 22. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
