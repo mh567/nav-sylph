@@ -191,8 +191,11 @@ const { WebDAVBackup } = require('./lib/webdav-backup');
 app.disable('x-powered-by');
 
 // 信任反代写入的 X-Forwarded-For，使限流能拿到真实客户端 IP。
-// 必须用跳数而非 true：true 会信任客户端自带的该头，任何能直连端口的
-// 客户端都能伪造 IP 轮换绕过限流。1 表示只信任最右侧一跳。
+// 1 表示只信任最右侧一跳。该跳正是 nginx 用 proxy_add_x_forwarded_for
+// 追加 $remote_addr 的位置，客户端自带的 XFF 会被完全丢弃。
+// 前提是端口不对外暴露：若能绕过 nginx 直连，客户端可往 XFF 末尾追加任意
+// IP 换取新限流桶（实测可无限轮换），此时 1 与 true 都不安全。真正生效的
+// 边界是网络层，不是这个取值。
 app.set('trust proxy', 1);
 
 app.use(express.json());

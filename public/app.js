@@ -247,13 +247,19 @@
             this.bindPointerEffects();
             this.bindBookmarkPress();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
-            // textarea 的回车默认只换行，不会提交表单。分享态下让回车发送、
-            // Shift/ Ctrl / Cmd+回车换行；搜索态保持原生行为不变。
+            // textarea 的回车默认只换行，不会提交表单，因此两种模式都要自己接管：
+            // 分享态回车发送、Shift/ Ctrl / Cmd+回车换行；搜索态回车搜索。
             $('#searchInput').addEventListener('keydown', event => {
-                if (event.key !== 'Enter' || !this.pasteMode) return;
-                if (event.shiftKey || event.ctrlKey || event.metaKey) return;
-                event.preventDefault();
-                this.handleSearch();
+                if (event.key !== 'Enter') return;
+                if (this.pasteMode) {
+                    if (event.shiftKey || event.ctrlKey || event.metaKey) return;
+                    event.preventDefault();
+                }
+                // 搜索态不能放行：裸回车会插入换行而不是提交表单
+                if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+                    event.preventDefault();
+                    this.handleSearch();
+                }
             });
             $('#searchInput').oninput = (e) => {
                 this.handleSearchInput(e);
@@ -262,8 +268,11 @@
             // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随。
             // 撞上 min-height 的空拖会留下一个永不生效的小高度并锁死自增高，
             // 因此拖拽结束时按实际渲染高度回退：没真的变高就交还给自动增高。
+            // 监听挂在 window 上：拖到元素外松手也能收到，否则标志会永久卡住。
             const input = $('#searchInput');
             const settleDrag = () => {
+                window.removeEventListener('pointerup', settleDrag);
+                window.removeEventListener('pointercancel', settleDrag);
                 if (!this.pasteUserResized) return;
                 const minHeight = parseFloat(getComputedStyle(input).minHeight) || 0;
                 if (input.getBoundingClientRect().height > minHeight + 1) return;
@@ -277,7 +286,8 @@
                 const onHandle = event.clientX > rect.right - 18 && event.clientY > rect.bottom - 18;
                 if (!onHandle) return;
                 this.pasteUserResized = true;
-                input.addEventListener('pointerup', settleDrag, { once: true });
+                window.addEventListener('pointerup', settleDrag);
+                window.addEventListener('pointercancel', settleDrag);
             });
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();

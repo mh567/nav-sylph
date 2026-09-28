@@ -150,17 +150,27 @@ function mountComposer(controls = {}) {
         }
         return node;
     };
+    // Real DOM allows several listeners for the same event; keep them in a
+    // list so a later registration cannot silently drop an earlier one
+    // (bindBookmarkPress and the resize handle both use pointercancel).
+    const windowListeners = {};
+    const windowStub = {
+        matchMedia: () => ({ matches: false }),
+        open() {},
+        location: { href: '' },
+        listeners: windowListeners,
+        addEventListener: (name, fn) => { (windowListeners[name] ||= []).push(fn); },
+        removeEventListener: (name, fn) => {
+            windowListeners[name] = (windowListeners[name] || []).filter(f => f !== fn);
+        },
+        fire(name) { (windowListeners[name] || []).forEach(fn => fn()); }
+    };
     const app = loadApp(
         document,
-        {
-            matchMedia: () => ({ matches: false }),
-            addEventListener() {},
-            open() {},
-            location: { href: '' }
-        },
+        windowStub,
         { getComputedStyle: () => ({ maxHeight: controls.maxHeight ?? 'none', minHeight: controls.minHeight ?? '0px' }) }
     );
-    return { app, dom };
+    return { app, dom, window: windowStub };
 }
 
 // ---- style shape guards ----
@@ -262,7 +272,7 @@ test('a drag that changes nothing hands control back to auto-grow', () => {
     // still marks the box as user-resized, which would freeze auto-grow for
     // the rest of the session and strand the content in an inner scrollbar.
     const controls = { maxHeight: 'none', minHeight: '96px' };
-    const { app, dom } = mountComposer(controls);
+    const { app, dom, window: windowStub } = mountComposer(controls);
     const input = dom.nodes.input;
     input.getBoundingClientRect = () => ({ right: 100, bottom: 100, height: 96 });
     let scrollHeight = 300;
@@ -276,9 +286,10 @@ test('a drag that changes nothing hands control back to auto-grow', () => {
     input.listeners.pointerdown({ clientX: 99, clientY: 99, currentTarget: input });
     assert.equal(app.pasteUserResized, true, 'the press claims control');
 
-    // The settle handler is armed by the press, not by bind()
-    assert.ok(input.listeners.pointerup, 'a settle handler is armed by the press');
-    input.listeners.pointerup();
+    // The settle handler is armed on window by the press, so a drag that ends
+    // outside the element still settles.
+    assert.ok(windowStub.listeners.pointerup, 'settle is armed on window, not the element');
+    windowStub.fire('pointerup');
 
     assert.equal(app.pasteUserResized, false, 'a no-op drag releases control');
     assert.equal(input.style.height, '300px', 'auto-grow resumes and fits the content');
@@ -286,7 +297,7 @@ test('a drag that changes nothing hands control back to auto-grow', () => {
 
 test('a real drag keeps control with the user', () => {
     const controls = { maxHeight: 'none', minHeight: '96px' };
-    const { app, dom } = mountComposer(controls);
+    const { app, dom, window: windowStub } = mountComposer(controls);
     const input = dom.nodes.input;
     input.getBoundingClientRect = () => ({ right: 100, bottom: 300, height: 204 });
     let scrollHeight = 300;
@@ -296,8 +307,26 @@ test('a real drag keeps control with the user', () => {
     app.bind();
 
     input.listeners.pointerdown({ clientX: 99, clientY: 299, currentTarget: input });
-    input.listeners.pointerup();
+    windowStub.fire('pointerup');
     assert.equal(app.pasteUserResized, true, 'a successful drag keeps the height the user chose');
+});
+
+test('a cancelled drag still settles', () => {
+    const controls = { maxHeight: 'none', minHeight: '96px' };
+    const { app, dom, window: windowStub } = mountComposer(controls);
+    const input = dom.nodes.input;
+    input.getBoundingClientRect = () => ({ right: 100, bottom: 100, height: 96 });
+    let scrollHeight = 300;
+    Object.defineProperty(input, 'scrollHeight', { get: () => scrollHeight, configurable: true });
+
+    app.pasteMode = true;
+    app.bind();
+
+    input.listeners.pointerdown({ clientX: 99, clientY: 99, currentTarget: input });
+    assert.ok(windowStub.listeners.pointercancel, 'a cancelled gesture settles too');
+    windowStub.fire('pointercancel');
+
+    assert.equal(app.pasteUserResized, false, 'a cancelled drag does not latch the height');
 });
 
 test('the editor announces what it is for', () => {
@@ -389,7 +418,7 @@ test('leaving share mode restores the search row', () => {
     assert.equal(dom.nodes.input.placeholder, '搜索网页或收藏');
 });
 
-test('Enter sends while Shift/Ctrl/Cmd+Enter inserts a newline', () => {
+test('Enter searches in both modes, and modifiers insert a newline', () => {
     const { app, dom } = mountComposer();
     const handlers = dom.nodes.input.listeners;
 
@@ -415,12 +444,14 @@ test('Enter sends while Shift/Ctrl/Cmd+Enter inserts a newline', () => {
         assert.equal(prevented, false, `${name}+Enter must fall through to a newline`);
     }
 
-    // In search mode the textarea must keep native behaviour
+    // In search mode Enter must still search. A textarea's default is to
+    // insert a newline, not submit, so letting it through would mean the
+    // only way to search is clicking the button.
     app.pasteMode = false;
     prevented = false;
     handlers.keydown({ key: 'Enter', preventDefault: () => { prevented = true; } });
-    assert.equal(prevented, false, 'search mode keeps native newline behaviour');
-    assert.equal(sent, 1, 'search mode must not send');
+    assert.equal(prevented, true, 'search mode must not insert a newline');
+    assert.equal(sent, 2, 'search mode Enter searches');
 });
 
 test('Escape leaves share mode and clears the draft', () => {
