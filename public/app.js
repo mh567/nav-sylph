@@ -235,17 +235,13 @@
                 const value = input.value;
                 if (this.pasteMode) {
                     // 分享态下该按钮是「退出」：只回到搜索态并清空，不跳去收藏检索
-                    this.pasteMode = false;
-                    this.togglePasteMode(false);
-                    input.value = '';
-                    this.handleSearchInput({ target: input });
-                    input.focus();
+                    this.exitPasteMode();
                     return;
                 }
                 input.value = this.favSearchMode
                     ? value.replace(/^[\/、]{1,2}/, '')
                     : `/${this.isPasteTrigger(value[0]) ? value.slice(1) : value}`;
-                this.handleSearchInput({ target: input });
+                this.handleSearchInput(input);
                 input.focus();
             };
             this.bindPointerEffects();
@@ -263,12 +259,25 @@
                 this.handleSearchInput(e);
                 this.autoGrowPasteInput();
             };
-            // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随
-            $('#searchInput').addEventListener('pointerdown', event => {
+            // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随。
+            // 撞上 min-height 的空拖会留下一个永不生效的小高度并锁死自增高，
+            // 因此拖拽结束时按实际渲染高度回退：没真的变高就交还给自动增高。
+            const input = $('#searchInput');
+            const settleDrag = () => {
+                if (!this.pasteUserResized) return;
+                const minHeight = parseFloat(getComputedStyle(input).minHeight) || 0;
+                if (input.getBoundingClientRect().height > minHeight + 1) return;
+                this.pasteUserResized = false;
+                input.style.height = '';
+                this.autoGrowPasteInput();
+            };
+            input.addEventListener('pointerdown', event => {
                 if (!this.pasteMode) return;
                 const rect = event.currentTarget.getBoundingClientRect();
                 const onHandle = event.clientX > rect.right - 18 && event.clientY > rect.bottom - 18;
-                if (onHandle) this.pasteUserResized = true;
+                if (!onHandle) return;
+                this.pasteUserResized = true;
+                input.addEventListener('pointerup', settleDrag, { once: true });
             });
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
@@ -349,12 +358,7 @@
                         this.closeAdmin();
                     } else if (this.pasteMode) {
                         // 分享态退出。移动端没有 Esc 键，主路径是左侧「退出」按钮
-                        const input = $('#searchInput');
-                        this.pasteMode = false;
-                        this.togglePasteMode(false);
-                        input.value = '';
-                        this.handleSearchInput({ target: input });
-                        input.focus();
+                        this.exitPasteMode();
                     }
                 }
             };
@@ -933,8 +937,9 @@
             return char === '>' || char === '》';
         }
 
+        // 接收 input 元素；也兼容直接传入事件对象
         handleSearchInput(e) {
-            const value = e.target.value;
+            const value = (e.target ?? e).value;
 
             // 检查收藏检索模式（/ 或 //）
             const isFavMode = value.length > 0 && this.isFavSearchTrigger(value[0]);
@@ -990,6 +995,17 @@
             }
         }
 
+        // 退出分享态：清标志、收起编辑器、清空草稿、还焦点。
+        // 「退出」按钮与 Esc 两条路径共用，复位逻辑只此一处。
+        exitPasteMode() {
+            const input = $('#searchInput');
+            this.pasteMode = false;
+            this.togglePasteMode(false);
+            input.value = '';
+            this.handleSearchInput(input);
+            input.focus();
+        }
+
         // textarea 只写 min-height 时高度会锁死，需按内容撑开。
         // 用户手动拖拽过的框不再自动跟随，否则会把刚拖出来的大小冲掉。
         autoGrowPasteInput() {
@@ -1029,6 +1045,9 @@
 
             if (enabled) {
                 input.placeholder = '输入要分享的文本，回车发送，Shift+回车换行...';
+                // aria-label 优先于 placeholder 播报，不同步的话读屏用户会
+                // 听到「搜索网页或收藏」却在里面写分享文本
+                input.setAttribute('aria-label', '要分享的文本');
                 // 重置上次拖拽留下的大小，否则会以旧高度进入
                 input.style.height = '';
                 this.pasteUserResized = false;
@@ -1036,6 +1055,7 @@
                 searchBtn.title = '发送分享';
             } else {
                 input.placeholder = '搜索网页或收藏';
+                input.setAttribute('aria-label', '搜索网页或收藏');
                 input.style.height = '';
                 this.pasteUserResized = false;
                 searchBtn.textContent = '搜索';

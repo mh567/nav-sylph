@@ -2668,7 +2668,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     background: linear-gradient(165deg,var(--glass-strong),var(--glass));
     box-shadow: inset 0 1px rgba(255,255,255,.76),inset 0 -1px rgba(105,81,63,.08),0 3px 8px rgba(67,51,39,.045),0 12px 27px rgba(67,51,39,.065);
     backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
-    transition: border-color 160ms,box-shadow 160ms,background 160ms;
+    /* 过渡属性必须与上面「Paste 分享模式」区块一致：这里同特异性且更靠后，
+       漏写 min-height/padding/border-radius 会让展开动画整条失效 */
+    transition: min-height var(--transition), padding var(--transition), border-radius var(--transition), border-color 160ms, box-shadow 160ms, background 160ms;
 }
 .search::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 105px 52px at var(--glow-x) var(--glow-y),var(--search-glint),transparent 82%); opacity: 0; transition: opacity 160ms; }
 .search:hover { border-color: rgba(148,94,74,.33); box-shadow: inset 0 1px rgba(255,255,255,.82),0 4px 10px rgba(67,51,39,.055),0 13px 27px rgba(67,51,39,.07); }

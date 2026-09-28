@@ -28,6 +28,7 @@ function loadApp(document, window = {}, sandbox = {}) {
 // Build a DOM stub covering exactly what togglePasteMode and the key handlers touch.
 function createComposerDom() {
     const el = tag => {
+        const listeners = {};
         const node = {
             tag,
             hidden: false,
@@ -39,9 +40,17 @@ function createComposerDom() {
             attrs: {},
             classes: new Set(),
             children: [],
+            addEventListener: (name, fn) => { listeners[name] = fn; },
+            // Tests read this to drive the handler bind() really registered
+            get listeners() { return listeners; },
             setAttribute(name, value) { this.attrs[name] = value; },
             getAttribute(name) { return this.attrs[name]; },
             focus() { this.focused = true; },
+            appendChild() {},
+            remove() {},
+            // Elements are query contexts too: $$('.fav-item', dropdown) goes
+            // through here, and a missing method throws inside handleFavKeydown.
+            querySelectorAll() { return []; },
             querySelector(selector) { return this.children.find(c => c.matches(selector)) || null; },
             matches(sel) {
                 return sel.split(',').map(s => s.trim()).some(s => {
@@ -75,13 +84,34 @@ function createComposerDom() {
     modeBtn.attrs.id = 'modeBtn';
     modeBtn.children = [webLabel, exitLabel];
 
+    // bind() wires up a lot more than togglePasteMode touches; register the
+    // elements it reaches so a real bind() can run without throwing.
+    const grid = el('div'); grid.attrs.id = 'grid';
+    const favDropdown = el('div'); favDropdown.attrs.id = 'favDropdown'; favDropdown.hidden = true;
+    const modal = el('div'); modal.attrs.id = 'modal'; modal.hidden = true;
+    const backdrop = el('div'); backdrop.attrs.id = 'modalBackdrop';
+    const modalContent = el('div');
+    modalContent.querySelectorAll = () => [];
+    const uiOverlay = el('div'); uiOverlay.classes.add('ui-dialog-overlay'); uiOverlay.hidden = true;
+
     const registry = {
         '#searchForm': form,
         '#searchInput': input,
         '#engineBtn': engineBtn,
         '#engineDropdown': dropdown,
         '#modeBtn': modeBtn,
-        '.search-btn': searchBtn
+        '.search-btn': searchBtn,
+        '#grid': grid,
+        '#favDropdown': favDropdown,
+        '#modal': modal,
+        '#modalBackdrop': backdrop,
+        '#cancelBtn': el('button'),
+        '#saveBtn': el('button'),
+        '#adminBtn': el('button'),
+        '#helpBtn': el('button'),
+        '#modal .modal-content': modalContent,
+        '.ui-dialog-overlay, .fav-dialog-overlay': uiOverlay,
+        '#engineName': el('span')
     };
 
     const document = {
@@ -89,39 +119,46 @@ function createComposerDom() {
         addEventListener() {},
         body: { appendChild() {}, contains: () => true },
         createElement: tag => el(tag),
-        // app.js's $ helper resolves against document; only the selectors
-        // togglePasteMode actually uses need to resolve.
+        // Unregistered selectors must resolve to null the way a real browser
+        // does. Returning a visible element here would make handleFavKeydown
+        // treat a non-existent fav dropdown as an open one and swallow Esc.
         querySelector(selector) {
-            if (registry[selector]) return registry[selector];
-            return el('div');
-        }
+            return registry[selector] || null;
+        },
+        querySelectorAll() { return []; }
     };
 
     return {
         document,
-        nodes: { form, input, searchBtn, engineBtn, dropdown, modeBtn, webLabel, exitLabel }
+        nodes: { form, input, searchBtn, engineBtn, dropdown, modeBtn, webLabel, exitLabel, modal }
     };
 }
 
 function mountComposer(controls = {}) {
     const dom = createComposerDom();
-    const document = {
-        ...dom.document,
-        createElement: tag => {
-            const node = dom.document.createElement(tag);
-            if (tag === 'template') {
-                return {
-                    set innerHTML(_value) { this.content = { firstChild: dom.nodes.form }; },
-                    content: null
-                };
-            }
-            return node;
+    // Mutate the original document rather than spreading it: bind() assigns
+    // document.onkeydown, and tests read it back off the same object.
+    const document = dom.document;
+    const createElement = document.createElement;
+    document.createElement = tag => {
+        const node = createElement(tag);
+        if (tag === 'template') {
+            return {
+                set innerHTML(_value) { this.content = { firstChild: dom.nodes.form }; },
+                content: null
+            };
         }
+        return node;
     };
     const app = loadApp(
         document,
-        { matchMedia: () => ({ matches: false }) },
-        { getComputedStyle: () => ({ maxHeight: controls.maxHeight ?? 'none' }) }
+        {
+            matchMedia: () => ({ matches: false }),
+            addEventListener() {},
+            open() {},
+            location: { href: '' }
+        },
+        { getComputedStyle: () => ({ maxHeight: controls.maxHeight ?? 'none', minHeight: controls.minHeight ?? '0px' }) }
     );
     return { app, dom };
 }
@@ -139,6 +176,29 @@ test('the share composer styles are declared in exactly one place', () => {
 
     const engineRules = cssSource.match(/^\.search\.paste-mode\s+#engineBtn\s*\{/gm) || [];
     assert.equal(engineRules.length, 1, 'the engine button should be hidden from exactly one rule');
+});
+
+test('the composer transition survives the later .search rule', () => {
+    // .search is declared three times. The first is the original look; the
+    // second and third are the composer block and the later "new theme" block,
+    // and the last one wins outright. If that last one omits min-height, the
+    // whole expand animation is silently dead.
+    const blocks = [...cssSource.matchAll(/^\.search\s*\{([^}]*)\}/gm)].map(m => m[1]);
+    const lists = blocks
+        .map(b => /transition\s*:([^;]+);/.exec(b))
+        .filter(Boolean)
+        .map(m => m[1].replace(/\s+/g, ''));
+
+    const applied = lists[lists.length - 1];
+    assert.match(applied, /min-height/, `the applied .search transition omits min-height: ${applied}`);
+    assert.match(applied, /padding/, `the applied .search transition omits padding: ${applied}`);
+    assert.match(applied, /border-radius/, `the applied .search transition omits border-radius: ${applied}`);
+
+    // The composer block declares its own list; the two must stay in step or
+    // editing one will silently break the other.
+    const composer = lists.find(l => l.startsWith('min-height'));
+    assert.ok(composer, 'the composer block declares a min-height transition');
+    assert.equal(composer, applied, `composer and applied .search transitions differ:\n  composer: ${composer}\n  applied:  ${applied}`);
 });
 
 test('the composer grows taller than the single-line search row', () => {
@@ -197,10 +257,60 @@ test('the composer auto-grows with its content but yields to manual resizing', (
     assert.equal(input.style.height, '', 'no auto-grow outside share mode');
 });
 
-test('pressing the resize handle marks the height as user-controlled', () => {
-    const source = appSource;
-    assert.match(source, /addEventListener\('pointerdown'/, 'editor watches for resize-handle presses');
-    assert.match(source, /this\.pasteUserResized = true/, 'handle press flips the flag');
+test('a drag that changes nothing hands control back to auto-grow', () => {
+    // Dragging upward into min-height leaves the rendered height unchanged but
+    // still marks the box as user-resized, which would freeze auto-grow for
+    // the rest of the session and strand the content in an inner scrollbar.
+    const controls = { maxHeight: 'none', minHeight: '96px' };
+    const { app, dom } = mountComposer(controls);
+    const input = dom.nodes.input;
+    input.getBoundingClientRect = () => ({ right: 100, bottom: 100, height: 96 });
+    let scrollHeight = 300;
+    Object.defineProperty(input, 'scrollHeight', { get: () => scrollHeight, configurable: true });
+
+    app.pasteMode = true;
+    app.bind();
+
+    assert.ok(input.listeners.pointerdown, 'bind() listens for pointerdown on the editor');
+
+    input.listeners.pointerdown({ clientX: 99, clientY: 99, currentTarget: input });
+    assert.equal(app.pasteUserResized, true, 'the press claims control');
+
+    // The settle handler is armed by the press, not by bind()
+    assert.ok(input.listeners.pointerup, 'a settle handler is armed by the press');
+    input.listeners.pointerup();
+
+    assert.equal(app.pasteUserResized, false, 'a no-op drag releases control');
+    assert.equal(input.style.height, '300px', 'auto-grow resumes and fits the content');
+});
+
+test('a real drag keeps control with the user', () => {
+    const controls = { maxHeight: 'none', minHeight: '96px' };
+    const { app, dom } = mountComposer(controls);
+    const input = dom.nodes.input;
+    input.getBoundingClientRect = () => ({ right: 100, bottom: 300, height: 204 });
+    let scrollHeight = 300;
+    Object.defineProperty(input, 'scrollHeight', { get: () => scrollHeight, configurable: true });
+
+    app.pasteMode = true;
+    app.bind();
+
+    input.listeners.pointerdown({ clientX: 99, clientY: 299, currentTarget: input });
+    input.listeners.pointerup();
+    assert.equal(app.pasteUserResized, true, 'a successful drag keeps the height the user chose');
+});
+
+test('the editor announces what it is for', () => {
+    const { app, dom } = mountComposer();
+    const input = dom.nodes.input;
+
+    app.togglePasteMode(true);
+    const sharingLabel = input.getAttribute('aria-label');
+    assert.ok(sharingLabel, 'the editor has an aria-label while sharing');
+    assert.doesNotMatch(sharingLabel, /搜索|收藏/, 'the label must not still say "search" while sharing');
+
+    app.togglePasteMode(false);
+    assert.match(input.getAttribute('aria-label'), /搜索/, 'the label returns to the search wording');
 });
 
 test('the search row itself stays single-height and not draggable', () => {
@@ -281,90 +391,99 @@ test('leaving share mode restores the search row', () => {
 
 test('Enter sends while Shift/Ctrl/Cmd+Enter inserts a newline', () => {
     const { app, dom } = mountComposer();
-    const input = dom.nodes.input;
-    const listeners = {};
-    input.addEventListener = (name, fn) => { listeners[name] = fn; };
+    const handlers = dom.nodes.input.listeners;
 
     let sent = 0;
     app.handleSearch = async () => { sent++; };
 
-    // Behaviour check for the intended rule. The wiring itself is pinned
-    // separately below so this cannot drift from the real implementation.
-    const handler = new Function('event', `
-        const app = this;
-        if (event.key !== 'Enter' || !app.pasteMode) return;
-        if (event.shiftKey || event.ctrlKey || event.metaKey) return;
-        event.preventDefault();
-        app.handleSearch();
-    `);
-    const keydown = event => handler.call(app, event);
+    // Drive the handler bind() actually registers. Re-implementing it here
+    // would leave the test asserting its own copy, so a regression in app.js
+    // would slip through.
+    app.bind();
+    assert.ok(handlers.keydown, 'bind() registers a keydown handler on the editor');
 
     app.pasteMode = true;
 
     let prevented = false;
-    keydown({ key: 'Enter', preventDefault: () => { prevented = true; } });
+    handlers.keydown({ key: 'Enter', preventDefault: () => { prevented = true; } });
     assert.equal(prevented, true, 'plain Enter must not submit the form');
     assert.equal(sent, 1, 'plain Enter sends the share');
 
-    prevented = false;
-    keydown({ key: 'Enter', shiftKey: true, preventDefault: () => { prevented = true; } });
-    assert.equal(prevented, false, 'Shift+Enter must fall through to a newline');
-
-    prevented = false;
-    keydown({ key: 'Enter', ctrlKey: true, preventDefault: () => { prevented = true; } });
-    assert.equal(prevented, false, 'Ctrl+Enter must fall through to a newline');
-
-    prevented = false;
-    keydown({ key: 'Enter', metaKey: true, preventDefault: () => { prevented = true; } });
-    assert.equal(prevented, false, 'Cmd+Enter must fall through to a newline');
+    for (const [name, modifier] of [['shift', 'shiftKey'], ['ctrl', 'ctrlKey'], ['cmd', 'metaKey']]) {
+        prevented = false;
+        handlers.keydown({ key: 'Enter', [modifier]: true, preventDefault: () => { prevented = true; } });
+        assert.equal(prevented, false, `${name}+Enter must fall through to a newline`);
+    }
 
     // In search mode the textarea must keep native behaviour
     app.pasteMode = false;
     prevented = false;
-    keydown({ key: 'Enter', preventDefault: () => { prevented = true; } });
+    handlers.keydown({ key: 'Enter', preventDefault: () => { prevented = true; } });
     assert.equal(prevented, false, 'search mode keeps native newline behaviour');
     assert.equal(sent, 1, 'search mode must not send');
 });
 
-test('the production source installs an Enter handler on the editor', () => {
-    // The behavioural test above drives a re-implemented handler; this pins
-    // the wiring in app.js itself so the two cannot drift apart.
-    const bind = /bind\(\)\s*\{([\s\S]*?)\n        \}/.exec(appSource);
-    assert.ok(bind, 'bind() exists');
-    assert.match(bind[1], /\$\('#searchInput'\)\.addEventListener\('keydown'/, 'editor has a keydown handler');
-    assert.match(bind[1], /event\.key !== 'Enter' \|\| !this\.pasteMode/, 'handler is scoped to share mode');
-    assert.match(bind[1], /event\.shiftKey \|\| event\.ctrlKey \|\| event\.metaKey/, 'modifier keys allow a newline');
-});
-
 test('Escape leaves share mode and clears the draft', () => {
     const { app, dom } = mountComposer();
+
+    let searchInputSeen = null;
+    app.handleSearchInput = arg => { searchInputSeen = arg; };
+
+    // Same rule as above: use the registered onkeydown, not a copy of it
+    app.bind();
+    const onkeydown = dom.document.onkeydown;
+    assert.ok(onkeydown, 'bind() installs document.onkeydown');
+
+    // Escape closes the engine dropdown first; share mode is the next branch
+    dom.nodes.dropdown.hidden = true;
+    dom.nodes.modal.hidden = true;
+
     app.pasteMode = true;
     dom.nodes.input.value = '>draft text';
-    app.handleSearchInput = () => {};
 
-    // Behaviour check for the intended rule; the real wiring is asserted below.
-    const escape = new Function('key', `
-        const app = this;
-        if (key !== 'Escape') return 'ignored';
-        return app.pasteMode ? 'leave-share' : 'none';
-    `);
-    assert.equal(escape.call(app, 'Escape'), 'leave-share');
+    onkeydown({ key: 'Escape' });
 
-    app.pasteMode = false;
-    app.togglePasteMode(false);
-    dom.nodes.input.value = '';
-    app.handleSearchInput({ target: dom.nodes.input });
-
-    assert.equal(app.pasteMode, false);
-    assert.equal(dom.nodes.input.value, '');
-    assert.equal(dom.nodes.form.classes.has('paste-mode'), false);
+    assert.equal(app.pasteMode, false, 'share mode ends');
+    assert.equal(dom.nodes.form.classes.has('paste-mode'), false, 'the composer collapses');
+    assert.equal(dom.nodes.input.value, '', 'the draft is discarded');
+    assert.equal(searchInputSeen, dom.nodes.input, 'the input is re-evaluated after clearing');
+    assert.equal(dom.nodes.input.focused, true, 'focus returns to the editor');
 });
 
-test('the production source handles Escape while sharing', () => {
-    const onkeydown = /document\.onkeydown\s*=\s*\(e\)\s*=>\s*\{([\s\S]*?)\n            \};/.exec(appSource);
-    assert.ok(onkeydown, 'document.onkeydown exists');
-    assert.match(onkeydown[1], /e\.key === 'Escape'/, 'Escape branch present');
-    assert.match(onkeydown[1], /this\.pasteMode/, 'Escape also leaves share mode');
+test('Escape leaves other modes alone', () => {
+    const { app, dom } = mountComposer();
+    let exited = false;
+    app.exitPasteMode = () => { exited = true; };
+
+    app.bind();
+    const onkeydown = dom.document.onkeydown;
+
+    app.pasteMode = false;
+    onkeydown({ key: 'Escape' });
+    assert.equal(exited, false, 'search mode is untouched by Escape');
+});
+
+test('the exit button and Escape share one code path', () => {
+    // Both routes used to inline the same reset. If either ever inlines it
+    // again, that copy can drift from the other and leave stale state behind.
+    // A bare adjacent pair is not distinctive (fav-search and a successful
+    // share clear the flag the same way), so anchor on exitPasteMode's body
+    // and require that no other site pairs the reset with a draft clear.
+    const owner = /exitPasteMode\(\)\s*\{([\s\S]*?)\n        \}/.exec(appSource);
+    assert.ok(owner, 'exitPasteMode exists');
+    assert.match(owner[1], /this\.pasteMode = false;\n\s*this\.togglePasteMode\(false\);/, 'exitPasteMode owns the reset');
+    assert.match(owner[1], /input\.value = ''/, 'exitPasteMode also clears the draft');
+
+    const callSites = appSource.match(/this\.exitPasteMode\(\)/g) || [];
+    assert.equal(callSites.length, 2, 'the exit button and Escape both call exitPasteMode');
+
+    // No route outside exitPasteMode may re-inline a draft clear. Strip that
+    // method first, otherwise it matches its own body.
+    const outsideMethod = appSource.replace(owner[0], '');
+    const strays = outsideMethod.match(
+        /this\.pasteMode = false;\n\s*this\.togglePasteMode\(false\);\n\s*(?:[^\n]*\n\s*)?(?:this\.\$\('#searchInput'\)\.value|input\.value) = '';/g
+    ) || [];
+    assert.equal(strays.length, 0, `no route may inline the draft clear, found ${strays.length}`);
 });
 
 test('the help text documents the new composer shortcuts', () => {
