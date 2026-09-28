@@ -389,3 +389,25 @@ test('搜索框有顶边受光高光', () => {
     assert.equal((code.match(/^\.search::before\s*\{/gm) || []).length, 1,
         '.search::before 应只声明一次');
 });
+
+test('触屏点按关掉 UA 蓝色高亮', () => {
+    // iOS Safari / 移动 Chrome 的 -webkit-tap-highlight-color 默认是
+    // rgba(51,181,229,.4)，那抹蓝会盖在暖灰拟物材质上。
+    // 此前只有 .fav-item / .fav-manager-item / .btn 被覆盖，搜索栏三个
+    // 按钮、书签和右下角 dock 都会漏出蓝框。
+    const block = mediaBlock(code, '@media (hover: none) and (pointer: coarse)', '-webkit-tap-highlight-color');
+    for (const sel of ['.search-mode', '.search-engine', '.search-btn', '.bookmark', '.engine-option', '.fab']) {
+        assert.match(block, new RegExp(sel.replace('.', '\\.') + '(?![\\w-])'),
+            `${sel} 应在触屏高亮的兜底选择器里`);
+    }
+    assert.match(block, /-webkit-tap-highlight-color:\s*transparent/, '兜底值为 transparent');
+
+    // 键盘可达性不能因此丢失：focus-visible 轮廓必须仍在。
+    // 断言只认材质层那一条（旧样式区 281 行也有一份，命中它就等于没测）。
+    const focusRule = /^\.bookmark:focus-visible[^\n]*$/m.exec(code);
+    assert.ok(focusRule, '材质层存在 focus-visible 统一轮廓规则');
+    for (const sel of ['.search-mode', '.search-btn', '.search-engine']) {
+        assert.ok(focusRule[0].includes(sel), `${sel} 保留 focus-visible 轮廓`);
+    }
+    assert.match(focusRule[0], /outline:\s*2px solid var\(--focus\)/, '轮廓仍使用主色');
+});

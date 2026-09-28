@@ -75,6 +75,8 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 搜索框自身的顶边 1px 受光高光走 `::before`（`::after` 已被光感占用），左右各内缩 11px。仿真有这条、移植时曾整块漏掉；背板加上内距后，框顶与背板顶拉开 20px，框若没有这道亮边会在这道缝里显得缺一条受光边。
 
+**触屏点按必须关掉 UA 蓝色高亮。** iOS Safari 与移动 Chrome 的 `-webkit-tap-highlight-color` 默认是 `rgba(51,181,229,.4)`，那抹蓝会盖在暖灰拟物材质上，与整套色调冲突。兜底写在 `@media (hover: none) and (pointer: coarse)` 里，覆盖搜索栏三个按钮、书签、引擎选项与右下角 dock。**它不影响键盘可达性**——材质层那条统一的 `:focus-visible` 轮廓（`outline: 2px solid var(--focus)`）只在键盘导航时出现，正是该给提示的时候。旧样式区另有一份同样用途的规则（针对 `.fav-item`/`.btn`），两者并存不冲突，但新增可点元素时别忘了新块。
+
 站内对话框统一走 `showUiDialog()`，样式定义在 `admin.css`（而非 `styles.css`——`admin.css` 后加载，同特异性时胜出）。它有三条平行的选项入口，渲染时必须保持顺序一致：平铺的 `options`、带标题的 `groups`（其 `options` 渲染进 `.ui-dialog-options` 网格，用于 2×2 排布），以及由某选项 `reveal: true` 触发的内联展开区（如 PIN 输入框）。展开区紧跟触发它的选项渲染，**不放在所有选项之后**——那是 DOM 顺序，CSS 改不动。取值、焦点流转与「是否返回 payload」三处都读合并后的 `allOptions`（`options` 在前、`groups` 在后），漏改任一处都会让分组内的选项静默取不到值。新增选项入口时把这三处一并更新。
 
 `vh` 与 `dvh` 都不跟随软键盘收缩，只有 `visualViewport` 能反映键盘弹出后的真实可视高度；`.ui-dialog` 与分享编辑器当前仍按 `dvh` 定高，键盘弹出时可能被顶出视口，这一点尚未处理。

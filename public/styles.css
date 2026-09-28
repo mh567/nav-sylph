@@ -2857,6 +2857,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 @media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast,.backboard { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark:hover,.btn:hover,.search-engine:hover,.search-btn:hover { transform: none; } }
 @media (hover: none) { .search:hover::after,.bookmark:hover::before,.search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: 0; } .bookmark:hover,.bookmark-text-only:hover,.btn:hover:not(:disabled),.search-engine:hover,.search-btn:hover { transform: none; } }
+/* 触屏点按时关掉 UA 默认高亮。
+   iOS Safari / 移动 Chrome 的 -webkit-tap-highlight-color 默认值是
+   rgba(51,181,229,.4)，那抹蓝会盖在按钮的拟物材质上，与整套暖灰调冲突。
+   键盘可达性不受影响：:focus-visible 的轮廓（2853 行）仍照常出现，
+   它只在键盘导航时出现，正是该给提示的时候。 */
+@media (hover: none) and (pointer: coarse) { .search-mode,.search-engine,.search-btn,.bookmark,.bookmark-text-only,.engine-option,.fab,.fab-help { -webkit-tap-highlight-color: transparent; } }
 /* 快捷键说明行：只桌面显示。
    移动端的 display:none 唯一写在下面那条 ≤600px 块里。
    说明行贴着搜索框、与下方收藏区拉开：间距由它自己给，

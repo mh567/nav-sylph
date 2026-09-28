@@ -133,6 +133,28 @@
 
 **窄屏验证**（`padding-top` 不应泄漏到小屏）：1280 与 1024 为 48px/83px；1023 与 390 均回落 `padding: 0`，说明行 390 下 `display: none`，四个视口均无横向滚动。深色 1280 同样落在 83px。
 
+## 第五轮：修移动端点按的蓝色底框
+
+用户报「移动端点击搜索框那几个按钮会有蓝色的底框」。在 iPhone 14 设备模拟下量得 `-webkit-tap-highlight-color` 的生效值是 **`rgba(51, 181, 229, 0.4)`**——正是那抹蓝（iOS Safari / 移动 Chrome 的 UA 默认值）。
+
+**根因不是搜索框本身，是覆盖不全**：项目里早就有两处 `-webkit-tap-highlight-color: transparent`，但只针对 `.fav-item`、`.fav-manager-item`、`.btn`——收藏项与管理按钮。搜索栏三个按钮、书签、引擎选项、右下角 dock 都不在其中。
+
+已在材质层新增一条兜底（`styles.css:2865`）：
+
+```css
+@media (hover: none) and (pointer: coarse) {
+  .search-mode,.search-engine,.search-btn,.bookmark,.bookmark-text-only,.engine-option,.fab,.fab-help {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+```
+
+**键盘可达性不受影响**：材质层那条统一的 `:focus-visible` 轮廓（`outline: 2px solid var(--focus)`）只在键盘导航时触发，正是该给提示的时候；关掉的只是触屏点按的 UA 底框。
+
+**未能在本机验证的部分（如实记录）**：无头 Chrome 报 `maxTouchPoints: 0`、`(hover: none)` 为 false，**无法真正模拟触屏**，所以「点上后蓝框消失」这一现象本身没能在浏览器里跑出来。已验证的是：规则能被 CSSOM 正确解析、8 个选择器在页面上都各能匹配到真实元素、声明值为 `transparent`；并补了源码形状断言钉住它。
+
+**过程中的一次假红**：新断言里我想验证「材质层的 focus-visible 轮廓未被误删」，破坏时用 `findIndex` 找 `.bookmark:focus-visible,` 开头的行，结果先命中了**旧样式区 281 行**那份同选择器规则——破坏没生效，测试却"绿"了。这与本项目记录的「断言要锚定到材质层，不能取第一个匹配」是同一类错误，已改成锚定材质层再破坏，测试如期转红。
+
 ### 四处旧样式残留（浏览器实测才暴露）
 
 **已修 A：收藏态的「打开」按钮是琥珀色。** 旧样式有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`，特异性 `(0,3,0)` 压过新材质层的 `.search-btn` `(0,1,0)`，实心陶土被换成琥珀底。只在真实浏览器截图里看得出来——单测与 `getComputedStyle` 在未进入收藏态时都测不到。已**删除**该规则（不是覆盖），原位留了解释性注释（`styles.css:1152`），并在 `tests/homepage-material.test.js` 加断言钉住。
