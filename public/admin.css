@@ -293,6 +293,15 @@
 .ui-dialog-message { margin: 0 0 17px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; white-space: pre-line; }
 .ui-dialog-field { display: block; margin-bottom: 12px; }
 .ui-dialog-field input { display: block; width: 100%; padding: 9px 11px; }
+.ui-dialog-option { margin-bottom: 8px; border: 1px solid var(--admin-edge); border-radius: 9px; background: var(--admin-row); }
+.ui-dialog-option:has(input:checked) { border-color: var(--focus); background: var(--admin-active); }
+.ui-dialog-option:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ui-dialog-choice { display: flex; align-items: center; gap: 9px; padding: 10px 12px; cursor: pointer; color: var(--text); font-size: 13px; }
+.ui-dialog-choice input { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
+.ui-dialog-hint { margin: -4px 12px 11px 33px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.ui-dialog-reveal { margin-bottom: 12px; }
+.ui-dialog-reveal[hidden] { display: none; }
+.ui-dialog-reveal .ui-dialog-field { margin-bottom: 0; }
 .ui-dialog-error { min-height: 0; color: var(--admin-error); font-size: 12px; }
 .ui-dialog-error:empty { display: none; }
 .ui-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

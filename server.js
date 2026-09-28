@@ -15,6 +15,15 @@ let server;
 const pasteStorage = new Map();
 // 结构: { code: { content, pin, expiresAt, attempts } }
 
+// 有效期白名单：键为分钟数，值为毫秒。只接受这些档位，未知值回落到 5 分钟。
+const PASTE_TTL_OPTIONS = {
+    5: 5 * 60 * 1000,
+    30: 30 * 60 * 1000,
+    1440: 24 * 60 * 60 * 1000,
+    10080: 7 * 24 * 60 * 60 * 1000
+};
+const PASTE_DEFAULT_TTL_MINUTES = 5;
+
 // 词表用于生成易记的分享码
 const ADJECTIVES = [
     'happy', 'sunny', 'cool', 'swift', 'brave', 'calm', 'eager', 'fair', 'gentle', 'kind',
@@ -907,7 +916,7 @@ app.post('/api/p/code', (req, res) => {
 app.post('/api/p', (req, res) => {
     const ip = req.ip || req.connection.remoteAddress;
 
-    const { code, content, pin } = req.body;
+    const { code, content, pin, ttl } = req.body;
 
     // 验证分享码格式
     if (!code || !isPasteCodeFormat(code)) {
@@ -931,7 +940,9 @@ app.post('/api/p', (req, res) => {
         return res.status(400).json({ error: 'PIN 必须是4位数字' });
     }
 
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5分钟后过期
+    // 有效期只接受白名单档位；缺失或非法值按 5 分钟处理
+    const ttlMs = PASTE_TTL_OPTIONS[ttl] ?? PASTE_TTL_OPTIONS[PASTE_DEFAULT_TTL_MINUTES];
+    const expiresAt = Date.now() + ttlMs;
 
     pasteStorage.set(code, {
         content,
@@ -940,7 +951,7 @@ app.post('/api/p', (req, res) => {
         attempts: 0
     });
 
-    console.log(`[Paste] Created: ${code} (expires in 5min)`);
+    console.log(`[Paste] Created: ${code} (expires in ${Math.round(ttlMs / 60000)}min)`);
 
     res.json({
         success: true,
@@ -1035,6 +1046,9 @@ app.get('/p/:code', (req, res) => {
             --input-top: #f1ece5; --input-bottom: #fcfaf6;
             --inner-light: rgba(255,255,255,.67); --inner-dark: rgba(91,70,55,.13);
             --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
+            --text-muted: #8b837a;
+            --code-string: #4e7a52; --code-number: #9a6b3f; --code-title: #3f6b8a;
+            --code-attr: #8a5a7a; --code-type: #7a6a3f; --code-deletion: #a4463f;
         }
         @media (prefers-color-scheme: dark) {
             :root {
@@ -1048,6 +1062,9 @@ app.get('/p/:code', (req, res) => {
                 --input-top: #292521; --input-bottom: #39312b;
                 --inner-light: rgba(255,255,255,.09); --inner-dark: rgba(0,0,0,.24);
                 --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
+                --text-muted: #9c9287;
+                --code-string: #9dc49f; --code-number: #d9a877; --code-title: #8fb8d4;
+                --code-attr: #c99ec0; --code-type: #c7b581; --code-deletion: #e0897f;
             }
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1098,6 +1115,20 @@ app.get('/p/:code', (req, res) => {
         @media (prefers-reduced-motion: reduce) { .btn { transition: none; } .btn:hover, .btn:active { transform: none; } }
         @media (prefers-reduced-transparency: reduce) { .container { background: var(--input-bottom); backdrop-filter: none; -webkit-backdrop-filter: none; } }
         @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .container { background: var(--input-bottom); } }
+
+        /* 代码高亮配色，复用页面既有变量以适配明暗主题 */
+        .hljs { color: var(--text); background: transparent; }
+        .hljs-comment, .hljs-quote { color: var(--text-muted); font-style: italic; }
+        .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: var(--accent); }
+        .hljs-string, .hljs-regexp, .hljs-addition { color: var(--code-string); }
+        .hljs-number, .hljs-symbol, .hljs-bullet { color: var(--code-number); }
+        .hljs-title, .hljs-title.function_, .hljs-section, .hljs-name { color: var(--code-title); }
+        .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--code-attr); }
+        .hljs-type, .hljs-built_in, .hljs-class .hljs-title { color: var(--code-type); }
+        .hljs-meta, .hljs-tag { color: var(--text-secondary); }
+        .hljs-deletion { color: var(--code-deletion); }
+        .hljs-emphasis { font-style: italic; }
+        .hljs-strong { font-weight: 600; }
     </style>
 </head>
 <body>
@@ -1123,6 +1154,7 @@ app.get('/p/:code', (req, res) => {
             <p class="notice">此内容已从服务器删除</p>
         `}
     </div>
+    <script src="/lib/highlight.min.js"></script>
     <script>
         // 使用分享码进行端到端解密
         const Crypto = {
@@ -1152,10 +1184,56 @@ app.get('/p/:code', (req, res) => {
         const code = '${code}';
         let decryptedText = '';
 
+        // 语言识别：先用高精度签名判定明确语言，再用 hljs 自动识别兜底。
+        // 分享内容多为短片段，hljs 的 relevance 在短文本上区分度不足，
+        // 因此签名层优先，避免把 Python 片段判成 CSS 一类的误判。
+        const CJK = /[\\u4e00-\\u9fff]/;
+        const LANG_SIGNATURES = [
+            ['python', [/^\\s*def\\s+\\w+\\s*\\(.*\\)\\s*(->[^:]*)?:/m, /^\\s*(from\\s+[\\w.]+\\s+)?import\\s+[\\w.,*\\s]+$/m, /\\bself\\.\\w+/, /^\\s*class\\s+\\w+.*:\\s*$/m, /\\bprint\\s*\\(/, /\\b(elif|None|True|False|__init__|__name__)\\b/]],
+            ['javascript', [/\\b(const|let|var)\\s+\\w+\\s*=/, /\\bfunction\\s*\\w*\\s*\\(/, /=>/, /\\brequire\\s*\\(/, /\\bconsole\\.(log|error|warn)\\s*\\(/, /\\bexport\\s+(default|const|function)/]],
+            ['go', [/^\\s*package\\s+\\w+\\s*$/m, /\\bfunc\\s+\\w*\\s*\\(/, /\\bfmt\\.(Println|Printf|Errorf)\\s*\\(/, /:=/]],
+            ['rust', [/\\bfn\\s+\\w+\\s*\\(/, /\\blet\\s+mut\\s+/, /\\bprintln!\\s*\\(/, /\\buse\\s+std::/]],
+            ['java', [/\\b(public|private|protected)\\s+(static\\s+)?(final\\s+)?\\w+[\\w<>\\[\\]]*\\s+\\w+\\s*\\(/, /System\\.out\\.print/]],
+            ['csharp', [/using\\s+System[\\s;]/, /namespace\\s+\\w+/, /Console\\.WriteLine\\s*\\(/]],
+            ['php', [/<\\?php/, /\\$\\w+\\s*=/]],
+            ['sql', [/\\b(SELECT|INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|CREATE\\s+TABLE)\\b/i, /\\bFROM\\s+\\w+/i]],
+            ['bash', [/^\\s*#!\\/.*\\b(ba)?sh\\b/m, /^\\s*(sudo|apt|apt-get|yum|brew|cd|ls|rm|mkdir|chmod|chown|curl|wget|git|export)\\s/m, /\\$\\{?\\w+\\}?/]],
+            ['json', [/^\\s*[{[][\\s\\S]*[}\\]]\\s*$/]],
+            ['yaml', [/^\\s*[\\w-]+:\\s*.*$/m, /^\\s*-\\s+\\w+:/m]]
+        ];
+
+        function detectLanguage(text) {
+            if (!text || !text.trim()) return null;
+            if (CJK.test(text)) return null;
+            for (const [lang, patterns] of LANG_SIGNATURES) {
+                if (patterns.some(pattern => pattern.test(text))) {
+                    return window.hljs && window.hljs.getLanguage(lang) ? lang : null;
+                }
+            }
+            if (!window.hljs) return null;
+            const auto = window.hljs.highlightAuto(text);
+            return auto && auto.language ? auto.language : null;
+        }
+
+        function renderContent(text) {
+            const target = document.getElementById('content');
+            const language = window.hljs ? detectLanguage(text) : null;
+            if (language) {
+                try {
+                    target.classList.add('hljs');
+                    target.innerHTML = window.hljs.highlight(text, { language }).value;
+                    return;
+                } catch {
+                    target.classList.remove('hljs');
+                }
+            }
+            target.textContent = text;
+        }
+
         async function showContent(encryptedContent) {
             try {
                 decryptedText = await Crypto.decrypt(encryptedContent, code);
-                document.getElementById('content').textContent = decryptedText;
+                renderContent(decryptedText);
                 document.getElementById('copyBtn').onclick = () => {
                     navigator.clipboard.writeText(decryptedText).then(() => {
                         document.getElementById('copyBtn').textContent = '已复制';

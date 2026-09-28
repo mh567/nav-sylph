@@ -1010,23 +1010,41 @@
         }
 
         async showPasteOptions(content) {
-            // 简单确认是否需要 PIN
-            const usePin = !!(await this.showUiDialog({
+            const PASTE_TTL_LABELS = { 5: '5 分钟', 30: '30 分钟', 1440: '1 天', 10080: '7 天' };
+
+            const result = await this.showUiDialog({
                 title: '分享保护',
-                message: '是否设置 4 位 PIN 码保护？取消后将直接分享。',
-                closeOnBackdrop: false
-            }));
+                options: [
+                    { kind: 'checkbox', name: 'pin', value: 'on', label: '设置 PIN 码保护', hint: '接收方需输入 PIN 才能查看内容', reveal: true },
+                    ...Object.entries(PASTE_TTL_LABELS).map(([minutes, label], index) => ({
+                        kind: 'radio',
+                        name: 'ttl',
+                        value: minutes,
+                        label,
+                        checked: index === 0
+                    }))
+                ],
+                confirmText: '分享',
+                closeOnBackdrop: false,
+                validate: (values, choices) => choices.pin && !/^\d{4}$/.test(values[0] || '') ? 'PIN 码必须是 4 位数字' : ''
+            });
 
-            let pin = null;
-            if (usePin) {
-                pin = await this.promptValue('设置 PIN', '4 位数字 PIN 码', { type: 'password', validate: ([value]) => /^\d{4}$/.test(value) ? '' : 'PIN 码必须是 4 位数字' });
-                if (!pin) return; // 用户取消
+            // 取消或遮罩关闭：返回 null，不创建分享
+            if (!result) return;
+
+            const usePin = !!result.choices.pin;
+            const pin = usePin ? result.values[0] : null;
+            const ttlMinutes = PASTE_TTL_LABELS[result.choices.ttl] ? Number(result.choices.ttl) : 5;
+
+            // 默认档位不传额外参数，保持既有 createPaste 两参数契约
+            if (!pin && ttlMinutes === 5) {
+                await this.createPaste(content, null);
+            } else {
+                await this.createPaste(content, pin, { ttlMinutes });
             }
-
-            await this.createPaste(content, pin);
         }
 
-        async createPaste(content, pin = null) {
+        async createPaste(content, pin = null, options = {}) {
             try {
                 // 先请求生成分享码
                 const codeRes = await fetch('/api/p/code', { method: 'POST' });
@@ -1044,6 +1062,7 @@
 
                 const body = { code, content: encryptedContent };
                 if (pin) body.pin = pin;
+                if (options.ttlMinutes) body.ttl = options.ttlMinutes;
 
                 const res = await fetch('/api/p', {
                     method: 'POST',
@@ -1056,7 +1075,7 @@
                     $('#searchInput').value = '';
                     this.pasteMode = false;
                     this.togglePasteMode(false);
-                    this.showPasteResult(code, !!pin);
+                    this.showPasteResult(code, !!pin, data.expiresAt);
                 } else {
                     this.showToast(data.error || '创建分享失败', 'error');
                 }
@@ -1065,10 +1084,9 @@
             }
         }
 
-        showPasteResult(code, hasPin = false) {
+        showPasteResult(code, hasPin = false, expiresAt = null) {
             this.hidePasteResult();
 
-            // 简洁的 URL，无需密钥
             const url = `${location.origin}/p/${code}`;
             const pinInfo = hasPin ? '<div class="paste-pin-info">已设置 PIN 保护</div>' : '';
             const result = html(`
@@ -1076,12 +1094,24 @@
                     <button class="paste-close" type="button" aria-label="关闭分享结果">×</button>
                     <div class="paste-code">${this.esc(code)}</div>
                     ${pinInfo}
+                    <div class="paste-qr"><img alt="分享链接二维码"></div>
                     <button class="paste-link" type="button" data-url="${this.esc(url)}">复制链接</button>
-                    <div class="paste-expiry">5分钟后过期</div>
+                    <div class="paste-expiry">${this.esc(this.pasteExpiryText(expiresAt))}</div>
                 </div>
             `);
 
             result.querySelector('.paste-close').onclick = () => this.hidePasteResult();
+
+            // 二维码：使用本地图库生成 data URL，失败时静默隐藏，不影响复制链接
+            const qrImg = result.querySelector('.paste-qr img');
+            try {
+                const qr = qrcode(0, 'M');
+                qr.addData(url);
+                qr.make();
+                qrImg.src = qr.createDataURL(6, 2);
+            } catch {
+                qrImg.closest('.paste-qr')?.remove();
+            }
 
             result.querySelector('.paste-link').onclick = async (e) => {
                 const link = e.target;
@@ -1096,6 +1126,15 @@
             };
 
             $('#searchForm').after(result);
+        }
+
+        pasteExpiryText(expiresAt) {
+            if (!expiresAt) return '5分钟后过期';
+            const minutes = Math.round((expiresAt - Date.now()) / 60000);
+            if (minutes <= 0) return '已过期';
+            if (minutes < 60) return `${minutes}分钟后过期`;
+            if (minutes < 1440) return `${Math.round(minutes / 60)}小时后过期`;
+            return `${Math.round(minutes / 1440)}天后过期`;
         }
 
         hidePasteResult() {
@@ -1136,7 +1175,7 @@
                         <div class="help-section">
                             <strong>跨设备文本分享</strong>
                             <p>搜索框输入 <code>></code> + 内容，回车发送</p>
-                            <p class="help-tip">端到端加密 · 5分钟过期 · 阅后即删</p>
+                            <p class="help-tip">端到端加密 · 有效期可选 · 阅后即删</p>
                         </div>
                         <div class="help-section">
                             <strong>管理收藏</strong>
@@ -1235,7 +1274,7 @@
             this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
         }
 
-        showUiDialog({ title, message = '', fields = [], confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
+        showUiDialog({ title, message = '', fields = [], options = [], confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
             const previousFocus = document.activeElement;
             const overlay = html(`
                 <div class="ui-dialog-overlay">
@@ -1247,6 +1286,19 @@
                                 <span>${this.esc(field.label)}</span>
                                 <input name="field${index}" type="${field.type === 'password' ? 'password' : 'text'}" value="${this.esc(field.value || '')}" placeholder="${this.esc(field.placeholder || '')}" ${field.readonly ? 'readonly' : ''} autocomplete="off">
                             </label>`).join('')}
+                            ${options.map((option, index) => `<div class="ui-dialog-option" data-kind="${this.esc(option.kind)}" data-name="${this.esc(option.name)}">
+                                <label class="ui-dialog-choice">
+                                    <input type="${option.kind === 'checkbox' ? 'checkbox' : 'radio'}" name="opt${index}" value="${this.esc(option.value)}" ${option.checked ? 'checked' : ''}>
+                                    <span>${this.esc(option.label)}</span>
+                                </label>
+                                ${option.hint ? `<p class="ui-dialog-hint">${this.esc(option.hint)}</p>` : ''}
+                            </div>`).join('')}
+                            ${options.some(option => option.reveal) ? `<div class="ui-dialog-reveal" data-reveal-for="${this.esc(options.find(option => option.reveal).name)}" hidden>
+                                <label class="ui-dialog-field">
+                                    <span>4 位数字 PIN 码</span>
+                                    <input name="revealPin" type="password" inputmode="numeric" maxlength="4" placeholder="••••" autocomplete="off">
+                                </label>
+                            </div>` : ''}
                             <div class="ui-dialog-error" role="alert"></div>
                             <div class="ui-dialog-actions">
                                 ${notice ? '' : `<button class="btn" type="button" data-action="cancel">${this.esc(cancelText)}</button>`}
@@ -1259,9 +1311,23 @@
             document.body.appendChild(overlay);
             const dialog = overlay.querySelector('.ui-dialog');
             const form = overlay.querySelector('form');
-            const inputs = [...overlay.querySelectorAll('input')];
+            const fieldInputs = [...overlay.querySelectorAll('input[name^="field"], .ui-dialog-reveal input')];
+            const optionInputs = [...overlay.querySelectorAll('.ui-dialog-option input')];
             const focusables = [...overlay.querySelectorAll('input, button')];
-            (inputs[0] || focusables.at(-1)).focus();
+            (fieldInputs[0] || optionInputs[0] || focusables.at(-1)).focus();
+
+            // 复选框可展开同弹窗内的附加区域（如 PIN 输入框）
+            const reveal = overlay.querySelector('.ui-dialog-reveal');
+            if (reveal) {
+                const owner = optionInputs[options.findIndex(option => option.reveal)];
+                const syncReveal = () => {
+                    reveal.hidden = !owner?.checked;
+                    // 展开时把焦点交给 PIN 输入框，收起时交还复选框
+                    if (owner?.checked) reveal.querySelector('input')?.focus();
+                };
+                owner?.addEventListener('change', syncReveal);
+                reveal.hidden = !owner?.checked;
+            }
 
             return new Promise(resolve => {
                 const close = value => {
@@ -1286,14 +1352,20 @@
                 });
                 form.addEventListener('submit', event => {
                     event.preventDefault();
-                    const values = inputs.map(input => input.value);
-                    const error = validate?.(values);
+                    const values = fieldInputs.map(input => input.value);
+                    const choices = Object.create(null);
+                    optionInputs.forEach(input => {
+                        if (input.type === 'radio') { if (input.checked) choices[input.closest('.ui-dialog-option').dataset.name] = input.value; }
+                        else choices[input.closest('.ui-dialog-option').dataset.name] = input.checked;
+                    });
+                    const payload = { values, choices };
+                    const error = validate?.(values, choices);
                     if (error) {
                         overlay.querySelector('.ui-dialog-error').textContent = error;
-                        (inputs[0] || form.querySelector('button[type="submit"]')).focus();
+                        (fieldInputs[0] || optionInputs[0] || form.querySelector('button[type="submit"]')).focus();
                         return;
                     }
-                    close(fields.length ? values : true);
+                    close(options.length || fields.length ? payload : true);
                 });
             });
         }
@@ -1304,7 +1376,7 @@
 
         async promptValue(title, label, options = {}) {
             const result = await this.showUiDialog({ title, fields: [{ label, ...options }], confirmText: options.confirmText || '确定', validate: options.validate });
-            return result ? result[0] : null;
+            return result ? result.values[0] : null;
         }
 
         async notice(message, title = '提示') {
@@ -2955,7 +3027,7 @@
                 validate: ([newPwd, repeated]) => newPwd.length < 8 ? '密码至少 8 位' : newPwd !== repeated ? '两次输入不一致' : ''
             });
             if (!values) return;
-            const newPwd = values[0];
+            const newPwd = values.values[0];
 
             const res = await API.post('/api/change-password', { newPassword: newPwd }, this.password);
             if (res.success) {

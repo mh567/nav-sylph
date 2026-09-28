@@ -676,6 +676,22 @@ body {
     margin-bottom: 8px;
 }
 
+.paste-qr {
+    display: flex;
+    justify-content: center;
+    margin: 14px auto;
+}
+
+.paste-qr img {
+    width: 148px;
+    height: 148px;
+    border-radius: 10px;
+    background: #fff;
+    padding: 6px;
+    box-sizing: content-box;
+    image-rendering: pixelated;
+}
+
 .paste-link {
     display: inline-block;
     font-size: 13px;

@@ -4,37 +4,63 @@
 
 ## 当前基线
 
-修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `19d6480`；`package.json` 版本 `1.5.6`。这里的远端状态只反映本地跟踪引用，后续 Agent 需要联网时应自行核对真实远端。
+修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `9ecc720`；`package.json` 版本 `1.5.6`。
 
-本次修改尚未提交。`AGENTS.md`、`docs/architecture.md`、`docs/current-work.md` 在本次之前已是未跟踪文件，`tests/api-boundary.test.js` 为本次新增。`node_modules` 是本次为运行验证而新装的本地依赖。
+本次修改**尚未提交**。改动文件：`server.js`、`public/app.js`、`public/index.html`、`public/styles.css`、`public/admin.css`、`public/sw.js`、`tests/dialog-regressions.test.js`、`docs/architecture.md`、`docs/current-work.md`；新增未跟踪文件：`public/lib/qrcode.js`、`public/lib/highlight.min.js`。
 
 ## 本次完成的内容
 
-匿名接口此前直接返回整个数据文件，私密收藏的标题、URL、描述、分类和标签会下发给任何访问者，`private` 标志本身也照发；`config.json` 的 `privacyMode` 同样公开。浏览器端的私密筛选发生在数据已经落到内存之后，不构成隔离。
+三项分享相关需求。
 
-现在 `GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图：收藏剔除 `private` 条目并剥离 `private` 字段，配置剔除 `privacyMode`；带上正确的 `X-Admin-Password` 时返回完整数据。写入路径改为按 id 合并，`POST /api/favorites` 中请求体缺席的私密条目会被保留，`POST /api/config` 以现有文件为基底合并，公开视图未携带的 `privacyMode` 不再被保存动作抹掉。
+**1. 分享保护面板。** 原来是「是否设置 PIN？」的确认框加二次 PIN 输入。现在 `showPasteOptions` 打开单个弹窗，直接展示两项设置：PIN 码保护复选框（默认不设，勾选后在同弹窗内联展开 4 位数字输入框），有效期单选组 5 分钟 / 30 分钟 / 1 天 / 7 天（默认 5 分钟）。服务端新增 `PASTE_TTL_OPTIONS` 白名单，`POST /api/p` 接受 `ttl`，缺失或非法值回落到 5 分钟，保持对旧客户端的兼容。
 
-前端相应调整：`API.get` 支持传入管理密码；管理面板打开前和私密检索触发时按需取回完整配置与收藏；登出后丢弃全量缓存并回到公开子集。`privacyMode` 不在公开视图内，因此改由带密码的 `GET /api/config` 取回，否则私密检索会因迁移默认值恒为 `false` 而无法触发。
+**2. 分享二维码。** 分享结果面板新增二维码，手机可直接扫码打开。生成在浏览器端用本地 `qrcode.js`（MIT，55KB，gzip 后约 11.8KB）输出 data URL 塞进 `<img>`，不用站外资源也不用 npm 依赖。生成失败时静默移除，不影响复制链接。过期文案不再写死「5分钟后过期」，改为按服务端返回的 `expiresAt` 计算。
+
+**3. 分享接收页代码渲染。** `/p/:code` 接收页在解密后自动识别编程语言并高亮渲染。新增 `public/lib/highlight.min.js`（highlight.js v11.11.2，BSD-3-Clause，common 构建，125KB，gzip 后约 43KB）。
+
+需要特别说明实现取舍：接收页原先用 hljs 的 `highlightAuto` 直接识别，实测在短片段上不可靠——15 个样本中 Python 片段被判成 scss / cpp / ini / ruby，JS 片段被判成 css，且 relevance 无法区分对错（判对与判错的 rel 值重叠）。分享内容天然是短片段，因此改为先用高精度正则签名层判定明确语言，hljs 只做高亮和兜底，自测 15 个样本命中 14 个。含中文的内容直接按纯文本处理，不做高亮。
+
+`showUiDialog` 增加了可选的 `options` 参数以支持复选框与单选组，返回值从数组变为 `{ values, choices }`，因此 `promptValue` 和 `changePassword` 两处调用方同步调整。既有对话框调用方（`confirmAction`、`notice`）不受影响。
 
 ## 实际验证
 
-- `node --test tests/*.test.js`：22 项全部通过（原 11 项 + 新增 11 项）。
-- `node --check server.js`、`node --check public/app.js`、`node --check tests/api-boundary.test.js`：通过。
+- `node --check`：`server.js`、`public/app.js`、`public/sw.js`、`public/lib/qrcode.js`、`public/lib/highlight.min.js`、`tests/dialog-regressions.test.js` 全部通过。
+- `node --test tests/*.test.js`：27 项全部通过（原 22 项 + 新增 5 项）。
 - `git diff --check`：无空白或冲突标记问题。
-- 真实 HTTP 验证：在临时目录启动服务并造含私密条目的数据，确认匿名响应不含私密标题与内网地址、不含 `private` 字段；错误密码只得到公开视图；正确密码得到全量与 `privacyMode`；从公开子集保存后私密条目存活而缺席的公开条目被删除；保存配置后 `privacyMode` 保留。验证脚本是一次性临时的，已删除，未纳入 `tests/`。
+- 首页首屏回归：`public/index.html` 未引入 highlight.js，只新增了 `lib/qrcode.js`（55KB，gzip 后约 11.8KB）。
+
+真实 HTTP 验证：在临时目录启动服务并造数据，验证结果全部通过。
+
+- 有效期白名单 10 种情况：四档正常值、缺失值，以及 `99999` / `0` / `-5` / `"abc"` / `null` 五种非法值，后者均正确回落到 5 分钟。响应 `expiresAt` 与期望一致。
+- 端到端加密往返：创建 → 接收页取密文 → 解密还原与原文一致；接收页不内联明文；阅后即删仍然生效。
+- PIN 流程：`requirePin` 返回、错误 PIN 返回剩余次数、正确 PIN 解密成功、服务端拒绝非 4 位 PIN。
+- 接收页模板以绝对路径 `/lib/highlight.min.js` 引用高亮库（相对路径会解析成 `/p/lib/...` 而 404）。
+- 安全验证：把 `<script>`、`<img onerror>`、`<svg onload>`、`javascript:` 等注入载荷交给高亮库处理，输出均已转义，未出现可执行标签。
+
+真实浏览器验证（agent-browser + Chrome）：
+
+- Python 分享页：内容正常解密，`#content` 带 `hljs` class，生成 17 个高亮 span，关键字与字符串实际取到不同颜色，非纯文本；console 零消息；`/lib/highlight.min.js` 返回 200。
+- 中文纯文本分享页：`#content` 无 `hljs` class，无 span 包裹，按纯文本显示，未被误判为代码。
+- 分享保护面板：PIN 复选框与四个有效期单选项均直接展示，勾选 PIN 后输入框在同弹窗内展开，无二次弹窗。
+- 分享结果面板：二维码 `src` 为 `data:image/` 开头，渲染尺寸 160×160，过期文案显示「1天后过期」并与所选档位一致。
+- 首页：用正确结构的配置加载，`#loader` 移除、`#app` 可见、搜索框与收藏格子正常、所有请求 200、console 零消息。
+
+验证脚本与临时服务均为一次性使用，已删除；验证期间未修改任何真实数据文件，仓库工作区无残留进程与临时文件。
 
 ## 未完成与后续
 
-1. 浏览器端行为未在真实浏览器验收。管理面板的收藏列表、私密徽标、输 `//` 的私密检索、拖拽改分类、导出收藏，以及私密检索加载全量时的索引配对，都需要在目标环境实测。静态测试和一次性 HTTP 验证覆盖不到这些交互。
-2. 公开部署前应核对实际部署凭据。默认管理密码由 `server-config/defaults.js` 定义为 `admin123`，仓库状态不能证明线上已改密。
-3. 首屏性能没有新的实测数据。本次改动使已登录用户在打开管理面板或触发私密检索时多一次带密码的 `/api/config` 或 `/api/favorites` 请求；匿名首屏路径未增加请求。国内网络与移动端下需重新测量。
-4. 本次范围外的已知问题，均在 `server.js` 中可核对：`POST /api/p` 没有速率限制（其余分享路由有）；CORS 允许来源硬编码为 `http://`，HTTPS 部署下正常来源会被拒绝，且未设置 `Vary: Origin`；安全头只有 `script-src`，缺 HSTS、`Permissions-Policy`；写操作没有 CSRF 校验；所有管理路由共享单个 IP 的 30 次/分钟限流桶，攻击者可借此阻断正常管理操作。
-5. auth 机制本身未改动，仍是明文密码经 `X-Admin-Password` 头逐请求校验，无会话、令牌或过期。公网部署应配合 HTTPS。
-6. 既有记录未证明目标 VPS 与国内手机网络下的明暗主题、触屏、拖放及 WebDAV 流程已验收。
+1. 二维码未做真机扫码实测。已确认 data URL 生成正确、尺寸正常，但「实际能否被手机相机扫出」需要真机验证。
+2. 语言识别未做系统性评测。上面的 14/15 基于 15 个人工构造样本，不是覆盖真实代码的语料；短片段的边界情况（如只有两三行的片段、混合语言注释）可能仍判错。识别错误只影响配色，不影响内容正确性。
+3. 接收页改用 `innerHTML` 渲染高亮结果，安全前提是 highlight.js 自身完成 HTML 转义。该前提已用注入载荷验证过，但升级 highlight.js 大版本时必须重新复核。
+4. 新增两个本地库（合计约 180KB，gzip 后约 55KB）的加载耗时尚未在国内网络与移动端实测。其中 `highlight.min.js` 只在分享接收页加载，不影响首页首屏；`qrcode.js` 进了首页，但只在进入分享模式时才实际使用。
+5. 有效期放到 7 天放大了「存储是进程内 `Map`、重启即丢」的既有缺陷——重启服务后历史分享立即失效。7 天档在当前存储模型下并不保证内容存活 7 天。若要真正支持长有效期，需要持久化存储，属于架构级变更，未在本次范围内。
+6. `POST /api/p` 仍没有速率限制（`ip` 已在函数开头取出却未使用），本次按范围约定未改，仍记录在下方已知问题中。
+7. 分享保护面板的键盘操作（Tab 焦点流转、Esc、遮罩点击）只在 DOM 桩测试与真实浏览器点击中验证过，未做完整的键盘可达性走查。
+8. 其余已知问题均未改动：分享码用 `Math.random()` 非加密安全；`isPasteCodeFormat` 正则 `/^[a-z]{2,6}-\d{3}$/` 与生成器词表不一致（`noodle`、`coffee` 等超过 6 个字母的词无法通过校验，生成的分享码可能取不回来）；CORS 硬编码 `http://`；缺 HSTS / `Permissions-Policy`；写操作无 CSRF 校验；管理路由共享单一 IP 的 30 次/分钟限流桶；管理密码明文经 `X-Admin-Password` 逐请求校验，无会话、令牌或过期。
 
 ## 下一位 Agent 的启动步骤
 
 1. 阅读根目录 `AGENTS.md`、`README.md`、`docs/architecture.md` 及本文件。
 2. 核对 `git status --short --branch`、`git log -5 --oneline`、`package.json` 和与新任务相关的代码。
-3. 明确本次目标与完成条件，实施后运行定向检查及适用的回归测试。
+3. 明确本次目标与完成条件，实施后运行定向检查及 `node --test tests/*.test.js`。
 4. 在交接前记录实际修改、验证命令与结果、未完成事项。只有发生稳定架构变化时才更新 `docs/architecture.md`。

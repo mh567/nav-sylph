@@ -1,4 +1,4 @@
-const CACHE = 'nav-v20';
+const CACHE = 'nav-v21';
 const ASSETS = [
     '/',
     '/index.html',
@@ -7,6 +7,7 @@ const ASSETS = [
     '/app.js',
     '/lib/uFuzzy.iife.min.js',
     '/lib/pinyin.js',
+    '/lib/qrcode.js',
     '/favicon.svg',
     '/icon.svg',
     '/manifest.json'
