@@ -40,17 +40,24 @@ function createComposerDom() {
             attrs: {},
             classes: new Set(),
             children: [],
+            // Mirrors the real DOM's data-* attribute bag
+            dataset: Object.create(null),
             addEventListener: (name, fn) => { listeners[name] = fn; },
             // Tests read this to drive the handler bind() really registered
             get listeners() { return listeners; },
-            setAttribute(name, value) { this.attrs[name] = value; },
+            setAttribute(name, value) {
+                this.attrs[name] = value;
+                if (name.startsWith('data-')) this.dataset[name.slice(5)] = value;
+            },
             getAttribute(name) { return this.attrs[name]; },
             focus() { this.focused = true; },
             appendChild() {},
             remove() {},
             // Elements are query contexts too: $$('.fav-item', dropdown) goes
             // through here, and a missing method throws inside handleFavKeydown.
-            querySelectorAll() { return []; },
+            querySelectorAll(selector = '') {
+                return this.children.filter(child => child.matches(selector));
+            },
             querySelector(selector) { return this.children.find(c => c.matches(selector)) || null; },
             matches(sel) {
                 return sel.split(',').map(s => s.trim()).some(s => {
@@ -78,11 +85,15 @@ function createComposerDom() {
     const searchBtn = el('button'); searchBtn.classes.add('search-btn');
     const engineBtn = el('button'); engineBtn.attrs.id = 'engineBtn';
     const dropdown = el('div'); dropdown.attrs.id = 'engineDropdown';
-    const webLabel = el('span'); webLabel.attrs['data-label'] = 'web';
-    const exitLabel = el('span'); exitLabel.attrs['data-label'] = 'exit'; exitLabel.hidden = true;
+    const webLabel = el('span'); webLabel.classes.add('mode-label'); webLabel.setAttribute('data-label', 'web');
+    const exitLabel = el('span'); exitLabel.classes.add('mode-label'); exitLabel.setAttribute('data-label', 'exit'); exitLabel.hidden = true;
     const modeBtn = el('button');
     modeBtn.attrs.id = 'modeBtn';
-    modeBtn.children = [webLabel, exitLabel];
+    // All three labels live in the button; the modes only flip which is shown.
+    // Writing textContent here (as toggleFavSearchMode once did) would destroy
+    // them permanently and break share mode for the rest of the session.
+    const favLabel = el('span'); favLabel.classes.add('mode-label'); favLabel.setAttribute('data-label', 'fav'); favLabel.hidden = true;
+    modeBtn.children = [webLabel, favLabel, exitLabel];
 
     // bind() wires up a lot more than togglePasteMode touches; register the
     // elements it reaches so a real bind() can run without throwing.
@@ -130,7 +141,7 @@ function createComposerDom() {
 
     return {
         document,
-        nodes: { form, input, searchBtn, engineBtn, dropdown, modeBtn, webLabel, exitLabel, modal }
+        nodes: { form, input, searchBtn, engineBtn, dropdown, modeBtn, webLabel, favLabel, exitLabel, modal }
     };
 }
 
@@ -357,11 +368,21 @@ test('the search row itself stays single-height and not draggable', () => {
 
 // ---- markup guards ----
 
-test('the editor is a textarea with both mode labels present', () => {
+test('the editor is a textarea with all three mode labels present', () => {
     assert.match(htmlSource, /<textarea[^>]*id="searchInput"/, 'searchInput must be a textarea');
     assert.equal(/<input[^>]*id="searchInput"/.test(htmlSource), false, 'no leftover input element');
-    assert.match(htmlSource, /data-label="web"/);
-    assert.match(htmlSource, /data-label="exit"/);
+    for (const label of ['web', 'fav', 'exit']) {
+        assert.match(htmlSource, new RegExp(`data-label="${label}"`), `missing ${label} label`);
+    }
+});
+
+test('no mode rewrites the mode button text wholesale', () => {
+    // toggleFavSearchMode used to do `modeBtn.textContent = ...`, which
+    // destroys the label spans for the rest of the session. Sharing then
+    // threw on the missing node and left the row half-rendered: expanded,
+    // engine button gone, but the buttons still reading 网页/搜索.
+    const assignments = appSource.match(/modeBtn\.textContent\s*=/g) || [];
+    assert.equal(assignments.length, 0, 'modeBtn.textContent must not be assigned');
 });
 
 // ---- behaviour ----
@@ -376,6 +397,57 @@ test('entering share mode swaps the mode button to an exit affordance', () => {
     assert.equal(dom.nodes.exitLabel.hidden, false, '退出 label shown while sharing');
     assert.equal(dom.nodes.modeBtn.getAttribute('aria-label'), '退出文本分享');
     assert.equal(dom.nodes.searchBtn.textContent, '发送');
+});
+
+test('share mode still works after a round trip through favorites', () => {
+    // The reported failure: / -> 网页 -> > left the row showing 网页/搜索
+    // while the geometry had already switched to the composer.
+    const { app, dom } = mountComposer();
+    const { modeBtn, webLabel, favLabel, exitLabel, searchBtn, form } = dom.nodes;
+    // The favorites dropdown needs loaded data; not what this test is about
+    app.showFavDropdown = () => {};
+    app.hideFavDropdown = () => {};
+
+    app.favSearchMode = false;
+    app.toggleFavSearchMode(true);
+    assert.equal(favLabel.hidden, false, '收藏 label shows in favorites mode');
+    assert.equal(modeBtn.querySelectorAll('.mode-label').length, 3, 'labels survive favorites mode');
+
+    app.toggleFavSearchMode(false);
+    assert.equal(webLabel.hidden, false, '网页 label comes back');
+    assert.equal(modeBtn.querySelectorAll('.mode-label').length, 3, 'labels survive leaving favorites mode');
+
+    app.togglePasteMode(true);
+    assert.equal(exitLabel.hidden, false, '退出 label shows in share mode');
+    assert.equal(favLabel.hidden, true);
+    assert.equal(webLabel.hidden, true);
+    assert.equal(searchBtn.textContent, '发送', 'the send button must not still read 搜索');
+    assert.equal(form.classes.has('paste-mode'), true);
+    assert.equal(dom.nodes.input.getAttribute('aria-label'), '要分享的文本');
+    assert.match(dom.nodes.input.placeholder, /分享/, 'placeholder follows the mode');
+});
+
+test('the share button works from every entry path', () => {
+    const { app, dom } = mountComposer();
+    app.showFavDropdown = () => {};
+    app.hideFavDropdown = () => {};
+    app.debouncedSearchFavorites = () => {};
+
+    // Enter favorites, type, leave via the button, then start a share
+    dom.nodes.input.value = '/git';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(app.favSearchMode, true, 'favorites mode engaged');
+
+    dom.nodes.input.value = '';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(app.favSearchMode, false, 'left favorites mode');
+
+    dom.nodes.input.value = '>hello';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(app.pasteMode, true, 'share mode engaged');
+    assert.equal(dom.nodes.searchBtn.textContent, '发送');
+    assert.equal(dom.nodes.form.classes.has('fav-search-mode'), false, 'favorites class cleared');
+    assert.equal(dom.nodes.form.classes.has('paste-mode'), true, 'share class set');
 });
 
 test('the engine button is hidden by class, not by an inline style', () => {

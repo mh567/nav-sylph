@@ -6,7 +6,7 @@
 
 修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `9ecc720`；`package.json` 版本 `1.5.6`。
 
-分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`。本次发布 **v1.5.8**（`package.json` / `version.json` / `CHANGELOG.json` 已更新）。
+分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`。其后的模式切换状态错乱修复**尚未提交**（改动 `public/app.js`、`public/index.html`、`tests/paste-composer.test.js`、`docs/current-work.md`）。
 
 ## 本次完成的内容
 
@@ -143,10 +143,32 @@ console 全程零消息。
 
 **未采纳的判断题**：全局错误中间件缺 `if (res.headersSent) return next(err)` 守卫（`server.js:203`）。当前无异步路由在 `res.json()` 之后抛错的路径，属预防性加固，单独评估。
 
+## 模式切换状态错乱（收藏 → 网页 → 分享）
+
+**现象**：先输入 `/` 进收藏模式，再切回网页模式，然后输入 `>` 触发分享——左侧按钮仍显示「网页」、右侧仍显示「搜索」，编辑区却已展开成大编辑器、搜索引擎按钮已消失。回车后行为诡异。
+
+**根因**：`toggleFavSearchMode` 用 `modeBtn.textContent = enabled ? '收藏' : '网页'` 切换按钮文案。`textContent` 赋值是**破坏性**的——它把 `#modeBtn` 里原有的 `<span class="mode-label">` 子节点整个删掉，替换成纯文本节点。此后 `togglePasteMode` 里的 `modeBtn.querySelector('[data-label="web"]')` 返回 `null`，第 `webLabel.hidden = enabled` 一行抛 `TypeError: Cannot set properties of null`，**函数在此中断**，后续所有文案赋值（按钮、placeholder、aria-label）一行都没执行。
+
+而 `form.classList.toggle('paste-mode')` 在异常点**之前**已执行，所以 CSS 生效（编辑区展开、引擎按钮隐藏），`app.pasteMode` 也已被赋值为 `true`。结果就是**样式层已切到分享态、行为与文案层仍停在网页搜索态**——同一个输入框对外呈现两套互相打架的语义。
+
+收藏模式是**单向门**：任意一次 `toggleFavSearchMode` 调用都会永久销毁分享态所需的子节点，此后无论怎么切都恢复不了。两条退出路径（点「网页」按钮、退格删 `/`）结果完全相同。
+
+**根因的第二层**：两个 `toggle*Mode` 用**互不兼容的机制**写同一批 UI——一个用 `textContent`（删子节点），一个用 `hidden`（依赖子节点）。先执行哪个决定了另一个能否工作。这是我在上一轮改版时引入的：为了让按钮文案能随模式切换，我把「网页/退出」拆成两个 span，却没检查既有的 `toggleFavSearchMode` 也在写同一个按钮。
+
+**修法**：
+
+- `index.html` 的 `#modeBtn` 补第三个标签 `<span class="mode-label" data-label="fav">收藏</span>`，三个身份（网页 / 收藏 / 退出）各有其 span。
+- 新增 `showModeLabel(mode)`，按 `dataset.label` 切换显隐，`toggleFavSearchMode` 与 `togglePasteMode` 共用。**任何地方都不再写 `modeBtn.textContent`**——它会删掉所有子节点。
+- 加源码形状断言 `modeBtn.textContent` 不得出现，以及「收藏→网页→分享」完整往返的行为测试。
+
+**真实 Chrome 复验**（10 步，含两条退出路径）：`labelCount`（`#modeBtn` 内 `.mode-label` 数量）**每一步均为 3**；分享态 = 退出 + 发送，收藏态 = 收藏 + 打开，网页态 = 网页 + 搜索；回车正常弹出分享保护面板；全程零 TypeError（页面内另装 `window.onerror` / `unhandledrejection` / `console.error` 捕获器复跑，`count: 0`）。
+
+顺带确认两条正确行为：收藏态下输入 `>` 不触发分享、分享态下输入 `/` 不切收藏（`handleSearchInput` 中 `isFavMode` 为真时提前 return，模式互斥成立）。
+
 ## 实际验证
 
 - `node --check`：`server.js`、`public/app.js`、`public/sw.js`、`public/lib/qrcode.js`、`public/lib/highlight.min.js`、`tests/dialog-regressions.test.js`、`tests/paste-ttl.test.js`、`tests/share-guards.test.js`、`tests/paste-composer.test.js` 全部通过。
-- `node --test tests/*.test.js`：65 项全部通过（原 46 项 + 新增 19 项）。
+- `node --test tests/*.test.js`：68 项全部通过（原 46 项 + 新增 22 项）。
 
 发布前修复的真实 Chrome 复验（三态回车 + 元素外松手）：
 

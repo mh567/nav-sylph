@@ -702,6 +702,17 @@
             }, 50);
         }
 
+        // 左侧按钮有三种身份：网页 / 收藏 / 退出（分享态）。
+        // 三个状态都要切换它，所以文案集中在这里，各模式只决定自己那个
+        // 标签的显隐。绝不能写 textContent —— 那会把 span 子节点整个删掉，
+        // 此后本方法再也找不到它们，切换分享态时就会抛错。
+        showModeLabel(mode) {
+            const modeBtn = $('#modeBtn');
+            for (const label of modeBtn.querySelectorAll('.mode-label')) {
+                label.hidden = label.dataset.label !== mode;
+            }
+        }
+
         toggleFavSearchMode(enabled) {
             const form = $('#searchForm');
             const input = $('#searchInput');
@@ -709,7 +720,7 @@
 
             form.classList.toggle('fav-search-mode', enabled);
             const modeBtn = $('#modeBtn');
-            modeBtn.textContent = enabled ? '收藏' : '网页';
+            this.showModeLabel(enabled ? 'fav' : 'web');
             modeBtn.setAttribute('aria-pressed', String(enabled));
             modeBtn.setAttribute('aria-label', `切换搜索模式，当前为${enabled ? '收藏' : '网页'}`);
 
@@ -1044,13 +1055,9 @@
             dropdown.hidden = true;
             engineBtn.setAttribute('aria-expanded', 'false');
 
-            // 左侧按钮在分享态下变为「退出」，用双 span 切换文案，
-            // 避免重写 textContent 时丢掉其他状态
+            // 左侧按钮在分享态下变为「退出」，与收藏模式共用同一套标签切换
             const modeBtn = $('#modeBtn');
-            const webLabel = modeBtn.querySelector('[data-label="web"]');
-            const exitLabel = modeBtn.querySelector('[data-label="exit"]');
-            webLabel.hidden = enabled;
-            exitLabel.hidden = !enabled;
+            this.showModeLabel(enabled ? 'exit' : 'web');
             modeBtn.setAttribute('aria-label', enabled ? '退出文本分享' : '切换搜索模式，当前为网页');
 
             if (enabled) {
