@@ -2719,6 +2719,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
        漏写 min-height/padding/border-radius 会让展开动画整条失效 */
     transition: min-height var(--transition), padding var(--transition), border-radius var(--transition), border-color 160ms, box-shadow 160ms, background 160ms;
 }
+/* 顶边 1px 受光高光。::after 已被光感占用，所以这条用 ::before。
+   仿真 .search-shell::before 同样存在，此前移植时整块漏掉——
+   背板加了 padding-top 后，搜索框顶与背板顶拉开 20px，
+   框自身若没有这条高光，会在这道缝里显得缺一道亮边。 */
+.search::before { content: ''; position: absolute; left: 11px; right: 11px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.95) 30%,rgba(255,255,255,.95) 70%,transparent); }
 /* 光感与 .bookmark::before 同构：中性白高光 + 色相光晕。
    单层时两层光晕叠在一起偏灰；仿真就是双层，这里对齐。 */
 .search::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(ellipse 77px 51px at var(--glow-x) var(--glow-y),var(--glint-white),transparent 68%),radial-gradient(ellipse 105px 52px at var(--glow-x) var(--glow-y),var(--search-glint),transparent 82%); opacity: 0; transition: opacity 85ms; }
@@ -2870,8 +2875,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    背板是本次新增的元素。文件尾段不再重复声明本区块的规则，
    与上面「Paste 分享模式」区块同一条纪律：同特异性下后写的会覆盖先前。 */
 
-/* 收束视觉：比 .app 窄一档，让宽屏下背景不再一览无余。 */
-.backboard { position: relative; width: min(100%,936px); margin: 0 auto; padding: 24px 30px 30px; border-radius: 18px;
+/* 收束视觉：比 .app 窄一档，让宽屏下背景不再一览无余。
+   padding-top 48px = 仿真的 24px 背板内边距 + 4px topbar 占位 + 20px 下边距。
+   仿真保留那个空占位元素（本项目已随站点标识一并删除），
+   两段留白叠起来比一段更透气；这里用单值等效还原，搜索框顶落在 83px。 */
+.backboard { position: relative; width: min(100%,936px); margin: 0 auto; padding: 48px 30px 30px; border-radius: 18px;
     background: linear-gradient(168deg,var(--glass-strong),var(--glass));
     box-shadow: inset 0 1px rgba(255,255,255,.72),inset 0 -1px rgba(105,81,63,.07),0 2px 6px rgba(67,51,39,.035),0 20px 48px rgba(67,51,39,.07);
     backdrop-filter: blur(20px) saturate(122%); -webkit-backdrop-filter: blur(20px) saturate(122%); }

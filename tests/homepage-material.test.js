@@ -364,3 +364,28 @@ test('引擎按钮的展开态只有一个真相来源', () => {
     const sets = (appSource.match(/engineBtn\.setAttribute\('aria-expanded'/g) || []).length;
     assert.ok(sets >= 4, `aria-expanded 应在所有关闭路径上都被设置，实际 ${sets} 处`);
 });
+
+test('背板上边距还原仿真的纵向节奏', () => {
+    // 仿真里搜索框顶距视口 83px = 背板内边距 24 + topbar 占位 4 + 其下边距 20。
+    // 本项目删掉了那个空占位元素，用单值 48px 等效还原；窄屏兜底必须清零。
+    // 用 mediaBlocks 的花括号配对取正文：这条规则跨行书写，正则 [^\n]* 会漏掉。
+    const board = mediaBlocks(code, '.backboard {').find(b => b.includes('padding: 48px'));
+    assert.ok(board, '存在 .backboard 基础规则且上内边距为 48px');
+    assert.match(board, /padding:\s*48px 30px 30px/,
+        '上内边距应为 48px（24 + 4 + 20），使搜索框顶落在 83px');
+
+    const fb = mediaBlock(code, '@media (max-width: 1023px)', '.backboard');
+    assert.match(fb, /\.backboard\s*\{[^}]*padding:\s*0/, '窄屏背板内边距必须清零');
+});
+
+test('搜索框有顶边受光高光', () => {
+    // ::after 已被光感占用，这条高光必须走 ::before。仿真有、移植时漏过。
+    const before = /^\.search::before\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(before, '存在 .search::before 规则');
+    assert.match(before[1], /height:\s*1px/, '是 1px 细线');
+    assert.match(before[1], /left:\s*11px/, '左右各内缩 11px');
+    assert.match(before[1], /pointer-events:\s*none/, '不拦截指针事件');
+    // 同一元素上 ::before 只能一条，否则后写的会覆盖先写的
+    assert.equal((code.match(/^\.search::before\s*\{/gm) || []).length, 1,
+        '.search::before 应只声明一次');
+});
