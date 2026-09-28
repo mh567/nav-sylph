@@ -634,7 +634,9 @@ body {
 .search.paste-mode .search-input {
     height: auto;
     min-height: 96px;
-    max-height: 60vh;
+    /* 软键盘弹出时按被遮挡高度收矮（--kb-inset 由 app.js 写入，无键盘时为 0），
+       否则 60dvh 的上限会把「发送」按钮顶到键盘后面。 */
+    max-height: calc(60vh - var(--kb-inset, 0px));
     padding: 6px 8px;
     line-height: 1.6;
     resize: vertical;
@@ -1627,9 +1629,10 @@ body {
     }
 
     /* 对话框优化。弹窗保持居中：贴底的底部抽屉会被手机浏览器的地址栏与
-       Home 指示条盖住，与 .ui-dialog 是同一类缺陷。内边距改为四边吃安全区。 */
+       Home 指示条盖住，与 .ui-dialog 是同一类缺陷。内边距改为四边吃安全区，
+       底部再减去软键盘遮挡高度（--kb-inset 由 app.js 写入，无键盘时为 0）。 */
     .fav-dialog-overlay {
-        padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+        padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + var(--kb-inset, 0px) + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
         align-items: center;
     }
 
@@ -1637,7 +1640,7 @@ body {
         max-width: 100%;
         border-radius: 14px;
         padding: 16px 14px;
-        max-height: 88dvh;
+        max-height: calc(88dvh - var(--kb-inset, 0px));
         overflow-y: auto;
     }
 
@@ -1757,6 +1760,14 @@ body {
     .paste-result {
         max-height: 88dvh;
         overflow-y: auto;
+    }
+
+    /* 引擎下拉原本没有 max-height：12 个引擎时高 442px，横屏 844×390 下
+       超出视口 199px 且无法滚动，后 6 个引擎完全点不到。 */
+    .engine-dropdown {
+        max-height: min(60dvh, 300px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
     }
 
     /* 搜索栏保留 44px 触摸高度（横屏也需可点），只把行高收到按钮加内边距的下限。 */

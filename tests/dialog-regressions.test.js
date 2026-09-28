@@ -362,6 +362,43 @@ test('every overlay dialog stays vertically centred on narrow screens', () => {
     assert.match(base[1], /place-items:\s*center/, '弹窗在基础规则里居中');
 });
 
+test('the engine dropdown is bounded and scrollable in landscape', () => {
+    // 12 个引擎时高 442px，横屏 844×390 下超出视口 199px 且无法滚动，
+    // 后 6 个引擎完全点不到。这是功能失效，不是观感问题。
+    const landscape = mediaBlock(stylesCss, '@media (max-height: 500px) and (orientation: landscape)', '.engine-dropdown');
+    const dropdown = /\.engine-dropdown\s*\{([^}]*)\}/.exec(landscape);
+    assert.ok(dropdown, '横屏块仍声明 .engine-dropdown');
+    assert.match(dropdown[1], /max-height:\s*[^;]*\d/, '横屏必须给引擎下拉设高度上限');
+    assert.match(dropdown[1], /overflow-y:\s*auto/, '超出后必须能滚动，否则下方选项点不到');
+
+    // 基础规则不该自带高度上限——竖屏下 442px 并不溢出，加了反而多余
+    const base = /\.engine-dropdown\s*\{([^}]*)\}/.exec(stylesCss);
+    assert.ok(base, '存在基础的 .engine-dropdown 规则');
+    assert.equal(/max-height/.test(base[1]), false, '基础规则不应限制高度，留给横屏块处理');
+});
+
+test('dialogs and the composer yield to the on-screen keyboard', () => {
+    // vh/dvh 都不跟随软键盘收缩，只有 visualViewport 反映真实可视高度。
+    // app.js 把被遮挡高度写进 --kb-inset，各弹窗按它收矮。
+    // 断言只匹配可执行代码：先把整行注释与块注释剥掉，否则
+    // 「只有 visualViewport 反映」这句注释就能让断言通过，而代码已被删空。
+    const code = source
+        .replace(/^\s*\/\/.*$/gm, '')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.match(code, /window\.visualViewport/, 'app.js 必须在代码中读取 visualViewport');
+    assert.match(code, /--kb-inset/, 'app.js 必须写出 --kb-inset');
+    assert.match(code, /addEventListener\('resize',\s*sync\)/, '键盘弹出/收起要监听 resize');
+    assert.match(code, /addEventListener\('scroll',\s*sync\)/, '键盘滚动也要同步');
+    // 变量不能只在 JS 里写而没有 CSS 消费，否则是死代码
+    assert.match(stylesCss, /var\(--kb-inset/, 'styles.css 需消费 --kb-inset');
+    assert.match(adminCss, /var\(--kb-inset/, 'admin.css 需消费 --kb-inset');
+
+    // 收矮后仍要留出底部安全区，否则键盘上方那条手势条又会压住按钮
+    const narrow = mediaBlock(adminCss, '@media (max-width: 480px)', '.ui-dialog-overlay');
+    assert.match(narrow, /--kb-inset/, '窄屏弹窗内边距需减去键盘高度');
+    assert.match(narrow, /env\(safe-area-inset-bottom\)/, '且仍需保留安全区');
+});
+
 test('the expiry grid is a two-column layout declared exactly once', () => {
     const all = [...adminCss.matchAll(/^\.ui-dialog-options\s*\{([^}]*)\}/gm)];
     assert.equal(all.length, 1, `.ui-dialog-options 应只定义一次，实际 ${all.length} 次`);

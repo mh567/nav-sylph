@@ -234,8 +234,11 @@ test('the composer grows taller than the single-line search row', () => {
     assert.ok(minHeight, 'composer sets a min-height');
     assert.ok(Number(minHeight[1]) >= 80, `composer min-height ${minHeight[1]}px is not meaningfully taller than 36px`);
 
-    // A bound is mandatory, otherwise dragging can push the send button off-screen
-    assert.match(block[1], /max-height:\s*\d+v?h/, 'composer needs a max-height bound');
+    // A bound is mandatory, otherwise dragging can push the send button off-screen.
+    // It is written as calc(60vh - var(--kb-inset, 0px)) so the on-screen keyboard
+    // can shorten it; a bare \d+v?h must not be required.
+    assert.match(block[1], /max-height:\s*[^;]*\d+v?h/, 'composer needs a max-height bound');
+    assert.match(block[1], /--kb-inset/, 'composer max-height must yield to the on-screen keyboard');
     assert.match(block[1], /resize:\s*vertical/, 'composer should be vertically draggable');
 });
 

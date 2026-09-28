@@ -245,6 +245,7 @@
                 input.focus();
             };
             this.bindPointerEffects();
+            this.bindKeyboardViewport();
             this.bindBookmarkPress();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
             // textarea 的回车默认只换行，不会提交表单，因此两种模式都要自己接管：
@@ -372,6 +373,29 @@
                     }
                 }
             };
+        }
+
+        // 软键盘弹出时把被遮挡的高度写进 --kb-inset，供弹窗收高。
+        // vh 与 dvh 都不会跟随软键盘收缩（规范如此），只有 visualViewport 反映
+        // 真实可视高度；不支持该 API 的浏览器 --kb-inset 保持 0，行为不变。
+        bindKeyboardViewport() {
+            const viewport = window.visualViewport;
+            if (!viewport) return;
+            let frame = 0;
+            const sync = () => {
+                if (frame) return;
+                frame = requestAnimationFrame(() => {
+                    frame = 0;
+                    const covered = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+                    document.documentElement.style.setProperty('--kb-inset', `${covered}px`);
+                    // 编辑区的 max-height 依赖这个变量，键盘弹出/收起后要重新算高度，
+                    // 否则会停在键盘弹出前算出的值上
+                    this.autoGrowPasteInput();
+                });
+            };
+            viewport.addEventListener('resize', sync);
+            viewport.addEventListener('scroll', sync);
+            sync();
         }
 
         bindPointerEffects() {

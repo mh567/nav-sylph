@@ -289,6 +289,10 @@
 
 .ui-dialog-overlay { position: fixed; inset: 0; z-index: 1300; display: grid; place-items: center; padding: 20px; background: rgba(25, 21, 18, .47); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
 .ui-dialog { width: min(100%, 400px); max-height: min(90dvh, 560px); overflow-y: auto; padding: 22px; border-radius: 14px; }
+/* 软键盘弹出时按被遮挡的高度收矮并让出底部空间（--kb-inset 由 app.js 写入，
+   不支持 visualViewport 的浏览器为 0，行为与之前一致）。 */
+.ui-dialog-overlay, .fav-dialog-overlay { padding-bottom: calc(12px + var(--kb-inset, 0px) + env(safe-area-inset-bottom)); }
+.ui-dialog, .fav-dialog { max-height: calc(min(90dvh, 560px) - var(--kb-inset, 0px)); }
 .ui-dialog h3 { margin: 0 0 9px; color: var(--text); font-size: 16px; font-weight: 600; }
 .ui-dialog-message { margin: 0 0 17px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; white-space: pre-line; }
 .ui-dialog-field { display: block; margin-bottom: 12px; }
@@ -394,8 +398,8 @@
        四边内边距吃安全区，max-height 改用 dvh 以便地址栏展开/收起时自适应。
        .fav-dialog 的同款处理在 styles.css 的 ≤768px 块（那里是它的唯一定义处），
        窄屏不再改回顶部圆角的底部抽屉。 */
-    .ui-dialog-overlay { padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); }
-    .ui-dialog { width: 100%; max-height: 88dvh; border-radius: 14px; padding: 16px 14px; }
+    .ui-dialog-overlay { padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + var(--kb-inset, 0px) + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); }
+    .ui-dialog { width: 100%; max-height: calc(88dvh - var(--kb-inset, 0px)); border-radius: 14px; padding: 16px 14px; }
     :is(.modal, .fav-dialog, .ui-dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) { min-height: 44px; font-size: 16px; }
     :is(.modal, .fav-dialog, .ui-dialog) .btn { min-height: 44px; }
     .fav-form .fav-category-row { display: block; }
