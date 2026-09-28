@@ -20,6 +20,9 @@ const LAYER_MARKER = '/* 2026 front-end material and interaction layer */';
 const layerStart = stylesCss.indexOf(LAYER_MARKER);
 assert.ok(layerStart > 0, 'styles.css 仍带有 2026 材质层标记');
 const code = stripComments(stylesCss.slice(layerStart));
+// 有些选择器的基础块在材质层之前的旧样式区（如 .engine-dropdown 在 166 行），
+// 只切材质层会找不到它们，这类断言用全文件去注释后的版本。
+const fullCode = stripComments(stylesCss);
 
 // 取某个 @media 块的正文。同一查询在文件里可能出现多次，
 // requiredIn 指定目标块必须包含的标记，否则返回第一个同查询块。
@@ -190,11 +193,15 @@ test('引擎按钮带下拉箭头，并在展开时翻转', () => {
     assert.match(arrow, /stroke-width/, '箭头用描边绘制');
     assert.match(arrow, /stroke:\s*currentColor/, '箭头跟随按钮文字色');
 
-    // 展开态靠 aria-expanded 驱动，不是 .active 类——
-    // 旧样式里的 `.search-engine.active .engine-arrow` 永远不命中。
+    // 展开态的驱动钩子统一为 aria-expanded。JS（app.js:314）其实两个都设，
+    // 所以旧的那条 `.search-engine.active .engine-arrow` 是能命中的——
+    // 删它是因为同一状态两条规则会各自旋转一次，不是因为不命中。
     const expanded = /\.search-engine\[aria-expanded="true"\]\s+\.engine-arrow\s*\{([^}]*)\}/.exec(code);
     assert.ok(expanded, '存在展开态的箭头翻转规则');
     assert.match(expanded[1], /rotate\(180deg\)/, '展开时箭头翻转');
+    // 同一状态只能有一条旋转规则，否则两条会叠乘
+    assert.equal(/\.search-engine\.active\s+\.engine-arrow/.test(code), false,
+        '不应再有 .search-engine.active 驱动的第二处箭头旋转');
 
     // 同一选择器的基础块只能有一处定义，否则同特异性下后写的会静默覆盖。
     // 只数行首无缩进的块：`.search-engine:hover .engine-arrow {` 这类派生规则不算。
@@ -228,4 +235,78 @@ test('背板包住搜索区与收藏网格，操作条留在外面', () => {
     // 光感与按压都按 ID 委托在这两个容器上，包裹不能改变它们的祖先结构
     assert.match(indexHtml, /<form class="search" id="searchForm">[\s\S]*?<textarea[^>]*id="searchInput"/, 'searchInput 仍嵌套在 searchForm 内');
     assert.match(indexHtml, /<div class="engine-dropdown" id="engineDropdown"[\s\S]*?<\/div>\s*<\/div>\s*<\/header>/, '引擎下拉仍是 .search-wrapper 的子节点，绝对定位锚点才不位移');
+});
+
+test('说明行只讲 / 与 > 两个触发符', () => {
+    const cap = /<div class="search-caption"[^>]*>([\s\S]*?)<\/div>/.exec(indexHtml);
+    assert.ok(cap, 'index.html 里有说明行');
+    const text = cap[1];
+    assert.match(text, /<kbd>\/<\/kbd>/, '说明行要点出 / 这个收藏触发符');
+    assert.match(text, /<kbd>&gt;<\/kbd>/, '说明行要点出 > 这个分享触发符');
+    // 次要功能（方向键选择、Enter 打开）不在这行强调，细节留给「说明」弹窗
+    for (const noise of ['Enter', '↑', '↓']) {
+        assert.equal(text.includes(noise), false, `说明行不应再出现 ${noise}（次要功能留给说明弹窗）`);
+    }
+});
+
+test('说明行贴搜索框、远离收藏区', () => {
+    const cap = ruleBlock(code, '.search-caption', 'justify-content');
+    const m = /margin:\s*(\d+)px\s+0\s+(\d+)px/.exec(cap);
+    assert.ok(m, '说明行用 margin: 上 0 下 的形式给出上下间距');
+    const [top, bottom] = [Number(m[1]), Number(m[2])];
+    assert.ok(top < bottom, `说明行上间距 ${top}px 应小于下间距 ${bottom}px（贴搜索框、远离收藏区）`);
+
+    // 间距归说明行自己管，.header 的 margin-bottom 必须让位，
+    // 否则两者折叠后取大值，说明行会被推离搜索框。
+    const header = /^\.header\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(header, '存在 .header 基础规则');
+    assert.match(header[1], /margin-bottom:\s*0/, '.header 的 margin-bottom 必须归零，间距交给说明行');
+});
+
+test('引擎下拉对齐到按钮下方，而不是搜索框左缘', () => {
+    const drop = /^\.engine-dropdown\s*\{([\s\S]*?)\n\}/m.exec(fullCode);
+    assert.ok(drop, '存在 .engine-dropdown 基础规则');
+    assert.match(drop[1], /left:\s*58px/,
+        'left 应为 58px（1+5+48+4），对齐引擎按钮左缘；left:0 会贴到搜索框左缘，与按钮脱开');
+
+    // 窄屏块曾把 left 重置为 0，等于在大屏修好、小屏又坏掉
+    const narrow = mediaBlock(fullCode, '@media (max-width: 768px)', '.engine-dropdown');
+    assert.equal(/\.engine-dropdown\s*\{[^}]*left:\s*0/.test(narrow), false,
+        '≤768px 不得把 left 重置为 0');
+});
+
+test('引擎下拉不带开合动画，与仿真一致', () => {
+    const drop = /^\.engine-dropdown\s*\{([\s\S]*?)\n\}/m.exec(fullCode);
+    assert.ok(drop, '存在 .engine-dropdown 基础规则');
+    assert.equal(/animation\s*:/.test(drop[1]), false, '引擎下拉不应有 animation');
+
+    // @keyframes dropIn 仍被收藏下拉使用，不能跟着删掉
+    const users = stylesCss.match(/animation:\s*dropIn/g) || [];
+    assert.ok(users.length > 0, '收藏下拉仍在用 dropIn，关键字帧不能删');
+    assert.match(stylesCss, /@keyframes dropIn/, '@keyframes dropIn 必须保留');
+});
+
+test('下拉选中项不铺底色', () => {
+    // 只有加粗 + 变色才与 hover 的底色区分得开。
+    // 必须显式写 transparent：旧样式 `.engine-option.active { background: var(--bg-hover) }`
+    // 同特异性，不覆盖就会留一层米色底，把信号淹掉。
+    const active = /^\.engine-option\.active\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(active, '存在 .engine-option.active 规则');
+    assert.match(active[1], /background:\s*transparent/, '选中项必须显式清掉底色');
+    assert.match(active[1], /color:\s*var\(--accent\)/, '选中项用主色文字');
+    assert.match(active[1], /font-weight:\s*700/, '选中项加粗');
+
+    // 选项也要有按下反馈——仿真 .engine-choice:active 有，移植时漏过一次
+    const pressed = /^\.engine-option:active\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(pressed, '下拉选项应有按下态规则');
+    assert.match(pressed[1], /box-shadow:\s*var\(--press-shadow\)/, '按下态用统一的凹陷阴影');
+});
+
+test('下拉容器与收藏下拉各自成条，不共用规则', () => {
+    // 两者材质不同（引擎 10px 圆角，收藏 11px），合写后改一处会连带改动另一处。
+    // 断言的是「分开声明」，不是具体数值——数值另有断言。
+    assert.equal(/\.engine-dropdown\s*,\s*\.fav-dropdown\s*\{/.test(code), false,
+        '.engine-dropdown 与 .fav-dropdown 不应再共用一条规则');
+    assert.match(code, /^\.engine-dropdown\s*\{/m, '引擎下拉有独立规则');
+    assert.match(code, /^\.fav-dropdown\s*\{/m, '收藏下拉有独立规则');
 });
