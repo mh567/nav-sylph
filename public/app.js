@@ -83,6 +83,7 @@
             this.password = null;
             this.dragData = null;
             this.pasteMode = false;
+            this.pasteUserResized = false;
             // 收藏检索
             this.favorites = [];
             this.favoritesLoading = true;
@@ -233,8 +234,13 @@
                 const input = $('#searchInput');
                 const value = input.value;
                 if (this.pasteMode) {
+                    // 分享态下该按钮是「退出」：只回到搜索态并清空，不跳去收藏检索
                     this.pasteMode = false;
                     this.togglePasteMode(false);
+                    input.value = '';
+                    this.handleSearchInput({ target: input });
+                    input.focus();
+                    return;
                 }
                 input.value = this.favSearchMode
                     ? value.replace(/^[\/、]{1,2}/, '')
@@ -245,7 +251,25 @@
             this.bindPointerEffects();
             this.bindBookmarkPress();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
-            $('#searchInput').oninput = (e) => this.handleSearchInput(e);
+            // textarea 的回车默认只换行，不会提交表单。分享态下让回车发送、
+            // Shift/ Ctrl / Cmd+回车换行；搜索态保持原生行为不变。
+            $('#searchInput').addEventListener('keydown', event => {
+                if (event.key !== 'Enter' || !this.pasteMode) return;
+                if (event.shiftKey || event.ctrlKey || event.metaKey) return;
+                event.preventDefault();
+                this.handleSearch();
+            });
+            $('#searchInput').oninput = (e) => {
+                this.handleSearchInput(e);
+                this.autoGrowPasteInput();
+            };
+            // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随
+            $('#searchInput').addEventListener('pointerdown', event => {
+                if (!this.pasteMode) return;
+                const rect = event.currentTarget.getBoundingClientRect();
+                const onHandle = event.clientX > rect.right - 18 && event.clientY > rect.bottom - 18;
+                if (onHandle) this.pasteUserResized = true;
+            });
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#modalBackdrop').onclick = () => this.closeAdmin();
@@ -323,6 +347,14 @@
                         engineBtn.focus();
                     } else if (!$('#modal').hidden) {
                         this.closeAdmin();
+                    } else if (this.pasteMode) {
+                        // 分享态退出。移动端没有 Esc 键，主路径是左侧「退出」按钮
+                        const input = $('#searchInput');
+                        this.pasteMode = false;
+                        this.togglePasteMode(false);
+                        input.value = '';
+                        this.handleSearchInput({ target: input });
+                        input.focus();
                     }
                 }
             };
@@ -958,23 +990,54 @@
             }
         }
 
+        // textarea 只写 min-height 时高度会锁死，需按内容撑开。
+        // 用户手动拖拽过的框不再自动跟随，否则会把刚拖出来的大小冲掉。
+        autoGrowPasteInput() {
+            const input = $('#searchInput');
+            if (!this.pasteMode || this.pasteUserResized) return;
+            // 先归零再量，否则上一次的 inline height 会成为新的测量基准
+            input.style.height = 'auto';
+            // clamp 到 CSS 的 max-height，避免把一个永远不生效的大值留在
+            // inline 样式里（max-height:none 时 computed 会返回 "none"）
+            const declared = parseFloat(getComputedStyle(input).maxHeight);
+            const max = Number.isFinite(declared) ? declared : Infinity;
+            input.style.height = `${Math.min(input.scrollHeight, max)}px`;
+        }
+
         togglePasteMode(enabled) {
             const form = $('#searchForm');
             const input = $('#searchInput');
             const searchBtn = $('.search-btn');
+            const engineBtn = $('#engineBtn');
 
             form.classList.toggle('paste-mode', enabled);
 
+            // 搜索引擎按钮的显隐交给 CSS（.search.paste-mode #engineBtn），
+            // 不用内联 display，否则无法参与过渡且会盖过样式表
+            const dropdown = $('#engineDropdown');
+            dropdown.hidden = true;
+            engineBtn.setAttribute('aria-expanded', 'false');
+
+            // 左侧按钮在分享态下变为「退出」，用双 span 切换文案，
+            // 避免重写 textContent 时丢掉其他状态
+            const modeBtn = $('#modeBtn');
+            const webLabel = modeBtn.querySelector('[data-label="web"]');
+            const exitLabel = modeBtn.querySelector('[data-label="exit"]');
+            webLabel.hidden = enabled;
+            exitLabel.hidden = !enabled;
+            modeBtn.setAttribute('aria-label', enabled ? '退出文本分享' : '切换搜索模式，当前为网页');
+
             if (enabled) {
-                input.placeholder = '输入要分享的文本，回车发送...';
-                // 隐藏搜索引擎选择
-                $('#engineBtn').style.display = 'none';
-                // 更改按钮图标为发送
+                input.placeholder = '输入要分享的文本，回车发送，Shift+回车换行...';
+                // 重置上次拖拽留下的大小，否则会以旧高度进入
+                input.style.height = '';
+                this.pasteUserResized = false;
                 searchBtn.textContent = '发送';
                 searchBtn.title = '发送分享';
             } else {
                 input.placeholder = '搜索网页或收藏';
-                $('#engineBtn').style.display = '';
+                input.style.height = '';
+                this.pasteUserResized = false;
                 searchBtn.textContent = '搜索';
                 searchBtn.title = '搜索';
             }
@@ -1177,6 +1240,8 @@
                             <strong>跨设备文本分享</strong>
                             <p>搜索框输入 <code>></code> + 内容，回车发送</p>
                             <p class="help-tip">端到端加密 · 有效期可选 · 阅后即删</p>
+                            <p class="help-tip"><code>Shift</code>+回车换行，可拖拽右下来调高编辑区</p>
+                            <p class="help-tip">点「退出」或按 <code>Esc</code> 返回搜索</p>
                         </div>
                         <div class="help-section">
                             <strong>管理收藏</strong>

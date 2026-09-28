@@ -606,31 +606,58 @@ body {
 
 [hidden] { display: none !important; }
 
-/* ========== Paste 分享模式 ========== */
+/* ========== Paste 分享模式 ==========
+   分享态样式的唯一定义处。文件尾段的新版样式区块不要再重复声明
+   .search.paste-mode 及其后代——同特异性下后者会覆盖这里，导致展开
+   效果静默失效（该问题已发生过一次）。 */
 
-/* 搜索框展开动画 */
-.search, .search-input {
-    transition: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
-}
+/* 展开/收回的过渡。height:auto 不可过渡，因此过渡 min-height 与 padding，
+   内容随输入增高则是即时反馈，不需要动画。 */
+.search { transition: min-height var(--transition), padding var(--transition), border-radius var(--transition), border-color 160ms, box-shadow 160ms, background 160ms; }
 
 .search.paste-mode {
+    align-items: stretch;
     border-radius: 16px;
-    padding: 8px;
+    padding: 10px 12px;
+    min-height: 116px;
 }
 
+.search.paste-mode #engineBtn { display: none; }
+.search.paste-mode .search-mode { color: var(--accent); border-color: var(--focus); background: rgba(148,94,74,.10); }
+
+/* height:auto 是自增高的前提：只写 min-height 时，textarea 高度会锁死在
+   rows=1 对应的高度，内容超出后转为内部滚动。JS 用 scrollHeight 写入
+   inline height 让它跟随内容，max-height 负责封顶。 */
 .search.paste-mode .search-input {
-    min-height: 60px;
-    padding: 12px 16px;
+    height: auto;
+    min-height: 96px;
+    max-height: 60vh;
+    padding: 6px 8px;
+    line-height: 1.6;
+    resize: vertical;
+    overflow-y: auto;
+    /* 自增高由 JS 逐帧计算 height，过渡会拖慢输入手感 */
+    transition: none;
 }
 
-/* 结果卡片 - 更紧凑 */
+/* 分享态下按钮贴底，编辑区占据主空间 */
+.search.paste-mode .search-btn { align-self: flex-end; }
+.search.paste-mode .search-mode { align-self: flex-start; }
+
+@media (max-width: 768px) {
+    .search.paste-mode { min-height: 100px; padding: 8px 10px; }
+    .search.paste-mode .search-input { min-height: 84px; }
+}
+
+/* 结果面板：与编辑框同宽，读作编辑器的输出区。
+   .search-wrapper 宽度固定，面板撑满 wrapper，因此天然与编辑框对齐。 */
 .paste-result {
     position: relative;
-    margin-top: 12px;
-    padding: 16px 20px;
+    margin-top: 14px;
+    padding: 18px 20px 16px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 14px;
     text-align: center;
     animation: pasteSlideDown 250ms ease;
     box-shadow: var(--shadow);
@@ -896,10 +923,6 @@ body {
 
 /* 移动端适配 */
 @media (max-width: 768px) {
-    .search.paste-mode .search-input {
-        min-height: 50px;
-    }
-
     .paste-result {
         padding: 14px 16px;
         margin-top: 10px;
@@ -2669,12 +2692,10 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search-engine:hover,.search-btn:hover { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.73),0 4px 9px rgba(67,51,39,.15); }
 .search-btn { width: auto; min-width: 47px; border-radius: 9px; color: var(--accent); }
 .search-mode:active,.search-engine:active,.search-btn:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); }
-.search-input { position: relative; z-index: 1; height: 36px; padding: 0 10px; font-size: 15px; }
+.search-input { position: relative; z-index: 1; min-height: 36px; padding: 8px 10px; font-size: 15px; font-family: inherit; line-height: 20px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }
 .search-input:focus-visible { outline: none; }
 .search.fav-search-mode { border-color: var(--focus); }
 .search.fav-search-mode .search-btn { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--accent); }
-.search.paste-mode { border-radius: 13px; padding: 5px; }
-.search.paste-mode .search-input { min-height: 36px; padding: 0 10px; }
 .engine-dropdown,.fav-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 11px; box-shadow: var(--shadow-lg); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .engine-option { font-size: 12px; }
 .engine-option { width: 100%; border: 0; background: transparent; text-align: left; font-family: inherit; }
@@ -2728,7 +2749,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 @media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark:hover,.btn:hover,.search-engine:hover,.search-btn:hover { transform: none; } }
 @media (hover: none) { .search:hover::after,.bookmark:hover::before,.search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: 0; } .bookmark:hover,.bookmark-text-only:hover,.btn:hover:not(:disabled),.search-engine:hover,.search-btn:hover { transform: none; } }
-@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .site-identity { margin-bottom: 22px; } .header { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: 12px; } }
+@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .site-identity { margin-bottom: 22px; } .header { margin-bottom: 30px; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: 12px; } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
 @media (max-width: 480px) { .modal-header { flex-wrap: wrap; gap: 8px; } .modal-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; } .config-save-status { margin-right: auto; } }
 @media (max-width: 480px) { .bookmarks { max-width: 304px; grid-template-columns: repeat(3,minmax(0,1fr)); } }
 @media (max-width: 370px) { .search { gap: 2px; } .search-mode { min-width: 43px; padding: 0 6px; } .search-engine { min-width: 55px; padding: 0 5px; } .search-input { padding: 0 5px; } .search-btn { min-width: 43px; padding: 0 6px; } }

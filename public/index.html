@@ -35,11 +35,14 @@
         <header class="header">
             <div class="search-wrapper">
                 <form class="search" id="searchForm">
-                    <button type="button" class="search-mode" id="modeBtn" aria-label="切换搜索模式，当前为网页" aria-pressed="false">网页</button>
+                    <button type="button" class="search-mode" id="modeBtn" aria-label="切换搜索模式，当前为网页" aria-pressed="false">
+                        <span class="mode-label" data-label="web">网页</span>
+                        <span class="mode-label" data-label="exit" hidden>退出</span>
+                    </button>
                     <button type="button" class="search-engine" id="engineBtn" title="切换搜索引擎" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineDropdown">
                         <span class="engine-name" id="engineName">Google</span>
                     </button>
-                    <input type="text" class="search-input" id="searchInput" placeholder="搜索网页或收藏" aria-label="搜索网页或收藏" autocomplete="off">
+                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页或收藏" aria-label="搜索网页或收藏" autocomplete="off" spellcheck="false"></textarea>
                     <button type="submit" class="search-btn" title="搜索">搜索</button>
                 </form>
                 <div class="engine-dropdown" id="engineDropdown" role="listbox" aria-label="搜索引擎" hidden></div>
