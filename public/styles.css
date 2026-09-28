@@ -1626,17 +1626,19 @@ body {
         padding: 10px 16px;
     }
 
-    /* 对话框优化 */
+    /* 对话框优化。弹窗保持居中：贴底的底部抽屉会被手机浏览器的地址栏与
+       Home 指示条盖住，与 .ui-dialog 是同一类缺陷。内边距改为四边吃安全区。 */
     .fav-dialog-overlay {
-        padding: 0;
-        align-items: flex-end;
+        padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+        align-items: center;
     }
 
     .fav-dialog {
         max-width: 100%;
-        border-radius: 16px 16px 0 0;
-        padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
-        animation: slideUpMobile 0.25s ease;
+        border-radius: 14px;
+        padding: 16px 14px;
+        max-height: 88dvh;
+        overflow-y: auto;
     }
 
     .fav-form input,

@@ -390,9 +390,10 @@
     .modal-body { padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); }
     .modal .fav-manager-item { gap: 8px; }
     .modal .category-tree-item { min-height: 40px; }
-    .fav-dialog { border-radius: 16px 16px 0 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); }
     /* 弹窗在窄屏同样居中：改成底部抽屉会被移动端浏览器的地址栏与 Home 指示条盖住。
-       四边内边距吃安全区，max-height 改用 dvh 以便地址栏展开/收起时自适应。 */
+       四边内边距吃安全区，max-height 改用 dvh 以便地址栏展开/收起时自适应。
+       .fav-dialog 的同款处理在 styles.css 的 ≤768px 块（那里是它的唯一定义处），
+       窄屏不再改回顶部圆角的底部抽屉。 */
     .ui-dialog-overlay { padding: calc(12px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left)); }
     .ui-dialog { width: 100%; max-height: 88dvh; border-radius: 14px; padding: 16px 14px; }
     :is(.modal, .fav-dialog, .ui-dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea) { min-height: 44px; font-size: 16px; }

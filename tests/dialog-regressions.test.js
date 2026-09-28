@@ -10,20 +10,35 @@ const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'
 const exportPoint = '    let app;\n';
 assert.equal(source.split(exportPoint).length, 2);
 
-// 取出某个 @media 块的正文，用于在正确的断点范围内做源码形状断言
-function mediaBlock(css, query) {
-    const start = css.indexOf(query);
-    assert.ok(start > -1, `样式表里存在 ${query}`);
-    const open = css.indexOf('{', start);
-    let depth = 0;
-    for (let i = open; i < css.length; i++) {
-        if (css[i] === '{') depth++;
-        else if (css[i] === '}') {
-            depth--;
-            if (depth === 0) return css.slice(open + 1, i);
+// 取出某个 @media 块的正文。一个查询在文件里可能出现多次（如 ≤768px），
+// requiredIn 用来指定目标块必须包含的标记，否则返回第一个同查询的块——
+// 那可能根本不是要断言的那个。
+function mediaBlocks(css, query) {
+    const blocks = [];
+    let searchFrom = 0;
+    for (;;) {
+        const start = css.indexOf(query, searchFrom);
+        if (start === -1) break;
+        const open = css.indexOf('{', start);
+        let depth = 0;
+        for (let i = open; i < css.length; i++) {
+            if (css[i] === '{') depth++;
+            else if (css[i] === '}') {
+                depth--;
+                if (depth === 0) { blocks.push(css.slice(open + 1, i)); searchFrom = i; break; }
+            }
         }
     }
-    assert.fail(`${query} 块未闭合`);
+    assert.ok(blocks.length > 0, `样式表里存在 ${query}`);
+    return blocks;
+}
+
+function mediaBlock(css, query, requiredIn) {
+    const blocks = mediaBlocks(css, query);
+    if (!requiredIn) return blocks[0];
+    const match = blocks.find(body => body.includes(requiredIn));
+    assert.ok(match, `${query} 中存在包含 ${requiredIn} 的块（共 ${blocks.length} 个同查询块）`);
+    return match;
 }
 
 function loadApp(document) {
@@ -316,14 +331,29 @@ test('expiry radios share one name so the browser enforces mutual exclusion', as
     assert.equal(shares[0][2].ttlMinutes, 30);
 });
 
-test('the dialog stays vertically centred on narrow screens', () => {
-    // 曾经这里写的是 align-items: end，把居中弹窗变成了底部抽屉，
-    // 结果在移动端被浏览器地址栏与 Home 指示条盖住。
-    const narrow = mediaBlock(adminCss, '@media (max-width: 480px)');
-    const overlayRule = /\.ui-dialog-overlay\s*\{([^}]*)\}/.exec(narrow);
-    assert.ok(overlayRule, '窄屏仍有 .ui-dialog-overlay 规则');
-    assert.equal(/align-items:\s*end/.test(overlayRule[1]), false, '窄屏不得把弹窗改成底部抽屉');
-    assert.equal(/place-items:\s*[^;]*end/.test(overlayRule[1]), false, 'place-items 也不得指定 end');
+test('every overlay dialog stays vertically centred on narrow screens', () => {
+    // 曾经 .ui-dialog-overlay（≤480px）与 .fav-dialog-overlay（≤768px）都被写成
+    // 贴底的底部抽屉，结果在移动端被地址栏与 Home 指示条盖住。两处都要守住。
+    const narrow480 = mediaBlock(adminCss, '@media (max-width: 480px)');
+    const uiOverlay = /\.ui-dialog-overlay\s*\{([^}]*)\}/.exec(narrow480);
+    assert.ok(uiOverlay, '窄屏仍有 .ui-dialog-overlay 规则');
+    assert.equal(/align-items:\s*end/.test(uiOverlay[1]), false, '窄屏不得把弹窗改成底部抽屉');
+    assert.equal(/place-items:\s*[^;]*end/.test(uiOverlay[1]), false, 'place-items 也不得指定 end');
+    // ≤480px 块里不得再出现 fav-dialog 的底部抽屉声明
+    assert.equal(/\.fav-dialog\s*\{/.test(narrow480), false, '≤480px 不应重定义 .fav-dialog');
+
+    // .fav-dialog 的唯一定义处是 styles.css 的 ≤768px 块（该查询有多个块，
+    // 必须按内容定位，不能取第一个）
+    const narrow768 = mediaBlock(stylesCss, '@media (max-width: 768px)', '.fav-dialog-overlay');
+    const favOverlay = /\.fav-dialog-overlay\s*\{([^}]*)\}/.exec(narrow768);
+    assert.ok(favOverlay, '≤768px 仍有 .fav-dialog-overlay 规则');
+    assert.equal(/align-items:\s*flex-end/.test(favOverlay[1]), false, '收藏弹窗不得贴底');
+    assert.match(favOverlay[1], /align-items:\s*center/, '收藏弹窗居中');
+    assert.match(favOverlay[1], /env\(safe-area-inset-bottom\)/, '收藏弹窗避让 Home 指示条');
+
+    const favDialog = /\.fav-dialog\s*\{([^}]*)\}/.exec(narrow768);
+    assert.ok(favDialog, '≤768px 仍有 .fav-dialog 规则');
+    assert.equal(/border-radius:\s*16px 16px 0 0/.test(favDialog[1]), false, '收藏弹窗不得是顶部圆角的抽屉');
 
     // 基础规则负责居中，窄屏只调内边距与尺寸
     // 注意：基础规则出现在文件中第一个 @media 之后，不能用 indexOf 判定它在前
