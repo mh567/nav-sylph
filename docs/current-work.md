@@ -6,21 +6,80 @@
 
 修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `9ecc720`；`package.json` 版本 `1.5.6`。
 
-分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`。本次发布 **v1.5.9**。
+分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`。
 
-## 本次完成的内容
+## 本次完成的内容（分享弹窗紧凑化 + 移动端适配审计）
 
-三项分享相关需求。
+已提交为 `a5a2e00`（含双轴审查修复），本次发布 **v1.5.10**。
 
-**1. 分享保护面板。** 原来是「是否设置 PIN？」的确认框加二次 PIN 输入。现在 `showPasteOptions` 打开单个弹窗，直接展示两项设置：PIN 码保护复选框（默认不设，勾选后在同弹窗内联展开 4 位数字输入框），有效期单选组 5 分钟 / 30 分钟 / 1 天 / 7 天（默认 5 分钟）。服务端新增 `PASTE_TTL_OPTIONS` 白名单，`POST /api/p` 接受 `ttl`，缺失或非法值回落到 5 分钟，保持对旧客户端的兼容。
+### 一、分享弹窗
 
-**2. 分享二维码。** 分享结果面板新增二维码，手机可直接扫码打开。生成在浏览器端用本地 `qrcode.js`（MIT，55KB，gzip 后约 11.8KB）输出 data URL 塞进 `<img>`，不用站外资源也不用 npm 依赖。生成失败时静默移除，不影响复制链接。过期文案不再写死「5分钟后过期」，改为按服务端返回的 `expiresAt` 计算。
+**PIN 输入框原本掉到弹窗最下面**，根因是 DOM 顺序：`app.js` 旧版把 `.ui-dialog-reveal` 渲染在**所有 option 之后**，与 CSS 无关。已改为紧随触发它的复选框渲染（`showUiDialog` 新增 `reveal` 就地插入）。实测勾选后：复选框底边 337.3 → PIN 框顶 345.3 → 有效期组顶 424.3，PIN 确实位于两者之间。
 
-**3. 分享接收页代码渲染。** `/p/:code` 接收页在解密后自动识别编程语言并高亮渲染。新增 `public/lib/highlight.min.js`（highlight.js v11.11.2，BSD-3-Clause，common 构建，125KB，gzip 后约 43KB）。
+**有效期改为 2×2 两横两竖**。`showUiDialog` 新增可选 `groups` 参数承载分组选项，四档有效期装进 `.ui-dialog-options` 网格容器并加「有效期」分组标题。实测网格 `grid-template-columns: 164.5px 164.5px`，两行两列，每格 46px 高（≥44px 触摸标准），「30 分钟」单行不折行。
 
-需要特别说明实现取舍：接收页原先用 hljs 的 `highlightAuto` 直接识别，实测在短片段上不可靠——15 个样本中 Python 片段被判成 scss / cpp / ini / ruby，JS 片段被判成 css，且 relevance 无法区分对错（判对与判错的 rel 值重叠）。分享内容天然是短片段，因此改为先用高精度正则签名层判定明确语言，hljs 只做高亮和兜底，自测 15 个样本命中 14 个。含中文的内容直接按纯文本处理，不做高亮。
+**弹窗在窄屏被浏览器遮挡**，根因不是缺少 `position: fixed`（`.ui-dialog-overlay` 一直在 `admin.css:290` 有 `position: fixed; place-items: center`），而是 `admin.css:395` 的 ≤480px 规则写了 `align-items: end`，**把居中弹窗改成了底部抽屉**。已删除该规则，窄屏恢复居中，改为四边 `env(safe-area-inset-*)` 内边距。5 档视口实测上下留白完全相等（见下表）。
 
-`showUiDialog` 增加了可选的 `options` 参数以支持复选框与单选组，返回值从数组变为 `{ values, choices }`，因此 `promptValue` 和 `changePassword` 两处调用方同步调整。既有对话框调用方（`confirmAction`、`notice`）不受影响。
+**收紧弹窗布局**：`admin.css:301` 的 `.ui-dialog-hint` 负边距 `-4px` 改为 `-2px`（原值让提示文字贴住复选框）；`.ui-dialog-choice` 补 `min-height: 40px`（窄屏 44px）。
+
+### 二、移动端适配审计（4 项确认破损 + 6 项体验缺陷）
+
+审计覆盖 `index.html`、`styles.css`、`admin.css`、`sw.js`、`server.js` 分享页。**共 42 个 `@media` 块**（`styles.css` 31、`admin.css` 5、`index.html` 2、`server.js` 4；`sw.js` 无），宽度断点为 768 / 600 / 480 / 370 / 1024，另有横屏 `max-height:500px` 与 `hover/pointer` 能力查询。管理界面**不是独立页面**，而是 `#modal` 弹窗，由后加载的 `admin.css` 接管（`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出）。
+
+**P0（会造成破损，本次已修）**
+
+| # | 位置 | 缺陷 |
+| --- | --- | --- |
+| 1 | `styles.css:2702` | `.search-input` 在文件**末尾**声明 `font-size: 15px`，覆盖了 583/603 行的移动端 `16px`。15px 低于 iOS Safari 自动缩放阈值 → 点击输入框整页被放大。改为 16px。 |
+| 2 | `admin.css:395` | ≤480px 的 `align-items: end` 把弹窗变底部抽屉，被地址栏与 Home 指示条遮挡。 |
+| 3 | `styles.css:2759` | `.utility-dock` 与 `.toast` 均无 `env(safe-area-inset-bottom)`。页面已声明 `viewport-fit=cover`，底部固定元素会压住 iOS Home 指示条。 |
+| 4 | `server.js:1114` | 分享接收页 viewport meta **缺 `viewport-fit=cover`**，刘海屏直接留白。补上后 `body` 的 `padding` 也改为 `max(20px, env(safe-area-inset-*))`，否则该 meta 无实际作用。 |
+
+**P1（明确体验缺陷，本次已修）**
+
+| # | 位置 | 缺陷 |
+| --- | --- | --- |
+| 5 | `styles.css:2685/2736` | 搜索栏三按钮 36px（≤480px 降到 32px）、dock 内按钮仅 31px，均低于 44px 触摸标准。统一提到 44px。 |
+| 6 | `styles.css:2763`（新增横屏块） | `.help-content` 与 `.paste-result` 没有高度上限，横屏矮视口下内容溢出、关闭按钮随内容滚走。补 `max-height: 88dvh; overflow-y: auto`，同时横屏把搜索栏收窄到 48px。 |
+| 7 | `index.html:22`、`styles.css:56/66` | `100vh` 在 iOS Safari 中是地址栏收起时的高度，展开时底部出现空白带。改为 `100vh` + `100dvh` 双声明（不支持 dvh 的浏览器沿用前者）。`admin.css` 早已全面改用 dvh，首页是漏网的。 |
+| 8 | `styles.css:2700` | placeholder 偏上：`line-height: 20px` + `padding: 8px 10px` 在 36px 容器内基线偏离中心。改为 `min-height: 44px; line-height: 44px; padding: 0 10px`，文字精确垂直居中。 |
+| 9 | `styles.css:2763` | ≤480px 的 `max-width: 304px` 硬上限在 390px 机型上造成右侧大片空白，且使 2759 行的 `auto-fill 96px` 成为死代码（同断点同特异性、后者在后）。改为 `max-width: 100%` + 三列等分。 |
+
+### 三、代码审计（基线 `382c89e`...工作区）
+
+**已修 1：`showUiDialog` 新增 `groups` 后三处取值仍读旧的 `options`。** 新参数若不同步，`choices.ttl` 会永远读不到、返回值也会错误地退化成 `true`。已引入 `allOptions` 统一承载 `options` 与 `groups.flatMap(...)`，改动 3 处：reveal 的 owner 索引、提交时的 `close(...)` 判定。
+
+**已修 2：测试桩把分组内的选项判给了错误的父节点。** `parseInputs` 只取 `<div>` 栈的最内层，新增 `.ui-dialog-group` 包装后 `stack.at(-1)` 变成 group 容器，`closest('.ui-dialog-option')` 会返回 `null`（生产代码读 `input.closest(...).dataset.name` 抛 TypeError）。已改为记录完整祖先链并取**最近的** `.ui-dialog-option`，与浏览器语义一致。
+
+**已修 3：一条测试固化了即将改掉的旧值。** `paste-composer.test.js` 断言 `min-height: 36px`，而本次要把该值提到 44px。测试本身没有错（它守的是"不得被固定 height 钉死"这个真实意图），已更新为 44px 并**补上 `font-size: 16px` 断言**，守住同一个意图的另一半。
+
+**新增测试桩的收尾修正**：新加的两条 DOM 顺序用例最初只 `await` 了永不 resolve 的弹窗 Promise（弹窗只在提交或取消时 resolve），导致连续 5 项 `cancelledByParent`。已改为点击取消按钮收尾。**这是测试自身的缺陷，不是生产代码的问题。**
+
+### 四、发布前双轴代码审查（基线 `382c89e`）
+
+Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），报告分列不合并、不重排。**发现 7 条属实、已修；2 条经复核推翻；1 条不采纳。**
+
+**已修 1（Standards，硬违规）：交接文档与仓库状态不符。** 本节当时写「尚未提交」，但改动已落为 `a5a2e00`。已按实际更新，并补上 `v1.5.10` 的版本记账。
+
+**已修 2（Standards，硬违规）：`docs/architecture.md` 未同步。** 两处：原写「搜索态保持单行（`min-height: 36px`）」，已随本次改动失效；`showUiDialog` 新增 `groups` 属稳定接口扩展，原文未记载。已补写，并新增一段说明三条并行选项入口必须同步维护 `allOptions` 的三处取值——这正是本次踩到的坑。同时记录了软键盘不受 `dvh` 约束这一未处理项。
+
+**已修 3（Standards，Duplicated Code）：选项模板被复制成两份。** `app.js` 的 `options.map` 与 `groups.map` 各写了一份逐字节相同的 `.ui-dialog-option` 标记（仅缩进不同），日后改一处忘另一处即漂移。已抽成 `renderOption()`，两处共用。
+
+**已修 4（Standards，Feature Envy）：`revealOption` 仍只扫平铺数组。** `allOptions` 已经合并了两个来源，但上一行的 `revealOption` 判定仍只查 `options`。当前唯一调用方把 `reveal: true` 放在平铺选项上，因此**尚未暴露**；一旦把带 `reveal` 的选项挪进 `groups`，展开区会静默不渲染。已改为查 `allOptions`。
+
+**已修 5（Standards + Spec，Duplicated Code）：同一个横屏 `@media` 出现两次。** 原先 `styles.css` 已有 `(max-height: 500px) and (orientation: landscape)`（1728 行），本次又在文件末尾追加了一个。**这正是本仓库发生过两次事故的那类问题**（尾段覆盖前段），也已作为 P2 记在后续项第 20 条里。已把帮助面板、分享结果面板与搜索栏三组规则合并进既有的那个块，末尾不再有第二个。
+
+**已修 6（Spec）：2×2 网格每格只有 42px，低于选项卡承诺的 44px。** 我在澄清轮给出的选项卡写明「每格约 180×44px」，实现时把 `min-height` 设成 40px、窄屏再抬到 44px，结果平板/横屏/PC 实测全是 42px。已把基础规则直接设为 44px 并删掉窄屏那条重复声明。
+
+**已修 7（Spec）：`server.js` 容器内边距漏改。** 计划里写了「容器 `padding: 24px` 改用 `max(24px, env(...))`」，实际只改了 `body`。已补。
+
+**已推翻 1：「≤480px 的 `height: 32px` 覆盖了 44px 触摸目标」。** 审查认为 ≤480px 块的 `height: 32px`（`styles.css:581/604/607`）会压过末尾的 `min-height: 44px`，理由是"更specific/更早"。**不成立**：`min-height` 与 `height` 不是同一属性，永远同时生效，**与源码顺序无关**，且 `min-height` 优先。真实 Chrome 在 390×844 实测四个控件全为 **44px**（`modeBtn` / `engineBtn` / `searchBtn` / `searchInput`），并非 32px。
+
+**已推翻 2：「PIN 输入框在 PIN 提示文字上方」。** 审查只做了模板字符串的 `indexOf` 比较，断言 reveal 区块排在 `opt_pin` 之后就算通过，因而误判视觉顺序。真实浏览器实测 y 坐标：复选框文案 280 → 提示文字 309.8~326.3 → **PIN 输入框 345.3** → 「有效期」标题 424.3，完全符合「紧跟在 PIN 码提示下面」。
+
+**未采纳：`groups` 是 Speculative Generality。** 审查提出 `.ui-dialog-options` 只有一个调用方、且只有一个分组，怀疑过度设计。**不采纳**：2×2 网格正是用户明确选定的排布（而非四档横排一行），`groups` 承载的正是这个需求；`confirmAction` / `notice` / `promptValue` / `changePassword` 传空数组时行为与改动前逐字节一致，不构成为想象中的需求预留钩子。
+
+**仍未处理（Spec 指出，本轮不扩大范围）**：`.fav-dialog` 在 ≤480px 仍是底部抽屉（`admin.css:392`），与本次修掉的 `.ui-dialog` 属同一类缺陷，但收藏面板不在本次范围内；原需求点名的「大折叠」机型未纳入实测视口。两者均记入后续项。
 
 ## 发布前代码审查发现并修复的缺陷
 
@@ -167,6 +226,55 @@ console 全程零消息。
 
 ## 实际验证
 
+### 本次（分享弹窗 + 移动端）
+
+- `node --check`：`server.js`、`public/app.js`、`public/sw.js`、`public/lib/qrcode.js`、`public/lib/highlight.min.js`、`tests/dialog-regressions.test.js`、`tests/paste-ttl.test.js`、`tests/share-guards.test.js`、`tests/paste-composer.test.js` 全部通过。
+- CSS 花括号配平：`styles.css` 587 对、`admin.css` 179 对，均平衡。
+- `node --test tests/*.test.js`：**75 项全部通过**（原 68 项 + 新增 7 项）。
+- `git diff --check`：无空白或冲突标记问题。
+- 首页首屏回归：`index.html` 的 `src` 仍为 `lib/uFuzzy.iife.min.js`、`lib/pinyin.js`、`lib/qrcode.js`、`app.js` 四项，`grep -c highlight public/index.html` 为 **0**，未引入新脚本。
+
+**红绿验证**（逐项改坏后确认对应测试变红，再恢复）：
+
+| 改坏方式 | 变红的测试 |
+| --- | --- |
+| `admin.css` 恢复 `align-items: end` | `the dialog stays vertically centred on narrow screens` |
+| `.search-input` 恢复 `font-size: 15px` | `the search input font size never drops below the iOS zoom threshold` + `the search row itself stays single-height and not draggable` |
+| `.utility-dock` / `.toast` 去掉 `env(safe-area-inset-bottom)` | `the utility dock and toast clear the home indicator` |
+| `reveal` 移回 options 之后 | `the PIN field sits directly under its checkbox, not below the expiry options` |
+
+共 5 项变红（含 1 项既有测试）。恢复后 75 项全绿。
+
+**真实浏览器验证**（agent-browser + Chrome，临时副本 + fixture 数据，端口 4123）：
+
+弹窗居中（5 档视口，`gapTop` 与 `gapBottom` 完全相等即居中）：
+
+| 视口 | 弹窗高 | 上留白 | 下留白 | 居中 | 完整在视口内 | 网格列宽 | 每格高 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 390×844 | 331.5 | 256.3 | 256.3 | ✅ | ✅ | 164.5px ×2 | 46 |
+| 360×640 | 331.5 | 154.3 | 154.3 | ✅ | ✅ | 149.5px ×2 | 46 |
+| 834×1112 | 322.5 | 394.8 | 394.8 | ✅ | ✅ | 173.5px ×2 | 42 |
+| 844×390（横屏） | 322.5 | 33.8 | 33.8 | ✅ | ✅ | 173.5px ×2 | 42 |
+| 1280×800 | 322.5 | 238.8 | 238.8 | ✅ | ✅ | 173.5px ×2 | 42 |
+
+网格行数实测 `rowCount: 2`，四档依次为 5 分钟 / 30 分钟 / 1 天 / 7 天。
+
+PIN 输入框位置（390×844，勾选后）：复选框底边 **337.3** → PIN 框顶 **345.3** → PIN 框底 412.3 → 有效期组顶 **424.3**。`pinAboveGroup: true`。横屏 844×390 同样成立（142 → 150 → 224.5），且弹窗转为内部滚动（`scrolls: true`）而非溢出视口。取消勾选后 `revealHidden: true`、高度 0、`offsetParent === null`，开合对称。
+
+搜索框（390×844，退出分享态后）：`font-size: 16px`、`line-height: 44px`、容器 56px、输入框 44px、模式/搜索按钮均 44px。
+
+底部固定元素与书签网格（390×844）：dock 底边 832（`bottom: calc(12px + env(...))`）、按钮 44px；toast 宽 195、`max-width: calc(100% - 24px)`、底边 816，均在视口内；书签三列各 116.66px、总宽 366、左右留白各 12px（原先 `max-width: 304px` 造成右侧空白）；`scrollWidth 390 <= 390`，无横向滚动。
+
+管理面板（390×844，用默认密码 `admin123` 进入）：`.modal-content` 全屏 390×844，`.modal-body` 707.3px 且可滚动，操作按钮 44px，`scrollWidth` 未超视口。行宽 345px 全部在视口内。
+
+暗色主题：弹窗背景 `rgba(57, 51, 46, 0.93)`，选项与选中态配色正常，布局与亮色一致。
+
+分享接收页：`GET /p/lucky-805` 返回的 HTML 含 `viewport-fit=cover`；390×844 下 `body` 内边距 14px、容器宽 362px、无横向滚动。（页面显示「解密失败」属预期——验收用的 content 不是真实密文。）
+
+console 全程零消息。未点击「分享」按钮，创建接口限流额度未消耗。
+
+### 历次发布
+
 - `node --check`：`server.js`、`public/app.js`、`public/sw.js`、`public/lib/qrcode.js`、`public/lib/highlight.min.js`、`tests/dialog-regressions.test.js`、`tests/paste-ttl.test.js`、`tests/share-guards.test.js`、`tests/paste-composer.test.js` 全部通过。
 - `node --test tests/*.test.js`：68 项全部通过（原 46 项 + 新增 22 项）。
 
@@ -258,6 +366,22 @@ console 全程零消息。
 16. 分享码用 `Math.random()` 非加密安全；`isPasteCodeFormat` 正则 `/^[a-z]{2,6}-\d{3}$/` 与生成器词表不一致（`noodle`、`coffee` 等超过 6 个字母的词无法通过校验，生成的分享码可能取不回来）。命名空间仅约 18 万。属分享码设计问题，需换生成策略。
 17. 分享保护面板的键盘操作（Tab 焦点流转、Esc、遮罩点击）已在 DOM 桩测试与真实浏览器点击中验证，未做完整的键盘可达性走查。
 18. 其余已知问题均未改动：CORS 硬编码 `http://` 导致反代部署下跨域被拒（是误伤不是漏洞）；缺 HSTS / `Permissions-Policy`；写操作无 CSRF 校验；管理密码明文经 `X-Admin-Password` 逐请求校验，无会话、令牌或过期。
+
+### 本次明确不在范围内（移动端）
+
+19. **软键盘弹出时弹窗与编辑框会被顶飞**。`vh` 与 `dvh` **都不跟随软键盘收缩**，只有 `visualViewport` 能反映可视区域。`styles.css:637` 的 `max-height: 60vh`（分享编辑器）与 `.ui-dialog` 的 `max-height: 88dvh` 在键盘弹出时都可能超出可视区。彻底解决需监听 `visualViewport` 的 `resize`/`scroll` 并据此改高度，属架构级改动。**真机键盘未验证。**
+20. **`styles.css` 与 `admin.css` 对同一批选择器重复声明且结论冲突**。`admin.css` 加载在 `styles.css` 之后，同特异性时它胜出：`.modal-content` 的宽度/圆角/最大高度在两个文件里各写一遍（`styles.css:563/598` vs `admin.css:371/384`）；`.category-tree-children` 在 `styles.css:2465` 是 `display: none`，`admin.css:378` 是 `display: contents`，实际生效的是后者（树在移动端并未被压平，与 styles.css 的意图相反）。本次未收敛，改任一处都可能失效。
+21. **管理面板的拖拽排序在移动端被禁用**（`styles.css` ≤768px 的 `.fav-drag-handle { display: none }`），现状保留；平板竖屏下也没有替代的排序方式。
+22. **`.fav-dialog` 在窄屏仍是底部抽屉**。`admin.css:392` 的 `.fav-dialog { border-radius: 16px 16px 0 0 }` 与本次修掉的 `.ui-dialog` 属**完全相同的一类缺陷**（居中弹窗被改成贴底），只是收藏面板不在本次范围内。收藏管理的新增/编辑弹窗在手机上仍会被地址栏与 Home 指示条遮挡，改法与 `.ui-dialog` 相同（去掉 `align-items: end`、恢复居中圆角）。
+23. **`.engine-dropdown` 没有横屏兜底**，引擎较多时横屏可能超出视口。`styles.css` 现有的横屏块（`max-height: 500px`）只覆盖 `.help-content`、`.paste-result` 与搜索栏。
+24. **`/p/:code` 分享页只有一个 `max-width: 480px` 断点**，横屏、平板与折叠屏展开态未逐一验证；本次只补了 `viewport-fit=cover` 与安全区内边距。
+25. **首屏体积未重新测量**。本次未增删任何脚本，但 `100dvh` 与触摸目标调整会影响移动端重排成本；国内网络下的首屏耗时仍需真机复测。
+
+## 已排除的误判（本次移动端审计）
+
+- **「分享弹窗没有 CSS 定位，所以掉到页面最底部」** —— 不成立。`.ui-dialog-overlay` 在 `admin.css:290` 一直有 `position: fixed; inset: 0; display: grid; place-items: center`，桌面端表现正常。真因是 `admin.css:395` 的 ≤480px 规则写了 `align-items: end` 覆盖成底部抽屉。**不要**去 `styles.css` 里补一份 `.ui-dialog` 定位，那会变成第三处声明。
+- **「`styles.css:2759` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2763 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2763 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
+- **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2702` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
 
 ## 下一位 Agent 的启动步骤
 
