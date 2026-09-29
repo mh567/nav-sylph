@@ -1,5 +1,5 @@
-// app.js 换成会话 Cookie 登录后必须升缓存名，否则老用户拿到的仍是旧的明文密码版本
-const CACHE = 'nav-v27';
+// app.js 新增管理面板的「信任此设备」开关，必须升缓存名，否则老用户拿到的仍是旧面板
+const CACHE = 'nav-v28';
 const ASSETS = [
     '/',
     '/index.html',
