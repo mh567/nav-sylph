@@ -6,6 +6,8 @@ const test = require('node:test');
 const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public/index.html'), 'utf8');
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'public/app.js'), 'utf8');
+const adminCss = fs.readFileSync(path.join(__dirname, '..', 'public/admin.css'), 'utf8');
+const adminCode = stripComments(adminCss);
 
 // 剥掉整行注释与块注释。源码形状断言曾因 `/* (reverted) .app.set(...) */`
 // 这类「注释里提到了标识符」的写法而假绿。
@@ -460,4 +462,87 @@ test('浅色与深色共用同一套浮起机制', () => {
     assert.equal(lifts.length, 3, `--bookmark-lift 应定义三处，实际 ${lifts.length}`);
     assert.equal(new Set(lifts).size, 1,
         `三处 --bookmark-lift 应一致（同一套机制），实际 ${lifts.join(' / ')}`);
+});
+
+test('管理页下拉框的展开列表自带不透明底色，深色下不会退回白底', () => {
+    // 收起的下拉框靠 select 自己的渐变上色，看起来正常；展开后的列表由 UA
+    // 绘制，只认 option 的 background-color。此前 option 完全透明
+    // （rgba(0,0,0,0)），深色下就由 UA 默认的白画布铺底，文字看不清。
+    const option = /select option\s*\{([\s\S]*?)\n\}/.exec(adminCode);
+    assert.ok(option, '存在 select option 规则');
+    assert.match(option[1], /background-color:\s*var\(--admin-field-canvas\)/,
+        'option 必须自带不透明底色');
+    assert.match(option[1], /color:\s*var\(--text\)/, 'option 必须自带文字色');
+
+    // 变量要在三处主题里都定义，否则自动深色（无 data-theme）会取不到值
+    const defs = adminCode.match(/--admin-field-canvas\s*:/g) || [];
+    assert.equal(defs.length, 3, `--admin-field-canvas 应定义三处，实际 ${defs.length}`);
+
+    // 深色取值必须真的是深色：写成浅色等于把白底问题换个地方复现。
+    // 浅色侧引用 --control-top，这里按浅色块来处理，不参与逐字比对。
+    const values = [...adminCode.matchAll(/--admin-field-canvas:\s*([^;]+);/g)].map(m => m[1].trim());
+    const light = values[0];
+    const dark = values.slice(1);
+    assert.match(light, /^var\(--/, '浅色底色应引用既有 token，不另存一份色值');
+    for (const d of dark) {
+        assert.equal(d, dark[0], '两个深色块的下拉底色必须逐字一致，避免手动深色与系统深色分叉');
+    }
+    // 数值断言：深色底必须真的是深色。仅比较两处深色彼此相同不够——
+    // 两处同时写成同一个浅色也会「逐字一致」而假绿。
+    const lum = hex => {
+        const n = parseInt(hex.replace('#', ''), 16);
+        return (n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114;
+    };
+    const controlTop = /--control-top:\s*(#[0-9a-fA-F]{6})/.exec(stylesCss);
+    assert.ok(controlTop, 'styles.css 定义了 --control-top');
+    assert.ok(lum(dark[0]) < lum(controlTop[1]),
+        `深色下拉底亮度 ${lum(dark[0]).toFixed(1)} 应低于浅色 ${lum(controlTop[1]).toFixed(1)}`);
+});
+
+test('background 简写不会把下拉底色抹掉', () => {
+    // `background` 简写会把 background-color 重置为 transparent。
+    // 把它写在不透明底色之前，底色当场失效且不报错，深色下又变回白底。
+    // 浏览器实测确认过：简写在后时 background-color 读回 rgba(0,0,0,0)。
+    const field = mediaBlocks(adminCode, ':is(input:not([type="checkbox"])')
+        .map(b => b.replace(/^[\s\S]*?\{/, ''))
+        .find(b => b.includes('--admin-field-canvas'));
+    assert.ok(field, '找到给表单控件设置底色的规则');
+
+    const shorthand = field.search(/\bbackground\s*:/);
+    const color = field.search(/background-color\s*:/);
+    assert.ok(shorthand >= 0 && color >= 0, '该规则同时写了 background 与 background-color');
+    assert.ok(shorthand < color,
+        'background 简写必须排在 background-color 之前，否则底色被重置为 transparent');
+});
+
+test('进入管理页的两个请求并发发出，不串行叠加两次密码校验', () => {
+    // 两个请求各自跑一次 bcrypt（实测各约 55ms），串行等待把两次叠加成约 130ms。
+    // 这条断言钉住「并发」这个意图，而不是某个具体毫秒数。
+    // 用花括号配对取正文，源码里的 openAdmin 缩进一变，正则就会误报「找不到」。
+    const start = appSource.indexOf('async openAdmin()');
+    assert.ok(start > -1, '找到 openAdmin');
+    const open = /\{([\s\S]*?)\n {8}\}/.exec(appSource.slice(start));
+    assert.ok(open, '能取到 openAdmin 的函数体');
+    const body = open[1];
+
+    assert.equal(body.search(/await\s+this\.(ensureAdminFavorites|loadPrivacyMode)/), -1,
+        '两个请求不得各自 await（那会把两次 bcrypt 串成约 130ms）');
+    assert.match(body, /await Promise\.all\(\[/,
+        '两个请求必须放进同一个 Promise.all 并发发出');
+    assert.match(body, /this\.ensureAdminFavorites\(\)/, '仍需取回全量收藏，否则保存会丢私密条目');
+    assert.match(body, /this\.loadPrivacyMode\(\)/, '仍需取回 privacyMode 的真实值');
+});
+
+test('三个下拉框都被同一条 option 规则覆盖', () => {
+    // 只修主面板的两个、漏掉收藏弹窗里的那个，等于留一个同样的坑。
+    const selects = [...appSource.matchAll(/<select\b[^>]*id="([^"]+)"/g)].map(m => m[1]);
+    assert.equal(selects.length, 3, `应恰好三个下拉框，实际 ${selects.length}: ${selects.join(', ')}`);
+    // 一条 :is(...) 规则同时挂载三处弹窗，收藏弹窗里的 favCategorySelect
+    // 因此不必单独再写一条。断言的是「三处都被覆盖」这个事实。
+    const optionRule = /:is\(([^)]*)\)\s*select option\s*\{/.exec(adminCode);
+    assert.ok(optionRule, '存在 select option 规则');
+    for (const host of ['.modal', '.fav-dialog', '.ui-dialog']) {
+        assert.ok(optionRule[1].includes(host),
+            `option 规则未覆盖 ${host}，该弹窗里的下拉框会漏`);
+    }
 });

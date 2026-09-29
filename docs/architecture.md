@@ -93,6 +93,12 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 `vh` 与 `dvh` 都不跟随软键盘收缩，只有 `visualViewport` 能反映键盘弹出后的真实可视高度；`.ui-dialog` 与分享编辑器当前仍按 `dvh` 定高，键盘弹出时可能被顶出视口，这一点尚未处理。
 
+**原生 `<select>` 展开后的列表由 UA 绘制，应用层控制不了，只能靠 `option` 的 `background-color` 上色。** 收起的下拉框由 `admin.css` 那条 `background: linear-gradient(...)` 撑着，看起来一直正常；`option` 此前完全透明（`rgba(0,0,0,0)`），于是展开后回落到 UA 默认的白画布，深色下文字看不清。修法是新增 `--admin-field-canvas`（浅色引用既有 `--control-top`，深色 `#2a2521`），**必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次**，与本文件 `:51`、`:78` 记的同类 token 规矩一致。规则写成 `:is(.modal, .fav-dialog, .ui-dialog) select option`，一处覆盖全部三个下拉框（管理面板两个 + 收藏弹窗的 `favCategorySelect`），不必逐个再写。
+
+**`background` 简写会把 `background-color` 重置为 `transparent`，因此不透明底色必须写在 `background:` 之后。** 顺序反了底色当场失效且不报错，深色下又变回白底；浏览器实测两种顺序读回分别是 `rgba(0,0,0,0)` 与 `rgb(42,37,33)`。`tests/homepage-material.test.js` 断言了这个相对顺序——只断言「有这条声明」会被同特异性的另一种写法蒙过去。
+
+进入管理页的 `openAdmin()` 里，全量收藏与 `privacyMode` 两个请求互不依赖，必须放进同一个 `Promise.all` 并发发出：服务端每个带密码的请求都要跑一次 `bcrypt.compare`（实测各约 55ms，不带密码约 1ms），串行等待等于把两次叠加成约 130ms。**`loadPrivacyMode()` 不能删**——`defaultConfig` 里没有 `privacyMode` 键只说明它有默认值（`migrateConfig` 填 `false`），用户在管理面板保存过一次后该键就会写入 `config.json` 并正常往返；删掉请求会让已开启隐私模式的用户丢失该状态。
+
 ## 开发与验收边界
 
 保持现有 Node.js、Express 和原生前端结构，先依据目标服务器及设备的实际数据优化首屏、搜索和管理加载。现有本地文件体积、压缩估算和静态检查不能替代真实网络或移动端性能测量。

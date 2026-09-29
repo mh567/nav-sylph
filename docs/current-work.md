@@ -676,6 +676,93 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 验证脚本与临时服务均为一次性使用，已删除；验证期间未修改任何真实数据文件，仓库工作区无残留进程与临时文件。
 
+## 深色模式管理页下拉框底色 + 进入管理页延迟
+
+核对日期：2026-09-29。已提交；发布状态见下方「发布」一节。
+
+### 问题 1：深色模式下管理页的下拉框看不清文字
+
+用户报「主题模式/管理搜索引擎的下拉选择框背景依然是白色」。
+
+**根因不是收起态的底色，而是展开后的原生列表。** 实测（`--color-scheme dark`）：
+
+| 元素 | 修复前 `background-color` | 修复后 |
+| --- | --- | --- |
+| `select#themeModeSelect` | `rgba(0, 0, 0, 0)`（只有 `background-image` 渐变） | `rgb(42, 37, 33)` |
+| `select option` | `rgba(0, 0, 0, 0)`、`background-image: none` | `rgb(42, 37, 33)` |
+
+收起的下拉框由 `admin.css` 那条 `background: linear-gradient(...)` 撑着，看起来一直是正常的；但**展开后的列表完全由 UA 绘制，只认 `option` 的 `background-color`**，而它此前是全透明，于是回落到 UA 默认的白画布。
+
+**修法**：新增 `--admin-field-canvas`（浅色引用既有 `--control-top`、深色 `#2a2521`，三处主题块各定义一次），给 `select` 补 `background-color`，并新增一条 `:is(.modal, .fav-dialog, .ui-dialog) select option` 同时设定 `background-color` 与 `color`。一处规则覆盖全部三个下拉框（`themeModeSelect` / `defaultEngineSelect` / 收藏弹窗的 `favCategorySelect`）。
+
+**`background` 简写会重置 `background-color`**——这是本次踩到并已用浏览器实测确认的坑：不透明底色必须写在 `background:` **之后**，否则被当场抹成 `transparent` 且不报错。实测两种顺序：简写在后时 `background-color` 读回 `rgba(0, 0, 0, 0)`，简写在前时读回 `rgb(42, 37, 33)`。已加断言钉住这个相对顺序。
+
+**浅色未回归**：实测 `option` 为 `rgb(252, 250, 246)` 配 `rgb(48, 43, 39)` 文字，与修复前一致。
+
+### 问题 2：进入管理页延迟约 130ms
+
+**实测拆解**（临时服务 + 真实 Chrome，1280×577）：
+
+- 修复前 `openAdmin` 5 次：`[123, 131.1, 139.8, 149.6, 120.5]` ms
+- 修复后 5 次：`[66.3, 65.4, 80.2, 75.7, 79.2]` ms
+
+**根因是两次串行的 bcrypt。** `openAdmin` 依次 `await` 了 `ensureAdminFavorites()`（`GET /api/favorites`）与 `loadPrivacyMode()`（`GET /api/config`），两者互不依赖，而服务端每个带密码的请求都要跑一次 `bcrypt.compare`。curl 实测单次约 55ms、不带密码约 1ms——**串行即两次 bcrypt 叠加**。渲染本身只占 0.6ms，不是瓶颈。
+
+**修法**：两个请求放进同一个 `Promise.all` 并发发出（`app.js:1370-1378`）。总耗时降到单次校验的量级。
+
+### 顺带查到、并已复核澄清的一件事（我自己先前的判断是错的）
+
+我一度以为 `loadPrivacyMode()` 恒返回 `null`、白付一次 bcrypt，理由是 `defaultConfig` 里没有 `privacyMode` 键。**代码审查的 Spec 轴也独立得出同样结论，并建议直接删掉这个请求。两条线索指向一起，看起来很可信——但实测推翻了它。**
+
+起真实服务验证（`POST /api/config` 写入 `privacyMode: true`，再带密码 `GET`）：
+
+| 状态 | 落盘 `config.json` | 带密码读回 | `loadPrivacyMode()` |
+| --- | --- | --- | --- |
+| 用户从未动过隐私模式 | 无该键 | `undefined` | `null`（符合预期） |
+| 用户已开启隐私模式 | `true` | `true` | `true` |
+
+即：键**在用户第一次保存设置后就会出现**，之后正常往返。`defaultConfig` 里没有它只说明**默认状态**（`migrateConfig` 把它填成 `false`），不是这条链路取不到值。**删掉这个请求会让已开启隐私模式的用户丢失该状态**——正是「无它」与「慢」必须分开判断的那类改动。
+
+`Promise.all` 因此是这里的正确修法：既降到一次 bcrypt 的量级，又不动行为。
+
+### 验证
+
+- `node --test tests/*.test.js` → **111 全通过**（新增 4 条断言）。
+- **红绿两轮已验证**，不是只看绿灯。每一次破坏都用 `grep`/断言结果复核确实落到文件里，没有出现「破坏是空操作、断言其实没在测」：
+  - 删掉 `select option` 规则与 `background-color` → **2 条失败**（31 pass / 2 fail）。
+  - 把 `Promise.all` 改回串行 → `进入管理页的两个请求并发发出` **失败**（32 pass / 1 fail）。
+  - 把 `background` 简写与 `background-color` 的顺序对调（即我一度写错的版本）→ `background 简写不会把下拉底色抹掉` **失败**。
+  - 从 option 规则里删掉 `.fav-dialog` → `三个下拉框都被同一条 option 规则覆盖` **失败**。
+- 真实浏览器（临时目录启动服务；`--color-scheme dark` 与 `light` 各跑一轮）：审查修正后复测 `clickToVisible` 81ms，深色下两个下拉框的 `option` 底色均为 `rgb(42, 37, 33)`、文字 `rgb(243, 238, 232)`；浅色下为 `rgb(252, 250, 246)` 配 `rgb(48, 43, 39)`，与修复前一致。console 零消息。
+- `node --check` 覆盖 `app.js` / `sw.js`；`git diff --check` 干净。CSS 无法用 `node --check`，改由浏览器读回计算样式验证（深色 `--admin-field-canvas` = `#2a2521`、浅色 = `#fcfaf6`）。
+- `sw.js` 缓存 `nav-v25` → **`nav-v26`**：本次改动的 `admin.css` 与 `app.js` 都在 ASSETS 白名单里，不升老用户继续吃旧资源。
+
+### 代码审查（`git diff v1.5.17`）
+
+两轴各起一个子代理：**Standards**（对照 `AGENTS.md` + `docs/architecture.md` + Fowler 坏味道基线）与 **Spec**（对照用户本轮原话需求）。findings 逐条自行复核后才动手。
+
+**已按 findings 修改**
+
+- **`background` 简写与 `background-color` 的顺序是承重的**（Standards C4 / Spec C4）。`background` 简写会把 `background-color` 重置为 `transparent`。我第一版就写反了（把底色放在简写之前），是 Spec 轴点出来的。**用浏览器实测确认了两种顺序的差别**才改正，并补断言钉住相对位置。
+- **token 命名窄于作用域**（Standards A3/Mysterious Name）。原名 `--admin-select-canvas` 却挂在覆盖 `input`/`select`/`textarea` 的共享规则上。改名 `--admin-field-canvas`。
+- **浅色值是既有 token 的逐字副本**（Standards / Spec C2）。`#fcfaf6` 与 `styles.css` 的 `--control-top` 完全相同，而本文件既有写法一律是引用。改为 `var(--control-top)`，少一份要同步的色值。
+- **两条测试锁死了实现写法**（Spec B2）。`selects.length >= 3` 对源码字符串恒真、且逐字匹配 `:is(...)` 文本，无行为价值。改为断言「恰好三个下拉框」+「规则确实覆盖 `.modal`/`.fav-dialog`/`.ui-dialog` 三处」，并按内容取块而不是硬编码缩进（Standards 指出的脆弱正则）。
+
+**已推翻的 finding（未改代码）**
+
+- **「`loadPrivacyMode()` 恒返回 `null`，是死代码，应直接删掉」**（Spec A1/C1，审查列为最严重，且我的新测试把它固化成契约）—— **不成立，已实测推翻**。`defaultConfig` 没有该键只说明**默认**状态；用户保存设置后键就会写入 `config.json` 并正常往返（见上表）。删掉它会让已开启隐私模式的用户**丢失该状态**。该测试因此保留。
+- **「第三个下拉框 `favCategorySelect` 是 scope creep」**（Spec B1）—— 审查自己改判为「合理的完整性」，我也同意：一条 `:is(...)` 规则覆盖三处弹窗几乎零成本，漏掉等于明知故犯留同一个坑。
+- **`sw.js` 缓存未升**（Standards 关注项）—— 已核对：本次正确升到 `nav-v26`，`admin.css`/`app.js` 均在 `ASSETS` 白名单内。✅
+- **Primitive Obsession 指控 `X-Admin-Password` 逐请求明文校验**（Standards A3）—— 属 `architecture.md` 已文档化的现状，非本次引入，按该轴自己的「仓库文档优先」规则抑制。
+
+**已补 `docs/architecture.md`**：Standards 指出新 token 属于该文件已建档的同类约束（`:51`「三处主题块各定义一次」）。已把三件事写进架构文档：`--admin-field-canvas` 的三处定义规矩、`background` 简写与 `background-color` 的顺序约束、以及 `openAdmin()` 必须并发且 `loadPrivacyMode()` 不可删的理由（附实测依据）。
+
+### 仍未验证 / 待办
+
+1. **展开后的原生下拉列表没有真机截图。** headless Chrome 抓不到 UA 弹层（`el.click()` 后截图只得到背景虚化）。已验证的是应用层能控制的全部：规则解析通过、声明读回为深色、`option` 匹配到真实元素。**请在真机上点开一次下拉框确认。**
+2. 服务端每次带密码请求都跑一次 `bcrypt.compare` 本身没动。本次只做客户端并发；若日后还嫌慢，该做的是服务端缓存密码校验结果，而不是继续在客户端省。
+3. 旧 WebKit 的 `mask-composite: exclude` 细线降级为无边框玻璃面板，功能无影响（旧有结论，未复测）。
+
 ## 已排除的误判
 
 - **「搜索态下 textarea 高度锁死 36px，多行内容进内部滚动条，属功能退化」** —— 审计提出，经核实不成立。`autoGrowPasteInput()` 有 `if (!this.pasteMode || this.pasteUserResized) return;` 守卫，搜索态根本不写 inline height，交给 CSS 的 `min-height: 36px`。这是刻意设计：搜索框本就该单行，`textarea` 只是分享态的载体。审计建议「进入分享态时补一次调用」，照做反而会让搜索框在长文本时突然变高。

@@ -13,6 +13,9 @@
     --admin-primary-text: #fffaf5;
     --admin-inner-light: rgba(255, 255, 255, .69);
     --admin-inner-dark: rgba(105, 81, 63, .10);
+    /* 表单控件的画布底色。option 必须是平色：展开后的原生列表由 UA 绘制，
+       渐变不生效，只认 background-color。浅色沿用 --control-top，不另存一份色值。 */
+    --admin-field-canvas: var(--control-top);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +28,7 @@
         --admin-primary-text: #271e18;
         --admin-inner-light: rgba(255, 255, 255, .09);
         --admin-inner-dark: rgba(0, 0, 0, .24);
+        --admin-field-canvas: #2a2521;
     }
 }
 
@@ -37,6 +41,7 @@
     --admin-primary-text: #271e18;
     --admin-inner-light: rgba(255, 255, 255, .09);
     --admin-inner-dark: rgba(0, 0, 0, .24);
+    --admin-field-canvas: #2a2521;
 }
 
 .modal-content,
@@ -108,12 +113,23 @@
     min-height: 38px;
     border: 1px solid var(--admin-edge);
     border-radius: 8px;
+    /* background 简写会把 background-color 重置为 transparent，因此不透明底色
+       必须写在它之后，否则被抹掉。展开后的原生下拉列表只认 background-color，
+       缺这一层时深色下会退回 UA 默认的白画布。 */
     background: linear-gradient(180deg, var(--admin-input-top), var(--admin-input-bottom));
+    background-color: var(--admin-field-canvas);
     color: var(--text);
     box-shadow: inset 0 1px 2px var(--admin-inner-dark), inset 0 -1px var(--admin-inner-light);
     font: inherit;
     font-size: 13px;
     transition: border-color 100ms, box-shadow 100ms;
+}
+
+/* 下拉展开后的列表由 UA 绘制，option 必须自带不透明底色与文字色，
+   否则深色下由 UA 的默认画布（白）铺底。 */
+:is(.modal, .fav-dialog, .ui-dialog) select option {
+    background-color: var(--admin-field-canvas);
+    color: var(--text);
 }
 :is(.modal, .fav-dialog, .ui-dialog) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea):focus {
     border-color: var(--focus);
