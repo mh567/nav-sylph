@@ -19,6 +19,8 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `public/sw.js` | 同源静态资源白名单缓存；动态接口和分享页不在缓存范围内 |
 | `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载 |
 | `lib/webdav-backup.js` | WebDAV 配置加密、备份、恢复和校验 |
+| `lib/session.js` | 管理端会话：设备指纹加权、地理绑定、Cookie 读写 |
+| `lib/geo/` | ip2region 离线 IP 归属库（仅 IPv4）与其只读解析器 |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本 |
 | `tests/` | 备份隐私、移动收藏、对话框、接口数据边界和服务生命周期回归测试 |
 
@@ -32,7 +34,25 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 `GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图，只含首页需要渲染的部分：收藏过滤掉 `private` 条目并剥离 `private` 字段本身，配置剔除 `privacyMode`。带上正确的 `X-Admin-Password` 时才返回完整数据，供管理面板和私密检索使用。写入路径相应地按 id 合并而不是整份覆盖：`POST /api/favorites` 中既有的私密条目在请求体缺席时保留，`POST /api/config` 以现有文件为基底合并，因此公开视图未携带的 `privacyMode` 不会被保存动作抹掉。浏览器中的私密收藏筛选只是显示逻辑，服务端不再依赖它承担隔离职责。新增私有资产字段时，应先确认它是否应当进入公开视图。
 
-管理密码仍以明文经 `X-Admin-Password` 头逐请求校验，没有会话、令牌或过期机制。公网部署时该头在网络上明文传输，应配合 HTTPS。
+管理端登录采用服务端会话：登录成功后签发 32 字节 CSPRNG 令牌（OWASP 要求 ≥128 位），用 `HttpOnly` Cookie 下发，会话存于进程内 `Map`，重启即失效。浏览器不再保存明文密码——`X-Admin-Password` 只在登录那一次请求里出现，密码验证通过后改由 Cookie 承载；该头作为兜底保留，已打开的旧页面仍可用。
+
+`lib/session.js` 负责设备绑定与 Cookie 读写。要点：
+
+- **指纹用加权部分匹配，不用整体哈希。** 逐字段比对七个请求头信号（UA、`Sec-CH-UA-Platform`、`-Mobile`、`-Platform-Version`、`-Arch`、`-Bitness`、`Accept-Language`），权重 2/3/2/4/1/1/1。整体哈希无法回答「只是语言变了还是设备换了」，且任一字段变动即 100% 不匹配。
+- **判定用一致**比例**，阈值 0.7，权重不构成总分。** 权重只用于给字段排序，算法是 `一致权重 / 可比权重`——不存在「满分 14」这个分母，`FP_TOTAL` 仅供权重自洽性断言使用。若改用绝对分阈值（如 10/14），Firefox 与 Safari 会被永久挡在门外：它们完全不实现 UA Client Hints，可比的只剩 UA(2)+语言(1)=3 分，无论是否同一台设备都达不到 10。**「缺失即跳过」只解决扣分，解决不了基准偏高**，两者必须一起改。比例判据下这类浏览器的一致率是 1.0；一个可比字段都没有时同样返回 1（无法判定 ≠ 检测到变化）。
+- **低熵 Client Hints 默认发送**，高熵的三个需 `Accept-CH` 协商，且**仅在 HTTPS 下发送**。`Accept-CH` 是持久化偏好，故只在下发会话相关响应（`/api/session`、登录、信任设备）时带上，不放静态资源与 `/api/config` 上。代价：首个会话请求拿不到高熵头，要等下一次请求补齐，此刻绑定较弱但仍可用。
+- **地理位置是独立判据，不并入加权分。** 地理是位置信号而非设备信号：同城两台设备地理完全相同，一台设备换城市则地理变。两者混在一个分数里会让动作无法决策（掉分了是降级还是登出？）。地理变化或设备分不达标 → **自动登出**，响应带 `code: 'env_changed'`，前端在页面底部弹一次提示条幅。
+- **地理库为 vendored 的 ip2region xdb**（`lib/geo/ip2region_v4.xdb`，10.6 MiB，双许可 Apache-2.0 OR MIT，见 `lib/geo/LICENSE.ip2region.txt`），只读、不调任何在线归属服务。格式与查找实现参照上游 `binding/golang/xdb`：小端、向量索引项为绝对文件偏移、段内 IP 需反转后比较。
+  - **数据出处**：取自上游 `master` 分支 `data/ip2region_v4.xdb`（blob SHA `c3d5915c69816dd3474943f0c826dcc2fd9aa562`，11,122,036 字节，`git hash-object` 校验一致）。上游 README 说明其自带的 IP 段数据为**不定期更新**的快照，来源是 ip2region 社区提供的数据、`[数据源补充]` 标签的 Issue 补充及其他合法合规来源；对精度和更新频率要求高的场景，上游建议购买社区的商用离线数据。**因此该库是快照而非实时数据**，新分配或未收录的 IP 段会查不到——这正是「查不到即跳过该判据」而非「判为环境变化」的原因。
+  - **字段格式** `国家|省份|城市|ISP|国家二字码`；中国境内全中文，境外全英文。上游 `data/README_zh.md` 记录了命名规则（自治区用简称、特别行政区用长称、直辖市带「市」、自治地区带「地区」），本项目按省/市两级取值，命名细节未作二次加工。
+  - **只随附 IPv4 库**（IPv6 库 35.6 MiB 不值得为此买单），IPv6 走「跳过该判据」分支。默认按**省级**比对——移动基站在相邻城市间漂移，市级会频繁误报自动登出；`security.geoScope` 可切 `'city'` 或 `'off'`。库缺失、IPv6、私网地址一律返回 `null` 并跳过该判据。
+- **指纹只用于降权，绝不用于提权。** OWASP 明确这些属性可被伪造（可改 UA、可与受害者共用 NAT 出口）。真正的护栏是令牌本身不可猜 + HttpOnly + Secure + 过期。局限须如实告知：浏览器升级、换系统、跨省移动网络都会触发一次自动登出。
+- **Cookie 不加 `__Host-` 前缀。** OWASP 推荐该前缀，但它强制要求 `Secure`；本项目支持本地 http 调试（`HTTPS_ENABLED=false`），前缀 + 无 `Secure` 会被浏览器直接拒收，登录态静默失效。改用普通名称 + `security.cookieSecure` 配置项。
+- **`Secure` 的判据不是 `req.secure`。** 标准部署由 nginx 终止 TLS，Node 收到明文 HTTP，`req.secure` 恒为 `false`；照此判断会让 http 部署的 Cookie 永不落盘（表现为「密码正确但一直未登录」）。实际判据是读反代回填的 `X-Forwarded-Proto`（`DEPLOYMENT.md:140` 的 `proxy_set_header`），已开 `trust proxy = 1` 保证该头可信，再与 `security.cookieSecure` 取与——**纯 http 部署自动省略 `Secure`，无需手工配置**，该配置项只在需要覆盖自动判断时使用。
+- **清除 Cookie 时必须沿用下发时的属性**（`HttpOnly`/`SameSite`/`Path`），否则浏览器会当成另一个 Cookie 留着。同名 `Set-Cookie` 只保留一条，避免「当前有效期」需要靠猜。
+- 登出响应带 `Clear-Site-Data: "cookies"`，**只清 cookies 不清 cache**——清 cache 会连带清掉用户刚存的配置缓存。
+
+`X-Admin-Password` 兜底通道仍在，因此上述改动没有关闭明文密码通道，只是让常规路径不再经过它。彻底移除前需确认没有旧客户端在用。
 
 `server.js` 设置 `app.set('trust proxy', 1)`，限流与日志据此使用 `req.ip` 取真实客户端地址。跳数 `1` 表示只信任最右侧一跳——该跳正是 nginx 用 `proxy_add_x_forwarded_for` 追加 `$remote_addr` 的位置，客户端自带的 `X-Forwarded-For` 会因截断而被丢弃。
 
@@ -69,7 +89,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 两个只在按下瞬间才暴露的坑，都靠真实指针驱动才测出来（`getComputedStyle` 在非按下状态读不到）：
 
 - **`:active` 必须显式写 `border-color`**。指针按下时仍停在按钮上，`:hover` 依然命中；实心按钮若不在 `:active` 里重写描边色，悬停时的浅色边会留在深色实心底上，凹陷读不出来。
-- **`.engine-arrow` 是引擎按钮可点开的唯一视觉线索**。它曾整块丢失：标记里没有 `<svg>`，而旧样式还留着两条 `.engine-arrow` 规则，样式落在一个不存在的元素上成为死代码。现在的定义只在材质层一处，旧的那条 `.search-engine.active .engine-arrow` 已删除——**不是因为不命中**（`app.js:314` 确实会设 `.active` 类），而是同一状态有 `.active` 与 `aria-expanded` 两个钩子，保留两条规则会各自旋转一次；统一只认语义化的 `[aria-expanded="true"]`。副作用：`engineBtn` 上的 `.active` 类目前没有 CSS 消费者。
+- **`.engine-arrow` 是引擎按钮可点开的唯一视觉线索**。它曾整块丢失：标记里没有 `<svg>`，而旧样式还留着两条 `.engine-arrow` 规则，样式落在一个不存在的元素上成为死代码。现在的定义只在材质层一处，旧的那条 `.search-engine.active .engine-arrow` 已删除——**不是因为不命中**（`app.js` 确实会设 `.active` 类），而是同一状态有 `.active` 与 `aria-expanded` 两个钩子，保留两条规则会各自旋转一次；统一只认语义化的 `[aria-expanded="true"]`。副作用：`engineBtn` 上的 `.active` 类目前没有 CSS 消费者。
 
 首页顶部不再有站点标识。快捷键说明行（`.search-caption`）是桌面专属的提示，`≤600px` 隐藏。内容只讲两个**触发符**——`/` 查收藏、`>` 分享文本；方向键选择与 Enter 打开属于次要操作，留给「说明」弹窗，不在这行挤占注意力。间距由说明行自己给（`margin: 10px 0 26px`：贴搜索框、与下方收藏区拉开），`.header` 的 `margin-bottom` 因此归零，`≤600px` 该行隐藏时再把间距还给 `.header`。它的**基础规则必须排在 `≤600px` 块之前**，否则同特异性下后写的 `display:flex` 会把块里的 `display:none` 压掉，表现为手机上说明行照样显示。
 

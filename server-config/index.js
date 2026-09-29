@@ -52,7 +52,11 @@ function loadFromEnv() {
             }
         },
         security: {
-            adminPasswordFile: env.ADMIN_PASSWORD_FILE
+            adminPasswordFile: env.ADMIN_PASSWORD_FILE,
+            cookieSecure: env.COOKIE_SECURE === undefined ? undefined : env.COOKIE_SECURE === 'true',
+            geoEnabled: env.GEO_ENABLED === undefined ? undefined : env.GEO_ENABLED === 'true',
+            geoDatabase: env.GEO_DATABASE,
+            geoScope: env.GEO_SCOPE
         },
         paths: {
             data: env.DATA_FILE,
@@ -95,6 +99,10 @@ function resolvePaths(config) {
     
     if (resolved.security && resolved.security.adminPasswordFile && !path.isAbsolute(resolved.security.adminPasswordFile)) {
         resolved.security.adminPasswordFile = path.join(ROOT_DIR, resolved.security.adminPasswordFile);
+    }
+
+    if (resolved.security && resolved.security.geoDatabase && !path.isAbsolute(resolved.security.geoDatabase)) {
+        resolved.security.geoDatabase = path.join(ROOT_DIR, resolved.security.geoDatabase);
     }
     
     if (resolved.server && resolved.server.https) {

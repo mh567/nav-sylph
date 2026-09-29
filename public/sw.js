@@ -1,4 +1,5 @@
-const CACHE = 'nav-v26';
+// app.js 换成会话 Cookie 登录后必须升缓存名，否则老用户拿到的仍是旧的明文密码版本
+const CACHE = 'nav-v27';
 const ASSETS = [
     '/',
     '/index.html',

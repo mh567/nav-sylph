@@ -839,6 +839,108 @@ done
 
 **教训**：这个仓库有自动化发布脚本，且用户的 `update` 入口依赖 GitHub Release 而非 tag。以后发布不要手写 `git` / `gh` —— 直接 `bash scripts/release.sh`。
 
+## 本次完成的内容（保持登录：会话 Cookie + 可信设备）
+
+**状态：已提交 `2020493`（父提交 `b809d21` / v1.5.18），尚未发布。** `sw.js` 缓存已升到 `nav-v27`。
+
+### 改了什么
+
+| 项 | 位置 | 说明 |
+| --- | --- | --- |
+| 会话与指纹 | `lib/session.js`（新增） | 32 字节 CSPRNG 令牌、HttpOnly Cookie、七字段加权指纹、地理绑定、Cookie 读写 |
+| 地理库 | `lib/geo/`（新增） | vendored ip2region IPv4 库（11,122,036 字节）+ 只读解析器 + 上游许可证 |
+| 统一守卫 | `server.js` | 11 处手写 `verifyPassword` 守卫改为 `requireAdmin` 中间件；两处软门同步接入 |
+| 新端点 | `server.js` | `GET /api/session`、`POST /api/logout`、`POST /api/trust-device`；登录成功即签发 Cookie |
+| 配置项 | `server-config/defaults.js` | `sessionCookieName`、`sessionTtl*`、`cookieSecure`、`geoEnabled`、`geoDatabase`、`geoScope` |
+| 客户端 | `public/app.js` | `this.password` → `this.authenticated`；明文密码不再进任何浏览器存储 |
+
+`X-Admin-Password` 保留为兜底通道（旧页面仍可用），**没有**关闭明文密码通道本身。
+
+### 实施中发现并修掉的问题
+
+1. **xdb 格式与我在计划里写的不同。** 计划按「大端、指针为相对索引」写的探针全部返回 null。实际格式（对照上游 `binding/golang/xdb`）是**小端**、向量索引项为**绝对文件偏移**、段内 IP 需**反转后**比较。探针失败促成了去读权威实现，否则会静默返回错误地区。
+2. **绝对分阈值会让 Firefox/Safari 永久拿不到 30 天。** 计划写的是「总分 14、阈值 10」+「缺失不扣分」。但 Firefox 完全不实现 Client Hints，可比信号只剩 UA(2)+语言(1)=3 分，**无论是否同一台设备都达不到 10**。「缺失不扣分」只避免了扣分，没解决基准本身偏高。改为**一致比例**阈值 0.7 后，这类浏览器一致率为 1.0。
+3. **清除 Cookie 时没沿用下发属性。** 原实现只发 `Max-Age=0`，缺 `HttpOnly`/`SameSite`/`Path`，浏览器会当成另一个 Cookie 留着。已补齐并加测试。
+4. **同名 `Set-Cookie` 会下发两条。** 滑动续期写一条、信任设备再写一条，令牌的当前有效期需要靠猜。已改为同名替换，保留最后一条。
+5. **`sessionStore` 的 TDZ 风险。** `setInterval` 回调引用了在其之后才声明的 `const`。`node --check` 通过，但回调首次触发时会在 TDZ 内抛错。回调在 60 秒后才执行，届时模块顶层已初始化，故当前安全——依赖的是调用时机而非代码顺序，值得记住。
+
+### 代码审查发现（提交前双轴审查，已全部修掉）
+
+按仓库约定在**提交前**跑双轴审查（Standards 对 `AGENTS.md` + `docs/architecture.md`，
+Spec 对已批准的计划 + 用户原话），发现的问题已逐条复核并修复：
+
+1. **`isHttps()` 缺参导致登录接口崩溃（最严重，155 条单测全绿也没抓到）。**
+   `setSessionCookie` 调 `this.isHttps()` 时没传 `req`，`cookieSecure` 为默认值 `true` 时
+   直接抛 `TypeError: Cannot read properties of undefined (reading 'headers')`，
+   进程退出。此前 e2e 一直设 `COOKIE_SECURE=false`，`&&` 短路让这条路径从未被执行；
+   单元测试的 `makeStore` 默认也是 `cookieSecure:false`，同样没覆盖。
+   **是真实服务器以默认配置启动才暴露的**——`issueSession` / `refreshSessionCookie` /
+   `clearSessionCookie` 三个入口同样缺参。已全部补上 `req` 参数并加了两条
+   真正会调用 `isHttps` 的回归测试（红/绿确认：还原后 2 条变红）。
+2. **README 的 http 部署警告是错的。** 原写「纯 http 部署必须设 `COOKIE_SECURE=false`」，
+   但 `secure: cookieSecure && isHttps(req)` 已在 http 时自动省略 `Secure`，
+   根本不需要手工配置。已改为说明自动判断 + 该项仅用于覆盖判断。
+3. **架构文档的「总分 14 / 阈值 10」是虚构的分母。** 实际算法是「一致权重 / 可比权重」，
+   权重只用于排序。已改写并说明「缺失即跳过」与「基准不能偏高」必须一起改。
+4. **DEPLOYMENT.md 未按计划要求更新**（计划明写「必须写进 README / DEPLOYMENT」）。已补，
+   含登录后始终未登录时的排查命令。
+5. **ip2region 数据来源出处未记录**（计划要求）。已查上游 README 补记：
+   快照式数据、非实时更新、来源为社区数据与 Issue 补充。
+6. **地理测试没测到它声称的东西。** 「同省不同市」用的是 南京→上海（跨省），
+   两种粒度下都会判为变化，等于没验证 city 粒度。已改用真实同省不同市 IP
+   （深圳 `106.11.1.1` → 汕头 `221.5.1.1`），并同时断言 province 粒度下不误报。
+7. **`trust-device` 的 `requiresLogin` 分支被客户端忽略**，旧页面勾选「信任此设备」会
+   静默只拿到 24 小时。已改为显式提示。
+8. 另修：`envChanged` 死字段、`expires` 死参数、`照常` 错字、
+   `architecture.md` 里失效的 `app.js:314` 引用（会话改动后该行已指向别处）、
+   `{ token, ...session }` 四处重复拼装收敛为 `refreshSessionCookie`、
+   源码形状守卫补上「修复前是什么样」的注释。
+
+**两条审查结论经复核后判定为不成立，未改**：
+- 「错误态 toast 没有样式」——`.toast[data-state="error"]` 存在于 `admin.css:334`，
+  且 `admin.css` 确实被 `index.html` 加载，`--admin-error` 也在该文件定义。
+- 「新增的 safe-area 断言与 `dialog-regressions.test.js` 重复」——那个文件的
+  safe-area 断言针对收藏弹窗与工具条，没有一条针对 `.toast` 本身。
+
+### 验证记录
+
+```bash
+node --test tests/session.test.js   # 44 passed / 0 failed
+node --test tests/*.test.js         # 155 passed / 0 failed（原有 111 条无回归）
+node --check <每个改动的 .js>       # 全部 OK
+```
+
+- **红/绿验证 17/17 全部变红**，每条破坏都校验了前后源码确实不同（此前踩过
+  `perl -0pi` 静默不匹配的坑）。审查修复后重跑，其中 `requireAdmin` 那条的锚点
+  因重构失效，重新锚定后确认仍能变红。
+- **真实 HTTP 端到端 28/28**（临时目录跑真实服务器，端口 4123）：登录 → 复用 →
+  24 小时档（实测 `Max-Age=86400`、`expiresAt` 距今 24.00 小时）→ 信任设备（30 天，
+  `Max-Age=2592000`）→ 浏览器升级仍登录 → 换系统自动登出 → 跨省自动登出 →
+  同省不同市不误报 → 登出 → 旧 Cookie 失效 → 明文兜底可用 → 无凭据 401。
+  **崩溃正是这一轮 e2e 抓到的，单元测试全绿时它已经存在。**
+- **地理解析实测**：`114.114.114.114→江苏省`、`223.5.5.5→浙江省`、`58.32.11.42→上海市`、
+  `8.8.8.8→California`；私网/IPv6/非法 IP 返回 `null`；5000 次查询 < 250ms。
+- **`.env` 覆盖实测**：`COOKIE_SECURE=false` 与 `GEO_SCOPE=city` 均能被读到。
+  注意 `COOKIE_SECURE` 只是允许在 https 下加 `Secure` 的开关，
+  http 部署本来就会自动省略它——**不需要靠这个变量来让 http 部署可用**。
+- **验收命令实测**：`grep -c 'requireAdmin' server.js` = **14**（1 处定义 + 13 处路由使用：11 个特权路由 + `change-password` + `trust-device`）。计划里写的 13 是漏算了 `trust-device`。
+- `git diff --check` 无空白问题；改动文件全部 `node --check` 通过；临时目录与端口 4123 已清理，`git status` 无残留产物。
+
+### 未验证 / 需真机确认
+
+- **Firefox / Safari 的实际登录体验**：设计上已保证它们能拿 30 天（单元测试覆盖），但真机行为未跑过。
+- **真实浏览器的 Client Hints 协商**：`curl` 是手工构造的头，真机上高熵头是否按预期补齐未验证。首个会话请求必然缺高熵头（浏览器需在收到 `Accept-CH` 后的下一次请求才发送），这是已知且可接受的缺口。
+- **首次首屏多一次 `/api/session` 往返**：已放在 `requestAnimationFrame` 内不阻塞渲染，但真实网络下的实际耗时未测。
+- **真实移动网络下跨省漂移**：省级判据能挡住省内漂移，跨省漫游的误报率需实际使用观察。
+
+### 用户已拍板（2026-09-29）
+
+- **接受发布包增大 10.6 MiB**（gzip 后约 4–5 MB）。仅安装包体积受影响，首页首屏零影响
+  （该文件不经 HTTP 下发、不进 service worker `ASSETS`）。保留地理判据；
+  若日后要退回，`security.geoEnabled=false` 即可完全关闭。
+- **`COOKIE_SECURE` 无需配置**：审查发现 http 部署本来就会自动省略 `Secure`，
+  原先以为需要手工设置的判断是错的，已改正文档。该项保留为覆盖自动判断的开关。
+
 ## 下一位 Agent 的启动步骤
 
 1. 阅读根目录 `AGENTS.md`、`README.md`、`docs/architecture.md` 及本文件。

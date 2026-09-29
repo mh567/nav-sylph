@@ -177,6 +177,9 @@ setInterval(() => {
     cleanExpiredPastes();
     sweepRateLimitStore(pasteRateLimitMap, now, PASTE_RATE_WINDOW);
     sweepRateLimitStore(rateLimitMap, now, RATE_LIMIT_WINDOW);
+    // 会话同理：只增不减会随登录次数累积。
+    // 回调在首次触发时才读取 sessionStore，此时模块顶层 const 已完成初始化。
+    sessionStore.sweep(now);
 }, 60000).unref();
 
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
@@ -186,6 +189,17 @@ const WEBDAV_CONFIG_FILE = path.join(config.rootDir, '.webdav-config.json');
 
 // WebDAV Backup module
 const { WebDAVBackup } = require('./lib/webdav-backup');
+
+// 管理端会话：设备指纹 + 地理绑定
+// 注意：本文件另有粘贴相关的 globalThis.crypto（WebCrypto）用法，
+// 故这里不 require('crypto')，令牌随机数由 lib/session 内部生成。
+const {
+    SessionStore,
+    readCookie,
+    ACCEPT_CH,
+    ENV_CHANGED_CODE,
+    ENV_CHANGED_MESSAGE
+} = require('./lib/session');
 
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
@@ -343,6 +357,66 @@ async function verifyPassword(password) {
     }
 }
 
+// ========== 会话 ==========
+
+// 标准部署由 nginx 终止 TLS，Node 收到的是明文 HTTP，req.secure 恒为 false。
+// 正确判据是反代回填的 X-Forwarded-Proto；已开 trust proxy=1，丢弃客户端自带的值。
+function isHttps(req) {
+    if (config.server.https.enabled) return true;
+    return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+}
+
+const sessionStore = new SessionStore({
+    cookieName: config.security.sessionCookieName,
+    ttlTrusted: config.security.sessionTtlTrusted,
+    ttlDefault: config.security.sessionTtlDefault,
+    cookieSecure: config.security.cookieSecure,
+    isHttps,
+    getClientIp: req => resolveClientIp(req),
+    geoEnabled: config.security.geoEnabled,
+    geoScope: config.security.geoScope,
+    geoDatabase: config.security.geoDatabase
+});
+
+// 会话相关的响应带 Accept-CH（高熵 Client Hints 需要它才会被发送）。
+// 只在这些响应上下发，不放静态资源与 /api/config 上，避免拖累首页首屏。
+function setSessionHeaders(res) {
+    res.setHeader('Accept-CH', ACCEPT_CH);
+    res.setHeader('Cache-Control', 'no-store');
+}
+
+function unauthorized(res, reason) {
+    if (reason && reason.code) {
+        return res.status(401).json({ error: ENV_CHANGED_MESSAGE, code: reason.code });
+    }
+    return res.status(401).json({ error: '未登录或登录已过期' });
+}
+
+/**
+ * 统一管理端守卫。会话命中即放行（零 bcrypt）；否则回退到明文密码，
+ * 保证已打开的旧页面仍可用。环境变化导致的登出由 reason 透传给调用方。
+ */
+async function requireAdmin(req, res, next) {
+    req.sessionReason = {};
+    const found = sessionStore.getSession(req, req.sessionReason);
+    if (found) {
+        req.adminSession = found;
+        sessionStore.refreshSessionCookie(res, found, req);
+        return next();
+    }
+    if (await verifyPassword(req.headers['x-admin-password'])) return next();
+    return unauthorized(res, req.sessionReason);
+}
+
+// 两处「软门」：命中即返回全量，否则返回公开视图，不返回 401。
+async function hasAdminAccess(req) {
+    const reason = {};
+    const found = sessionStore.getSession(req, reason);
+    if (found) return { ok: true, reason };
+    if (await verifyPassword(req.headers['x-admin-password'])) return { ok: true, reason };
+    return { ok: false, reason };
+}
+
 async function init() {
     const logDir = config.paths.logs;
     if (!fsSync.existsSync(logDir)) {
@@ -360,8 +434,9 @@ async function init() {
 app.get('/api/config', async (req, res) => {
     try {
         const cfg = await readJSON(CONFIG_FILE);
-        // 带正确管理密码时返回完整配置，供管理面板读取 privacyMode
-        if (await verifyPassword(req.headers['x-admin-password'])) {
+        // 会话或正确管理密码时返回完整配置，供管理面板读取 privacyMode
+        const access = await hasAdminAccess(req);
+        if (access.ok) {
             return res.json(cfg);
         }
         res.json(toPublicConfig(cfg));
@@ -371,13 +446,7 @@ app.get('/api/config', async (req, res) => {
     }
 });
 
-app.post('/api/config', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-    
+app.post('/api/config', rateLimit, requireAdmin, async (req, res) => {
     try {
         const cfg = req.body;
         if (!cfg.categories || !Array.isArray(cfg.categories)) {
@@ -402,17 +471,56 @@ app.post('/api/config', rateLimit, async (req, res) => {
 app.post('/api/verify-password', rateLimit, async (req, res) => {
     const password = req.headers['x-admin-password'];
     const valid = await verifyPassword(password);
+    // 登录即换发新会话令牌（OWASP：权限级别变化后必须换发会话 ID）
+    if (valid) {
+        sessionStore.issueSession(res, req, false);
+        setSessionHeaders(res);
+    }
     res.json({ valid });
 });
 
-app.post('/api/change-password', rateLimit, async (req, res) => {
-    const currentPassword = req.headers['x-admin-password'];
-    const { newPassword } = req.body;
-    
-    if (!await verifyPassword(currentPassword)) {
-        return res.status(401).json({ error: '当前密码错误' });
+// 首屏静默确认登录态。未登录返回 200 + { authenticated:false } 而非 401，
+// 避免未访问者把整个首页渲染成错误态。
+app.get('/api/session', async (req, res) => {
+    setSessionHeaders(res);
+    const found = sessionStore.getSession(req, {});
+    if (!found) {
+        return res.json({ authenticated: false, trusted: false });
     }
-    
+    sessionStore.refreshSessionCookie(res, found, req);
+    res.json({
+        authenticated: true,
+        trusted: found.session.trusted,
+        expiresAt: found.session.expiresAt
+    });
+});
+
+// 信任此设备：把当前会话升级为 30 天滑动续期
+app.post('/api/trust-device', requireAdmin, async (req, res) => {
+    setSessionHeaders(res);
+    const token = readCookie(req, config.security.sessionCookieName);
+    if (!token) {
+        // 明文密码登录的旧客户端没有会话可升级，前端会重新登录后再试
+        return res.json({ trusted: false, requiresLogin: true });
+    }
+    const session = sessionStore.markTrusted(token);
+    if (!session) return unauthorized(res, {});
+    sessionStore.setSessionCookie(res, { token, expiresAt: session.expiresAt }, req);
+    res.json({ trusted: true, expiresAt: session.expiresAt });
+});
+
+// 登出：服务端销毁会话 + 清 Cookie。
+// Clear-Site-Data 只清 cookies，不清 cache —— 清 cache 会连带清掉用户刚存的配置缓存。
+app.post('/api/logout', async (req, res) => {
+    sessionStore.destroy(readCookie(req, config.security.sessionCookieName));
+    sessionStore.clearSessionCookie(res, req);
+    res.setHeader('Clear-Site-Data', '"cookies"');
+    setSessionHeaders(res);
+    res.json({ success: true });
+});
+
+app.post('/api/change-password', rateLimit, requireAdmin, async (req, res) => {
+    const { newPassword } = req.body;
     if (!newPassword || newPassword.length < 8) {
         return res.status(400).json({ error: '新密码至少8位' });
     }
@@ -601,8 +709,9 @@ function mergeConfig(existing, incoming) {
 app.get('/api/favorites', async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
-        // 带正确管理密码时返回完整列表，供管理面板与私密检索使用
-        if (await verifyPassword(req.headers['x-admin-password'])) {
+        // 会话或正确管理密码时返回完整列表，供管理面板与私密检索使用
+        const access = await hasAdminAccess(req);
+        if (access.ok) {
             return res.json({
                 version: data?.version || 1,
                 favorites: Array.isArray(data?.favorites) ? data.favorites : []
@@ -616,13 +725,7 @@ app.get('/api/favorites', async (req, res) => {
 });
 
 // 保存收藏书签
-app.post('/api/favorites', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/favorites', rateLimit, requireAdmin, async (req, res) => {
     try {
         const { favorites } = req.body;
         if (!Array.isArray(favorites)) {
@@ -647,13 +750,7 @@ app.post('/api/favorites', rateLimit, async (req, res) => {
 });
 
 // 导入浏览器书签
-app.post('/api/favorites/import', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/favorites/import', rateLimit, requireAdmin, async (req, res) => {
     try {
         const { html, merge = true } = req.body;
         if (!html || typeof html !== 'string') {
@@ -699,13 +796,7 @@ app.post('/api/favorites/import', rateLimit, async (req, res) => {
 });
 
 // 导出书签为 HTML
-app.get('/api/favorites/export', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.get('/api/favorites/export', rateLimit, requireAdmin, async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
         const html = generateBookmarkHtml(data.favorites || []);
@@ -732,12 +823,7 @@ async function getPasswordHash() {
 }
 
 // Get WebDAV config (password masked)
-app.get('/api/webdav/config', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.get('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
     try {
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
@@ -750,12 +836,7 @@ app.get('/api/webdav/config', rateLimit, async (req, res) => {
 });
 
 // Save WebDAV config
-app.post('/api/webdav/config', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
     try {
         const { url, username, password: webdavPassword, remotePath, enabled } = req.body;
         const passwordHash = await getPasswordHash();
@@ -779,12 +860,7 @@ app.post('/api/webdav/config', rateLimit, async (req, res) => {
 });
 
 // Test WebDAV connection
-app.post('/api/webdav/test', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/webdav/test', rateLimit, requireAdmin, async (req, res) => {
     try {
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
@@ -803,12 +879,7 @@ app.post('/api/webdav/test', rateLimit, async (req, res) => {
 });
 
 // Create backup
-app.post('/api/webdav/backup', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/webdav/backup', rateLimit, requireAdmin, async (req, res) => {
     try {
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
@@ -849,12 +920,7 @@ app.post('/api/webdav/backup', rateLimit, async (req, res) => {
 });
 
 // List backups
-app.get('/api/webdav/list', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.get('/api/webdav/list', rateLimit, requireAdmin, async (req, res) => {
     try {
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
@@ -873,12 +939,7 @@ app.get('/api/webdav/list', rateLimit, async (req, res) => {
 });
 
 // Restore from backup
-app.post('/api/webdav/restore', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
     try {
         const {
             configFile,
@@ -938,12 +999,7 @@ app.post('/api/webdav/restore', rateLimit, async (req, res) => {
 });
 
 // Delete backup file
-app.post('/api/webdav/delete', rateLimit, async (req, res) => {
-    const password = req.headers['x-admin-password'];
-    if (!await verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
-    }
-
+app.post('/api/webdav/delete', rateLimit, requireAdmin, async (req, res) => {
     try {
         const { filename } = req.body;
         if (!filename) {

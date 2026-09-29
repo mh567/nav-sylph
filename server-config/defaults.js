@@ -16,7 +16,21 @@ module.exports = {
     },
     security: {
         adminPasswordFile: '.admin-password.json',
-        defaultPassword: 'admin123'
+        defaultPassword: 'admin123',
+        // 会话 Cookie 名称。刻意不用 __Host- 前缀：它强制要求 Secure，
+        // 而本地 http 调试（HTTPS_ENABLED=false）会被浏览器直接拒收。
+        sessionCookieName: 'nav_session',
+        // 会话有效期（毫秒）。可信设备 30 天滑动续期，普通会话 24 小时。
+        sessionTtlTrusted: 30 * 86400000,
+        sessionTtlDefault: 24 * 3600000,
+        // Cookie 是否带 Secure。默认 true；纯 http 部署需在 .env 设 COOKIE_SECURE=false，
+        // 否则浏览器不会保存该 Cookie，登录态静默失效。
+        cookieSecure: true,
+        // 设备绑定的地理位置判据。geoEnabled=false 或库文件缺失时该判据被跳过。
+        geoEnabled: true,
+        geoDatabase: 'lib/geo/ip2region_v4.xdb',
+        // 'province' 省级（默认，噪声小）| 'city' 市级 | 'off' 关闭
+        geoScope: 'province'
     },
     paths: {
         data: 'data.json',           // 书签数据文件

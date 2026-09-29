@@ -130,6 +130,15 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 | `HTTPS_ENABLED` | `false` | 启用 HTTPS |
 | `HTTPS_KEY_PATH` | - | SSL 私钥路径 |
 | `HTTPS_CERT_PATH` | - | SSL 证书路径 |
+| `COOKIE_SECURE` | `true` | 允许在 https 下给登录 Cookie 加 `Secure` 标记 |
+| `GEO_ENABLED` | `true` | 是否用 IP 归属地辅助判断登录环境是否变化 |
+| `GEO_SCOPE` | `province` | 地理比对粒度：`province` / `city` / `off` |
+
+> 登录 Cookie 的 `Secure` 标记是**自动判断**的：请求经 https 到达
+> （`HTTPS_ENABLED=true`，或反代回填 `X-Forwarded-Proto: https`）才加，
+> 纯 http 部署自动省略——否则浏览器不会保存该 Cookie，表现为「密码正确但一直未登录」。
+>
+> 因此**一般无需配置 `COOKIE_SECURE`**，它只用于覆盖上述自动判断。
 
 ## 🖥️ 使用说明
 

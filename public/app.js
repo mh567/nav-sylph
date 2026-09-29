@@ -60,27 +60,45 @@
         }
     };
 
+    // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
+    // 服务端把「因环境变化被自动登出」用 401 + code:'env_changed' 表达，
+    // 这里统一拦截并弹一次底部提示条幅。
     const API = {
-        async get(url, password) {
-            const options = password ? { headers: { 'X-Admin-Password': password } } : undefined;
-            const res = await fetch(url, options);
-            if (!res.ok) throw new Error(res.statusText);
-            return res.json();
+        envChangeNotified: false,
+        notifyEnvChanged(data) {
+            if (!data || data.code !== 'env_changed' || API.envChangeNotified) return;
+            API.envChangeNotified = true;
+            if (window.app) {
+                window.app.authenticated = false;
+                window.app.showToast('检测到登录环境变化，已自动退出，请重新登录', 'error', 8000);
+            }
         },
-        async post(url, data, password) {
-            const headers = { 'Content-Type': 'application/json' };
-            if (password) headers['X-Admin-Password'] = password;
-            const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(data) });
-            return res.json();
+        async request(url, options) {
+            const res = await fetch(url, { credentials: 'same-origin', ...options });
+            let data = null;
+            try { data = await res.json(); } catch (e) {}
+            if (data && data.error) API.notifyEnvChanged(data);
+            return { res, data };
+        },
+        async get(url) {
+            const { res, data } = await API.request(url);
+            if (!res.ok) throw new Error(res.statusText);
+            return data;
+        },
+        async post(url, body) {
+            const { data } = await API.request(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            return data || {};
         }
     };
-
-    const SESSION_PWD_KEY = 'nav-sylph-admin-password';
 
     class App {
         constructor() {
             this.config = null;
-            this.password = null;
+            this.authenticated = false;
             this.dragData = null;
             this.pasteMode = false;
             this.pasteUserResized = false;
@@ -115,25 +133,15 @@
             try {
                 this.config = await (window.__navSylphConfigPromise || API.get('/api/config'));
                 this.migrateConfig();
-                // 恢复 sessionStorage 中的登录状态
-                const savedPwd = sessionStorage.getItem(SESSION_PWD_KEY);
-                if (savedPwd) {
-                    this.password = savedPwd;
-                }
                 this.applyTheme();
                 this.render();
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
-                // privacyMode 不在公开配置视图里，后台取回真实值以启用私密检索，
-                // 不阻塞首屏渲染
-                if (this.password) {
-                    this.loadPrivacyMode().then(privacyMode => {
-                        if (privacyMode !== null) this.config.privacyMode = privacyMode;
-                    });
-                }
-                // 首页先显示，收藏索引和版本信息随后加载
+                // 首页先显示，收藏索引、版本信息与会话状态随后加载。
+                // 会话状态放在首屏之后查，不为它增加首屏的往返等待。
                 requestAnimationFrame(() => {
+                    this.restoreSession();
                     this.loadFavorites();
                     this.checkVersionUpdate();
                 });
@@ -521,16 +529,51 @@
             }
         }
 
-        // privacyMode 属于管理端设置，不在公开配置视图里。
-        // 带管理密码取回；失败时保持现状。
-        async loadPrivacyMode() {
-            if (!this.password) return null;
+        // ========== 管理会话 ==========
+
+        // 会话状态只存在于 HttpOnly Cookie，JS 读不到内容，
+        // 只能问服务端当前是否已登录。
+        async loadSession() {
+            return API.get('/api/session');
+        }
+
+        // 首屏渲染之后再问一次会话。命中则补上私密检索所需的 privacyMode，
+        // 整个过程不阻塞首屏。
+        async restoreSession() {
             try {
-                const res = await fetch('/api/config', {
-                    headers: { 'X-Admin-Password': this.password }
+                const session = await this.loadSession();
+                if (!session.authenticated) return;
+                this.authenticated = true;
+                this.loadPrivacyMode().then(privacyMode => {
+                    if (privacyMode !== null) this.config.privacyMode = privacyMode;
                 });
-                if (!res.ok) return null;
-                const cfg = await res.json();
+            } catch (e) {
+                console.error('Restore session failed:', e);
+            }
+        }
+
+        async trustDevice() {
+            try {
+                const res = await API.post('/api/trust-device', {});
+                if (res.trusted) return true;
+                // 服务端没有会话可升级（仅可能发生在仍用明文密码的旧页面上）。
+                // 不静默返回 false：那会让「信任此设备」看起来勾了却只有 24 小时。
+                if (res.requiresLogin) {
+                    this.showToast('未能标记为可信设备，请重新登录后再试', 'error');
+                }
+                return false;
+            } catch (e) {
+                console.error('Trust device failed:', e);
+                return false;
+            }
+        }
+
+        // privacyMode 属于管理端设置，不在公开配置视图里。
+        // 带会话取回；失败时保持现状。
+        async loadPrivacyMode() {
+            if (!this.authenticated) return null;
+            try {
+                const cfg = await API.get('/api/config');
                 return typeof cfg.privacyMode === 'boolean' ? cfg.privacyMode : null;
             } catch (e) {
                 console.error('Load privacy mode failed:', e);
@@ -538,15 +581,15 @@
             }
         }
 
-        // 匿名列表只含公开条目。私密检索与管理面板需要全量，
-        // 用管理密码取回。成功后让 this.favorites 指向全量，
+        // 匿名列表只含公开条目。私密检索与管理面板需要全量。
+        // 成功后让 this.favorites 指向全量，
         // 使搜索索引与结果取值保持同源。
         async loadAdminFavorites() {
-            if (!this.password) return false;
+            if (!this.authenticated) return false;
             if (this.adminFavoritesLoading) return false;
             this.adminFavoritesLoading = true;
             try {
-                const data = await API.get('/api/favorites', this.password);
+                const data = await API.get('/api/favorites');
                 this.adminFavorites = data.favorites || [];
                 this.favorites = this.adminFavorites;
                 return true;
@@ -700,7 +743,7 @@
         }
 
         isPrivacySearchEnabled() {
-            return !!(this.password && this.config.privacyMode);
+            return !!(this.authenticated && this.config.privacyMode);
         }
 
         isFavSearchTrigger(char) {
@@ -1347,13 +1390,37 @@
 
         async openAdmin() {
             this.adminReturnFocus = document.activeElement;
-            if (!this.password) {
-                const pwd = await this.promptValue('进入管理', '管理密码', { type: 'password' });
+            if (!this.authenticated) {
+                // 一次对话框同时收密码与「信任此设备」，不额外弹第二个窗。
+                // 勾选框走 options（kind: 'checkbox'）而不是 fields：
+                // fields 的取值恒为字符串，options 才会给出真正的布尔值。
+                const values = await this.showUiDialog({
+                    title: '进入管理',
+                    fields: [{ label: '管理密码', type: 'password' }],
+                    options: [{
+                        name: 'trustDevice',
+                        kind: 'checkbox',
+                        value: '1',
+                        label: '信任此设备（30 天内免重复登录）',
+                        hint: '不勾选则本次登录 24 小时后自动退出'
+                    }]
+                });
+                if (!values) return;
+                const pwd = values.values[0];
                 if (!pwd) return;
-                const res = await API.post('/api/verify-password', {}, pwd);
-                if (!res.valid) { await this.notice('密码错误', '无法进入管理'); return; }
-                this.password = pwd;
-                sessionStorage.setItem(SESSION_PWD_KEY, pwd);
+                // 密码只在这一请求里出现一次，服务端校验通过后改用 HttpOnly Cookie。
+                const res = await API.request('/api/verify-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Admin-Password': pwd },
+                    body: '{}'
+                });
+                if (!res.data || !res.data.valid) { await this.notice('密码错误', '无法进入管理'); return; }
+                this.authenticated = true;
+
+                // 勾选「信任此设备」才把会话升级为 30 天
+                if (values.choices.trustDevice) {
+                    await this.trustDevice();
+                }
 
                 // 检测是否为默认密码，提示修改
                 if (pwd === 'admin123') {
@@ -1368,8 +1435,8 @@
                 }
             }
             this.beginConfigEdit();
-            // 两个请求互不依赖，各自的密码校验是一次 bcrypt（实测各约 55ms）。
-            // 串行等待等于把两次 bcrypt 叠加；并发后总耗时降到单次校验的量级。
+            // 两个请求互不依赖，仍并发发出。会话 Cookie 命中时服务端不再跑
+            // bcrypt，但两个请求的串行等待仍是两倍往返。
             const [, privacyMode] = await Promise.all([
                 // 收藏管理器需要全量列表，否则保存会丢掉私密条目
                 this.ensureAdminFavorites(),
@@ -1400,14 +1467,15 @@
             status.dataset.state = state || (this.configDirty ? 'pending' : '');
         }
 
-        showToast(message, state = 'success') {
+        // duration 可选，默认 3500ms。环境变化自动登出需要阅读时间，传 8000。
+        showToast(message, state = 'success', duration = 3500) {
             const toast = $('#toast');
             if (!toast) return;
             clearTimeout(this.toastTimer);
             toast.textContent = message;
             toast.dataset.state = state;
             toast.hidden = false;
-            this.toastTimer = setTimeout(() => { toast.hidden = true; }, 3500);
+            this.toastTimer = setTimeout(() => { toast.hidden = true; }, duration);
         }
 
         showUiDialog({ title, message = '', fields = [], options = [], groups = [], reveal = null, confirmText = '确定', cancelText = '取消', danger = false, notice = false, closeOnBackdrop = true, validate }) {
@@ -1703,8 +1771,13 @@
             // 登出按钮
             $('#logoutBtn').onclick = async () => {
                 if (!await this.closeAdmin()) return;
-                this.password = null;
-                sessionStorage.removeItem(SESSION_PWD_KEY);
+                this.authenticated = false;
+                // 通知服务端销毁会话并清 Cookie；失败也要继续清理本地状态
+                try { await API.post('/api/logout', {}); } catch (e) {
+                    console.error('Logout failed:', e);
+                }
+                // 重新允许下次进入管理时重新弹环境变化提示
+                API.envChangeNotified = false;
                 this.privacySearchActive = false;
                 // 丢弃全量缓存，页面回到匿名可见的公开子集
                 this.adminFavorites = null;
@@ -1719,9 +1792,7 @@
 
         async loadWebDAVConfig() {
             try {
-                const res = await fetch('/api/webdav/config', {
-                    headers: { 'X-Admin-Password': this.password }
-                });
+                const { res } = await API.request('/api/webdav/config');
                 if (res.ok) {
                     this.webdavConfig = await res.json();
                     this.renderWebDAVSection();
@@ -1795,7 +1866,7 @@
                 const pwd = $('#webdavPassword').value;
                 if (pwd) data.password = pwd;
 
-                const res = await API.post('/api/webdav/config', data, this.password);
+                const res = await API.post('/api/webdav/config', data);
                 if (res.success) {
                     this.webdavConfig = res.config;
                     msgEl.textContent = '配置已保存';
@@ -1817,7 +1888,7 @@
             msgEl.className = 'webdav-message';
 
             try {
-                const res = await API.post('/api/webdav/test', {}, this.password);
+                const res = await API.post('/api/webdav/test', {});
                 if (res.success) {
                     msgEl.textContent = '连接成功';
                     msgEl.className = 'webdav-message success';
@@ -1837,7 +1908,7 @@
             msgEl.className = 'webdav-message';
 
             try {
-                const res = await API.post('/api/webdav/backup', {}, this.password);
+                const res = await API.post('/api/webdav/backup', {});
                 if (res.success) {
                     if (res.noChanges) {
                         msgEl.textContent = res.message || '配置和收藏没有变化，无需备份';
@@ -1864,9 +1935,7 @@
             msgEl.className = 'webdav-message';
 
             try {
-                const res = await fetch('/api/webdav/list', {
-                    headers: { 'X-Admin-Password': this.password }
-                });
+                const { res } = await API.request('/api/webdav/list');
                 const data = await res.json();
 
                 if (!data.success) {
@@ -1961,7 +2030,7 @@
                         try {
                             const filesToDelete = [configFile, bookmarksFile, legacyFile].filter(Boolean);
                             for (const file of filesToDelete) {
-                                await API.post('/api/webdav/delete', { filename: file }, this.password);
+                                await API.post('/api/webdav/delete', { filename: file });
                             }
                             item.remove();
 
@@ -2040,7 +2109,7 @@
                         legacyFile: backup.legacyFile,
                         restoreConfig,
                         restoreBookmarks
-                    }, this.password);
+                    });
 
                     if (restoreRes.success) {
                         this.closeLayer(optionsDialog);
@@ -2261,7 +2330,7 @@
             button.textContent = '保存中...';
             this.updateConfigStatus('正在保存到服务器', 'pending');
             try {
-                const res = await API.post('/api/config', this.config, this.password);
+                const res = await API.post('/api/config', this.config);
                 if (res.success) {
                     this.configDirty = false;
                     this.render();
@@ -2289,7 +2358,7 @@
             const htmlContent = await file.text();
 
             try {
-                const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true }, this.password);
+                const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true });
                 if (res.success) {
                     this.showToast(`导入成功，新增 ${res.imported} 个收藏${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
                     await this.loadFavorites();
@@ -2306,9 +2375,7 @@
 
         async exportFavorites() {
             try {
-                const res = await fetch('/api/favorites/export', {
-                    headers: { 'X-Admin-Password': this.password }
-                });
+                const { res } = await API.request('/api/favorites/export');
                 if (!res.ok) {
                     const data = await res.json();
                     this.showToast(data.error || '导出失败', 'error');
@@ -2426,7 +2493,7 @@
 
         async saveFavorites() {
             try {
-                const res = await API.post('/api/favorites', { favorites: this.favorites }, this.password);
+                const res = await API.post('/api/favorites', { favorites: this.favorites });
                 if (res.success) {
                     this.buildSearchIndex();
                     this.showToast('收藏已保存到服务器');
@@ -3165,7 +3232,7 @@
         }
 
         async changePassword() {
-            if (!this.password) { await this.notice('请先进入管理模式'); return; }
+            if (!this.authenticated) { await this.notice('请先进入管理模式'); return; }
             const values = await this.showUiDialog({
                 title: '修改管理密码',
                 fields: [
@@ -3177,10 +3244,9 @@
             if (!values) return;
             const newPwd = values.values[0];
 
-            const res = await API.post('/api/change-password', { newPassword: newPwd }, this.password);
+            const res = await API.post('/api/change-password', { newPassword: newPwd });
             if (res.success) {
-                this.password = newPwd;
-                sessionStorage.setItem(SESSION_PWD_KEY, newPwd);
+                // 密码改了，浏览器里没有任何需要更新的凭据：会话 Cookie 仍在。
                 this.showToast('密码已修改');
             } else {
                 this.showToast(res.error || '修改失败', 'error');

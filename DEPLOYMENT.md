@@ -160,6 +160,15 @@ sudo apt install certbot python3-certbot-nginx
 sudo certbot --nginx -d nav.example.com
 ```
 
+**登录 Cookie 与 HTTPS**：登录状态存放在 Cookie 中。服务端通过 nginx 回填的
+`X-Forwarded-Proto` 头判断请求是否经 https 到达，是则给 Cookie 加 `Secure` 标记。
+纯 http 部署会自动省略该标记，浏览器才肯保存——**只要按上面配置了证书与反代，
+无需任何额外设置**。`security.cookieSecure` 仅用于覆盖这一自动判断，一般不要改。
+
+若登录后始终提示未登录，先确认浏览器能收到 `Set-Cookie` 响应头：
+`curl -i -X POST http://127.0.0.1:4000/api/verify-password -H 'X-Admin-Password: <密码>' -d '{}'`
+应看到 `Set-Cookie: nav_session=...; HttpOnly; SameSite=Lax; Path=/`（经 https 时另带 `Secure`）。
+
 ## 更新应用
 
 ```bash
