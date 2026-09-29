@@ -61,12 +61,17 @@
     };
 
     // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
-    // 服务端把「因环境变化被自动登出」用 401 + code:'env_changed' 表达，
-    // 这里统一拦截并弹一次底部提示条幅。
+    // 服务端把「因环境变化被自动登出」用两种方式表达：401 响应体里的
+    // code:'env_changed'，以及两处软门（200 响应）上的 X-Session-Env-Changed 头。
+    // 软门必须返回 200——否则匿名用户每次刷新首页都会看到报错——
+    // 但那样客户端就收不到原因，只能对着被截断的公开列表建索引。
     const API = {
         envChangeNotified: false,
-        notifyEnvChanged(data) {
-            if (!data || data.code !== 'env_changed' || API.envChangeNotified) return;
+        notifyEnvChanged(data, headers) {
+            const fromBody = data && data.code === 'env_changed';
+            const fromHeader = headers && headers.get('X-Session-Env-Changed') === 'env_changed';
+            if (!fromBody && !fromHeader) return;
+            if (API.envChangeNotified) return;
             API.envChangeNotified = true;
             if (window.app) {
                 window.app.authenticated = false;
@@ -77,7 +82,8 @@
             const res = await fetch(url, { credentials: 'same-origin', ...options });
             let data = null;
             try { data = await res.json(); } catch (e) {}
-            if (data && data.error) API.notifyEnvChanged(data);
+            // 200 的响应也可能带 env_changed（软门），所以不看状态码，只看两个信号源
+            API.notifyEnvChanged(data, res.headers);
             return { res, data };
         },
         async get(url) {
@@ -539,17 +545,34 @@
 
         // 首屏渲染之后再问一次会话。命中则补上私密检索所需的 privacyMode，
         // 整个过程不阻塞首屏。
+        //
+        // 保留 promise 供检索分支 await：首屏与本次查询之间有一个窗口，
+        // 期间 authenticated 仍是 false。此时输入 // 会被当成普通搜索词，
+        // 私密收藏「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
-            try {
-                const session = await this.loadSession();
-                if (!session.authenticated) return;
-                this.authenticated = true;
-                this.loadPrivacyMode().then(privacyMode => {
-                    if (privacyMode !== null) this.config.privacyMode = privacyMode;
+            const probe = this.sessionProbe = this.loadSession()
+                .then(session => {
+                    if (session.authenticated) {
+                        this.authenticated = true;
+                        this.loadPrivacyMode().then(privacyMode => {
+                            if (privacyMode !== null) this.config.privacyMode = privacyMode;
+                        });
+                    }
+                    return session.authenticated;
+                })
+                .catch(e => {
+                    console.error('Restore session failed:', e);
+                    return false;
                 });
-            } catch (e) {
-                console.error('Restore session failed:', e);
-            }
+            return probe;
+        }
+
+        // 会话是否已确认。会话查询还没回来时返回 null 表示「尚未确定」，
+        // 与 false（确定未登录）区分开。
+        async waitForSession() {
+            if (this.authenticated) return true;
+            if (!this.sessionProbe) return false;
+            return this.sessionProbe;
         }
 
         async trustDevice() {
@@ -1034,6 +1057,15 @@
             // 检测是否为隐私模式触发（//）
             const isPrivacyTrigger = isFavMode && value.length >= 2 && this.isFavSearchTrigger(value[1]);
 
+            // 首屏与 /api/session 返回之间存在一个窗口，期间 authenticated 仍是 false，
+            // 若此时判定「// 未生效」，它会被永久当成普通搜索词，私密收藏再也回不来。
+            // 窗口内改为等会话结果出来再判定；已确定的状态不额外等待。
+            if (isPrivacyTrigger && !this.authenticated && this.sessionProbe) {
+                e.preventDefault?.();
+                this.waitForSession().then(() => this.handleSearchInput(e));
+                return;
+            }
+
             if (isFavMode && this.pasteMode) {
                 this.pasteMode = false;
                 this.togglePasteMode(false);
@@ -1416,6 +1448,9 @@
                 });
                 if (!res.data || !res.data.valid) { await this.notice('密码错误', '无法进入管理'); return; }
                 this.authenticated = true;
+                // 重新登录后必须复位这个标志，否则本轮会话再遇到环境变化时
+                // 提示会被静默吞掉——用户只看到自己被登出，却没有任何说明。
+                API.envChangeNotified = false;
 
                 // 勾选「信任此设备」才把会话升级为 30 天
                 if (values.choices.trustDevice) {
@@ -1776,12 +1811,19 @@
                 try { await API.post('/api/logout', {}); } catch (e) {
                     console.error('Logout failed:', e);
                 }
-                // 重新允许下次进入管理时重新弹环境变化提示
+                // 重新允许下次登录后再次弹出环境变化提示
                 API.envChangeNotified = false;
                 this.privacySearchActive = false;
                 // 丢弃全量缓存，页面回到匿名可见的公开子集
                 this.adminFavorites = null;
                 await this.loadFavorites();
+                // loadFavorites 之前若有请求在途，可能在登出后才把全量列表写回来。
+                // 此刻已是匿名身份，必须把私密条目就地剔除，否则页面会一边声称
+                // 未登录、一边握着完整的私密列表（保存/渲染路径都看得到）。
+                if (!this.authenticated && this.favorites.some(fav => fav && fav.private)) {
+                    this.favorites = this.favorites.filter(fav => fav && !fav.private);
+                    this.buildSearchIndex();
+                }
             };
 
             // WebDAV 配置加载
@@ -3233,21 +3275,34 @@
 
         async changePassword() {
             if (!this.authenticated) { await this.notice('请先进入管理模式'); return; }
+            // 必须填当前密码：服务端只凭会话不放行改密码，
+            // 这是为了防止拿到会话的人直接改掉密码完成接管。
             const values = await this.showUiDialog({
                 title: '修改管理密码',
                 fields: [
+                    { label: '当前密码', type: 'password' },
                     { label: '新密码', type: 'password' },
                     { label: '再次输入新密码', type: 'password' }
                 ],
-                validate: ([newPwd, repeated]) => newPwd.length < 8 ? '密码至少 8 位' : newPwd !== repeated ? '两次输入不一致' : ''
+                validate: ([cur, newPwd, repeated]) =>
+                    !cur ? '请输入当前密码'
+                        : newPwd.length < 8 ? '密码至少 8 位'
+                        : newPwd !== repeated ? '两次输入不一致' : ''
             });
             if (!values) return;
-            const newPwd = values.values[0];
+            const currentPwd = values.values[0];
+            const newPwd = values.values[1];
 
-            const res = await API.post('/api/change-password', { newPassword: newPwd });
+            const res = await API.post('/api/change-password', {
+                currentPassword: currentPwd,
+                newPassword: newPwd
+            });
             if (res.success) {
-                // 密码改了，浏览器里没有任何需要更新的凭据：会话 Cookie 仍在。
-                this.showToast('密码已修改');
+                // 服务端改密码后终止了全部会话，本设备的凭据也已失效，需重新登录。
+                this.authenticated = false;
+                API.envChangeNotified = false;
+                this.adminFavorites = null;
+                this.showToast('密码已修改，请重新登录', 'success', 5000);
             } else {
                 this.showToast(res.error || '修改失败', 'error');
             }

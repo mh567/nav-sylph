@@ -477,8 +477,9 @@ test('11 个特权路由 + change-password 都改用 requireAdmin 中间件', ()
     // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
     // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
     const code = stripComments(server);
-    const guarded = code.match(/app\.(?:post|get)\('\/api\/[^']*',\s*rateLimit,\s*requireAdmin,/g) || [];
-    assert.equal(guarded.length, 12, '11 个特权路由外加 change-password 共 12 处');
+    const guarded = code.match(/app\.(?:post|get)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
+    // 11 个特权路由 + change-password + trust-device = 13（trust-device 不带 rateLimit 亦可）
+    assert.equal(guarded.length, 13, '特权路由 + change-password + trust-device 共 13 处');
     assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
         '手写守卫必须全部移除');
 });
@@ -499,12 +500,16 @@ test('会话相关响应带 no-store 与 Accept-CH', () => {
     assert.match(code, /function setSessionHeaders\(res\) \{[\s\S]*?Accept-CH/);
 });
 
-test('登出只清 cookies 不清 cache', () => {
-    // 修复前若写 Clear-Site-Data: "cache", "cookies"，
-    // 会连带清掉用户刚存的配置缓存。
+test('登出不再发 Clear-Site-Data', () => {
+    // 修复前发的是 Clear-Site-Data: "cookies"，想的是「只清 cookies 不清 cache」。
+    // 但该头作用于整个源（Chrome 还覆盖可注册域），而 /api/logout 无需凭据即可调用，
+    // 一个跨站表单 POST 就能把受害者该站所有 Cookie 清空——反复登出的死循环。
+    // 显式清掉会话 Cookie 已经足够，不应再依赖这个头。
     const code = stripComments(server);
-    assert.match(code, /Clear-Site-Data', '"cookies"'/);
-    assert.doesNotMatch(code, /Clear-Site-Data',\s*'"cache/, '清 cache 会连带清掉用户刚存的配置缓存');
+    assert.doesNotMatch(code, /Clear-Site-Data/, 'Clear-Site-Data 可被跨站触发清空整站 Cookie');
+    assert.match(code, /app\.post\('\/api\/logout', rateLimit,/, '登出端点必须限流');
+    assert.match(code, /app\.post\('\/api\/logout', rateLimit,[\s\S]*?sessionStore\.getSession/,
+        '登出必须要求一个真实会话，不能是任意调用即可清 Cookie 的端点');
 });
 
 test('401 响应带上 env_changed 原因码', () => {
@@ -523,10 +528,90 @@ test('客户端不再保存明文密码', () => {
     assert.equal(headerUses.length, 1, '密码只应在登录那一次请求里出现');
 });
 
+test('重新登录后必须复位 envChangeNotified', () => {
+    // 修复前：envChangeNotified 一旦置真，只有显式点「退出登录」才会复位。
+    // 于是「环境变化 → 看到提示 → 重新登录 → 再次环境变化」这条极常见的路径上，
+    // 第二次登出**完全没有提示**，用户只看到自己被踢出去却没有任何说明。
+    const code = stripComments(appSource);
+    const login = code.slice(code.indexOf('async openAdmin()'), code.indexOf('beginConfigEdit()'));
+    assert.match(login, /API\.envChangeNotified = false;/,
+        '重新登录成功后必须复位，否则本轮再次环境变化不会提示');
+    // 复位必须发生在 authenticated = true 之后，否则旧会话的迟到响应会再置真
+    assert.ok(login.indexOf('API.envChangeNotified = false;') > login.indexOf('this.authenticated = true;'),
+        '复位应在确认登录成功之后');
+});
+
+test('服务端兜住未处理的 Promise 拒绝', () => {
+    // 纵深防御：Express 4 不捕获 async 处理函数抛出的异常，
+    // 任何解析路径出错都会变成 unhandledRejection 终止进程。
+    // readCookie 已有 try/catch，这里是第二道防线。
+    const code = stripComments(server);
+    assert.match(code, /process\.on\('unhandledRejection'/, '必须兜住未处理的 Promise 拒绝');
+});
+
 test('会话状态用 HttpOnly Cookie，客户端用 credentials 携带', () => {
+    // 修复前只从响应体读 code:'env_changed'，而两处软门必须返回 200，
+    // 那里带不出原因码——于是环境变化后客户端对着被截断的公开列表建索引，
+    // 私密检索报「无匹配」且不自愈。软门改用 X-Session-Env-Changed 头。
     const code = stripComments(appSource);
     assert.match(code, /credentials: 'same-origin'/);
-    assert.match(code, /code !== 'env_changed'/, '客户端必须识别环境变化原因码');
+    assert.match(code, /code === 'env_changed'/, '客户端必须识别 401 响应体里的原因码');
+    assert.match(code, /X-Session-Env-Changed'\) === 'env_changed'/, '必须识别软门响应头里的原因码');
+});
+
+test('两处软门与环境变化响应都带 X-Session-Env-Changed', () => {
+    // 修复前 hasAdminAccess 丢掉了 reason，两条软门在环境变化后静默返回
+    // 公开子集，客户端无从判断自己已被登出。
+    const code = stripComments(server);
+    assert.match(code, /function noteEnvChanged\(res, reason\)/, '需要统一标注环境变化的辅助函数');
+    assert.match(code, /ENV_CHANGED_HEADER = 'X-Session-Env-Changed'/);
+    const gates = code.match(/noteEnvChanged\(res, access\.reason\)/g) || [];
+    assert.equal(gates.length, 2, '/api/config 与 /api/favorites 两处软门都要标注');
+    assert.match(code, /app\.get\('\/api\/session', rateLimit,[\s\S]*?noteEnvChanged\(res, reason\)/,
+        '/api/session 必须透出 env_changed——它是页面加载时客户端唯一发的请求');
+});
+
+test('改密码必须重新验证当前密码，并终止全部会话', () => {
+    // 修复前：改密码只凭会话即可，密码泄露后的补救动作完全失效——
+    // 攻击者能改掉密码让受害者也登不进去，且已窃取的令牌继续可用。
+    // OWASP Authentication Cheat Sheet 要求凭据变更前重新认证。
+    const code = stripComments(server);
+    const route = code.slice(code.indexOf("app.post('/api/change-password'"));
+    assert.match(route, /currentPassword/, '必须接收当前密码');
+    assert.match(route, /verifyPassword\(provided\)/, '必须校验当前密码');
+    assert.match(route, /sessionStore\.destroyAll\(\)/, '改密码后必须终止全部会话');
+});
+
+test('会话总数有上限，超限拒绝而非驱逐', () => {
+    const code = stripComments(server);
+    assert.match(code, /登录会话过多/, '会话满时应明确报错');
+    const { MAX_SESSIONS } = require(path.join(ROOT, 'lib', 'session.js'));
+    assert.equal(MAX_SESSIONS, 1000);
+});
+
+test('匿名可读接口有独立限流，防止 bcrypt 放大', () => {
+    // 修复前 /api/config 与 /api/favorites 无任何限流，而它们在无会话时
+    // 每次都跑一次 bcrypt：伪造 X-Admin-Password 可把单请求从约 7ms
+    // 抬到 63ms（约 9 倍 CPU）且无需认证。
+    const code = stripComments(server);
+    assert.match(code, /function publicReadLimit\(req, res, next\)/);
+    assert.match(code, /app\.get\('\/api\/config', publicReadLimit,/, '/api/config 需独立限流');
+    assert.match(code, /app\.get\('\/api\/favorites', publicReadLimit,/, '/api/favorites 需独立限流');
+    // 必须是独立桶：与登录共用会把防爆破预算耗光
+    assert.match(code, /publicReadLimitMap = new Map\(\)/);
+});
+
+test('畸形百分号编码的 Cookie 不会让进程崩溃', () => {
+    // 修复前 readCookie 直接 decodeURIComponent，Cookie: nav_session=%
+    // 抛 URIError；调用栈都在 async 处理函数里、Express 4 不捕获，
+    // 于是 unhandledRejection 终止进程——一个未认证请求即可打挂服务。
+    const { readCookie } = sessionModule.exports;
+    for (const bad of ['nav_session=%', 'nav_session=%E4%', 'nav_session=%zz', 'nav_session=%C0']) {
+        assert.equal(readCookie({ headers: { cookie: bad } }, 'nav_session'), null,
+            `${bad} 应被安全拒绝而不是抛出`);
+    }
+    assert.equal(readCookie({ headers: { cookie: 'nav_session=abc' } }, 'nav_session'), 'abc',
+        '正常值仍应照常解析');
 });
 
 test('环境变化提示复用底部 toast 且时长可调', () => {

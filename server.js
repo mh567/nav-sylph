@@ -150,6 +150,24 @@ function sweepRateLimitStore(store, now, windowMs) {
     }
 }
 
+// 匿名可读接口（/api/config、/api/favorites）的限流。
+// 这两条软门在无会话时每次都会跑一次 bcrypt 比对，实测伪造 X-Admin-Password
+// 可把单请求从约 7ms 抬到 63ms（约 9 倍 CPU）且无需任何认证。
+// 单独计数而不是复用 rateLimit：首页匿名加载是正常流量，若与登录共用一个桶，
+// 正常访问就能把登录的防爆破预算耗光。阈值放宽到 120 次/分钟。
+const publicReadLimitMap = new Map();
+const PUBLIC_READ_WINDOW = 60000;
+const PUBLIC_READ_MAX = 120;
+
+function publicReadLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const { allowed } = consumeRateLimit(publicReadLimitMap, ip, Date.now(), PUBLIC_READ_WINDOW, PUBLIC_READ_MAX);
+    if (!allowed) {
+        return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    next();
+}
+
 function isOverPasteCapacity(count, totalBytes) {
     return count >= PASTE_MAX_ENTRIES || totalBytes >= PASTE_MAX_BYTES;
 }
@@ -177,6 +195,7 @@ setInterval(() => {
     cleanExpiredPastes();
     sweepRateLimitStore(pasteRateLimitMap, now, PASTE_RATE_WINDOW);
     sweepRateLimitStore(rateLimitMap, now, RATE_LIMIT_WINDOW);
+    sweepRateLimitStore(publicReadLimitMap, now, PUBLIC_READ_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发时才读取 sessionStore，此时模块顶层 const 已完成初始化。
     sessionStore.sweep(now);
@@ -211,6 +230,13 @@ app.disable('x-powered-by');
 // IP 换取新限流桶（实测可无限轮换），此时 1 与 true 都不安全。真正生效的
 // 边界是网络层，不是这个取值。
 app.set('trust proxy', 1);
+
+// Express 4 不捕获 async 处理函数抛出的异常，这类异常会变成 unhandledRejection
+// 并终止进程。任何未认证请求都能触发的解析路径（如 Cookie 解码）都可能打挂服务，
+// 因此在这里兜底：记日志、继续存活。真正的请求级错误仍由下面的错误处理中间件负责。
+process.on('unhandledRejection', (reason) => {
+    console.error('[Server] 未处理的 Promise 拒绝:', reason && reason.message ? reason.message : reason);
+});
 
 app.use(express.json());
 app.use(compression({ threshold: 1024 }));
@@ -408,6 +434,21 @@ async function requireAdmin(req, res, next) {
     return unauthorized(res, req.sessionReason);
 }
 
+/**
+ * 环境变化的信号怎么传给客户端。
+ *
+ * 401 一律走 unauthorized()，靠 body 里的 code 区分。但两处「软门」
+ * （/api/config、/api/favorites）必须返回 200 + 公开视图，否则未登录用户
+ * 每次刷新首页都会看到报错。它们此前把 reason 丢掉，于是环境变化后
+ * 客户端只拿到一个被截断的公开列表，既不知道发生了登出，私密检索
+ * 也会对着残缺数据报「无匹配」。这里改用响应头携带，由客户端统一识别。
+ */
+const ENV_CHANGED_HEADER = 'X-Session-Env-Changed';
+
+function noteEnvChanged(res, reason) {
+    if (reason && reason.code) res.setHeader(ENV_CHANGED_HEADER, reason.code);
+}
+
 // 两处「软门」：命中即返回全量，否则返回公开视图，不返回 401。
 async function hasAdminAccess(req) {
     const reason = {};
@@ -431,7 +472,10 @@ async function init() {
     });
 }
 
-app.get('/api/config', async (req, res) => {
+// 这条软门在无会话时会跑一次 bcrypt 比对，而匿名访问必走这条路。
+// 不限流的话，伪造的 X-Admin-Password 就能把每次请求从约 7ms 抬到 63ms
+// （约 9 倍 CPU），且完全无需认证。匿名也要能读首页，因此用独立限流桶。
+app.get('/api/config', publicReadLimit, async (req, res) => {
     try {
         const cfg = await readJSON(CONFIG_FILE);
         // 会话或正确管理密码时返回完整配置，供管理面板读取 privacyMode
@@ -439,6 +483,7 @@ app.get('/api/config', async (req, res) => {
         if (access.ok) {
             return res.json(cfg);
         }
+        noteEnvChanged(res, access.reason);
         res.json(toPublicConfig(cfg));
     } catch (err) {
         console.error('读取配置失败:', err);
@@ -471,9 +516,13 @@ app.post('/api/config', rateLimit, requireAdmin, async (req, res) => {
 app.post('/api/verify-password', rateLimit, async (req, res) => {
     const password = req.headers['x-admin-password'];
     const valid = await verifyPassword(password);
-    // 登录即换发新会话令牌（OWASP：权限级别变化后必须换发会话 ID）
     if (valid) {
-        sessionStore.issueSession(res, req, false);
+        // 登录即换发新会话令牌（OWASP：权限级别变化后必须换发会话 ID）
+        const token = sessionStore.issueSession(res, req, false);
+        if (!token) {
+            // 会话数已满：明确报错，不静默驱逐他人仍在有效期内的登录
+            return res.status(503).json({ error: '登录会话过多，请稍后再试' });
+        }
         setSessionHeaders(res);
     }
     res.json({ valid });
@@ -481,10 +530,14 @@ app.post('/api/verify-password', rateLimit, async (req, res) => {
 
 // 首屏静默确认登录态。未登录返回 200 + { authenticated:false } 而非 401，
 // 避免未访问者把整个首页渲染成错误态。
-app.get('/api/session', async (req, res) => {
+// 仍然要把 env_changed 透出去：页面加载时这是客户端唯一发的请求，
+// 若不告诉它「你刚被环境变化登出」，用户只会看到一个无来由的登录框。
+app.get('/api/session', rateLimit, async (req, res) => {
     setSessionHeaders(res);
-    const found = sessionStore.getSession(req, {});
+    const reason = {};
+    const found = sessionStore.getSession(req, reason);
     if (!found) {
+        noteEnvChanged(res, reason);
         return res.json({ authenticated: false, trusted: false });
     }
     sessionStore.refreshSessionCookie(res, found, req);
@@ -496,7 +549,7 @@ app.get('/api/session', async (req, res) => {
 });
 
 // 信任此设备：把当前会话升级为 30 天滑动续期
-app.post('/api/trust-device', requireAdmin, async (req, res) => {
+app.post('/api/trust-device', rateLimit, requireAdmin, async (req, res) => {
     setSessionHeaders(res);
     const token = readCookie(req, config.security.sessionCookieName);
     if (!token) {
@@ -510,25 +563,48 @@ app.post('/api/trust-device', requireAdmin, async (req, res) => {
 });
 
 // 登出：服务端销毁会话 + 清 Cookie。
-// Clear-Site-Data 只清 cookies，不清 cache —— 清 cache 会连带清掉用户刚存的配置缓存。
-app.post('/api/logout', async (req, res) => {
-    sessionStore.destroy(readCookie(req, config.security.sessionCookieName));
+// **不发 Clear-Site-Data。** 该头作用于整个源（Chrome 还覆盖可注册域），
+// 一个跨站表单 POST 就能触发，把用户在该站所有 Cookie 一次清空——
+// 受害者会陷入「一访问就被登出」的循环。显式清掉会话 Cookie 已经足够。
+// 必须带一个真实会话：否则它就是个无凭据也能调的端点，还能烧掉
+// 登录接口共用的限流桶。幂等语义由「有无会话都清 Cookie」保证。
+app.post('/api/logout', rateLimit, async (req, res) => {
+    const reason = {};
+    const found = sessionStore.getSession(req, reason);
+    if (found) sessionStore.destroy(found.token);
     sessionStore.clearSessionCookie(res, req);
-    res.setHeader('Clear-Site-Data', '"cookies"');
     setSessionHeaders(res);
     res.json({ success: true });
 });
 
+// 改密码必须重新验证**当前密码**，会话 Cookie 不足以授权。
+// 密码是这里唯一的根凭据：只凭一个会话就改掉它，等于让任何拿到会话的人
+// 完成账号接管，而且受害者改完密码反而把自己锁在门外。
+// OWASP Authentication Cheat Sheet 要求凭据变更前重新认证。
 app.post('/api/change-password', rateLimit, requireAdmin, async (req, res) => {
-    const { newPassword } = req.body;
+    const { newPassword, currentPassword } = req.body || {};
     if (!newPassword || newPassword.length < 8) {
         return res.status(400).json({ error: '新密码至少8位' });
     }
-    
+
+    // 优先取当前密码；不传时回落到旧版放在请求头的写法。
+    const provided = currentPassword || req.headers['x-admin-password'];
+    if (!provided) {
+        return res.status(401).json({ error: '请输入当前密码' });
+    }
+    if (!await verifyPassword(provided)) {
+        return res.status(401).json({ error: '当前密码错误' });
+    }
+
     try {
         const passwordHash = await bcrypt.hash(newPassword, 10);
         await writeJSON(PASSWORD_FILE, { passwordHash });
-        res.json({ success: true });
+        // 换密码后终止全部会话（含本会话），否则已泄露的令牌仍能继续用，
+        // 这个补救动作就失去意义。客户端已无凭据可重放，需重新登录。
+        const revoked = sessionStore.destroyAll();
+        console.log(`[Server] 密码已修改，终止 ${revoked} 个会话`);
+        sessionStore.clearSessionCookie(res, req);
+        res.json({ success: true, reauth: true });
     } catch (err) {
         console.error('修改密码失败:', err);
         res.status(500).json({ error: '修改密码失败' });
@@ -706,10 +782,10 @@ function mergeConfig(existing, incoming) {
 }
 
 // 获取收藏书签
-app.get('/api/favorites', async (req, res) => {
+app.get('/api/favorites', publicReadLimit, async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
-        // 会话或正确管理密码时返回完整列表，供管理面板与私密检索使用
+        // 会话或正确管理密码时返回全量列表，供管理面板与私密检索使用
         const access = await hasAdminAccess(req);
         if (access.ok) {
             return res.json({
@@ -717,6 +793,9 @@ app.get('/api/favorites', async (req, res) => {
                 favorites: Array.isArray(data?.favorites) ? data.favorites : []
             });
         }
+        // 环境变化时这里返回的是被截断的公开子集，必须让客户端知道，
+        // 否则它会把残缺列表当成完整数据建索引，私密检索随即报「无匹配」。
+        noteEnvChanged(res, access.reason);
         res.json(toPublicFavorites(data));
     } catch (err) {
         console.error('读取收藏失败:', err);
