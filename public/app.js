@@ -105,6 +105,8 @@
         constructor() {
             this.config = null;
             this.authenticated = false;
+            // 当前会话是否被信任（可信=30 天，否则 24 小时）
+            this.sessionTrusted = false;
             this.dragData = null;
             this.pasteMode = false;
             this.pasteUserResized = false;
@@ -554,6 +556,8 @@
                 .then(session => {
                     if (session.authenticated) {
                         this.authenticated = true;
+                        // 记录当前会话是否被信任，管理面板里的开关要反映真实状态
+                        this.sessionTrusted = !!session.trusted;
                         this.loadPrivacyMode().then(privacyMode => {
                             if (privacyMode !== null) this.config.privacyMode = privacyMode;
                         });
@@ -575,20 +579,40 @@
             return this.sessionProbe;
         }
 
-        async trustDevice() {
+        /**
+         * 设置当前会话是否被信任。
+         * @param {boolean} trusted true=30 天免重复登录，false=降回 24 小时（不登出）
+         * @returns {Promise<boolean>} 是否设置成功
+         */
+        async setDeviceTrust(trusted) {
             try {
-                const res = await API.post('/api/trust-device', {});
-                if (res.trusted) return true;
-                // 服务端没有会话可升级（仅可能发生在仍用明文密码的旧页面上）。
-                // 不静默返回 false：那会让「信任此设备」看起来勾了却只有 24 小时。
+                const res = await API.post('/api/trust-device', { trusted });
                 if (res.requiresLogin) {
-                    this.showToast('未能标记为可信设备，请重新登录后再试', 'error');
+                    // 服务端没有会话可调整（仅可能发生在仍用明文密码的旧页面上）。
+                    // 不静默失败：那会让开关看起来生效了，实际没变。
+                    this.showToast('未能设置，请重新登录后再试', 'error');
+                    return false;
                 }
-                return false;
+                if (res.trusted !== undefined) this.sessionTrusted = !!res.trusted;
+                return !!res.trusted;
             } catch (e) {
-                console.error('Trust device failed:', e);
+                console.error('Set device trust failed:', e);
                 return false;
             }
+        }
+
+        async trustDevice() {
+            return this.setDeviceTrust(true);
+        }
+
+        // 信任此设备开关下方的说明文字。写清「关闭」的实际后果，
+        // 避免用户以为关掉就等于退出登录。
+        updateTrustDeviceHint() {
+            const hint = $('#trustDeviceHint');
+            if (!hint) return;
+            hint.textContent = this.sessionTrusted
+                ? '30 天内免重复登录；关闭后当前会话仍有效，但 24 小时后需重新登录。'
+                : '当前设备未被信任，24 小时后需重新登录。';
         }
 
         // privacyMode 属于管理端设置，不在公开配置视图里。
@@ -1451,10 +1475,14 @@
                 // 重新登录后必须复位这个标志，否则本轮会话再遇到环境变化时
                 // 提示会被静默吞掉——用户只看到自己被登出，却没有任何说明。
                 API.envChangeNotified = false;
+                // 会话已换，之前那份可信状态不再作数
+                this.sessionTrusted = false;
 
                 // 勾选「信任此设备」才把会话升级为 30 天
                 if (values.choices.trustDevice) {
-                    await this.trustDevice();
+                    this.sessionTrusted = await this.trustDevice();
+                } else {
+                    this.sessionTrusted = false;
                 }
 
                 // 检测是否为默认密码，提示修改
@@ -1718,6 +1746,19 @@
                     </div>
                 </div>
                 <div class="section">
+                    <div class="section-title">登录安全</div>
+                    <div class="setting-row">
+                        <label>
+                            <span>信任此设备</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="trustDeviceToggle" ${this.sessionTrusted ? 'checked' : ''}>
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                    <p class="fav-hint" id="trustDeviceHint"></p>
+                </div>
+                <div class="section">
                     <div class="section-title">收藏</div>
                     <div class="fav-stats">
                         共 <strong>${this.favoritesLoading ? '加载中' : this.favorites.length}</strong> 个收藏
@@ -1803,10 +1844,29 @@
                 this.markConfigDirty();
             };
 
+            // 信任此设备开关。与其他设置不同：它立即生效、不走「保存配置」，
+            // 因为服务端会立刻按新档位重算会话有效期。
+            $('#trustDeviceToggle').onchange = async (e) => {
+                const toggle = e.target;
+                const wanted = toggle.checked;
+                // 等待期间锁住，避免连续点击发出互相矛盾的两次请求
+                toggle.disabled = true;
+                const ok = await this.setDeviceTrust(wanted);
+                toggle.disabled = false;
+                if (ok !== wanted) {
+                    // 服务端没接受：把开关拨回真实状态，别让它停在一个假的档位上
+                    toggle.checked = !wanted;
+                    this.sessionTrusted = !wanted;
+                }
+                this.updateTrustDeviceHint();
+            };
+            this.updateTrustDeviceHint();
+
             // 登出按钮
             $('#logoutBtn').onclick = async () => {
                 if (!await this.closeAdmin()) return;
                 this.authenticated = false;
+                this.sessionTrusted = false;
                 // 通知服务端销毁会话并清 Cookie；失败也要继续清理本地状态
                 try { await API.post('/api/logout', {}); } catch (e) {
                     console.error('Logout failed:', e);

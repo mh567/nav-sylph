@@ -471,6 +471,71 @@ test('查询走的是索引查找而非线性扫描', () => {
     assert.ok(ms < 250, `5000 次查询耗时 ${ms.toFixed(1)}ms，疑似线性扫描`);
 });
 
+test('setTrusted 可双向设置，并立即按新档位重算有效期', () => {
+    // 取消信任不能等下次访问才生效：否则用户以为已经降级，实际还能用到 30 天。
+    const { store, advance } = makeStore();
+    const token = store.createSession(req(MAC), false);
+    assert.equal(store.sessions.get(token).trusted, false);
+
+    const trusted = store.setTrusted(token, true);
+    assert.equal(trusted.trusted, true);
+    assert.equal(trusted.expiresAt, 1_700_000_000_000 + 30 * 86400000, '开启后按 30 天算');
+
+    // 用掉一些时间后再取消，应当立刻回到「现在起 24 小时」
+    advance(10 * 86400000);
+    const untrusted = store.setTrusted(token, false);
+    assert.equal(untrusted.trusted, false);
+    assert.equal(untrusted.expiresAt, 1_700_000_000_000 + 10 * 86400000 + 24 * 3600000,
+        '取消信任必须立即降回 24 小时，而不是等下次访问');
+    assert.ok(store.getSession(req(MAC, token), {}), '取消信任不销毁会话，用户当前仍处于登录态');
+
+    assert.equal(store.setTrusted('不存在的令牌', true), null);
+});
+
+test('markTrusted 仍是 setTrusted(true) 的等价入口', () => {
+    const { store } = makeStore();
+    const token = store.createSession(req(MAC), false);
+    assert.equal(store.markTrusted(token).trusted, true);
+});
+
+test('管理端 trust-device 端点接受显式的 trusted 布尔值', () => {
+    // 服务端此前只能置 true，无法取消；前端管理面板的开关需要双向。
+    const code = stripComments(server);
+    const route = code.slice(code.indexOf("app.post('/api/trust-device'"));
+    assert.match(route, /req\.body\?\.trusted !== false/, '缺省为 true 以兼容旧客户端');
+    assert.match(route, /sessionStore\.setTrusted\(token, trusted\)/, '必须用双向的 setTrusted');
+    assert.equal((code.match(/sessionStore\.markTrusted\(token\)/g) || []).length, 0,
+        '端点里不应再直接用单向的 markTrusted');
+});
+
+test('管理面板提供信任此设备开关，且失败时回滚显示状态', () => {
+    // 开关的 checked 是「用户点完之后的意图」，不等于服务端真实状态。
+    // 服务端没接受却把开关留在新位置，用户就会看到一个假的档位。
+    const code = stripComments(appSource);
+    assert.match(code, /id="trustDeviceToggle"/, '管理面板要有该开关');
+    assert.match(code, /\$\{this\.sessionTrusted \? 'checked' : ''\}/,
+        '开关初值须反映真实的会话可信状态');
+    assert.match(code, /if \(ok !== wanted\) \{[\s\S]*?toggle\.checked = !wanted/,
+        '服务端没接受时必须把开关拨回真实状态');
+    assert.match(code, /toggle\.disabled = true/, '等待期间须锁住，避免连点发出矛盾请求');
+});
+
+test('登录与登出都会同步 sessionTrusted', () => {
+    // 状态不同步的后果：换一个会话后，面板仍显示上一段的「已信任」。
+    const code = stripComments(appSource);
+    const login = code.slice(code.indexOf('async openAdmin()'), code.indexOf('beginConfigEdit()'));
+    // 必须在认证成功后立刻清掉旧值，且要在勾选分支之前
+    const reset = login.indexOf('this.sessionTrusted = false;');
+    assert.ok(reset > login.indexOf('this.authenticated = true;'),
+        '重新登录后旧的可信状态不再作数');
+    assert.ok(reset < login.indexOf('await this.trustDevice()'),
+        '须先复位，再按本次勾选结果写入，否则残留的旧值会覆盖本次选择');
+    assert.match(login, /this\.sessionTrusted = await this\.trustDevice\(\)/,
+        '勾选时应写入服务端返回的真实结果，而不是假定成功');
+    const logout = code.slice(code.indexOf("$('#logoutBtn').onclick"));
+    assert.match(logout, /this\.sessionTrusted = false/, '登出后必须清空');
+});
+
 // ========== 源码形状守卫 ==========
 
 test('11 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {

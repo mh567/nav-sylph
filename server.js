@@ -548,18 +548,22 @@ app.get('/api/session', rateLimit, async (req, res) => {
     });
 });
 
-// 信任此设备：把当前会话升级为 30 天滑动续期
+// 信任此设备：设置当前会话的可信状态。
+// body.trusted 为 true 时升级为 30 天滑动续期，false 时降回 24 小时。
+// 缺省为 true，兼容只在登录时勾选「信任此设备」的旧客户端。
+// **取消信任不登出**：用户当前仍处于登录态，只是有效期回到 24 小时。
 app.post('/api/trust-device', rateLimit, requireAdmin, async (req, res) => {
     setSessionHeaders(res);
     const token = readCookie(req, config.security.sessionCookieName);
     if (!token) {
-        // 明文密码登录的旧客户端没有会话可升级，前端会重新登录后再试
+        // 明文密码登录的旧客户端没有会话可调整，前端会重新登录后再试
         return res.json({ trusted: false, requiresLogin: true });
     }
-    const session = sessionStore.markTrusted(token);
+    const trusted = req.body?.trusted !== false;
+    const session = sessionStore.setTrusted(token, trusted);
     if (!session) return unauthorized(res, {});
     sessionStore.setSessionCookie(res, { token, expiresAt: session.expiresAt }, req);
-    res.json({ trusted: true, expiresAt: session.expiresAt });
+    res.json({ trusted: session.trusted, expiresAt: session.expiresAt });
 });
 
 // 登出：服务端销毁会话 + 清 Cookie。
