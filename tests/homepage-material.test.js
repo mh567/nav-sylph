@@ -425,3 +425,39 @@ test('触屏点按关掉 UA 蓝色高亮', () => {
     }
     assert.match(focusRule[0], /outline:\s*2px solid var\(--focus\)/, '轮廓仍使用主色');
 });
+
+test('浅色下的浮起与按下依赖外投影，不能只靠内阴影', () => {
+    // 深色下手感正确、浅色下「读不出来」，根因不是色相而是**机制缺失**：
+    // 深色常态就带 --shadow、悬停带 --shadow-lg，抬升时有影子跟着；
+    // 浅色此前常态完全没有外投影，悬停那层灰棕影在米色底上几乎不可见，
+    // 按钮抬了 -1px 却看不到影子，等于白抬。
+    // 这组断言钉住「浅色必须带外投影」，防止以后又被当成冗余删掉。
+    const idle = /--bookmark-idle-shadow:\s*([^;]+);/.exec(code);
+    assert.ok(idle, '定义了 --bookmark-idle-shadow');
+    assert.match(idle[1], /var\(--shadow\)/, '书签常态须带外投影（与深色同构）');
+
+    const hover = /--bookmark-hover-shadow:\s*([^;]+);/.exec(code);
+    assert.ok(hover, '定义了 --bookmark-hover-shadow');
+    assert.match(hover[1], /var\(--shadow-lg\)/, '书签悬停须换成更强的外投影');
+
+    const btnBase = /^\.search-mode,\.search-engine,\.search-btn\s*\{([\s\S]*?)\n\}/m.exec(code);
+    assert.ok(btnBase, '存在三按钮基础规则');
+    assert.match(btnBase[1], /var\(--shadow\)/, '搜索按钮常态须带外投影');
+
+    const btnHover = /^\.search-mode:hover,\.search-engine:hover,\.search-btn:hover\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(btnHover, '存在三按钮悬停规则');
+    assert.match(btnHover[1], /var\(--shadow-lg\)/, '搜索按钮悬停须换成更强的外投影');
+
+    // 按下时外投影必须收掉：抬升与下压两股力会互相抵消
+    const btnActive = /^\.search-mode:active,\.search-engine:active,\.search-btn:active\s*\{([^}]*)\}/m.exec(code);
+    assert.match(btnActive[1], /box-shadow:\s*var\(--ctl-press-shadow\)/,
+        '按下态整条替换阴影，不保留悬停的外投影');
+});
+
+test('浅色与深色共用同一套浮起机制', () => {
+    // 悬停抬升此前浅色 -1px / 深色 -2px，是机制不一致的又一处。
+    const lifts = [...fullCode.matchAll(/--bookmark-lift:\s*(-?\d+)px/g)].map(m => m[1]);
+    assert.equal(lifts.length, 3, `--bookmark-lift 应定义三处，实际 ${lifts.length}`);
+    assert.equal(new Set(lifts).size, 1,
+        `三处 --bookmark-lift 应一致（同一套机制），实际 ${lifts.join(' / ')}`);
+});
