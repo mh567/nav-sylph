@@ -632,7 +632,7 @@ test('两处软门与环境变化响应都带 X-Session-Env-Changed', () => {
     assert.match(code, /ENV_CHANGED_HEADER = 'X-Session-Env-Changed'/);
     const gates = code.match(/noteEnvChanged\(res, access\.reason\)/g) || [];
     assert.equal(gates.length, 2, '/api/config 与 /api/favorites 两处软门都要标注');
-    assert.match(code, /app\.get\('\/api\/session', rateLimit,[\s\S]*?noteEnvChanged\(res, reason\)/,
+    assert.match(code, /app\.get\('\/api\/session', (?:rateLimit|publicReadLimit),[\s\S]*?noteEnvChanged\(res, reason\)/,
         '/api/session 必须透出 env_changed——它是页面加载时客户端唯一发的请求');
 });
 

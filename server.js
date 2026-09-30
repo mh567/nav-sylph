@@ -196,6 +196,9 @@ setInterval(() => {
     sweepRateLimitStore(pasteRateLimitMap, now, PASTE_RATE_WINDOW);
     sweepRateLimitStore(rateLimitMap, now, RATE_LIMIT_WINDOW);
     sweepRateLimitStore(publicReadLimitMap, now, PUBLIC_READ_WINDOW);
+    sweepRateLimitStore(globalLoginMap, now, 60000);
+    // 失败锁定：按窗口清掉过期记录，锁定期已满的也会随之消失
+    sweepRateLimitStore(loginFailMap, now, LOGIN_FAIL_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发时才读取 sessionStore，此时模块顶层 const 已完成初始化。
     sessionStore.sweep(now);
@@ -305,6 +308,99 @@ function rateLimit(req, res, next) {
     
     if (record.count > RATE_LIMIT_MAX) {
         return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    next();
+}
+
+// ========== 登录防爆破 ==========
+//
+// 本项目只有一个管理密码、没有账户体系，因此没有「锁账号、输密码解锁」这条路。
+// 能做的只有两件事，各管一层：
+//
+//   第 1 层 失败锁定（主力）：同一 IP 连续 LOGIN_FAIL_MAX 次密码错误即锁该 IP
+//                          LOGIN_FAIL_WINDOW。锁定期内直接 429，**不跑 bcrypt**——
+//                          攻击者每个 IP 只消耗 LOGIN_FAIL_MAX 次密码比对，
+//                          之后边际成本趋近于零，堆再多 IP 也只是自己更慢。
+//   第 2 层 总量封顶（兜底）：见 globalLoginLimit，防「大量 IP 各打一次」
+//                          这一种不触发锁定的打法。
+//
+// 三层的执行顺序有讲究：失败锁定必须排在总量封顶**之前**。若总量阈值不大于
+// 单 IP 锁定阈值（第 N 次错误），总量桶会先触发，单 IP 锁定永远走不到，
+// 锁定功能形同虚设，而且「换一台设备登录」也会被总量桶挡下——
+// 那正是全局桶唯一的代价，不该由正常用户先吃到。
+const LOGIN_FAIL_WINDOW = 30 * 60000;  // 30 分钟
+const LOGIN_FAIL_MAX = 10;             // 连续 10 次错误即锁
+const loginFailMap = new Map();        // ip -> { count, start, lockedUntil }
+
+/**
+ * 纯函数形式：store 与 now 由调用方注入，便于做确定性测试。
+ * @returns {{locked: boolean, retryAfter: number, count: number}}
+ */
+function checkLoginLock(store, ip, now) {
+    const rec = store.get(ip);
+    if (!rec) return { locked: false, retryAfter: 0, count: 0 };
+    if (rec.lockedUntil > now) {
+        return { locked: true, retryAfter: Math.ceil((rec.lockedUntil - now) / 1000), count: rec.count };
+    }
+    // 锁定期已过：计数归零重新开始，否则一次锁定会变成永久封禁
+    if (now - rec.start > LOGIN_FAIL_WINDOW) {
+        store.delete(ip);
+        return { locked: false, retryAfter: 0, count: 0 };
+    }
+    return { locked: false, retryAfter: 0, count: rec.count };
+}
+
+/** 密码正确 → 清零；密码错误 → 累加，达阈值即锁。 */
+function notePasswordResult(store, ip, valid, now) {
+    if (valid) {
+        // 成功即清零：否则「成功一次后再错 9 次」会把自己锁住
+        store.delete(ip);
+        return { locked: false };
+    }
+    const rec = store.get(ip);
+    const count = (rec && now - rec.start <= LOGIN_FAIL_WINDOW) ? rec.count + 1 : 1;
+    const lockedUntil = count >= LOGIN_FAIL_MAX ? now + LOGIN_FAIL_WINDOW : 0;
+    store.set(ip, { count, start: rec && now - rec.start <= LOGIN_FAIL_WINDOW ? rec.start : now, lockedUntil });
+    return { locked: count >= LOGIN_FAIL_MAX };
+}
+
+function loginGuard(req, res, next) {
+    const ip = resolveClientIp(req);
+    const { locked, retryAfter } = checkLoginLock(loginFailMap, ip, Date.now());
+    if (locked) {
+        return res.status(429).json({
+            error: `密码错误次数过多，请在 ${Math.ceil(retryAfter / 60)} 分钟后重试`,
+            code: 'locked',
+            retryAfter
+        });
+    }
+    // 把 ip 传给密码校验环节，由 notePasswordResult 回写结果
+    res.locals.loginIp = ip;
+    next();
+}
+
+// 第 2 层：全站总量封顶。key 是固定字符串，不按 IP——单账号系统里 IP 维度
+// 只带来误伤与绕过，层间也不该互相消耗配额。它防的是「大量 IP 各试一次、
+// 始终不触发第 1 层锁定」的打法；代价是攻击者打满时你也会被挡一分钟，
+// 这是封顶总量的必然代价，纯应用层无法既封顶又保证你一定进得来。
+//
+// 阈值必须**大于** LOGIN_FAIL_MAX 并留出足够余量：正常登录要留出余量
+// （自己一次 + 若干次输错），更关键的是要让「第 1 层先触发」成为常态——
+// 否则总量桶会先于单 IP 锁定触发，把「连续输错」变成「等一会儿再试」，
+// 既让锁定功能形同虚设，也让正常用户先吃到全局桶的代价。
+const GLOBAL_LOGIN_LIMIT = 30;         // 每分钟，明显高于单 IP 锁定阈值
+const globalLoginMap = new Map();
+
+function globalLoginLimit(req, res, next) {
+    const { allowed, resetAt } = consumeRateLimit(
+        globalLoginMap, 'global:login', Date.now(), 60000, GLOBAL_LOGIN_LIMIT
+    );
+    if (!allowed) {
+        return res.status(429).json({
+            error: '登录请求过于频繁，请稍后再试',
+            code: 'global_limited',
+            retryAfter: Math.ceil((resetAt - Date.now()) / 1000)
+        });
     }
     next();
 }
@@ -513,9 +609,13 @@ app.post('/api/config', rateLimit, requireAdmin, async (req, res) => {
     }
 });
 
-app.post('/api/verify-password', rateLimit, async (req, res) => {
+// 登录入口：三层依次是「IP 请求速率 → 失败锁定 → 全站总量」。
+// 顺序不能调换：失败锁定排在总量封顶之前，且总量阈值必须高于单 IP 锁定阈值，
+// 否则总量桶先触发，锁定功能形同虚设（详见 globalLoginLimit 上方注释）。
+app.post('/api/verify-password', rateLimit, loginGuard, globalLoginLimit, async (req, res) => {
     const password = req.headers['x-admin-password'];
     const valid = await verifyPassword(password);
+    notePasswordResult(loginFailMap, res.locals.loginIp, valid, Date.now());
     if (valid) {
         // 登录即换发新会话令牌（OWASP：权限级别变化后必须换发会话 ID）
         const token = sessionStore.issueSession(res, req, false);
@@ -532,7 +632,8 @@ app.post('/api/verify-password', rateLimit, async (req, res) => {
 // 避免未访问者把整个首页渲染成错误态。
 // 仍然要把 env_changed 透出去：页面加载时这是客户端唯一发的请求，
 // 若不告诉它「你刚被环境变化登出」，用户只会看到一个无来由的登录框。
-app.get('/api/session', rateLimit, async (req, res) => {
+// 它每次首屏都调，不该消耗登录配额；会话命中时也不跑 bcrypt，档位可放宽。
+app.get('/api/session', publicReadLimit, async (req, res) => {
     setSessionHeaders(res);
     const reason = {};
     const found = sessionStore.getSession(req, reason);

@@ -1470,7 +1470,20 @@
                     headers: { 'Content-Type': 'application/json', 'X-Admin-Password': pwd },
                     body: '{}'
                 });
-                if (!res.data || !res.data.valid) { await this.notice('密码错误', '无法进入管理'); return; }
+                if (!res.data || !res.data.valid) {
+                    // 必须区分「密码错误」与「已被暂时锁定」：本项目没有解锁入口，
+                    // 若两者都提示「密码错误」，你只会反复输，从而把锁定越推越深。
+                    if (res.data && res.data.code === 'locked') {
+                        await this.notice('登录已暂时锁定', res.data.error || '密码错误次数过多，请稍后再试');
+                        return;
+                    }
+                    if (res.data && res.data.code === 'global_limited') {
+                        await this.notice('登录请求过于频繁', res.data.error || '请稍后再试');
+                        return;
+                    }
+                    await this.notice('密码错误', '无法进入管理');
+                    return;
+                }
                 this.authenticated = true;
                 // 重新登录后必须复位这个标志，否则本轮会话再遇到环境变化时
                 // 提示会被静默吞掉——用户只看到自己被登出，却没有任何说明。
