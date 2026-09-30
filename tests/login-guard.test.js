@@ -275,6 +275,54 @@ test('错误提示经过转义，不直接插入用户可见文本', () => {
         '服务端返回的 error 文案可能含用户数据，必须转义后再插入');
 });
 
+// ========== 响应体只能读一次 ==========
+
+test('恢复对话框不得在 API.request 之后再次 res.json()', () => {
+    // 报错的直接原因：body stream 只能读一次。API.request 已经解析过，
+    // 调用方再 res.json() 抛
+    // "Failed to execute 'json' on 'Response': body stream already read"，
+    // 于是恢复功能 100% 失败，与 WebDAV 服务端无关。
+    const c = stripComments(appSource);
+    const dialog = c.slice(c.indexOf('async showWebDAVRestoreDialog()'), c.indexOf('formatSize('));
+    assert.doesNotMatch(dialog, /const\s*\{\s*res\s*\}\s*=\s*await API\.request\([^)]*\)\s*;\s*\n\s*const\s+data\s*=\s*await res\.json\(\)/,
+        '不能解构出 res 后再 res.json()——body 已被 request 读走');
+    assert.match(dialog, /const \{ res, data \} = await API\.request\('\/api\/webdav\/list'\)/,
+        '应直接使用 request 已解析好的 data');
+});
+
+test('非 JSON 响应时用 data?. 而非 data.', () => {
+    // 网关返回 HTML 502 时 data 为 null，data.error 会二次抛错把真正的错误盖掉。
+    const c = stripComments(appSource);
+    const dialog = c.slice(c.indexOf('async showWebDAVRestoreDialog()'), c.indexOf('formatSize('));
+    assert.doesNotMatch(dialog, /msgEl\.textContent = data\.error/,
+        'data 可能为 null，必须用 data?.error');
+    assert.match(dialog, /data\?\.error/);
+});
+
+test('API.request 支持 binary 模式，把 body 流留给调用方', () => {
+    // 导出收藏需要 res.blob()；若 request 无条件 res.json()，流已被消费，
+    // 导出功能同样会坏（只是表现为 blob 为空而非明确报错）。
+    const c = stripComments(appSource);
+    const api = c.slice(c.indexOf('const API = {'), c.indexOf('class App {'));
+    assert.match(api, /async request\(url, options, binary = false\)/, 'request 应支持 binary 开关');
+    assert.match(api, /if \(binary\) return \{ res, data: null \};/,
+        'binary 模式必须完全不消费 body');
+    // binary 模式下不得再走 json 分支
+    const guard = api.slice(api.indexOf('if (binary)'));
+    const jsonAfter = guard.indexOf('res.json()');
+    assert.ok(jsonAfter === -1 || guard.indexOf('return') < jsonAfter,
+        'binary 分支必须先返回，不能继续解析 body');
+    assert.match(c, /API\.request\('\/api\/favorites\/export', undefined, true\)/,
+        '导出收藏应走 binary 模式');
+});
+
+test('全库不得残留「解构 res 后再 res.json()」的写法', () => {
+    // 这一类错误在源码里看着完全正常，只有运行时才炸，必须全库扫。
+    const c = stripComments(appSource);
+    const bad = c.match(/const\s*\{\s*res\s*\}\s*=\s*await API\.request\([^)]*\)\s*;\s*\n\s*const\s+data\s*=\s*await res\.json\(\)/g) || [];
+    assert.deepEqual(bad, [], `仍有 ${bad.length} 处二次读取 body`);
+});
+
 // ========== 源码形状守卫 ==========
 
 test('锁定只统计失败，不按请求到达计数', () => {

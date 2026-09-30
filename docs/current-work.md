@@ -992,7 +992,38 @@ node --check <每个改动的 .js>       # 全部 OK
 > 判据：能在本地跑出数值的就不写进「未验证」——把该做的验证推给真机，
 > 既掩盖了问题，也让这份清单失去筛选作用。
 
-### 追加：修复「远程备份一直加载」（v1.5.21 用户反馈）
+### 追加：修复「从备份恢复」点开就报错（v1.5.23）
+
+**报错原文**：`获取列表失败: Failed to execute 'json' on 'Response': body stream already read`
+
+**根因是客户端代码，与 WebDAV 服务端无关。** 浏览器里 `Response.body` 是**一次性流**，
+读过一次就不能再读。而 `API.request` 内部无条件 `await res.json()`，
+`showWebDAVRestoreDialog` 拿到 `res` 后又调了一次 `res.json()` ——
+于是恢复功能 **100% 必然失败**，与配了什么 WebDAV 无关。
+
+顺带查出**导出收藏也坏了**，只是症状不同：它成功后要用 `res.blob()`，
+而 body 已被 `request` 读走，导出的内容会是空的（不报错，所以更隐蔽）。
+
+修法不是逐处打补丁，而是从根上明确职责：
+- `API.request(url, options, binary)` 增加 binary 模式，**完全不碰 body**，
+  把流留给需要 blob/arrayBuffer 的调用方；
+- 恢复对话框直接用 `request` 已解析好的 `data`；
+- `data?.error` 而非 `data.error`——网关返回 HTML 错误页时 `data` 为 `null`，
+  直接取属性会二次抛错，把真实错误盖掉；
+- 加一条**全库扫描**断言，禁掉「解构 res 后再 res.json()」这种写法。
+
+**我在这里走了一段弯路，得说清楚**：一开始我用自建的 WebDAV 测试服务端，
+复现出 `Cannot read properties of undefined (reading 'getlastmodified')`，
+差点当成项目 bug 去改服务端。查下来是**我的测试桩不达标**（WebDAV 的属性
+必须包在 `<propstat><prop>` 里，href 也要带远程根前缀）。
+修正测试桩后，备份→列出→恢复全流程一次跑通，证明服务端本来就是好的。
+**如果当时照着那个假象去改服务端，就会把一个前端 bug 修成别的问题。**
+是用户提供的确切报错把方向掰回来的——这正是不该靠猜的证据。
+
+**验证**：192 条测试全绿（新增 4 条）；红/绿 5/5 全部变红；
+用 Node 的 `Response` 实测确认「二次读取必崩」与「修复后正常」。
+
+### 追加：修复「远程备份一直加载」（v1.5.22）
 
 **状态：已修复，发布为 v1.5.22。**
 

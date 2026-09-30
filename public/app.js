@@ -78,8 +78,12 @@
                 window.app.showToast('检测到登录环境变化，已自动退出，请重新登录', 'error', 8000);
             }
         },
-        async request(url, options) {
+        // binary=true 时不碰 body，把流留给调用方用 res.blob() 读。
+        // 否则一律在此解析：body stream 只能读一次，调用方再 res.json()
+        // 会抛 "body stream already read"。
+        async request(url, options, binary = false) {
             const res = await fetch(url, { credentials: 'same-origin', ...options });
+            if (binary) return { res, data: null };
             let data = null;
             try { data = await res.json(); } catch (e) {}
             // 200 的响应也可能带 env_changed（软门），所以不看状态码，只看两个信号源
@@ -2071,11 +2075,13 @@
             msgEl.className = 'webdav-message';
 
             try {
-                const { res } = await API.request('/api/webdav/list');
-                const data = await res.json();
+                // 必须用 request 已经解析好的 data，不能再 res.json()：
+                // body stream 只能读一次，二次读取抛
+                // "Failed to execute 'json' on 'Response': body stream already read"。
+                const { res, data } = await API.request('/api/webdav/list');
 
-                if (!data.success) {
-                    msgEl.textContent = data.error || '获取列表失败';
+                if (!res.ok || !data?.success) {
+                    msgEl.textContent = data?.error || `获取列表失败（${res.status}）`;
                     msgEl.className = 'webdav-message error';
                     return;
                 }
@@ -2517,10 +2523,13 @@
 
         async exportFavorites() {
             try {
-                const { res } = await API.request('/api/favorites/export');
+                // binary=true：让 request 不碰 body，流留给 res.blob()
+                const { res } = await API.request('/api/favorites/export', undefined, true);
                 if (!res.ok) {
-                    const data = await res.json();
-                    this.showToast(data.error || '导出失败', 'error');
+                    // 错误分支需要一个可读的 message；body 尚未被读，这里可以安全解析
+                    let message = '导出失败';
+                    try { message = (await res.json())?.error || message; } catch (e) {}
+                    this.showToast(message, 'error');
                     return;
                 }
                 const blob = await res.blob();

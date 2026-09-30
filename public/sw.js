@@ -1,5 +1,5 @@
-// app.js 修复「远程备份一直加载」的静默失败，必须升缓存名，否则老用户拿不到
-const CACHE = 'nav-v30';
+// app.js 修复恢复功能读取响应体的错误，必须升缓存名，否则老用户拿不到
+const CACHE = 'nav-v31';
 const ASSETS = [
     '/',
     '/index.html',
