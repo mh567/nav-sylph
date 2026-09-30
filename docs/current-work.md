@@ -1145,6 +1145,63 @@ node --check <每个改动的 .js>       # 全部 OK
 - **`COOKIE_SECURE` 无需配置**：审查发现 http 部署本来就会自动省略 `Secure`，
   原先以为需要手工设置的判断是错的，已改正文档。该项保留为覆盖自动判断的开关。
 
+### 收藏批量隐私（未提交，工作树）
+
+**目标**：收藏管理里多选后，能一次性修改隐私状态。
+
+**做了什么**
+
+- 批量条新增「隐私」按钮（`public/app.js:2724`），点开复用现有 `showUiDialog`，
+  单选「设为私密 / 设为公开」。混选时默认预选「设为私密」——批量收紧可见性比放宽安全；
+  全部已私密才预选「设为公开」。
+- 新增 `privacySelectedFavorites()`（`public/app.js:3116`）。保存失败时按快照整体回滚
+  （`Object.assign(f, previous[i])`），与同文件 `editFavorite` 的回滚方式一致。
+- 列表项复用首页既有的 `.fav-private-label` 显示「私密」，**不新建类名**。
+- 窄屏 order 写在 `public/admin.css` 的 `.modal` 作用域内（`admin.css:477`），
+  与既有 `.fav-manager-category { order: 3 }` 同行。
+
+**两个方向的提示不对称**：「设为私密」只是收紧可见性；「设为公开」等于对未登录访客
+披露（服务端 `toPublicFavorites` 会把 `private` 条目放进公开集合）。因此只在「设为公开」
+上挂了 `hint`，不新增弹窗——用户选定的形态就是单层弹窗。
+注意：单个编辑弹窗 `editFavorite` 改 private 仍无任何提示，是**既存缺口**，未在本次修。
+
+**已验证**（真实服务器 + 无头 Chrome 390×844，非仅单测）
+
+- 选中 2 项 → 按钮启用、全选框半选；未选中时两个按钮都禁用
+- 混选预选「设为私密」、全私密预选「设为公开」——两条都实测
+- 改完后 DOM 与服务端 `favorites.json` 逐项一致，未选中项未被误改
+- 窄屏弹窗上下间距均 289px（严格居中），选项 334×44px
+- 回归 207 条全绿；新测试 10 项，每项都做过「破坏 → 转红 → 还原」验证
+- service worker 缓存 `nav-v32 → nav-v33`（本次改了 `public/` 资产，**发版阻断项**）
+
+**审查中发现并已修的三处**
+
+1. **违背了用户选定的形态**（Spec 轴 P0）。用户选的是「复用 `.fav-private-label`、
+   在分类标签旁显示」，我第一版却新建了 `.fav-manager-private` 并把标签塞进
+   `.fav-manager-info` 里。且我给的理由（「窄屏 info 占满整行 `flex:1 1 100%`」）
+   在 ≤480px 下**不成立**——`admin.css:458` 的 `.modal .fav-manager-info`
+   特异性更高、加载更晚，把它改成了 `1 1 auto`，而 390px 正是落在这个区间。
+   真实生效的是 `admin.css` 那套 order，不是 `styles.css` 里的。
+2. **回滚快照不完整**（Standards 轴 P1）。只快照了 `private`，但同时推进了 `updatedAt`，
+   保存失败后时间戳会停在一次失败的操作上。已改为整体快照 + `Object.assign` 还原。
+3. **测试有两处恒真断言**。`favs()` fixture 没有 `updatedAt` 字段，
+   `assert.ok(f.updatedAt > 0)` 恒假、且回滚路径完全没校验时间戳。
+   fixture 已补初值，回滚测试新增 `updatedAt` 断言。另补了 onclick 接线断言——
+   之前删掉那行，10 条测试仍全绿。
+
+**已知取舍与未做的事**
+
+- **私密项行高高于非私密项**（实测 62px vs 80px），列表会略参差。这是标签独占一行的代价；
+  已选择保留，因为隐藏状态比行高一致更重要。
+- **「全选」只选当前页**（`pageSize = 50`）。这与既有批量删除**完全一致**，
+  非本次引入。但收藏数 >50 时无法一次「全部设为私密」，而隐私清查正是跨页场景的典型用法。
+  是否要跨页全选属于「选中模型」的既有边界，需用户定。
+- **保存期间未锁按钮**（Standards 轴 P1）。连点会发出两次相同方向的写——幂等、不损坏数据，
+  但会有重复 toast。可接受与否取决于取向，未修。
+- 窄屏批量条在 <356px 视口可能换行（`<=768px` 下 `.fav-batch-bar` 是 `flex-wrap: wrap`）。
+  仅按 CSS 手算，未在 320/375px 实测。
+- 无头 Chrome `maxTouchPoints: 0`，无法验证 coarse pointer 相关的触摸目标差异。
+
 ## 下一位 Agent 的启动步骤
 
 1. 阅读根目录 `AGENTS.md`、`README.md`、`docs/architecture.md` 及本文件。

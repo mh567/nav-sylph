@@ -1,5 +1,5 @@
-// admin.css 的窄屏管理面板布局调整，必须升缓存名，否则老用户仍是旧布局
-const CACHE = 'nav-v32';
+// 收藏管理新增批量隐私按钮与私密标签，命中缓存的老用户拿不到，必须升缓存名
+const CACHE = 'nav-v33';
 const ASSETS = [
     '/',
     '/index.html',

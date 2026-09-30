@@ -470,6 +470,16 @@
         margin-top: 0;
         align-self: center;
     }
+    /* 私密标签复用首页的 .fav-private-label（顶层全局类，无需重复定义），
+       但它是 .fav-manager-item 的兄弟节点，窄屏默认 order:0 会排到
+       order:1 的信息块之前。跟分类标签一样排 order:3，紧挨着它同行显示。
+       本文件加载晚于 styles.css 且选择器带 .modal，特异性更高，窄屏以此为准。 */
+    .modal .fav-manager-item .fav-private-label {
+        order: 3;
+        flex: 0 0 auto;
+        max-width: 100%;
+        align-self: center;
+    }
 
     /* 管理器头部：返回按钮(44px) 与搜索框纵向堆叠，实测占 102–120px，
        把列表挤到首屏中段。这里让两者同行——返回按钮固定宽度，

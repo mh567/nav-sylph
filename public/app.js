@@ -2721,6 +2721,7 @@
                                 <span>全选</span>
                             </label>
                             <span class="fav-selected-count" id="favSelectedCount"></span>
+                            <button class="btn btn-sm" id="privacySelectedBtn" disabled>隐私</button>
                             <button class="btn btn-danger btn-sm" id="deleteSelectedBtn" disabled>删除选中</button>
                         </div>
                         <div class="fav-manager-stats" id="favManagerStats"></div>
@@ -2741,6 +2742,7 @@
 
             // Batch selection
             $('#selectAllFav').onchange = (e) => this.toggleSelectAllFav(e.target.checked);
+            $('#privacySelectedBtn').onclick = () => this.privacySelectedFavorites();
             $('#deleteSelectedBtn').onclick = () => this.deleteSelectedFavorites();
 
             // Category tree events
@@ -3097,16 +3099,60 @@
             const count = this.favManagerSelected.size;
             const countEl = $('#favSelectedCount');
             const deleteBtn = $('#deleteSelectedBtn');
+            const privacyBtn = $('#privacySelectedBtn');
             const selectAllCb = $('#selectAllFav');
 
             if (countEl) countEl.textContent = count > 0 ? `已选 ${count} 项` : '';
             if (deleteBtn) deleteBtn.disabled = count === 0;
+            if (privacyBtn) privacyBtn.disabled = count === 0;
 
             const checkboxes = $$('.fav-checkbox');
             if (selectAllCb && checkboxes.length > 0) {
                 selectAllCb.checked = checkboxes.every(cb => cb.checked);
                 selectAllCb.indeterminate = checkboxes.some(cb => cb.checked) && !selectAllCb.checked;
             }
+        }
+
+        async privacySelectedFavorites() {
+            const targets = this.favorites.filter(f => this.favManagerSelected.has(f.id));
+            if (targets.length === 0) return;
+
+            // 混选时默认预选「设为私密」：批量操作里收紧可见性比放宽更安全，
+            // 全部已私密才预选「设为公开」。
+            const allPrivate = targets.every(f => f.private);
+            const result = await this.showUiDialog({
+                title: '批量设置隐私状态',
+                message: `已选中 ${targets.length} 个收藏`,
+                options: [
+                    { name: 'privacy', kind: 'radio', value: 'private', label: '设为私密', checked: !allPrivate },
+                    {
+                        name: 'privacy', kind: 'radio', value: 'public', label: '设为公开', checked: allPrivate,
+                        // 两个方向的风险不对称：设为私密只是收紧可见性，
+                        // 设为公开等于对未登录访客披露。只在同一弹窗里给披露方向加提示。
+                        hint: '公开后，未登录的访客也能看到这些收藏'
+                    }
+                ],
+                confirmText: '应用'
+            });
+            if (!result) return;
+
+            const makePrivate = result.choices.privacy === 'private';
+            // 快照整个对象而非只记 private：本次同时推进了 updatedAt，
+            // 只还原 private 会让时间戳停在一次失败的操作上。
+            // 与 editFavorite 的回滚方式保持一致。
+            const previous = targets.map(f => ({ ...f }));
+            targets.forEach(f => {
+                f.private = makePrivate;
+                f.updatedAt = Date.now();
+            });
+
+            if (!await this.saveFavorites()) {
+                targets.forEach((f, i) => Object.assign(f, previous[i]));
+                this.showFavManager();
+                return;
+            }
+            this.showFavManager();
+            this.showToast(`已更新 ${targets.length} 个收藏的隐私状态`, 'success');
         }
 
         async deleteSelectedFavorites() {
@@ -3238,6 +3284,7 @@
                         <div class="fav-manager-url">${this.esc(fav.url)}</div>
                     </div>
                     ${fav.category ? `<span class="fav-manager-category">${this.esc(fav.category)}</span>` : ''}
+                    ${fav.private ? '<span class="fav-private-label">私密</span>' : ''}
                     <div class="fav-manager-actions">
                         <button class="btn btn-sm edit-fav">编辑</button>
                         <button class="btn btn-sm btn-danger del-fav">删除</button>
