@@ -1,5 +1,5 @@
-// app.js 新增管理面板的「信任此设备」开关，必须升缓存名，否则老用户拿到的仍是旧面板
-const CACHE = 'nav-v28';
+// app.js 新增登录锁定/总量封顶的区分提示，必须升缓存名，否则老用户看不到
+const CACHE = 'nav-v29';
 const ASSETS = [
     '/',
     '/index.html',
