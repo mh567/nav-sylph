@@ -218,6 +218,63 @@ test('客户端区分锁定、总量封顶与密码错误三种提示', () => {
     assert.match(login, /密码错误/, '普通失败仍提示密码错误');
 });
 
+// ========== 远程备份区块的静默失败 ==========
+
+test('WebDAV 配置加载失败必须显示原因，不能停在「加载中」', () => {
+    // 修复前只在 res.ok 时渲染：任何非 200（限流 429、会话失效、网络错误）
+    // 都会让「加载中...」永远留在页面上，且没有任何提示——用户只能干等。
+    const c = stripComments(appSource);
+    const b = c.indexOf('async loadWebDAVConfig()');
+    const e = c.indexOf('renderWebDAVSection() {');
+    assert.ok(b >= 0 && e > b, 'loadWebDAVConfig 应在 renderWebDAVSection 定义之前');
+    const load = c.slice(b, e);
+    assert.match(load, /if \(!res\.ok\)/, '非 200 必须走失败分支而不是什么都不做');
+    assert.match(load, /renderWebDAVError/, '失败时要渲染错误信息');
+    // 网络异常（fetch 抛错）同样不能静默：此前 catch 只写 console，
+    // 页面上依旧是无声的「加载中...」。
+    // 必须**只**看 catch 块：早先的断言从 catch 一直切到函数末尾，
+    // 而 catch 后面紧跟着 renderWebDAVError 的定义（含同名调用），
+    // 于是删掉 catch 里那一行仍然会匹配上——断言形同虚设（本次实测踩到）。
+    const catchStart = load.indexOf('catch');
+    assert.ok(catchStart > 0, 'loadWebDAVConfig 应有 catch 分支');
+    const catchEnd = load.indexOf('\n        }', catchStart);
+    assert.ok(catchEnd > catchStart, '应能定位到函数结尾');
+    const catchBody = load.slice(catchStart, catchEnd);
+    assert.match(catchBody, /renderWebDAVError/,
+        'fetch 抛错时也必须提示，而不是只记 console');
+    assert.match(c, /id="webdavRetryBtn"/, '失败后要给重试入口，不能只能刷新整页');
+});
+
+test('远程备份配置改为首次展开时加载，不再每次重渲染都预取', () => {
+    // 修复前在 renderAdminPanel 末尾预取：每次保存配置、增删分类都会重渲染，
+    // 于是每次都多打一次请求，累积起来撞上管理接口的限流。
+    const c = stripComments(appSource);
+    const panel = c.slice(c.indexOf('renderAdminPanel()'), c.indexOf('async loadWebDAVConfig()'));
+    assert.doesNotMatch(panel, /this\.loadWebDAVConfig\(\)/,
+        'renderAdminPanel 末尾不应再预取 WebDAV 配置');
+    const toggle = c.slice(c.indexOf('toggleSection(sectionId)'));
+    assert.match(toggle, /expanded && sectionId === 'webdav' && !this\.webdavConfig/,
+        '应在首次展开且尚未加载时才拉取');
+});
+
+test('登出后清空 webdavConfig，避免下一会话显示上一份内容', () => {
+    const c = stripComments(appSource);
+    const logout = c.slice(c.indexOf("$('#logoutBtn').onclick"));
+    assert.match(logout, /this\.webdavConfig = null/,
+        '换会话后配置不再可信；不清掉会导致下次进入面板时因「已加载过」而跳过请求');
+});
+
+test('错误提示经过转义，不直接插入用户可见文本', () => {
+    const c = stripComments(appSource);
+    // 锚在**定义**上：renderWebDAVSection 在 loadWebDAVConfig 里被调用，
+    // 用它当结束标记会得到一个起点晚于终点的空切片（此前踩过）。
+    const b = c.indexOf('renderWebDAVError(message) {');
+    const e = c.indexOf('renderWebDAVSection() {');
+    assert.ok(b >= 0 && e > b, 'renderWebDAVError 定义应排在 renderWebDAVSection 之前');
+    assert.match(c.slice(b, e), /\$\{this\.esc\(message\)\}/,
+        '服务端返回的 error 文案可能含用户数据，必须转义后再插入');
+});
+
 // ========== 源码形状守卫 ==========
 
 test('锁定只统计失败，不按请求到达计数', () => {

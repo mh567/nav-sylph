@@ -1880,6 +1880,10 @@
                 if (!await this.closeAdmin()) return;
                 this.authenticated = false;
                 this.sessionTrusted = false;
+                // 换会话后远程备份配置不再可信，必须清掉：
+                // 否则下次进入管理面板时 toggleSection 会因「已加载过」而跳过请求，
+                // 直接显示上一个会话的内容。
+                this.webdavConfig = null;
                 // 通知服务端销毁会话并清 Cookie；失败也要继续清理本地状态
                 try { await API.post('/api/logout', {}); } catch (e) {
                     console.error('Logout failed:', e);
@@ -1899,22 +1903,39 @@
                 }
             };
 
-            // WebDAV 配置加载
-            this.loadWebDAVConfig();
+            // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
+            // 不在此处预取——每次重渲染都多打一次请求会累积撞上限流
         }
 
         // ========== WebDAV 远程备份 ==========
 
         async loadWebDAVConfig() {
+            const container = $('#webdavSection');
             try {
-                const { res } = await API.request('/api/webdav/config');
-                if (res.ok) {
-                    this.webdavConfig = await res.json();
-                    this.renderWebDAVSection();
+                const { res, data } = await API.request('/api/webdav/config');
+                if (!res.ok) {
+                    // 失败必须显式落到容器里。此前只在 res.ok 时渲染，
+                    // 任何非 200（限流、会话失效、网络错误）都会让
+                    // 「加载中...」永远留在页面上，且没有任何提示。
+                    this.renderWebDAVError(data?.error || `加载失败（${res.status}）`);
+                    return;
                 }
+                this.webdavConfig = data;
+                this.renderWebDAVSection();
             } catch (e) {
                 console.error('Load WebDAV config failed:', e);
+                this.renderWebDAVError('加载失败，请稍后重试');
             }
+        }
+
+        /** 把失败原因显示在远程备份区块内，而不是留一个转圈的提示。 */
+        renderWebDAVError(message) {
+            const container = $('#webdavSection');
+            if (!container) return;
+            // 给一个重试入口：失败后不能只能刷新整页
+            container.innerHTML = `<div class="webdav-message error">${this.esc(message)}</div>
+                <div class="webdav-actions"><button class="btn" id="webdavRetryBtn">重试</button></div>`;
+            $('#webdavRetryBtn').onclick = () => this.loadWebDAVConfig();
         }
 
         renderWebDAVSection() {
@@ -2259,6 +2280,12 @@
                 const expanded = !section.classList.contains('collapsed');
                 header.setAttribute('aria-expanded', String(expanded));
                 header.querySelector('.section-toggle-label').textContent = expanded ? '收起' : '展开';
+                // 折叠区块改为**首次展开时**才拉数据。此前在 renderAdminPanel 末尾
+                // 就预取，每次重渲染（保存配置、增删分类等）都会多打一次请求，
+                // 累积起来会撞上管理接口的限流。
+                if (expanded && sectionId === 'webdav' && !this.webdavConfig) {
+                    this.loadWebDAVConfig();
+                }
             }
         }
 

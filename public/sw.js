@@ -1,5 +1,5 @@
-// app.js 新增登录锁定/总量封顶的区分提示，必须升缓存名，否则老用户看不到
-const CACHE = 'nav-v29';
+// app.js 修复「远程备份一直加载」的静默失败，必须升缓存名，否则老用户拿不到
+const CACHE = 'nav-v30';
 const ASSETS = [
     '/',
     '/index.html',
