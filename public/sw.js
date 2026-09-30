@@ -1,5 +1,5 @@
-// app.js 修复恢复功能读取响应体的错误，必须升缓存名，否则老用户拿不到
-const CACHE = 'nav-v31';
+// admin.css 的窄屏管理面板布局调整，必须升缓存名，否则老用户仍是旧布局
+const CACHE = 'nav-v32';
 const ASSETS = [
     '/',
     '/index.html',

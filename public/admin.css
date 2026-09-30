@@ -403,12 +403,94 @@
 
 @media (max-width: 480px) {
     .modal-content { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; }
-    .modal-header { align-items: flex-start; gap: 10px; padding: 13px 14px; background-color: var(--admin-panel); }
-    .modal-header h2 { padding-top: 5px; }
-    .modal-actions { flex-wrap: wrap; justify-content: flex-end; }
-    .config-save-status { width: 100%; order: 2; text-align: right; }
+    /* 标题与「取消/保存」同行。原先 align-items:flex-start 配 .modal-actions 的
+       flex-wrap:wrap，而标题只有约 35px 宽、按钮区要占满整行，两者放不下
+       390px 的可用宽度，按钮必然被挤到第二行——头部实测占 118.5px
+       （视口 844px 的 14%）。实测降为 70px。
+       本文件在 styles.css 之后加载且特异性更高，窄屏的最终决定权在这里，
+       只改 styles.css 会被下面的声明静默还原。 */
+    .modal-header { align-items: center; gap: 10px; padding: 10px 14px; background-color: var(--admin-panel); }
+    .modal-header h2 { padding-top: 0; font-size: 15px; flex: 0 0 auto; }
+    .modal-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+    /* 窄屏没有空间显示整句保存状态，隐藏而不是让它把按钮挤下去 */
+    .config-save-status { display: none; }
     .modal-body { padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); }
-    .modal .fav-manager-item { gap: 8px; }
+
+    /* 收藏区四个按钮：横排时每个仅约 52px 宽。改两列网格，每格 ≥44px 高
+       （触摸目标下限）。原先 styles.css 里的 grid 声明会被本文件
+       .modal .fav-actions 的高特异性覆盖，故在此一并声明。 */
+    .modal .fav-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+    .modal .fav-actions .btn { width: 100%; min-height: 44px; padding: 10px 8px; }
+
+    /* 收藏管理器侧栏：≤768px 时它占满整行且限高 176px，把列表挤到首屏之外。
+       窄屏改为横向滚动的分类条，列表紧接在下方立刻可见。 */
+    .modal .fav-manager-sidebar {
+        width: 100%;
+        max-height: none;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 0;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        background: none;
+        /* 分类多于宽度时需要滚动提示：右侧渐隐，暗示还有内容 */
+        mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent);
+    }
+    .modal .fav-manager-sidebar .sidebar-header { flex: 0 0 auto; padding: 0 4px; }
+    .modal .fav-manager-sidebar .category-tree { display: flex; flex-direction: row; gap: 8px; flex: 0 0 auto; }
+    .modal .fav-manager-sidebar .category-tree-item { flex: 0 0 auto; white-space: nowrap; }
+
+    /* 列表条目：原先条目是 flex-wrap:wrap，而 .fav-manager-info 独占整行，
+       把「分类」和操作按钮挤到第二、三行——单个条目实测 134px，
+       一屏只放得下 5 条。这里让信息与操作同行、分类缩到信息下方一行。 */
+    .modal .fav-manager-item {
+        gap: 8px;
+        padding: 8px 10px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .modal .fav-manager-info {
+        flex: 1 1 auto;
+        min-width: 0;
+        order: 1;
+    }
+    .modal .fav-manager-actions { order: 2; flex: 0 0 auto; }
+    /* 分类标签原本 flex:1 0 100% 会横贯整行、像个输入框。
+       改为随内容宽度、跟在信息下方并排，占位更紧凑。 */
+    .modal .fav-manager-category {
+        order: 3;
+        flex: 0 1 auto;
+        max-width: 100%;
+        margin-top: 0;
+        align-self: center;
+    }
+
+    /* 管理器头部：返回按钮(44px) 与搜索框纵向堆叠，实测占 102–120px，
+       把列表挤到首屏中段。这里让两者同行——返回按钮固定宽度，
+       搜索框吃掉剩余宽度，行高由搜索框自身决定（原 50px 偏高，
+       收到 40px 仍高于 44px 触摸下限的常见实现）。 */
+    .modal .fav-manager-header {
+        flex-direction: row;
+        flex-wrap: nowrap;      /* 基线是 wrap：搜索框 min-width:150px + 按钮 67px 放不下 336px，仍会换行 */
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+    .modal .fav-manager-header > .btn { flex: 0 0 auto; }
+    .modal .fav-manager-search {
+        flex: 1 1 auto;
+        min-width: 0;          /* 覆盖基线的 min-width:150px，否则窄屏放不下 */
+        width: auto;
+        height: 40px;
+        padding: 8px 12px;
+        font-size: 16px;       /* 保持 16px：iOS Safari 对 <16px 输入会触发自动放大 */
+    }
     .modal .category-tree-item { min-height: 40px; }
     /* 弹窗在窄屏同样居中：改成底部抽屉会被移动端浏览器的地址栏与 Home 指示条盖住。
        四边内边距吃安全区，max-height 改用 dvh 以便地址栏展开/收起时自适应。

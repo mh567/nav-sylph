@@ -323,6 +323,73 @@ test('全库不得残留「解构 res 后再 res.json()」的写法', () => {
     assert.deepEqual(bad, [], `仍有 ${bad.length} 处二次读取 body`);
 });
 
+// ========== 窄屏管理面板布局 ==========
+
+/** 取 admin.css 里最后一个 ≤480px 块——文件尾部同名块后写者胜。 */
+function adminNarrowBlock() {
+    const admin = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8'));
+    const at = admin.indexOf('@media (max-width: 480px)');
+    assert.ok(at >= 0, 'admin.css 应有 ≤480px 块');
+    let end = admin.length;
+    for (const m of admin.matchAll(/@media \(max-width: 480px\)/g)) {
+        if (m.index > at) { end = m.index; break; }
+    }
+    return admin.slice(at, end);
+}
+
+test('窄屏管理面板的调整必须写在 admin.css（它后加载且特异性更高）', () => {
+    // 本项目已多次被「后写的同特异性声明静默覆盖」咬到：本次改 styles.css
+    // 后实测头部仍是 118.5px——真正的决定者是 admin.css 里的
+    // `.modal .fav-actions` 这类更高特异性选择器。
+    const block = adminNarrowBlock();
+    for (const sel of ['.modal-header', '.modal-actions', '.modal .fav-actions', '.modal .fav-manager-sidebar', '.modal .fav-manager-item']) {
+        assert.ok(block.includes(sel), `≤480px 块应包含 ${sel}`);
+    }
+});
+
+test('窄屏头部必须让标题与按钮同行，且不被保存状态挤下去', () => {
+    // 修复前：.modal-actions 占满整行 + flex-wrap:wrap，标题只有约 35px 宽，
+    // 两者放不下 390px 的可用宽度，按钮必然换行——头部实测 118.5px。
+    const block = adminNarrowBlock();
+    assert.match(block, /\.modal-header \{[^}]*align-items: center/, '窄屏头部应垂直居中对齐');
+    assert.match(block, /\.modal-actions \{[^}]*flex-wrap: nowrap/, '按钮区不得换行');
+    assert.match(block, /\.config-save-status \{ display: none/, '窄屏应隐藏保存状态，而不是让它把按钮挤下去');
+});
+
+test('窄屏收藏按钮为两列网格且满足触摸目标下限', () => {
+    // 横排时每个按钮仅约 52px 宽；44px 是触摸目标下限，
+    // 放在媒体查询里的条件覆盖会让它在多数机型上不成立。
+    const block = adminNarrowBlock();
+    assert.match(block, /\.modal \.fav-actions \{[^}]*display: grid[^}]*grid-template-columns: 1fr 1fr/s,
+        '收藏按钮应为两列网格');
+    assert.match(block, /\.modal \.fav-actions \.btn \{[^}]*min-height: 44px/,
+        '每个按钮高度须满足 44px 触摸下限');
+});
+
+test('窄屏收藏管理器侧栏改为横向滚动，且列表条目被压紧', () => {
+    // 侧栏原本在 ≤768px 占满整行并限高 176px，把列表挤出首屏。
+    const block = adminNarrowBlock();
+    const side = block.match(/\.modal \.fav-manager-sidebar \{[^}]*\}/);
+    assert.ok(side, '应有窄屏侧栏规则');
+    assert.match(side[0], /flex-direction: row/, '侧栏应改为横排');
+    assert.match(side[0], /overflow-x: auto/, '分类过多时应可横向滚动');
+    assert.match(block, /\.modal \.fav-manager-item \{[^}]*align-items: center/);
+    // 分类标签不能横贯整行（看起来像个输入框）
+    assert.match(block, /\.modal \.fav-manager-category \{[^}]*flex: 0 1 auto/);
+});
+
+test('窄屏管理器头部必须禁止换行并解除搜索框的 min-width', () => {
+    // 基线是 flex-wrap:wrap + .fav-manager-search{min-width:150px}：
+    // 150px 搜索框 + 67px 返回按钮放不下 336px，仍会换行，头部实测 116px。
+    const block = adminNarrowBlock();
+    const head = block.match(/\.modal \.fav-manager-header \{[^}]*\}/);
+    assert.ok(head, '应有窄屏管理器头部规则');
+    assert.match(head[0], /flex-wrap: nowrap/, '头部不得换行，否则按钮与搜索框仍会分两行');
+    assert.match(block, /\.modal \.fav-manager-search \{[^}]*min-width: 0/, '须覆盖基线的 min-width:150px');
+    // 搜索框字号不得降到 16px 以下：iOS Safari 会自动放大页面
+    assert.match(block, /\.modal \.fav-manager-search \{[^}]*font-size: 16px/);
+});
+
 // ========== 源码形状守卫 ==========
 
 test('锁定只统计失败，不按请求到达计数', () => {

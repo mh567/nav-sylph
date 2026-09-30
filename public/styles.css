@@ -603,6 +603,10 @@ body {
     .engine-name { max-width: 50px; }
     .search-input { padding: 8px 10px; font-size: 16px; }
     .search-btn { width: 32px; height: 32px; }
+
+    /* 窄屏管理面板的调整放在 admin.css 的 ≤480px 块里：那个文件在
+       styles.css 之后加载，且用的是 `.modal .fav-actions` 这类更高特异性的
+       选择器，在这里写会被静默覆盖（本次实测踩过：头部仍停在 118.5px）。 */
 }
 
 [hidden] { display: none !important; }
@@ -2888,7 +2892,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search-caption { display: flex; justify-content: center; gap: 20px; margin: 10px 0 26px; color: var(--text-muted); font-size: 11px; }
 .search-caption kbd { padding: 1px 4px; margin: 0 1px; border: 1px solid var(--border); border-radius: 4px; background: var(--glass); font: inherit; }
 @media (max-width: 600px) { .app { padding: 25px 12px 90px; } .header { margin-bottom: 30px; } .search-caption { display: none; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
-@media (max-width: 480px) { .modal-header { flex-wrap: wrap; gap: 8px; } .modal-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; } .config-save-status { margin-right: auto; } }
 /* 三列铺满可用宽度：原先的 max-width:304px 在 390px 宽的机型上右侧留出大片空白，
    且使上一条 ≤600px 规则里的 auto-fill 96px 变成死代码（同为 ≤480px 且同特异性，后者在后）。 */
 @media (max-width: 480px) { .bookmarks { max-width: 100%; grid-template-columns: repeat(3,minmax(0,1fr)); } }
