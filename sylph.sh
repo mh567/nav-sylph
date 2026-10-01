@@ -716,6 +716,9 @@ do_update() {
     [ -f ".env" ] && cp .env "$backup_dir/"
     [ -f "server-config.json" ] && cp server-config.json "$backup_dir/"
     [ -f "favorites.json" ] && cp favorites.json "$backup_dir/"
+    # SQLite 库（会话等落盘数据）：更新失败回滚时一并恢复，保证与配置一致。
+    # 仅本地回滚用，不参与 WebDAV 跨设备备份。
+    [ -f "nav-sylph.db" ] && cp nav-sylph.db "$backup_dir/"
 
     # 下载新版本
     log_step "下载新版本..."
@@ -751,6 +754,7 @@ do_update() {
     [ -f "$backup_dir/.env" ] && cp "$backup_dir/.env" .
     [ -f "$backup_dir/server-config.json" ] && cp "$backup_dir/server-config.json" .
     [ -f "$backup_dir/favorites.json" ] && cp "$backup_dir/favorites.json" .
+    [ -f "$backup_dir/nav-sylph.db" ] && cp "$backup_dir/nav-sylph.db" .
     rm -rf "$backup_dir"
 
     # 更新依赖

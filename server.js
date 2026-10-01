@@ -200,7 +200,8 @@ setInterval(() => {
     // 失败锁定：按窗口清掉过期记录，锁定期已满的也会随之消失
     sweepRateLimitStore(loginFailMap, now, LOGIN_FAIL_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
-    // 回调在首次触发时才读取 sessionStore，此时模块顶层 const 已完成初始化。
+    // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
+    // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
     sessionStore.sweep(now);
 }, 60000).unref();
 
@@ -222,6 +223,8 @@ const {
     ENV_CHANGED_CODE,
     ENV_CHANGED_MESSAGE
 } = require('./lib/session');
+const { openDatabase } = require('./lib/db');
+const { createSqliteBackend } = require('./lib/session-sqlite');
 
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
@@ -488,17 +491,11 @@ function isHttps(req) {
     return String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 }
 
-const sessionStore = new SessionStore({
-    cookieName: config.security.sessionCookieName,
-    ttlTrusted: config.security.sessionTtlTrusted,
-    ttlDefault: config.security.sessionTtlDefault,
-    cookieSecure: config.security.cookieSecure,
-    isHttps,
-    getClientIp: req => resolveClientIp(req),
-    geoEnabled: config.security.geoEnabled,
-    geoScope: config.security.geoScope,
-    geoDatabase: config.security.geoDatabase
-});
+// 会话存储改由 SQLite 承载：进程内 Map 会随重启清空，登录态因此丢失。
+// 这里只声明，实例在 init() 打开数据库后创建——路由闭包与 60 秒清扫定时器
+// 都在 init() 完成之后才读它（定时器只在首次触发时读取）。
+let db;
+let sessionStore;
 
 // 会话相关的响应带 Accept-CH（高熵 Client Hints 需要它才会被发送）。
 // 只在这些响应上下发，不放静态资源与 /api/config 上，避免拖累首页首屏。
@@ -565,6 +562,22 @@ async function init() {
     await ensureFile(FAVORITES_FILE, defaultFavorites);
     await ensureFile(PASSWORD_FILE, {
         passwordHash: await bcrypt.hash(config.security.defaultPassword, 10)
+    });
+
+    // 打开（必要时创建）SQLite 库并跑完迁移，再据此构造会话存储。
+    // 顺序固定：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。
+    db = openDatabase(config.paths.database);
+    sessionStore = new SessionStore({
+        cookieName: config.security.sessionCookieName,
+        ttlTrusted: config.security.sessionTtlTrusted,
+        ttlDefault: config.security.sessionTtlDefault,
+        cookieSecure: config.security.cookieSecure,
+        isHttps,
+        getClientIp: req => resolveClientIp(req),
+        geoEnabled: config.security.geoEnabled,
+        geoScope: config.security.geoScope,
+        geoDatabase: config.security.geoDatabase,
+        backend: createSqliteBackend(db)
     });
 }
 
@@ -1650,6 +1663,15 @@ function createServer() {
 
 function gracefulShutdown(signal) {
     console.log(`\n${signal} received, shutting down gracefully...`);
+    // 关库会把 WAL 合并回主文件（checkpoint），于是升级/备份只需处理一个 .db 文件。
+    if (db) {
+        try {
+            db.close();
+        } catch (err) {
+            console.error('关闭数据库失败:', err.message);
+        }
+        db = null;
+    }
     if (server) {
         server.close(() => {
             console.log('Server closed');
@@ -1688,6 +1710,11 @@ init().then(() => {
     });
 }).catch(err => {
     console.error('启动失败:', err);
+    // 开库或迁移失败时连接可能已经建立：先关库再退出，避免留下未 checkpoint 的 WAL。
+    if (db) {
+        try { db.close(); } catch { /* 关不掉也要退出 */ }
+        db = null;
+    }
     process.exit(1);
 });
 

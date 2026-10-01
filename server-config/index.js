@@ -60,6 +60,7 @@ function loadFromEnv() {
         },
         paths: {
             data: env.DATA_FILE,
+            database: env.DB_FILE,
             icon: env.ICON_PATH,
             favicon: env.FAVICON_PATH,
             logs: env.LOG_DIR

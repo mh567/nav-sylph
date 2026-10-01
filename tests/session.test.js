@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
@@ -30,6 +31,10 @@ const {
     ENV_CHANGED_CODE
 } = sessionModule.exports;
 
+// 会话的落盘后端同样归本文件管：本文件是会话逻辑的归属测试。
+const { openDatabase } = require(path.join(ROOT, 'lib', 'db.js'));
+const { createSqliteBackend } = require(path.join(ROOT, 'lib', 'session-sqlite.js'));
+
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 
@@ -57,6 +62,8 @@ function req(headers, token, ip) {
     return { headers: h, ip };
 }
 
+// 不传 backend → SessionStore 使用进程内内存后端；测试经 store.backend 直接读存储，
+// 与生产（SQLite 后端）走同一套 6 方法接口。「存哪里」是接缝，不是断言点。
 function makeStore(overrides = {}) {
     let now = 1_700_000_000_000;
     const store = new SessionStore({
@@ -184,7 +191,7 @@ test('跨省换出口 IP 判为环境变化并销毁会话', () => {
     const reason = {};
     assert.equal(store.getSession(req(MAC, token), reason), null, '跨省应判定为环境变化');
     assert.equal(reason.code, ENV_CHANGED_CODE, '响应体应带上 env_changed 原因码');
-    assert.equal(store.sessions.has(token), false, '环境变化后会话必须被销毁');
+    assert.equal(store.backend.get(token), undefined, '环境变化后会话必须被销毁');
 });
 
 test('geoScope 设为 city 时，同省不同市也算变化；仍为 province 时不算', () => {
@@ -266,17 +273,17 @@ test('过期会话被拒绝并从存储中清除', () => {
     const token = store.createSession(req(MAC), false);
     advance(24 * 3600000 + 1);
     assert.equal(store.getSession(req(MAC, token), {}), null);
-    assert.equal(store.sessions.has(token), false, '过期会话必须被删除，不能一直留着');
+    assert.equal(store.backend.get(token), undefined, '过期会话必须被删除，不能一直留着');
 });
 
 test('可信设备 30 天、普通会话 24 小时', () => {
     const trusted = makeStore();
     const t1 = trusted.store.createSession(req(MAC), true);
-    assert.equal(trusted.store.sessions.get(t1).expiresAt - 1_700_000_000_000, 30 * 86400000);
+    assert.equal(trusted.store.backend.get(t1).expiresAt - 1_700_000_000_000, 30 * 86400000);
 
     const plain = makeStore();
     const t2 = plain.store.createSession(req(MAC), false);
-    assert.equal(plain.store.sessions.get(t2).expiresAt - 1_700_000_000_000, 24 * 3600000);
+    assert.equal(plain.store.backend.get(t2).expiresAt - 1_700_000_000_000, 24 * 3600000);
 });
 
 test('可信会话在 30 天内滑动续期，普通会话不会因此被延长', () => {
@@ -309,7 +316,7 @@ test('sweep 清掉过期会话', () => {
     const token = store.createSession(req(MAC), false);
     advance(25 * 3600000);
     store.sweep(1_700_000_000_000 + 25 * 3600000);
-    assert.equal(store.sessions.has(token), false);
+    assert.equal(store.backend.get(token), undefined);
 });
 
 // ========== Cookie ==========
@@ -328,7 +335,7 @@ test('Cookie 带 HttpOnly 与 SameSite=Lax', () => {
     const { store } = makeStore();
     const res = fakeRes();
     const token = store.createSession(req(MAC), true);
-    store.setSessionCookie(res, { token, expiresAt: store.sessions.get(token).expiresAt }, req(MAC));
+    store.setSessionCookie(res, { token, expiresAt: store.backend.get(token).expiresAt }, req(MAC));
     const cookie = res.cookie().join(';');
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /SameSite=Lax/);
@@ -351,13 +358,13 @@ test('https 时带 Secure，http 时不带', () => {
     const httpsRes = fakeRes();
     const httpsStore = makeStore({ cookieSecure: true, isHttps: r => r?.headers['x-forwarded-proto'] === 'https' });
     const t1 = httpsStore.store.createSession(httpsReq, true);
-    httpsStore.store.setSessionCookie(httpsRes, { token: t1, expiresAt: httpsStore.store.sessions.get(t1).expiresAt }, httpsReq);
+    httpsStore.store.setSessionCookie(httpsRes, { token: t1, expiresAt: httpsStore.store.backend.get(t1).expiresAt }, httpsReq);
     assert.match(httpsRes.cookie().join(';'), /Secure/);
 
     const httpRes = fakeRes();
     const httpStore = makeStore({ cookieSecure: true, isHttps: r => r?.headers['x-forwarded-proto'] === 'https' });
     const t2 = httpStore.store.createSession(httpReq, true);
-    httpStore.store.setSessionCookie(httpRes, { token: t2, expiresAt: httpStore.store.sessions.get(t2).expiresAt }, httpReq);
+    httpStore.store.setSessionCookie(httpRes, { token: t2, expiresAt: httpStore.store.backend.get(t2).expiresAt }, httpReq);
     assert.doesNotMatch(httpRes.cookie().join(';'), /Secure/, 'http 部署不能带 Secure，否则浏览器不落盘');
 });
 
@@ -393,7 +400,7 @@ test('同名 Cookie 不会重复下发（滑动续期 + 信任设备各写一次
     const { store } = makeStore();
     const res = fakeRes();
     const token = store.createSession(req(MAC), false);
-    store.setSessionCookie(res, { token, expiresAt: store.sessions.get(token).expiresAt }, req(MAC));
+    store.setSessionCookie(res, { token, expiresAt: store.backend.get(token).expiresAt }, req(MAC));
     const trusted = store.markTrusted(token);
     store.setSessionCookie(res, { token, expiresAt: trusted.expiresAt }, req(MAC));
     const all = res.cookie();
@@ -475,7 +482,7 @@ test('setTrusted 可双向设置，并立即按新档位重算有效期', () => 
     // 取消信任不能等下次访问才生效：否则用户以为已经降级，实际还能用到 30 天。
     const { store, advance } = makeStore();
     const token = store.createSession(req(MAC), false);
-    assert.equal(store.sessions.get(token).trusted, false);
+    assert.equal(store.backend.get(token).trusted, false);
 
     const trusted = store.setTrusted(token, true);
     assert.equal(trusted.trusted, true);
@@ -654,6 +661,22 @@ test('会话总数有上限，超限拒绝而非驱逐', () => {
     assert.equal(MAX_SESSIONS, 1000);
 });
 
+test('会话存储由 init() 内打开的 SQLite 库承载', () => {
+    // 落盘的顺序是有约束的：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。
+    // 若有人把构造挪回模块顶层，这条会红。
+    const code = stripComments(server);
+    const open = code.indexOf('openDatabase(config.paths.database)');
+    const create = code.indexOf('backend: createSqliteBackend(db)');
+    assert.ok(open > -1, 'init() 必须打开 SQLite 库');
+    assert.ok(create > open, '必须先开库跑完迁移，再构造 SessionStore');
+    assert.match(code, /let sessionStore;/, 'sessionStore 由 init() 赋值，不能再是模块顶层 const');
+    assert.doesNotMatch(code, /const sessionStore = new SessionStore/, '不应回到模块顶层构造');
+
+    // 退出路径要关库：关库会把 WAL 合并回主文件，升级/备份因此只需处理一个 .db
+    const closes = code.match(/db\.close\(\)/g) || [];
+    assert.ok(closes.length >= 2, '正常关闭与 init() 失败两条路径都要关库');
+});
+
 test('匿名可读接口有独立限流，防止 bcrypt 放大', () => {
     // 修复前 /api/config 与 /api/favorites 无任何限流，而它们在无会话时
     // 每次都跑一次 bcrypt：伪造 X-Admin-Password 可把单请求从约 7ms
@@ -696,4 +719,231 @@ test('窄屏 toast 仍避让 Home 指示条', () => {
     const toast = body.match(/\.toast\s*\{[^}]*\}/);
     assert.ok(toast, '窄屏块内应有 .toast 规则');
     assert.match(toast[0], /bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/);
+});
+
+// ========== SQLite 后端（会话落盘）==========
+//
+// 本次改动的核心目的：登录态不再随进程重启/升级丢失。以下用例把「存哪里」这条接缝
+// 铺开验证——语义必须与内存后端一致，且写入要真正落到库里（关库重开仍在）。
+
+function tempDbPath() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-sqlite-'));
+    return { dir, file: path.join(dir, 'nav-sylph.db') };
+}
+
+function makeSqliteStore(file, overrides = {}) {
+    let now = 1_700_000_000_000;
+    const db = openDatabase(file);
+    const store = new SessionStore({
+        cookieName: 'nav_session',
+        ttlTrusted: 30 * 86400000,
+        ttlDefault: 24 * 3600000,
+        cookieSecure: false,
+        isHttps: () => false,
+        getClientIp: () => '114.114.114.114',
+        geoEnabled: false,
+        backend: createSqliteBackend(db),
+        ...overrides,
+        now: () => now
+    });
+    return { db, store, advance: ms => { now += ms; } };
+}
+
+function withTempDb(fn) {
+    const { dir, file } = tempDbPath();
+    try {
+        return fn(file);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+test('SQLite 后端：写入的会话可读回，字段语义与内存后端一致', () => {
+    withTempDb(file => {
+        const { db, store } = makeSqliteStore(file);
+        try {
+            const token = store.createSession(req(MAC), true);
+            const rec = store.backend.get(token);
+            assert.equal(rec.trusted, true);
+            // 用序列化比较，避免 vm 载入的 collectFingerprint 与库中读回的对象
+            // 分属不同 realm、原型不同而让 deepStrictEqual 误报。
+            assert.equal(JSON.stringify(rec.fp), JSON.stringify(collectFingerprint({ headers: MAC })),
+                '指纹要原样存取');
+            assert.equal(rec.expiresAt, 1_700_000_000_000 + 30 * 86400000);
+
+            const found = store.getSession(req(MAC, token), {});
+            assert.ok(found, '同一请求应命中会话');
+            assert.equal(found.session.trusted, true);
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('重启后登录态仍在：关库再开，原令牌依然有效', () => {
+    // 修复前会话只在进程内 Map 里，sylph.sh update 重启进程后所有人被登出。
+    withTempDb(file => {
+        const first = makeSqliteStore(file);
+        const token = first.store.createSession(req(MAC), true);
+        first.db.close();
+
+        const second = makeSqliteStore(file);
+        try {
+            const found = second.store.getSession(req(MAC, token), {});
+            assert.ok(found, '关库重开后同一令牌必须仍然有效');
+            assert.equal(found.session.trusted, true);
+            assert.equal(second.store.getSession(req(MAC, 'f'.repeat(64)), {}), null,
+                '伪造令牌不应命中');
+        } finally {
+            second.db.close();
+        }
+    });
+});
+
+test('SQLite 后端：过期会话被拒绝并从库中删除', () => {
+    withTempDb(file => {
+        const { db, store, advance } = makeSqliteStore(file);
+        try {
+            const token = store.createSession(req(MAC), false);
+            assert.ok(store.backend.get(token), '前置：会话应先真正写入库，否则下面的删除断言会空转');
+            advance(24 * 3600000 + 1);
+            assert.equal(store.getSession(req(MAC, token), {}), null);
+            assert.equal(store.backend.get(token), undefined, '过期会话必须从库中删除');
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('SQLite 后端：sweep 只清过期行，不动仍在有效期内的会话', () => {
+    withTempDb(file => {
+        const { db, store, advance } = makeSqliteStore(file);
+        try {
+            const expired = store.createSession(req(MAC), false);
+            advance(25 * 3600000);
+            const alive = store.createSession(req(MAC), true);
+            store.sweep(1_700_000_000_000 + 25 * 3600000);
+            assert.equal(store.backend.get(expired), undefined);
+            assert.ok(store.backend.get(alive), '未过期的会话不能被误删');
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('SQLite 后端：setTrusted 写回库，并立即按新档位重算有效期', () => {
+    withTempDb(file => {
+        const { db, store, advance } = makeSqliteStore(file);
+        try {
+            const token = store.createSession(req(MAC), false);
+            store.setTrusted(token, true);
+            assert.equal(store.backend.get(token).trusted, true, '可信状态必须落盘');
+
+            advance(10 * 86400000);
+            store.setTrusted(token, false);
+            assert.equal(store.backend.get(token).expiresAt,
+                1_700_000_000_000 + 10 * 86400000 + 24 * 3600000,
+                '取消信任必须立刻降回 24 小时并写回库');
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('SQLite 后端：destroy / destroyAll 真正删除行', () => {
+    withTempDb(file => {
+        const { db, store } = makeSqliteStore(file);
+        try {
+            const a = store.createSession(req(MAC), true);
+            const b = store.createSession(req(MAC), true);
+            store.destroy(a);
+            assert.equal(store.backend.get(a), undefined);
+            assert.ok(store.backend.get(b), 'destroy 只删指定令牌');
+
+            assert.equal(store.destroyAll(), 1, 'destroyAll 必须返回被删除的行数');
+            assert.equal(store.backend.count(), 0);
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('SQLite 后端：环境变化销毁会话也穿透到库', () => {
+    // 走地理判据触发 env_changed，确认删除动作发生在库里，而非只改内存对象。
+    withTempDb(file => {
+        let ip = '106.11.1.1';        // 广东深圳
+        const db = openDatabase(file);
+        try {
+            const store = new SessionStore({
+                cookieName: 'nav_session',
+                ttlTrusted: 1e12, ttlDefault: 1e12, cookieSecure: false,
+                isHttps: () => false,
+                getClientIp: () => ip,
+                geoEnabled: true, geoScope: 'city', geoDatabase: GEO_DB,
+                backend: createSqliteBackend(db)
+            });
+            const token = store.createSession(req(MAC), true);
+            ip = '221.5.1.1';         // 广东汕头（同省不同市）
+            const reason = {};
+            assert.equal(store.getSession(req(MAC, token), reason), null);
+            assert.equal(reason.code, ENV_CHANGED_CODE);
+            assert.equal(store.backend.get(token), undefined, '环境变化必须在库中删除该行');
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('SQLite 后端：会话达上限时拒绝新登录，且不驱逐既有会话', () => {
+    withTempDb(file => {
+        const db = openDatabase(file);
+        try {
+            const store = new SessionStore({
+                cookieName: 'nav_session',
+                ttlTrusted: 1e12, ttlDefault: 1e12, cookieSecure: false,
+                isHttps: () => false,
+                getClientIp: () => '114.114.114.114',
+                geoEnabled: false,
+                backend: createSqliteBackend(db)
+            });
+            const insert = db.prepare(
+                `INSERT INTO sessions (token, trusted, expires_at, fp, region) VALUES (?, 1, 9e15, '{}', NULL)`
+            );
+            db.transaction(() => {
+                for (let i = 0; i < 1000; i++) insert.run('t' + i);
+            })();
+
+            assert.equal(store.createSession(req(MAC), true), null, '满额必须拒绝而非驱逐');
+            assert.equal(store.backend.count(), 1000, '不能悄悄删掉他人仍在有效期内的会话');
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('库文件权限收紧到 0600（含令牌，不可世界可读）', () => {
+    withTempDb(file => {
+        const db = openDatabase(file);
+        try {
+            assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+        } finally {
+            db.close();
+        }
+    });
+});
+
+test('迁移幂等：重复打开不会重复建表，user_version 稳定在 1', () => {
+    withTempDb(file => {
+        const first = openDatabase(file);
+        const v1 = first.pragma('user_version', { simple: true });
+        first.close();
+
+        const second = openDatabase(file);   // 表已存在，不应抛错
+        try {
+            assert.equal(v1, 1);
+            assert.equal(second.pragma('user_version', { simple: true }), 1);
+        } finally {
+            second.close();
+        }
+    });
 });

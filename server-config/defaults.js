@@ -34,6 +34,7 @@ module.exports = {
     },
     paths: {
         data: 'data.json',           // 书签数据文件
+        database: 'nav-sylph.db',    // SQLite 库（会话等落盘数据）
         icon: 'icon.svg',
         favicon: 'favicon.svg',
         logs: 'logs'

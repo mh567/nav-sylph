@@ -5,7 +5,7 @@
 ## 系统要求
 
 - Linux (Ubuntu 20.04+ / Debian 11+ / CentOS 8+)
-- Node.js 16+
+- Node.js 22+（`better-sqlite3` 要求；登录会话持久化在 SQLite 库中）
 - 512MB RAM（最低）
 - curl 或 wget
 - 开放端口：4000（或自定义端口）
@@ -35,19 +35,19 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 
 **Ubuntu/Debian:**
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 ```
 
 **CentOS/RHEL:**
 ```bash
-curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
 sudo yum install -y nodejs
 ```
 
 验证安装：
 ```bash
-node --version  # v20.x.x
+node --version  # v22.x.x
 npm --version   # 10.x.x
 ```
 
@@ -177,9 +177,11 @@ cd /opt/nav-sylph
 ```
 
 更新时会自动：
-- 备份用户配置
+- 备份用户配置（含 `nav-sylph.db`，仅用于更新失败时本地回滚）
 - 下载最新版本
 - 恢复配置并重启
+
+> 会话库 `nav-sylph.db` 不在程序文件删除清单里，升级后仍在，因此更新不会让已登录的浏览器掉线。
 
 ## 安全检查清单
 
@@ -190,7 +192,7 @@ cd /opt/nav-sylph
 - [ ] 配置反向代理
 - [ ] 启用 HTTPS
 - [ ] 配置防火墙
-- [ ] `.env` 和 `.admin-password.json` 权限为 600
+- [ ] `.env`、`.admin-password.json` 权限为 600（`nav-sylph.db` 启动时自动设为 600）
 
 ## 常用运维命令
 
@@ -220,6 +222,7 @@ tar -czf backup-$(date +%Y%m%d).tar.gz \
   config.json \
   favorites.json \
   .admin-password.json \
+  nav-sylph.db \
   .env
 ```
 

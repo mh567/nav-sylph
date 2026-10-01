@@ -17,6 +17,11 @@ server-config.json
 config.json
 favorites.json
 
+# SQLite database (admin sessions today; future module data)
+nav-sylph.db
+nav-sylph.db-wal
+nav-sylph.db-shm
+
 # AI assistant files
 CLAUDE.md
 .claude/

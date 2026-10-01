@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 
 ### 系统要求
 
-- **Node.js** 16+
+- **Node.js** 22+（`better-sqlite3` 要求，会话落盘依赖它）
 - **curl** 或 **wget**（用于下载）
 
 ## 📦 管理脚本
@@ -73,6 +73,8 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 - 从 GitHub Release 下载最新版本
 - 恢复配置并重启服务
 - 显示版本变化和更新亮点
+
+> 登录会话存放在 `nav-sylph.db` 中且升级时保留，因此更新后无需重新登录。
 
 > 💡 更新后可点击页面右下角“说明”查看新功能；有新版本时入口会显示提示。
 
@@ -112,6 +114,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 | `.webdav-config.json` | WebDAV 配置 | 远程备份服务器配置（加密存储） |
 | `version.json` | 版本信息 | 当前安装版本 |
 | `.admin-password.json` | 管理密码 | 自动生成，bcrypt 加密存储 |
+| `nav-sylph.db` | SQLite 库 | 登录会话等落盘数据，自动生成，权限 600 |
 
 ### 配置优先级
 
@@ -151,7 +154,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 
 > ⚠️ **首次登录会提示修改默认密码！**
 
-> 登录状态在当前标签页内保持，刷新页面无需重新输入密码；关闭标签页后自动失效。
+> 登录状态由服务端会话 + `HttpOnly` Cookie 维持：刷新页面、关闭标签页、以及服务重启或版本升级后都仍然有效，直到过期、主动退出、修改密码，或检测到登录环境变化（设备指纹 / 归属地）。普通会话默认 24 小时，勾选「信任此设备」后为 30 天滑动续期。
 
 ### 管理面板
 
@@ -250,7 +253,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 |------|------|
 | **前端** | HTML5 + CSS3 + 原生 JavaScript (ES6+) |
 | **后端** | Node.js + Express.js |
-| **存储** | JSON 文件存储 |
+| **存储** | JSON 文件（配置/收藏） + SQLite（登录会话） |
 | **安全** | bcrypt、Rate Limiting、安全响应头、XSS 防护 |
 | **PWA** | Service Worker + Web App Manifest |
 
@@ -264,7 +267,10 @@ nav-sylph/
 │   ├── styles.css         # 样式（含深色模式）
 │   └── sw.js              # Service Worker
 ├── lib/                    # 后端模块
-│   └── webdav-backup.js   # WebDAV 备份模块
+│   ├── webdav-backup.js   # WebDAV 备份模块
+│   ├── session.js         # 管理端会话（设备指纹、地理绑定、Cookie）
+│   ├── session-sqlite.js  # 会话的 SQLite 存储后端
+│   └── db.js              # SQLite 连接与迁移
 ├── server-config/          # 服务器配置模块
 ├── server.js              # 后端服务入口
 ├── sylph.sh               # 统一管理脚本

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const scriptPath = path.join(__dirname, '..', 'sylph.sh');
+const ROOT = path.join(__dirname, '..');
 
 function runLifecycle(action, initialState = 'active', options = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-service-test-'));
@@ -95,4 +96,32 @@ test('failed systemd stop prevents an update from downloading or replacing files
     assert.equal(result.downloadAttempted, false);
     assert.equal(result.serverContents, 'old server');
     assert.doesNotMatch(result.calls, /start nav-sylph\.service/);
+});
+
+// ========== 源码形状守卫：会话库的部署面 ==========
+//
+// 会话落盘依赖三处部署配置同时正确。任一处漏掉，症状都不是本地报错，而是真实环境里
+// 「升级后又掉登录」或「服务起不来」——所以把它们钉成断言，而不是靠手工核对。
+
+test('systemd 单元把会话库及其 WAL 边车纳入可写路径', () => {
+    // ProtectSystem=strict 下，未列入 ReadWritePaths 的路径一律只读，库建不出来。
+    const unit = fs.readFileSync(path.join(ROOT, 'nav-sylph.service'), 'utf8');
+    assert.match(unit, /ReadWritePaths=.*nav-sylph\.db\b/, '会话库必须可写');
+    assert.match(unit, /ReadWritePaths=.*nav-sylph\.db-wal/, 'WAL 边车也要可写');
+});
+
+test('sylph.sh 更新前备份会话库、替换文件后放回', () => {
+    const sh = fs.readFileSync(scriptPath, 'utf8');
+    assert.match(sh, /\[\s*-f\s+"nav-sylph\.db"\s*\]\s*&&\s*cp\s+nav-sylph\.db\s+"\$backup_dir\/"/,
+        '更新流程要先备份会话库');
+    assert.match(sh, /\[\s*-f\s+"\$backup_dir\/nav-sylph\.db"\s*\]\s*&&\s*cp\s+"\$backup_dir\/nav-sylph\.db"\s+\./,
+        '替换程序文件后要把会话库放回，否则回滚路径状态不一致');
+});
+
+test('.gitignore 排除会话库及其 WAL 边车', () => {
+    const ignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+    for (const entry of ['nav-sylph.db', 'nav-sylph.db-wal', 'nav-sylph.db-shm']) {
+        assert.match(ignore, new RegExp(`^${entry.replace(/\./g, '\\.')}$`, 'm'),
+            `${entry} 必须被忽略，否则库会进仓库`);
+    }
 });

@@ -19,7 +19,9 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `public/sw.js` | 同源静态资源白名单缓存；动态接口和分享页不在缓存范围内 |
 | `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载；拼音（收藏加载时）与二维码（首次分享时）经 `app.js` 的 `loadScript` 延迟加载，仍列入 sw.js 的 `ASSETS` 预缓存（离线可用） |
 | `lib/webdav-backup.js` | WebDAV 配置加密、备份、恢复和校验 |
-| `lib/session.js` | 管理端会话：设备指纹加权、地理绑定、Cookie 读写 |
+| `lib/session.js` | 管理端会话：设备指纹加权、地理绑定、Cookie 读写；存储后端可注入（缺省内存） |
+| `lib/session-sqlite.js` | 会话的 SQLite 存储后端（实现 SessionStore 的 6 方法接口） |
+| `lib/db.js` | SQLite 连接、PRAGMA 与 `user_version` 迁移；驱动只在此文件出现 |
 | `lib/geo/` | ip2region 离线 IP 归属库（仅 IPv4）与其只读解析器 |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本 |
 | `tests/` | 备份隐私、移动收藏、对话框、接口数据边界和服务生命周期回归测试 |
@@ -30,11 +32,17 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 `server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载收藏及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；它同样被 `.gitignore` 排除，`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
 `GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图，只含首页需要渲染的部分：收藏过滤掉 `private` 条目并剥离 `private` 字段本身，配置剔除 `privacyMode`。带上正确的 `X-Admin-Password` 时才返回完整数据，供管理面板和私密检索使用。写入路径相应地按 id 合并而不是整份覆盖：`POST /api/favorites` 中既有的私密条目在请求体缺席时保留，`POST /api/config` 以现有文件为基底合并，因此公开视图未携带的 `privacyMode` 不会被保存动作抹掉。浏览器中的私密收藏筛选只是显示逻辑，服务端不再依赖它承担隔离职责。新增私有资产字段时，应先确认它是否应当进入公开视图。
 
-管理端登录采用服务端会话：登录成功后签发 32 字节 CSPRNG 令牌（OWASP 要求 ≥128 位），用 `HttpOnly` Cookie 下发，会话存于进程内 `Map`，重启即失效。浏览器不再保存明文密码——`X-Admin-Password` 只在登录那一次请求里出现，密码验证通过后改由 Cookie 承载；该头作为兜底保留，已打开的旧页面仍可用。
+管理端登录采用服务端会话：登录成功后签发 32 字节 CSPRNG 令牌（OWASP 要求 ≥128 位），用 `HttpOnly` Cookie 下发。**会话持久化在 SQLite（`nav-sylph.db`）中，不随进程重启或版本升级失效**——此前存在进程内 `Map` 里，`./sylph.sh update` 重启进程即把所有人登出。浏览器仍不保存明文密码：`X-Admin-Password` 只在登录那一次请求里出现，验证通过后改由 Cookie 承载；该头作为兜底保留，已打开的旧页面仍可用。
+
+存储分三层，各自只做一件事：`lib/db.js` 管连接、PRAGMA 与 `user_version` 迁移，**驱动（`better-sqlite3`）只在这个文件里出现**，换驱动只改这一处；`lib/session-sqlite.js` 把 `sessions` 表适配成 `SessionStore` 需要的 6 方法后端接口（`get`/`set`/`delete`/`deleteAll`/`sweep`/`count`）；`lib/session.js` 缺省使用语义等价的内存后端，因此不传 `backend` 的调用方（含 `tests/session.test.js` 的 vm 加载方式）行为不变。**这套分层同时是未来模块的接缝**：新模块在 `lib/db.js` 的 `MIGRATIONS` 尾部追加一个台阶即可，不新建库文件、不改已发布的迁移项（老库 `user_version` 已领先，被改动的那一步不会再执行）。
+
+会话在每次请求上滑动续期都会写一行，所以用 WAL（`journal_mode=WAL`，回滚日志下并发读写会互相阻塞）。库文件含令牌，`openDatabase()` 在打开后把主文件与 `-wal`/`-shm` 边车收紧到 0600，与 `.admin-password.json` 同级。**令牌落盘确实扩大了「磁盘可读即可窃取会话」的面**，缓解手段是文件权限、TTL 到期、以及改密码即 `destroyAll()`；这与「密码哈希本就落盘」属同一威胁级别。`server.js` 在 `init()` 内开库并据此构造 `sessionStore`（`requireAdmin` 等路由闭包与 60 秒清扫定时器都在其后才读它），`gracefulShutdown` 关库时 WAL 自动 checkpoint，因此升级与备份只需处理主文件。
+
+配置、收藏与密码仍是 JSON，本次未迁移。
 
 `lib/session.js` 负责设备绑定与 Cookie 读写。要点：
 

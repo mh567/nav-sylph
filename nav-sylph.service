@@ -29,7 +29,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/nav-sylph/logs /opt/nav-sylph/config.json /opt/nav-sylph/.admin-password.json
+ReadWritePaths=/opt/nav-sylph/logs /opt/nav-sylph/config.json /opt/nav-sylph/.admin-password.json -/opt/nav-sylph/nav-sylph.db -/opt/nav-sylph/nav-sylph.db-wal -/opt/nav-sylph/nav-sylph.db-shm
 
 [Install]
 WantedBy=multi-user.target
