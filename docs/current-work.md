@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-当前基线：分支 `main` 与 `origin/main` 一致；最新提交 `5c774d1`，已发布 **v1.5.28**；`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.28`。本会话两轮：先做会话落盘（SQLite，`17efea1` → v1.5.27），再做全面审查与修复（`5c774d1` → v1.5.28）。详见文末两节。
+当前基线：分支 `main` 与 `origin/main` 一致；最新提交 `d9713f8`（记录 v1.5.28 的文档提交），已发布 **v1.5.28**；`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.28`。本会话两轮：先做会话落盘（SQLite，`17efea1` → v1.5.27），再做全面审查与修复（`5c774d1` → v1.5.28）。详见文末两节。
 
 分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`，分享弹窗紧凑化 `a5a2e00`/v1.5.10 `b4522e2`，收藏弹窗 `7779a64`/v1.5.11 `49f9f28`，横屏与软键盘修复为 v1.5.12，**首页材质改版为 v1.5.13**。
 
@@ -808,7 +808,7 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 **现象**：服务器执行 `./sylph.sh update` 提示「已是最新版本」，而仓库已是 1.5.12。
 
-**根因不是 tag，是 GitHub Release。** `sylph.sh:297` 的 `get_latest_release()` 请求 `${GITHUB_RELEASES}/latest`，从 JSON 里取 `tag_name` 与 `.tar.gz` 的 `browser_download_url`；`sylph.sh:698` 拿它和**服务器上的** `version.json`（`sylph.sh:686`）比较。两者都停在 1.5.9 —— 服务器旧版本与缺失的 Release 互相掩盖，看起来像"已经是最新"。
+**根因不是 tag，是 GitHub Release。** `sylph.sh:335` 的 `get_latest_release()` 请求 `${GITHUB_RELEASES}/latest`，从 JSON 里取 `tag_name` 与 `.tar.gz` 的 `browser_download_url`；`sylph.sh:740` 拿它和**服务器上的** `version.json`（`sylph.sh:728`）比较。两者都停在 1.5.9 —— 服务器旧版本与缺失的 Release 互相掩盖，看起来像"已经是最新"。
 
 git tag 与 GitHub Release 是两套东西：推 tag 不产生 Release。当时 `gh release list` 最新仍是 v1.5.9，`/releases/latest` 也就仍返回 v1.5.9。
 
@@ -1335,7 +1335,7 @@ node --check <每个改动的 .js>       # 全部 OK
 
 P3 是本轮最值得记住的一条：失败**不会在安装阶段暴露**。`sylph.sh update` 的既有流程是「停服 → 删程序文件 → 拷贝新版 → `npm install` → 启动」，版本不够时前四步全部成功，只有最后一步段错误退出——而脚本在停服之后没有任何回滚路径，站点就这么停着。闸门因此必须挡在 `do_stop` 之前。实测平台为 darwin-arm64；Linux 上未复现，但包与 N-API 层级相同。
 
-P0 的根因值得记住：`sylph.sh:434` 的 `chmod 600 .admin-password.json` 跑在**应用创建该文件之前**（文件由 `server.js` 的 `ensureFile()` 在首次启动时写入），`[ -f ]` 守卫直接跳过——**脚本侧的 chmod 不能作为私有文件的唯一防线**。`.env` 不受影响，因为脚本自己在前面创建了它。
+P0 的根因值得记住：`sylph.sh:473` 的 `chmod 600 .admin-password.json` 跑在**应用创建该文件之前**（文件由 `server.js` 的 `ensureFile()` 在首次启动时写入），`[ -f ]` 守卫直接跳过——**脚本侧的 chmod 不能作为私有文件的唯一防线**。`.env` 不受影响（`sylph.sh:474`），因为脚本自己在前面创建了它。
 
 **已排除（不成立，免得重复调查）**：会话泄进 WebDAV（`lib/webdav-backup.js` 零引用）；两个后端方法集不一致（实测两侧都是同样 6 个方法）；驱动被别处 require（只有 `lib/db.js`）；二次启动后 WAL 权限回落 644（实测仍为 600）。
 
