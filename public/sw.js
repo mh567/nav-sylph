@@ -1,5 +1,6 @@
-// 收藏管理新增批量隐私按钮与私密标签，命中缓存的老用户拿不到，必须升缓存名
-const CACHE = 'nav-v33';
+// 首页性能优化：admin.css 改非阻塞加载、pinyin/qrcode 延迟加载，
+// index.html 与 app.js 已变，命中缓存的老用户拿不到，必须升缓存名
+const CACHE = 'nav-v34';
 const ASSETS = [
     '/',
     '/index.html',

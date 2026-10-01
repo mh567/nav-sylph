@@ -15,9 +15,9 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `server.js` | Express 服务、静态资源、配置与收藏接口、管理密码、分享页面和 WebDAV 接口 |
 | `server-config/` | 服务配置默认值、文件与环境变量的加载及校验 |
 | `public/index.html`、`public/app.js` | 首页结构、搜索、收藏、管理界面及浏览器状态；管理密码存在时按需取回完整配置与收藏 |
-| `public/styles.css`、`public/admin.css` | 首页与管理界面样式；`.search.paste-mode`（分享编辑器）只在该文件「Paste 分享模式」区块定义一处，勿在尾段的新版样式区块重复声明 |
+| `public/styles.css`、`public/admin.css` | 首页与管理界面样式。`admin.css` 经 `media="print" onload` 非阻塞加载（首屏渲染不等它）——它不止样式化管理面板，还样式化站内对话框 `showUiDialog()` 与错误 toast（见 :145），故必须在用户交互前就位、不能按需加载；`.search.paste-mode`（分享编辑器）只在该文件「Paste 分享模式」区块定义一处，勿在尾段的新版样式区块重复声明 |
 | `public/sw.js` | 同源静态资源白名单缓存；动态接口和分享页不在缓存范围内 |
-| `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载 |
+| `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载；拼音（收藏加载时）与二维码（首次分享时）经 `app.js` 的 `loadScript` 延迟加载，仍列入 sw.js 的 `ASSETS` 预缓存（离线可用） |
 | `lib/webdav-backup.js` | WebDAV 配置加密、备份、恢复和校验 |
 | `lib/session.js` | 管理端会话：设备指纹加权、地理绑定、Cookie 读写 |
 | `lib/geo/` | ip2region 离线 IP 归属库（仅 IPv4）与其只读解析器 |
@@ -28,7 +28,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 ## 数据与请求路径
 
-`server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。首页在 `public/index.html` 中提前请求 `/api/config`；`public/app.js` 复用该请求，渲染首页后再加载收藏及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
+`server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载收藏及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
 运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 

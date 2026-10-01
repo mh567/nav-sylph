@@ -8,7 +8,9 @@
     <meta name="theme-color" content="#211f1c" media="(prefers-color-scheme: dark)">
     <title>导航</title>
     <script>
-        window.__navSylphConfigPromise = fetch('/api/config', { cache: 'no-store' }).then(response => {
+        // no-cache：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304
+        // （零传输），既省去首屏往返的响应体，又保证配置始终最新。
+        window.__navSylphConfigPromise = fetch('/api/config', { cache: 'no-cache' }).then(response => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.json();
         });
@@ -26,7 +28,12 @@
         @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
     </style>
     <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" href="admin.css">
+    <!-- admin.css 不阻塞首屏渲染：media="print" 让浏览器异步下载，
+         onload 后切回 all 立即生效。它不止样式化管理面板——架构文档
+         规定站内对话框（showUiDialog，含首页分享保护面板）与错误
+         toast 的样式都定义在 admin.css，必须在用户交互前就位，
+         故不能按需加载，只能改为非阻塞。 -->
+    <link rel="stylesheet" href="admin.css" media="print" onload="this.media='all'">
 </head>
 <body>
     <div class="loader" id="loader"></div>
@@ -78,8 +85,8 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="lib/uFuzzy.iife.min.js"></script>
-    <script src="lib/pinyin.js"></script>
-    <script src="lib/qrcode.js"></script>
+    <!-- pinyin.js（拼音搜索）与 qrcode.js（分享二维码）改为按需加载，
+         见 app.js loadScript；仍在 sw.js 的 ASSETS 预缓存清单里 -->
     <script src="app.js"></script>
 </body>
 </html>

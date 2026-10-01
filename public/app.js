@@ -138,7 +138,25 @@
             this.currentVersion = null;
             this.changelog = null;
             this.hasNewVersion = false;
+            this._scriptCache = new Map();  // 按需加载的 <script>，同一 src 只加载一次
             this.init();
+        }
+
+        // 按需加载一个 <script>。同一 src 只加载一次，后续调用复用同一 promise。
+        // 用于把非首屏必需的库（拼音搜索、分享二维码）移出首屏关键路径。
+        loadScript(src) {
+            if (this._scriptCache.has(src)) return this._scriptCache.get(src);
+            const promise = new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('加载失败: ' + src));
+                document.head.appendChild(s);
+            });
+            this._scriptCache.set(src, promise);
+            // 失败时清掉缓存，允许下次重试（网络抖动后可恢复）
+            promise.catch(() => this._scriptCache.delete(src));
+            return promise;
         }
 
         async init() {
@@ -520,6 +538,9 @@
             try {
                 const data = await API.get('/api/favorites');
                 this.favorites = data.favorites || [];
+                // 拼音库只在构建搜索索引时才需要，按需加载，不阻塞首屏。
+                // 加载失败则索引不含拼音（普通搜索仍可用），不阻断收藏加载。
+                await this.loadScript('lib/pinyin.js').catch(() => {});
                 this.buildSearchIndex();
             } catch (e) {
                 console.error('Load favorites failed:', e);
@@ -1335,16 +1356,24 @@
 
             result.querySelector('.paste-close').onclick = () => this.hidePasteResult();
 
-            // 二维码：使用本地图库生成 data URL，失败时静默隐藏，不影响复制链接
+            // 二维码：使用本地图库生成 data URL，失败时静默隐藏，不影响复制链接。
+            // qrcode.js 经 loadScript 按需加载，加载完成后再生成，
+            // 不阻塞分享结果的展示。
             const qrImg = result.querySelector('.paste-qr img');
-            try {
-                const qr = qrcode(0, 'M');
-                qr.addData(url);
-                qr.make();
-                qrImg.src = qr.createDataURL(6, 2);
-            } catch {
-                qrImg.closest('.paste-qr')?.remove();
-            }
+            this.loadScript('lib/qrcode.js')
+                .then(() => {
+                    try {
+                        const qr = qrcode(0, 'M');
+                        qr.addData(url);
+                        qr.make();
+                        qrImg.src = qr.createDataURL(6, 2);
+                    } catch {
+                        qrImg.closest('.paste-qr')?.remove();
+                    }
+                })
+                .catch(() => {
+                    qrImg.closest('.paste-qr')?.remove();
+                });
 
             result.querySelector('.paste-link').onclick = async (e) => {
                 const link = e.target;

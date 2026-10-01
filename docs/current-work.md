@@ -1145,7 +1145,7 @@ node --check <每个改动的 .js>       # 全部 OK
 - **`COOKIE_SECURE` 无需配置**：审查发现 http 部署本来就会自动省略 `Secure`，
   原先以为需要手工设置的判断是错的，已改正文档。该项保留为覆盖自动判断的开关。
 
-### 收藏批量隐私（未提交，工作树）
+### 收藏批量隐私（已提交 `8e487db`，发布 v1.5.25）
 
 **目标**：收藏管理里多选后，能一次性修改隐私状态。
 
@@ -1201,6 +1201,51 @@ node --check <每个改动的 .js>       # 全部 OK
 - 窄屏批量条在 <356px 视口可能换行（`<=768px` 下 `.fav-batch-bar` 是 `flex-wrap: wrap`）。
   仅按 CSS 手算，未在 320/375px 实测。
 - 无头 Chrome `maxTouchPoints: 0`，无法验证 coarse pointer 相关的触摸目标差异。
+
+### 首页加载性能优化（本次工作树，待提交）
+
+**目标**：首页加载变慢，分析原因并优化。用户从三项优化中选了 2、3、4（未选 1 的 SW stale-while-revalidate）。
+
+**做了什么**（4 文件，`+73/−15`）
+
+- **选项 2**：`/api/config` 的 fetch 从 `cache: 'no-store'` 改 `cache: 'no-cache'`
+  （`index.html`），服务端补 `Cache-Control: no-cache`（`server.js`）。**单改客户端不够**——
+  服务端虽发 ETag 但从不发 `Cache-Control`，浏览器因此不缓存 config、ETag 形同虚设；
+  补上头后浏览器才在回访时发 `If-None-Match`、服务端返 304（零响应体）。
+- **选项 4**：`lib/pinyin.js`（收藏加载时）与 `lib/qrcode.js`（首次分享时）从
+  `index.html` 移除，经 `app.js` 新增的 `loadScript(src)` 延迟加载（同一 src 只加载
+  一次，失败清缓存可重试）。二者仍列入 `sw.js` 的 `ASSETS` 预缓存（离线可用）。
+- **选项 3（原方案被审查推翻，见下）**：`admin.css` 改为 `media="print" onload`
+  非阻塞加载——首屏渲染不等它，但用户交互前已就位。
+- `sw.js` 缓存 `nav-v33 → nav-v34`（改了 `public/` 资产，**发版阻断项**）。
+
+**审查中发现并已修的硬违规（Standards 轴 P0）**：我最初把 `admin.css` 移出 head、
+只在 `openAdmin` 里按需加载。但架构文档 `:145` 规定「站内对话框统一走 `showUiDialog()`，
+样式定义在 `admin.css`」——admin.css **不止样式化管理面板**，还样式化首页的分享保护
+面板、confirm 对话框与错误 toast（`admin.css:49` 的 `.ui-dialog`、`:334` 的
+`.toast[data-state="error"]`）。按需加载会让这些首页功能在首次打开管理面板前**完全无样式**
+（我首次的分享测试因先开了管理面板而幸免，是假绿）。已改为非阻塞加载，并实测：
+全新页面不碰管理面板、直接触发分享，保护面板即带 `backdrop-filter: blur(23px)`、
+`background: var(--admin-panel)`、`border: 1px solid`。
+
+**已验证**（真实服务器 + 无头 Chrome）
+
+- 选项 2：服务器日志确认浏览器回访时发 `If-None-Match: W/"428-…"`、服务端返 304；
+  配置按认证态生成不同表示（公开视图不含 `privacyMode`）→ 不同 ETag → 登录态变化
+  必得新 200，**不会拿到旧的完整配置**（「始终最新」成立）。
+- 选项 4：qrcode 仅在分享时加载、二维码正常生成（真实 data URL）；pinyin 在首屏后
+  才加载（load 事件已完成），拼音搜索 `bdss` 正确命中「百度搜索」；`buildSearchIndex`
+  另有三个调用点均在首次 `loadFavorites` 之后，不会 `ReferenceError`。
+- 选项 3：`admin.css` 的 `media` 由 print 切为 all（onload 生效），首页对话框样式就位。
+- 回归 207 条全绿；`node --check` 通过。
+
+**已知取舍与未做**
+
+- pinyin/qrcode 仍由 SW 在安装时预缓存（省的是**首屏阻塞**而非流量；严格说「首次分享
+  才下载」有出入，但脚本执行确实已延迟，且换来离线可用与老访客秒开）。
+- `loadScript` 的失败重试（`promise.catch` 清缓存）只为两个调用点，属轻量投机泛化，
+  保留因网络抖动后可自愈。
+- 未在真实高 RTT 网络测 304 的端到端收益（本地回环 RTT≈0，看不出省传输的绝对值）。
 
 ## 下一位 Agent 的启动步骤
 

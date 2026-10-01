@@ -573,6 +573,10 @@ async function init() {
 // （约 9 倍 CPU），且完全无需认证。匿名也要能读首页，因此用独立限流桶。
 app.get('/api/config', publicReadLimit, async (req, res) => {
     try {
+        // 允许浏览器缓存但每次用 ETag 校验：配置未变时返 304（零响应体），
+        // 省去首屏往返的传输量，又保证配置始终最新。客户端以
+        // cache: 'no-cache' 发起（见 index.html），二者配合才生效。
+        res.setHeader('Cache-Control', 'no-cache');
         const cfg = await readJSON(CONFIG_FILE);
         // 会话或正确管理密码时返回完整配置，供管理面板读取 privacyMode
         const access = await hasAdminAccess(req);
