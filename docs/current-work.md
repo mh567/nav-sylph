@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-当前基线：分支 `main` 与 `origin/main` 一致；本次会话的改动已提交为 `17efea1` 并发布 **v1.5.27**；`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.27`。详见文末「会话落盘（SQLite）」一节。
+当前基线：分支 `main` 与 `origin/main` 一致；最新提交 `5c774d1`，已发布 **v1.5.28**；`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.28`。本会话两轮：先做会话落盘（SQLite，`17efea1` → v1.5.27），再做全面审查与修复（`5c774d1` → v1.5.28）。详见文末两节。
 
 分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`，分享弹窗紧凑化 `a5a2e00`/v1.5.10 `b4522e2`，收藏弹窗 `7779a64`/v1.5.11 `49f9f28`，横屏与软键盘修复为 v1.5.12，**首页材质改版为 v1.5.13**。
 
@@ -1342,6 +1342,14 @@ P0 的根因值得记住：`sylph.sh:434` 的 `chmod 600 .admin-password.json` �
 **既有、非本次引入，未改**：`nav-sylph.service` 的 `ReadWritePaths` 未含 `favorites.json` 与 `.webdav-config.json`（`ProtectSystem=strict` 下会拒写，但实际部署用的是 `sylph.sh do_enable` 生成的 unit，不设 `ProtectSystem`）；`paths.data` 是死配置（全仓无消费者）；`lib/db.js` 导出的 `MIGRATIONS` 无 import（方案要求暴露，保留）。
 
 **验证**：`node --test tests/*.test.js` → **226 通过 0 失败**（新增 2 条私有文件权限守卫 + 4 条 Node 闸门用例，均经红/绿验证）；全新安装实测五个文件全部 600；预置 644 的旧文件在启动后被收敛为 600；打包逻辑实测不再夹带 `config.json`；闸门用例在环境 `NODE_BIN` 不可用时仍全部通过（不依赖跑测试的 Node 版本）。
+
+**发布 v1.5.28**
+
+- 前置检查：`git status --short` + `git diff <last-tag>` 对照 `release.sh` 打包清单；`public/` 未改动 → `sw.js` 缓存保持 `nav-v34`，**无需升版**。本次是「确认命中」方向，不是拦下遗漏。
+- 三处版本 → `1.5.28`；`CHANGELOG.json` 新增条目（summary 一句 + 两条 highlights + `fix`/`security`/`improve`）。
+- 提交 `5c774d1`；`bash scripts/release.sh` 产出 `nav-sylph-v1.5.28.tar.gz`；脚本只推 tag，分支为手工推送（`f10e93c..5c774d1`）。
+- 产物核验：`server-config/` 只有 `defaults.js index.js`（**P1 在真实产物上确认修复**）；包内版本 `1.5.28`；`restrictPrivateFileModes` 与 `REQUIRED_NODE_MAJOR=22` 均已随包；无 `docs/`、`tests/`、`.git`、`node_modules` 泄漏。
+- **在产物里真实的 `sylph.sh` 上跑了一次闸门**：伪造 Node 20 → 打印拒绝信息并以 `exit 1` 结束，未停服、未联网。
 
 ## 下一位 Agent 的启动步骤
 
