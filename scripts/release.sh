@@ -108,7 +108,10 @@ cp README.md "$DIST_DIR/${RELEASE_NAME}/"
 
 # 目录
 cp -r public "$DIST_DIR/${RELEASE_NAME}/"
-cp -r server-config "$DIST_DIR/${RELEASE_NAME}/"
+# server-config/ 只复制代码模块：该目录下可能残留本机的 server-config/config.json
+# （被 .gitignore 忽略，但 `cp -r` 不感知），打进发布包会夹带开发者的本地配置。
+mkdir -p "$DIST_DIR/${RELEASE_NAME}/server-config"
+cp server-config/*.js "$DIST_DIR/${RELEASE_NAME}/server-config/"
 cp -r lib "$DIST_DIR/${RELEASE_NAME}/"
 
 # 创建空目录

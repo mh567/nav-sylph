@@ -454,11 +454,31 @@ const defaultFavorites = {
     favorites: []
 };
 
+/**
+ * 承载用户数据或凭据的文件，权限统一收到 600。
+ *
+ * 不依赖 sylph.sh 的 chmod：`.admin-password.json` 等文件是**应用**在首次启动时才创建的，
+ * 脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，等于空操作——实测全新安装后密码哈希
+ * 与私密收藏都是 644，反而是本次新增的会话库为 600。
+ */
+const PRIVATE_FILES = [CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE];
+
+/** 兜底校正既有安装：老版本写下的文件可能仍是 644，每次启动收敛一次。 */
+async function restrictPrivateFileModes() {
+    await Promise.all(PRIVATE_FILES.map(async file => {
+        try {
+            await fs.chmod(file, 0o600);
+        } catch {
+            // 尚未创建，例如未配置 WebDAV 时的 .webdav-config.json
+        }
+    }));
+}
+
 async function ensureFile(file, defaultData) {
     try {
         await fs.access(file);
     } catch {
-        await fs.writeFile(file, JSON.stringify(defaultData, null, 2));
+        await writeJSON(file, defaultData);
         console.log(`Created: ${path.basename(file)}`);
     }
 }
@@ -468,8 +488,10 @@ async function readJSON(file) {
     return JSON.parse(data);
 }
 
+/** 只用于 PRIVATE_FILES 里的文件：写完立即收紧，不留 644 窗口。 */
 async function writeJSON(file, data) {
     await fs.writeFile(file, JSON.stringify(data, null, 2));
+    await fs.chmod(file, 0o600);
 }
 
 async function verifyPassword(password) {
@@ -563,6 +585,10 @@ async function init() {
     await ensureFile(PASSWORD_FILE, {
         passwordHash: await bcrypt.hash(config.security.defaultPassword, 10)
     });
+
+    // 老版本写下的这几个文件可能仍是 644（脚本的 chmod 跑在它们创建之前），
+    // 每次启动收敛一次；本次新建的已在 writeJSON 里就收紧。
+    await restrictPrivateFileModes();
 
     // 打开（必要时创建）SQLite 库并跑完迁移，再据此构造会话存储。
     // 顺序固定：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。

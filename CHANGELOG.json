@@ -1,6 +1,28 @@
 {
   "versions": [
     {
+      "version": "1.5.28",
+      "date": "2026-10-01",
+      "summary": "修复了用户数据文件的权限问题",
+      "highlights": [
+        "密码、收藏等文件不再对同机其他用户可读",
+        "更新前会先检查 Node 版本，不满足直接拒绝，避免更新后服务起不来"
+      ],
+      "changes": {
+        "fix": [
+          "config.json / favorites.json / .admin-password.json / .webdav-config.json 改为创建与写入时即收紧为 600，并在每次启动校正既有安装（此前全新安装为 644）",
+          "release.sh 只打包 server-config 下的代码模块，不再夹带本机的 server-config/config.json"
+        ],
+        "security": [
+          "私有数据文件改由服务自身负责收紧权限，不再依赖 sylph.sh 的 chmod——它跑在文件创建之前，对全新安装等于空操作"
+        ],
+        "improve": [
+          "sylph.sh 新增 Node 版本闸门：低于 22 时拒绝更新并给出升级指引，避免「文件已替换、服务起不来、且无回滚」",
+          "README / DEPLOYMENT 补充更新前需 Node ≥ 22 的说明；server-config.example.json 补上 paths.database"
+        ]
+      }
+    },
+    {
       "version": "1.5.27",
       "date": "2026-10-01",
       "summary": "更新版本后不用重新登录了",

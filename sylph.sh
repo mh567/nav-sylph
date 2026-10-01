@@ -41,6 +41,10 @@ LOG_FILE="${LOG_DIR}/server.log"
 NODE_BIN="${NODE_BIN:-node}"
 SYSTEMD_DIR="/etc/systemd/system"
 
+# 应用要求的最低 Node 主版本。better-sqlite3@13 的 engines 是 >=22；实测在 Node 20 上
+# require 会直接段错误，而 npm install 阶段不会报任何错——所以必须在这里挡住。
+REQUIRED_NODE_MAJOR=22
+
 # ===== 颜色定义 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -293,6 +297,40 @@ check_dependencies() {
     fi
 }
 
+# 取 Node 主版本号；拿不到（未安装或输出异常）时返回非零。
+node_major_version() {
+    local raw
+    raw="$("$NODE_BIN" -v 2>/dev/null)" || return 1
+    raw="${raw#v}"
+    raw="${raw%%.*}"
+    case "$raw" in ''|*[!0-9]*) return 1 ;; esac
+    echo "$raw"
+}
+
+# Node 版本闸门。**必须在停服与替换文件之前调用**——那两个动作一旦发生就没有回滚路径，
+# 而版本不够的后果恰好是「安装阶段全绿、启动时段错误」，不挡在这里就没有第二次机会。
+check_node_version() {
+    local major
+    if ! major="$(node_major_version)"; then
+        log_error "无法确定 Node 版本（NODE_BIN=${NODE_BIN}），请确认 node 可用"
+        return 1
+    fi
+    if [ "$major" -lt "$REQUIRED_NODE_MAJOR" ]; then
+        log_error "当前 Node 主版本为 ${major}，本版本要求 Node ${REQUIRED_NODE_MAJOR} 及以上"
+        echo ""
+        echo "  为什么不只是警告：应用依赖的 better-sqlite3 在 Node 20 及以下会段错误退出，"
+        echo "  而 npm install 阶段不会报任何错——更新会变成「文件已替换、服务起不来、且无回滚」。"
+        echo ""
+        echo "  升级 Node（旧版本仍在运行，升级 Node 本身是安全的）："
+        echo "    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
+        echo "    sudo apt-get install -y nodejs"
+        echo ""
+        echo "  然后重新执行: ./sylph.sh update"
+        return 1
+    fi
+    return 0
+}
+
 # 获取最新版本信息
 get_latest_release() {
     local api_url="${GITHUB_RELEASES}/latest"
@@ -377,6 +415,7 @@ do_install() {
     echo ""
 
     check_dependencies
+    check_node_version || exit 1
     log_info "Node.js: $(node --version)"
     echo ""
 
@@ -679,6 +718,9 @@ do_update() {
 
     print_banner
     cd "$APP_DIR"
+
+    # 版本闸门必须排在停服与下载之前：停服之后失败就没有回滚路径了。
+    check_node_version || exit 1
 
     # 获取当前版本
     local old_version=""

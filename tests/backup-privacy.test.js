@@ -63,3 +63,33 @@ test('an unchanged legacy backup is refreshed with privacy metadata', async () =
     const repeat = await backup.createBackup(configData, { favorites }, '1.4.0', generateBookmarkHtml);
     assert.equal(repeat.noChanges, true);
 });
+
+// ========== 私有文件的权限 ==========
+//
+// 修复前：这些文件由应用首次启动时创建，而 sylph.sh 的 chmod 跑在它们存在之前，
+// `[ -f ... ] && chmod` 直接跳过——实测全新安装后密码哈希与私密收藏都是 644，
+// 只有本次新增的会话库是 600。这里钉住「谁负责收紧」。
+
+/** 去注释后再匹配，避免注释里的字样把形状断言骗过。 */
+function stripComments(src) {
+    return src
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:'"\\])\/\/.*$/gm, '$1');
+}
+
+test('应用自己创建/写入的私有文件立即收紧为 600', () => {
+    const code = stripComments(server);
+    assert.match(code, /const PRIVATE_FILES = \[CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE\]/,
+        '密码、收藏、配置与 WebDAV 配置都承载私有数据');
+    assert.match(code, /async function writeJSON\(file, data\) \{[\s\S]*?fs\.chmod\(file, 0o600\)/,
+        '写入后必须立即收紧，不留 644 窗口');
+    assert.match(code, /await restrictPrivateFileModes\(\)/,
+        '启动时要兜底校正既有安装中仍是 644 的老文件');
+});
+
+test('WebDAV 配置保存后同样收紧为 600', () => {
+    // 该文件由 lib/webdav-backup.js 直接写，不走 server.js 的 writeJSON。
+    const code = stripComments(backupSource);
+    assert.match(code, /saveConfig\(newConfig\) \{[\s\S]*?fs\.chmod\(this\.configPath, 0o600\)/,
+        '里面存着加密后的 WebDAV 密码');
+});

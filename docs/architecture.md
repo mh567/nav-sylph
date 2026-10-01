@@ -32,7 +32,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 `server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载收藏及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；它同样被 `.gitignore` 排除，`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
 `GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图，只含首页需要渲染的部分：收藏过滤掉 `private` 条目并剥离 `private` 字段本身，配置剔除 `privacyMode`。带上正确的 `X-Admin-Password` 时才返回完整数据，供管理面板和私密检索使用。写入路径相应地按 id 合并而不是整份覆盖：`POST /api/favorites` 中既有的私密条目在请求体缺席时保留，`POST /api/config` 以现有文件为基底合并，因此公开视图未携带的 `privacyMode` 不会被保存动作抹掉。浏览器中的私密收藏筛选只是显示逻辑，服务端不再依赖它承担隔离职责。新增私有资产字段时，应先确认它是否应当进入公开视图。
 

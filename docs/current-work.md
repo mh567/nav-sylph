@@ -1320,6 +1320,29 @@ node --check <每个改动的 .js>       # 全部 OK
 - 若日后要把配置/收藏也迁入同一库，须先处理 `favorites.json` 的 HTML 导入导出与 WebDAV 往返格式
 - 本次改动已提交 `17efea1`、已发布 v1.5.27
 
+## 全面审查（文档 / 脚本 / 新旧模块冲突）与随后的修复
+
+**方法**：基线 `v1.5.27`。文档逐条与代码核对；后端方法集、驱动引用点、WAL 权限、WebDAV 边界等一律**实测**而非推理。以下结论均已复核。
+
+**确认并已修**
+
+| 级别 | 问题 | 证据 | 修法 |
+| --- | --- | --- | --- |
+| P0 | 密码哈希与私密收藏是 644，反而只有新加的会话库是 600 | 全新安装实测 `.admin-password.json` / `config.json` / `favorites.json` 均为 644 | `writeJSON()` 写完即 `chmod 600`；`init()` 每次启动调 `restrictPrivateFileModes()` 兜底校正既有安装；WebDAV 配置在 `lib/webdav-backup.js` 的保存路径单独收紧 |
+| P1 | `release.sh` 把未跟踪的本机 `server-config/config.json`（含 `"port": 4123`）打进了发布包 | 下载的 v1.5.27 产物里确有该文件 | `cp -r server-config` 改为只复制 `server-config/*.js` |
+| P2 | `server-config.example.json` 缺 `database` 键 | 与 `defaults.js` 的 `paths` 块比对 | 示例补上 |
+| P3 | 升级到本版本（Node < 22 时）会「`npm install` 全绿、启动段错误」，而脚本既无版本检查也无回滚 | 实测 Node 20.19.4 加载 `better-sqlite3@13` → **Segmentation fault，退出码 139**（`try/catch` 接不住）；Node 20 下 `npm install` → **退出码 0、EBADENGINE 出现 0 次** | `sylph.sh` 新增 Node 版本闸门，**排在停服与下载之前**；`do_install` 同样校验；README / DEPLOYMENT 写明前提 |
+
+P3 是本轮最值得记住的一条：失败**不会在安装阶段暴露**。`sylph.sh update` 的既有流程是「停服 → 删程序文件 → 拷贝新版 → `npm install` → 启动」，版本不够时前四步全部成功，只有最后一步段错误退出——而脚本在停服之后没有任何回滚路径，站点就这么停着。闸门因此必须挡在 `do_stop` 之前。实测平台为 darwin-arm64；Linux 上未复现，但包与 N-API 层级相同。
+
+P0 的根因值得记住：`sylph.sh:434` 的 `chmod 600 .admin-password.json` 跑在**应用创建该文件之前**（文件由 `server.js` 的 `ensureFile()` 在首次启动时写入），`[ -f ]` 守卫直接跳过——**脚本侧的 chmod 不能作为私有文件的唯一防线**。`.env` 不受影响，因为脚本自己在前面创建了它。
+
+**已排除（不成立，免得重复调查）**：会话泄进 WebDAV（`lib/webdav-backup.js` 零引用）；两个后端方法集不一致（实测两侧都是同样 6 个方法）；驱动被别处 require（只有 `lib/db.js`）；二次启动后 WAL 权限回落 644（实测仍为 600）。
+
+**既有、非本次引入，未改**：`nav-sylph.service` 的 `ReadWritePaths` 未含 `favorites.json` 与 `.webdav-config.json`（`ProtectSystem=strict` 下会拒写，但实际部署用的是 `sylph.sh do_enable` 生成的 unit，不设 `ProtectSystem`）；`paths.data` 是死配置（全仓无消费者）；`lib/db.js` 导出的 `MIGRATIONS` 无 import（方案要求暴露，保留）。
+
+**验证**：`node --test tests/*.test.js` → **226 通过 0 失败**（新增 2 条私有文件权限守卫 + 4 条 Node 闸门用例，均经红/绿验证）；全新安装实测五个文件全部 600；预置 644 的旧文件在启动后被收敛为 600；打包逻辑实测不再夹带 `config.json`；闸门用例在环境 `NODE_BIN` 不可用时仍全部通过（不依赖跑测试的 Node 版本）。
+
 ## 下一位 Agent 的启动步骤
 
 1. 阅读根目录 `AGENTS.md`、`README.md`、`docs/architecture.md` 及本文件。

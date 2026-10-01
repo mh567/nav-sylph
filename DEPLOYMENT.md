@@ -171,12 +171,19 @@ sudo certbot --nginx -d nav.example.com
 
 ## 更新应用
 
+**前提：Node ≥ 22。** 从 1.5.27 起应用改用 SQLite 持久化登录会话，依赖的 `better-sqlite3`
+在 Node 20 及以下会**段错误退出**，而 `npm install` 阶段不会报任何错——也就是说，版本不够时
+更新会变成「文件已替换、服务起不来、且没有回滚」。因此 `./sylph.sh update` 会**先校验 Node 版本**，
+不满足就直接拒绝，不会停服、不会替换任何文件。
+
 ```bash
+node --version        # 必须 ≥ v22；否则先按上面「安装 Node.js」一节升级（旧版本仍在运行，升级 Node 本身安全）
 cd /opt/nav-sylph
 ./sylph.sh update
 ```
 
 更新时会自动：
+- 校验 Node 版本（不足则中止）
 - 备份用户配置（含 `nav-sylph.db`，仅用于更新失败时本地回滚）
 - 下载最新版本
 - 恢复配置并重启
@@ -192,7 +199,7 @@ cd /opt/nav-sylph
 - [ ] 配置反向代理
 - [ ] 启用 HTTPS
 - [ ] 配置防火墙
-- [ ] `.env`、`.admin-password.json` 权限为 600（`nav-sylph.db` 启动时自动设为 600）
+- [ ] `.env` 权限为 600（`config.json`、`favorites.json`、`.admin-password.json`、`.webdav-config.json`、`nav-sylph.db` 由服务在创建/写入时收紧，并在每次启动兜底校正）
 
 ## 常用运维命令
 

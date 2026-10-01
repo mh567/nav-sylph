@@ -69,10 +69,13 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 ```
 
 更新时会自动：
+- 校验 Node 版本（低于 22 会直接拒绝更新）
 - 备份用户配置（书签、密码、设置）
 - 从 GitHub Release 下载最新版本
 - 恢复配置并重启服务
 - 显示版本变化和更新亮点
+
+> 需要 **Node.js 22+**。低版本请先升级 Node，再执行更新——`./sylph.sh update` 会先校验并拒绝，不会改动你的文件。
 
 > 登录会话存放在 `nav-sylph.db` 中且升级时保留，因此更新后无需重新登录。
 
