@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-修改前的基线：分支 `main`，与本地 `origin/main` 跟踪引用一致；最新提交为 `9ecc720`；`package.json` 版本 `1.5.6`。
+当前基线：分支 `main` 与 `origin/main` 一致；最新提交 `b418b4c`（发布 v1.5.26）；`package.json` 版本 `1.5.26`。
 
 分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`，分享弹窗紧凑化 `a5a2e00`/v1.5.10 `b4522e2`，收藏弹窗 `7779a64`/v1.5.11 `49f9f28`，横屏与软键盘修复为 v1.5.12，**首页材质改版为 v1.5.13**。
 
@@ -1202,7 +1202,7 @@ node --check <每个改动的 .js>       # 全部 OK
   仅按 CSS 手算，未在 320/375px 实测。
 - 无头 Chrome `maxTouchPoints: 0`，无法验证 coarse pointer 相关的触摸目标差异。
 
-### 首页加载性能优化（本次工作树，待提交）
+### 首页加载性能优化（已提交 `4ec2a07` + 版本 `b418b4c`，发布 v1.5.26）
 
 **目标**：首页加载变慢，分析原因并优化。用户从三项优化中选了 2、3、4（未选 1 的 SW stale-while-revalidate）。
 
@@ -1238,6 +1238,9 @@ node --check <每个改动的 .js>       # 全部 OK
   另有三个调用点均在首次 `loadFavorites` 之后，不会 `ReferenceError`。
 - 选项 3：`admin.css` 的 `media` 由 print 切为 all（onload 生效），首页对话框样式就位。
 - 回归 207 条全绿；`node --check` 通过。
+- 发布验证：`/releases/latest` 指向 `v1.5.26`（4.3MB）；下载 tarball 后 grep 确认
+  8 项改动全部在内、`ensureAdminCss` 无残留、无 docs/tests 泄漏；远程 `main` 到
+  `b418b4c`、tag `v1.5.26` 已推送。
 
 **已知取舍与未做**
 
