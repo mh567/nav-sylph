@@ -64,8 +64,13 @@
         </div>
         <main class="grid" id="grid"></main>
         </div>
+        <!-- 登录后模块区：在 .backboard **之外**、作为 .app 的子节点。
+             宽屏（≥1024px）时它绝对定位到背板左右外侧；窄屏由 CSS 拉回文档流，
+             落在分类网格下方横滑。未登录时保持 hidden。 -->
+        <section class="module-zone" id="moduleZone" aria-label="模块" hidden></section>
         <nav class="utility-dock" aria-label="页面操作">
             <button class="fab fab-help" id="helpBtn" title="帮助">说明</button>
+            <button class="fab" id="layoutBtn" title="调整模块布局" hidden>布局</button>
             <button class="fab" id="adminBtn" title="管理 (Alt+A)">管理</button>
         </nav>
     </div>

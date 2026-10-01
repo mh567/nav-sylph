@@ -32,7 +32,7 @@ const {
 } = sessionModule.exports;
 
 // 会话的落盘后端同样归本文件管：本文件是会话逻辑的归属测试。
-const { openDatabase } = require(path.join(ROOT, 'lib', 'db.js'));
+const { openDatabase, MIGRATIONS } = require(path.join(ROOT, 'lib', 'db.js'));
 const { createSqliteBackend } = require(path.join(ROOT, 'lib', 'session-sqlite.js'));
 
 const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
@@ -545,13 +545,13 @@ test('登录与登出都会同步 sessionTrusted', () => {
 
 // ========== 源码形状守卫 ==========
 
-test('11 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
+test('18 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
     // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
     // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
     const code = stripComments(server);
-    const guarded = code.match(/app\.(?:post|get)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
-    // 11 个特权路由 + change-password + trust-device = 13（trust-device 不带 rateLimit 亦可）
-    assert.equal(guarded.length, 13, '特权路由 + change-password + trust-device 共 13 处');
+    const guarded = code.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
+    // 11 特权路由 + change-password + trust-device + 模块平台 5 条 = 18
+    assert.equal(guarded.length, 18, '特权路由 + change-password + trust-device + 模块 5 条共 18 处');
     assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
         '手写守卫必须全部移除');
 });
@@ -932,7 +932,10 @@ test('库文件权限收紧到 0600（含令牌，不可世界可读）', () => 
     });
 });
 
-test('迁移幂等：重复打开不会重复建表，user_version 稳定在 1', () => {
+test('迁移幂等：重复打开不会重复建表，user_version 稳定在 MIGRATIONS.length', () => {
+    // 断言写成 MIGRATIONS.length 而非硬编码数字：每次在 lib/db.js 尾部追加
+    // 台阶都会让硬编码值过期，而这类过期曾以「测试失败」的形式出现，
+    // 容易被误当成实现坏了而改断言。台阶数由代码自己回答。
     withTempDb(file => {
         const first = openDatabase(file);
         const v1 = first.pragma('user_version', { simple: true });
@@ -940,8 +943,14 @@ test('迁移幂等：重复打开不会重复建表，user_version 稳定在 1',
 
         const second = openDatabase(file);   // 表已存在，不应抛错
         try {
-            assert.equal(v1, 1);
-            assert.equal(second.pragma('user_version', { simple: true }), 1);
+            assert.equal(v1, MIGRATIONS.length, `首次打开应升到 ${MIGRATIONS.length}`);
+            assert.equal(second.pragma('user_version', { simple: true }), MIGRATIONS.length,
+                '重复打开不再推进');
+            const tables = second
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .all().map(row => row.name);
+            assert.ok(tables.includes('sessions'), '会话表在');
+            assert.ok(tables.includes('module_cache'), '模块缓存表在');
         } finally {
             second.close();
         }

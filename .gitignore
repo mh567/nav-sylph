@@ -16,6 +16,7 @@ server-config.json
 # User bookmarks config (personal data)
 config.json
 favorites.json
+.modules.json
 
 # SQLite database (admin sessions today; future module data)
 nav-sylph.db

@@ -75,6 +75,9 @@
             API.envChangeNotified = true;
             if (window.app) {
                 window.app.authenticated = false;
+                // 模块区与布局按钮是登录态的产物，必须一起收起。
+                // 少了这一行，环境变化后首页仍留着可点的模块入口。
+                window.app.syncModuleVisibility();
                 window.app.showToast('检测到登录环境变化，已自动退出，请重新登录', 'error', 8000);
             }
         },
@@ -139,6 +142,14 @@
             this.changelog = null;
             this.hasNewVersion = false;
             this._scriptCache = new Map();  // 按需加载的 <script>，同一 src 只加载一次
+            // 模块平台：登录后才可见。配置来自 /api/modules/config，
+            // 不进 config.json —— 那里的新 key 会经 toPublicConfig 下发给匿名用户。
+            this.modulesConfig = null;
+            this.modulesLoaded = false;
+            this.modulesLoading = false;
+            this.modulesError = null;
+            this.modulesEditorRendered = false;
+            this.editLayout = false;
             this.init();
         }
 
@@ -157,6 +168,363 @@
             // 失败时清掉缓存，允许下次重试（网络抖动后可恢复）
             promise.catch(() => this._scriptCache.delete(src));
             return promise;
+        }
+
+        // ========== 模块平台 ==========
+        // 每个模块一个 public/modules/<id>.js，登录且启用时才加载。
+        // 首页首屏因此不因模块变重——未登录访客一个模块文件都不下载。
+
+        /** 已知模块 id 白名单。loadModule 只加载这里有的，避免任意路径被当成脚本请求。 */
+        static KNOWN_MODULES = ['server-monitor'];
+
+        static moduleDefs = new Map();
+
+        registerModule(def) {
+            if (!def || !def.id) throw new Error('模块必须带 id');
+            App.moduleDefs.set(def.id, def);
+        }
+
+        getModule(id) {
+            return App.moduleDefs.get(id);
+        }
+
+        /** 拉取模块平台配置。只在登录后调用。 */
+        async loadModulesConfig() {
+            if (this.modulesLoading) return this.modulesConfig;
+            this.modulesLoading = true;
+            this.modulesError = null;
+            try {
+                const data = await API.get('/api/modules/config');
+                this.modulesConfig = {
+                    enabledModules: Array.isArray(data?.enabledModules) ? data.enabledModules : [],
+                    widgets: Array.isArray(data?.widgets) ? data.widgets : [],
+                    servers: Array.isArray(data?.servers) ? data.servers : []
+                };
+                this.modulesLoaded = true;
+                return this.modulesConfig;
+            } catch (e) {
+                // 失败必须 render 出来，而不是留一个空白的模块区：
+                // 无声失败过一次（WebDAV 分区永远停在「加载中...」）。
+                console.error('Load modules config failed:', e);
+                this.modulesError = '模块配置加载失败';
+                return null;
+            } finally {
+                this.modulesLoading = false;
+            }
+        }
+
+        /** 已启用的模块 id，按 widgets 里的 order 排序；未配置 layout 的按注册顺序。 */
+        enabledModuleIds() {
+            const enabled = new Set(this.modulesConfig?.enabledModules || []);
+            const layout = this.modulesConfig?.widgets || [];
+            const ids = App.KNOWN_MODULES.filter(id => enabled.has(id));
+            const orderOf = id => {
+                const item = layout.find(w => w.id === id);
+                return item && Number.isFinite(item.order) ? item.order : 0;
+            };
+            return ids.sort((a, b) => orderOf(a) - orderOf(b) || a.localeCompare(b));
+        }
+
+        /**
+         * 背板外侧是否放得下模块。
+         *
+         * 用固定断点表达不了这件事：936px 的背板在 1024 视口下左右只剩 44px，
+         * 而 1440 下有 252px。断点只能二选一，另一头必然出错。
+         * 所以按实际余量判断——放得下才用两侧，否则退回网格下方。
+         */
+        sideDockAvailable() {
+            const MIN_SIDE = 132;   // 与 CSS 里的 clamp 下限一致
+            const GAP = 20;
+            const board = $('.backboard');
+            const app = $('#app');
+            if (!board || !app) return false;
+            const boardWidth = board.getBoundingClientRect().width;
+            const appWidth = app.getBoundingClientRect().width;
+            const padding = 22 * 2;
+            const side = (appWidth - padding - boardWidth) / 2;
+            return side >= MIN_SIDE + GAP;
+        }
+
+        /**
+         * 加载并渲染模块区。
+         * 单个模块加载失败不影响其它模块——失败的那个渲染出错误与重试按钮。
+         */
+        async renderModuleZone() {
+            const zone = $('#moduleZone');
+            if (!zone) return;
+
+            if (!this.authenticated) {
+                zone.hidden = true;
+                zone.replaceChildren();
+                return;
+            }
+            if (!this.modulesConfig) await this.loadModulesConfig();
+
+            const ids = this.enabledModuleIds();
+            if (!ids.length) {
+                zone.hidden = true;
+                zone.replaceChildren();
+                return;
+            }
+
+            zone.hidden = false;
+            zone.dataset.dock = this.sideDockAvailable() ? 'outside' : 'below';
+            if (this.modulesError) {
+                zone.replaceChildren(this.renderModuleZoneError());
+                return;
+            }
+
+            const inner = document.createElement('div');
+            inner.className = 'module-zone-inner';
+            for (const id of ids) {
+                inner.appendChild(await this.mountModule(id));
+            }
+            zone.replaceChildren(inner);
+            this.applyWidgetLayout();
+        }
+
+        /** 加载一个模块并返回它的 DOM 节点；加载失败返回错误卡片而非抛出。 */
+        async mountModule(id) {
+            const shell = document.createElement('section');
+            shell.className = 'module-widget';
+            shell.dataset.moduleId = id;
+
+            // 顺序要紧：必须先加载脚本，再取定义。
+            // 首次进入时模块尚未注册，若先查 getModule 会拿到 undefined，
+            // 于是一直渲染「模块未注册」——而脚本其实加载成功了，
+            // 只是注册发生在 getModule 之后。已注册的定义要留着，
+            // 这样重渲染时不必重复加载。
+            if (!this.getModule(id)) {
+                try {
+                    await this.loadModule(id);
+                } catch (e) {
+                    console.error(`Load module ${id} failed:`, e);
+                    shell.appendChild(this.renderWidgetError(id, '加载失败'));
+                    return shell;
+                }
+            }
+
+            const def = this.getModule(id);
+            if (!def) {
+                shell.appendChild(this.renderWidgetError(id, '模块未注册'));
+                return shell;
+            }
+
+            try {
+                const mounted = def.mountWidget(shell, {
+                    config: this.modulesConfig,
+                    editLayout: this.editLayout,
+                    api: API
+                });
+                // mountWidget 有三种返回形态：
+                //  - 返回节点数组：一台机器一张卡片（如服务器监控，每台一台）
+                //  - 返回单个节点：替换 shell 内容
+                //  - 返回 shell 本身：就地渲染
+                if (Array.isArray(mounted)) {
+                    const fragment = document.createDocumentFragment();
+                    mounted.forEach(node => {
+                        if (!node) return;
+                        node.classList.add('module-widget');
+                        node.dataset.moduleId = id;
+                        // 布局键用节点自带的 instanceId，**不是数组下标**。
+                        // 用下标的话，隐藏一张卡片会让后面所有卡的键整体前移，
+                        // 谁排在第几、在左边还是右边——全部错乱，
+                        // 而用户只是关了一台机器。
+                        if (!node.dataset.instanceId) node.dataset.instanceId = id;
+                        fragment.appendChild(node);
+                    });
+                    return fragment;
+                }
+                shell.dataset.instanceId = id;
+                if (mounted && mounted !== shell) shell.replaceChildren(mounted);
+            } catch (e) {
+                console.error(`Mount module ${id} failed:`, e);
+                shell.replaceChildren(this.renderWidgetError(id, '渲染失败'));
+            }
+            return shell;
+        }
+
+        /** 未注册的白名单外的 id 一律拒绝——不要把任意字符串拼进脚本路径。 */
+        loadModule(id) {
+            if (!App.KNOWN_MODULES.includes(id)) {
+                return Promise.reject(new Error('未知模块: ' + id));
+            }
+            return this.loadScript(`modules/${id}.js`);
+        }
+
+        renderWidgetError(id, message) {
+            const box = document.createElement('div');
+            box.className = 'module-widget-error';
+            const title = document.createElement('span');
+            title.className = 'module-widget-error-title';
+            title.textContent = this.getModule(id)?.title || id;
+            const detail = document.createElement('span');
+            detail.className = 'module-widget-error-detail';
+            detail.textContent = message;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'module-widget-retry';
+            retry.textContent = '重试';
+            retry.addEventListener('click', async () => {
+                this._scriptCache.delete(`modules/${id}.js`);
+                retry.disabled = true;
+                await this.renderModuleZone();
+            });
+            box.append(title, detail, retry);
+            return box;
+        }
+
+        renderModuleZoneError() {
+            const box = document.createElement('div');
+            box.className = 'module-zone-error';
+            const text = document.createElement('span');
+            text.textContent = this.modulesError;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'module-widget-retry';
+            retry.textContent = '重试';
+            retry.addEventListener('click', () => this.renderModuleZone());
+            box.append(text, retry);
+            return box;
+        }
+
+        /**
+         * 写回 layout（顺序 / 换边）。排序是持久化状态，所以不做乐观更新：
+         * 失败时用调用方的快照回滚，并把错误 render 出来。
+         */
+        async saveWidgetLayout(snapshot) {
+            try {
+                await API.post('/api/modules/config', {
+                    enabledModules: this.modulesConfig.enabledModules,
+                    widgets: this.modulesConfig.widgets,
+                    servers: this.modulesConfig.servers
+                });
+                return true;
+            } catch (e) {
+                console.error('Save widget layout failed:', e);
+                // 整体回滚到拖拽前，而不是只回滚一个字段——同一操作通常还推进了 updatedAt 之类
+                if (snapshot) {
+                    this.modulesConfig.widgets = snapshot.widgets.map(w => ({ ...w }));
+                }
+                this.showToast('布局保存失败，已还原', 'error');
+                this.renderModuleZone();
+                return false;
+            }
+        }
+
+        /** 按 widgets[].side / order 摆放已渲染的 widget 节点。 */
+        applyWidgetLayout() {
+            const zone = $('#moduleZone');
+            if (!zone || !this.modulesConfig) return;
+            const inner = zone.querySelector('.module-zone-inner');
+            if (!inner) return;
+
+            // 布局的键是 instanceId 而不是 moduleId：一个模块可能渲染出
+            // 多张卡片（服务器监控每台一张），共用 moduleId 会让它们的
+            // order 与 side 互相覆盖——拖一张，另几张跟着变。
+            const keyOf = node => node.dataset.instanceId || node.dataset.moduleId;
+
+            // 查不到布局项时排到末尾而不是 0：全部回落 0 会让排序变成
+            // 「按 id 字母序」，看起来像随机。新加的服务器因此会稳定地
+            // 排在已布局的卡片之后。
+            const orderOf = id => {
+                const item = (this.modulesConfig.widgets || []).find(w => w.id === id);
+                return item && Number.isFinite(item.order) ? item.order : Number.MAX_SAFE_INTEGER;
+            };
+            const sideOf = id => {
+                const item = (this.modulesConfig.widgets || []).find(w => w.id === id);
+                return item && item.side === 'right' ? 'right' : 'left';
+            };
+
+            const nodes = [...inner.querySelectorAll('.module-widget')];
+            nodes.sort((a, b) => {
+                const ka = keyOf(a), kb = keyOf(b);
+                return orderOf(ka) - orderOf(kb) || ka.localeCompare(kb);
+            });
+            for (const node of nodes) {
+                node.dataset.side = sideOf(keyOf(node));
+                inner.appendChild(node);
+            }
+            this.syncEditLayoutUI();
+            // 高度要在归位之后量：绝对定位元素的尺寸此时才是最终值
+            this.stackWidgetsByHeight();
+        }
+
+        /**
+         * 宽屏下按**实际高度**纵向堆叠，不按固定步进。
+         *
+         * 早先 CSS 里写死 `margin-top: calc(var(--i) * 166px)`，而卡片高度
+         * 随内容变化：在线带延迟提示 174px、在线无提示 152px、离线只有 98px。
+         * 固定 166px 遇上 174px 的卡片就压掉 8px——实测重叠 8px，两处。
+         *
+         * 用 CSS 变量表达「每张卡自己的偏移」是做不到的，因为偏移依赖
+         * 前面所有卡的高度和；所以在 JS 里量、在 JS 里排。
+         */
+        stackWidgetsByHeight() {
+            const zone = $('#moduleZone');
+            if (!zone || zone.dataset.dock !== 'outside') return;
+            const GAP = 14;
+
+            for (const side of ['left', 'right']) {
+                const nodes = [...zone.querySelectorAll(`.module-widget[data-side="${side}"]`)];
+                let cursor = 0;
+                for (const node of nodes) {
+                    node.style.marginTop = '';
+                    const height = node.getBoundingClientRect().height;
+                    node.style.setProperty('--stack-top', `${cursor}px`);
+                    cursor += height + GAP;
+                }
+            }
+        }
+
+        /**
+         * 编辑模式开关。这是显式的，不是默认拖拽：
+         * widget 卡片本身可点击（点开全屏面板），默认态开拖拽会劫持点击，
+         * 而 bookmark 卡片已经是拖拽排序的宿主（moveBookmark）。
+         */
+        toggleEditLayout(force) {
+            const next = force === undefined ? !this.editLayout : !!force;
+            this.editLayout = next;
+            this.syncEditLayoutUI();
+        }
+
+        syncEditLayoutUI() {
+            const zone = $('#moduleZone');
+            const btn = $('#layoutBtn');
+            if (btn) btn.setAttribute('aria-pressed', String(this.editLayout));
+            if (zone) zone.classList.toggle('is-editing', this.editLayout);
+            if (btn) btn.classList.toggle('is-active', this.editLayout);
+        }
+
+        /** 退出编辑模式并清掉全部拖拽残留状态。
+         *  登出与环境变化自动登出也走这里——否则反复进出编辑模式会留下
+         *  .is-dragging 与悬停高亮，下次进入时看起来像卡住了。 */
+        exitEditLayout() {
+            this.editLayout = false;
+            this.syncEditLayoutUI();
+            const zone = $('#moduleZone');
+            if (zone) {
+                zone.querySelectorAll('.is-dragging').forEach(n => n.classList.remove('is-dragging'));
+                zone.querySelectorAll('.drop-active').forEach(n => n.classList.remove('drop-active'));
+            }
+            this.dragData = null;
+        }
+
+        /** 登录态变化时统一走这里：显示或彻底收起模块区与布局按钮。 */
+        async syncModuleVisibility() {
+            const btn = $('#layoutBtn');
+            if (!this.authenticated) {
+                this.exitEditLayout();
+                const zone = $('#moduleZone');
+                if (zone) { zone.hidden = true; zone.replaceChildren(); }
+                if (btn) btn.hidden = true;
+                this.modulesConfig = null;
+                this.modulesLoaded = false;
+                this.modulesError = null;
+                return;
+            }
+            if (btn) btn.hidden = false;
+            await this.renderModuleZone();
         }
 
         async init() {
@@ -330,6 +698,30 @@
             });
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
+            $('#layoutBtn').onclick = () => this.toggleEditLayout();
+            // Esc 退出编辑模式。放在 window 而非按钮上：编辑态下焦点可能在
+            // 任何 widget 内部，按钮收不到冒泡不到的路径。
+            document.addEventListener('keydown', event => {
+                if (event.key !== 'Escape' || !this.editLayout) return;
+                const zone = $('#moduleZone');
+                // 全屏面板自己处理 Esc（它是 overlay，不属于编辑态）
+                if (zone && zone.querySelector('.module-overlay')) return;
+                event.preventDefault();
+                this.exitEditLayout();
+            });
+            this.bindWidgetDrag();
+            // 视口变化时重算模块区的停靠方式：936 背板在宽屏两侧放得下、
+            // 窄屏放不下，这个判据是连续量，跨过阈值时要重新摆放。
+            let dockResizeTimer = null;
+            window.addEventListener('resize', () => {
+                clearTimeout(dockResizeTimer);
+                dockResizeTimer = setTimeout(() => {
+                    const zone = $('#moduleZone');
+                    if (!zone || zone.hidden) return;
+                    const want = this.sideDockAvailable() ? 'outside' : 'below';
+                    if (zone.dataset.dock !== want) this.renderModuleZone();
+                }, 150);
+            });
             $('#modalBackdrop').onclick = () => this.closeAdmin();
             $('#cancelBtn').onclick = () => this.closeAdmin();
             $('#saveBtn').onclick = () => this.save();
@@ -564,6 +956,239 @@
 
         // ========== 管理会话 ==========
 
+        /**
+         * widget 拖拽排序 / 换边。委托在模块区上，编辑态才生效。
+         *
+         * 三条纪律来自既有代码的教训：
+         *  1. 终止监听挂在 window 上——挂在元素上用 { once:true } 会在指针于元素外
+         *     释放时永久卡住（分享编辑器的 auto-grow 曾这样冻结整个会话）。
+         *  2. 同时处理 pointercancel，只有 pointerup 会漏掉系统中断手势。
+         *  3. 排序是持久化状态，拖完立即落盘，失败整体回滚，不做乐观更新。
+         */
+        bindWidgetDrag() {
+            const zone = $('#moduleZone');
+            if (!zone) return;
+
+            zone.addEventListener('pointerdown', event => {
+                if (!this.editLayout || !this.modulesConfig) return;
+                const handle = event.target.closest('.module-drag-handle');
+                if (!handle) return;
+                const widget = handle.closest('.module-widget');
+                if (!widget) return;
+                // 只响应主键：右键/中键会带着 contextmenu，另开一条路径反而多一个状态
+                if (event.button !== 0) return;
+
+                event.preventDefault();
+                this.beginWidgetDrag(event, widget);
+            });
+        }
+
+        beginWidgetDrag(event, widget) {
+            // 布局键与 applyWidgetLayout 一致：instanceId 优先，
+            // 回落到 moduleId。两者不一致会让拖拽写进一条布局项、
+            // 而渲染读的是另一条——卡片看着「拖了但没动」。
+            const id = widget.dataset.instanceId || widget.dataset.moduleId;
+            // 快照在拖拽开始时取，回滚要用它而不是拖拽后的值
+            const snapshot = { widgets: this.modulesConfig.widgets.map(w => ({ ...w })) };
+
+            const isWide = window.matchMedia('(min-width: 1024px)').matches;
+            const startX = event.clientX;
+            const startY = event.clientY;
+
+            widget.classList.add('is-dragging');
+            // pointer capture：指针移出元素后事件仍回到它身上，与 window 上的
+            // 终止监听双保险。旧浏览器/模拟环境可能没有这个方法。
+            try { widget.setPointerCapture(event.pointerId); } catch (e) {}
+
+            // startX/startY 挂在 dragData 上：插入导致基准跳变时要把它们同步调整，
+// 否则下一帧仍用旧起点算 dy，位置会逐帧漂移。
+            this.dragData = { id, widget, isWide, targetSide: null, snapshot, bounds: null, startX, startY };
+
+            const move = ev => {
+                if (!this.dragData) return;
+                const dx = ev.clientX - this.dragData.startX;
+                const dy = ev.clientY - this.dragData.startY;
+                widget.style.transform = `translate(${dx}px, ${dy}px)`;
+
+                // 同栏内按指针位置插入到正确位置——**拖拽过程中就要真的移动 DOM**。
+                // 早先只在松手时按「DOM 当前顺序」写 order，可节点从没被移动过，
+                // 读回来的还是原顺序，于是拖 NAS 到本机位置两者纹丝不动。
+                this.reorderWhileDragging(ev.clientY, ev.clientX);
+
+                // 换边仅宽屏可用：窄屏模块区是横滑列表，
+                // 横向拖拽会与横滑抢同一个手势
+                if (!isWide) return;
+                this.markDropSide(dx > 80 ? 'right' : dx < -80 ? 'left' : null);
+            };
+
+            const settle = () => {
+                window.removeEventListener('pointermove', move);
+                window.removeEventListener('pointerup', settle);
+                window.removeEventListener('pointercancel', settle);
+                try { widget.releasePointerCapture(event.pointerId); } catch (e) {}
+                const drag = this.dragData;
+                this.dragData = null;
+                if (!drag) return;
+                this.commitWidgetDrag(drag);
+            };
+
+            window.addEventListener('pointerup', settle);
+            window.addEventListener('pointercancel', settle);
+        }
+
+        markDropSide(side) {
+            if (!this.dragData) return;
+            if (this.dragData.targetSide === side) return;
+            this.dragData.targetSide = side;
+            const zone = $('#moduleZone');
+            if (!zone) return;
+            if (side) zone.dataset.dropSide = side;
+            else delete zone.dataset.dropSide;
+            const draggedId = this.dragData.id;
+            zone.querySelectorAll('.module-widget').forEach(node => {
+                const key = node.dataset.instanceId || node.dataset.moduleId;
+                node.classList.toggle('drop-target',
+                    !!side && node.dataset.side === side && key !== draggedId);
+            });
+        }
+
+        /**
+         * 按指针位置把被拖的卡插入到正确位置。
+         *
+         * 拖拽中卡片跟着指针走（transform），其余卡片要让位——所以每一帧都要
+         * 重新排一次并重算 `--stack-top`。判据是「指针落在谁的中线上」。
+         *
+         * 关键：中线必须在**拖拽开始时**量一次并缓存，不能每帧读实时
+         * `getBoundingClientRect()`。因为卡片一旦让位，上方那张的实时中线也跟着
+         * 移位，于是「指针 < 中线」这个比较会在自己造成的移动中失配——
+         * 实测把最后一张拖到最前，怎么拖都插不进去。
+         *
+         * 窄屏是横滑列表，判据换成横向。
+         */
+        reorderWhileDragging(clientY, clientX) {
+            const zone = $('#moduleZone');
+            const drag = this.dragData;
+            if (!zone || !drag) return;
+            const widget = drag.widget;
+            const horizontal = zone.dataset.dock === 'below';
+            const pointer = horizontal ? clientX : clientY;
+
+            if (!drag.bounds) {
+                // 只量一次：被拖卡片之外那些，在「未让位」状态下的中线
+                drag.bounds = [...zone.querySelectorAll('.module-widget')]
+                    .filter(node => node !== widget)
+                    .map(node => {
+                        const rect = node.getBoundingClientRect();
+                        return {
+                            node,
+                            mid: horizontal
+                                ? rect.left + rect.width / 2
+                                : rect.top + rect.height / 2
+                        };
+                    })
+                    .sort((a, b) => a.mid - b.mid);
+            }
+            if (!drag.bounds.length) return;
+
+            // 拖拽期间每次让位都会改变次序，所以顺序也每帧重算；
+            // 但每张卡的**中线**用缓存里的值。
+            const ordered = drag.bounds
+                .slice()
+                .sort((a, b) =>
+                    (a.node.compareDocumentPosition(b.node) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
+            const anchor = ordered.find(entry => pointer < entry.mid) || null;
+
+            const inner = zone.querySelector('.module-zone-inner') || zone;
+
+            // 视觉位置 = 基准（--stack-top）+ transform。插入会让基准突变
+            // （实测从 376 跳到 188），而 transform 仍相对拖拽起点——
+            // 于是合成后的视觉位置猛跳 247px，卡片「弹」回原处。
+            // 修法：记住基准的差量，补进 transform，让视觉位置保持不变。
+            const before = this.readStackTop(widget);
+            let moved = false;
+            if (anchor) {
+                if (anchor.node.previousElementSibling === widget) return;  // 已经就位
+                inner.insertBefore(widget, anchor.node);
+                moved = true;
+            } else if (inner.lastElementChild !== widget) {
+                inner.appendChild(widget);
+                moved = true;
+            } else {
+                return;
+            }
+            if (moved) this.compensateStackShift(widget, before, horizontal);
+        }
+
+        readStackTop(widget) {
+            const value = parseFloat(widget.style.getPropertyValue('--stack-top'));
+            return Number.isFinite(value) ? value : 0;
+        }
+
+        /**
+         * 插入导致基准跳变时，把它补进 transform，使卡片的**视觉位置**保持不动。
+         * 不这样做的话，用户看到的是卡片先弹回原处再跟上指针——幅度可达两张卡的高度。
+         */
+        compensateStackShift(widget, beforeTop, horizontal) {
+            this.stackWidgetsByHeight();
+            const after = this.readStackTop(widget);
+            const shift = after - beforeTop;
+            if (!shift) return;
+            // transform 里已有的位移要读回来加减，而不是覆盖成 0
+            const current = this.readTranslate(widget);
+            const next = horizontal
+                ? { x: current.x + shift, y: current.y }
+                : { x: current.x, y: current.y + shift };
+            widget.style.transform = `translate(${next.x}px, ${next.y}px)`;
+            // 让 translate 继续跟随指针：起点基准变了，位移的参照也要同步，
+            // 否则下一帧又用旧起点算 dy，位置会逐帧漂移。
+            if (horizontal) this.dragData.startX += shift;
+            else this.dragData.startY += shift;
+        }
+
+        readTranslate(widget) {
+            const m = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(widget.style.transform);
+            return m ? { x: Number(m[1]), y: Number(m[2]) } : { x: 0, y: 0 };
+        }
+
+        /** 拖拽结束：按 DOM 顺序重排 order、按落点写 side，然后落盘。 */
+        async commitWidgetDrag(drag) {
+            const zone = $('#moduleZone');
+            if (!this.modulesConfig) return;
+
+            const { id, widget, snapshot, targetSide } = drag;
+            const widgets = this.modulesConfig.widgets;
+            // 配置里还没有这条（首次启用、布局从未保存过）时补一条
+            if (!widgets.some(w => w.id === id)) {
+                widgets.push({ id, enabled: true, side: 'left', order: widgets.length, collapsed: false });
+            }
+            const entry = widgets.find(w => w.id === id);
+            if (entry && targetSide) entry.side = targetSide;
+
+            // 顺序取 DOM 当前顺序——拖拽过程中节点位置已经反映了用户的意图。
+            // 键同样是 instanceId，否则同一模块的多张卡片会互相写同一个 order。
+            const nodes = zone ? [...zone.querySelectorAll('.module-widget')] : [];
+            nodes.forEach((node, index) => {
+                const key = node.dataset.instanceId || node.dataset.moduleId;
+                const item = widgets.find(w => w.id === key);
+                if (item) item.order = index;
+            });
+
+            // 清掉全部拖拽残留：transform、落点高亮、指针状态
+            if (zone) {
+                delete zone.dataset.dropSide;
+                zone.querySelectorAll('.drop-target').forEach(n => n.classList.remove('drop-target'));
+            }
+            widget.classList.remove('is-dragging');
+            widget.style.transform = '';
+
+            await this.saveWidgetLayout(snapshot);
+            // 落盘后重排。**必须**在写完 order 之后调：applyWidgetLayout 按
+            // modulesConfig.widgets[i].order 排序，而 commitWidgetDrag 正是
+            // 刚把新顺序写进那里的。早先在写之前调，它按旧 order 重排，
+            // 拖拽结果被自己撤销——实测拖 NAS 到本机位置，松手又弹回原样。
+            if (this.modulesConfig) this.applyWidgetLayout();
+        }
+
         // 会话状态只存在于 HttpOnly Cookie，JS 读不到内容，
         // 只能问服务端当前是否已登录。
         async loadSession() {
@@ -586,6 +1211,9 @@
                         this.loadPrivacyMode().then(privacyMode => {
                             if (privacyMode !== null) this.config.privacyMode = privacyMode;
                         });
+                        // 模块区同样不占首屏：会话确认后才拉配置、才加载模块文件。
+                        // 失败不影响首屏，也不影响上面的私密检索。
+                        this.syncModuleVisibility();
                     }
                     return session.authenticated;
                 })
@@ -1523,6 +2151,10 @@
                 API.envChangeNotified = false;
                 // 会话已换，之前那份可信状态不再作数
                 this.sessionTrusted = false;
+                // 模块区与布局按钮是登录态的产物。这条路径与 restoreSession 无关
+                // （首屏探测早已判定未登录），漏掉它会出现「密码正确、已登录，
+                // 但首页模块区仍是空的且布局按钮不出现」。
+                this.syncModuleVisibility();
 
                 // 勾选「信任此设备」才把会话升级为 30 天
                 if (values.choices.trustDevice) {
@@ -1756,9 +2388,523 @@
             return true;
         }
 
+        /**
+         * 管理面板的分区导航。宽屏是左侧竖排侧栏，≤899px 是顶部横滑标签条——
+         * 同一套 DOM 与状态，只由 CSS 改变呈现方式。
+         *
+         * 键盘按 WAI-ARIA tabs 模式：←/→ 在标签间移动，Home/End 跳首尾。
+         * 未选中的 tab 用 tabindex="-1"，使 Tab 键一次只落在当前分区上。
+         */
+        bindAdminTabs() {
+            const tabs = $$('.admin-tab');
+            if (!tabs.length) return;
+
+            const select = tab => this.selectAdminTab(tab.dataset.panel);
+            for (const tab of tabs) tab.addEventListener('click', () => select(tab));
+
+            const list = $('.admin-tabs');
+            list.addEventListener('keydown', event => {
+                const current = tabs.findIndex(t => t.getAttribute('aria-selected') === 'true');
+                if (current < 0) return;
+                let next = null;
+                if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+                else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+                else if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = tabs.length - 1;
+                if (next === null) return;
+                event.preventDefault();
+                select(tabs[next]);
+                tabs[next].focus();
+            });
+        }
+
+        /**
+         * 切到某个分区。模块分区首次进入时才拉 /api/modules/config——
+         * 每次 renderAdminPanel 都预取会累积撞上匿名读限流
+         * （WebDAV 分区已经因为这个原因 429 过）。
+         */
+        selectAdminTab(panel) {
+            // 记住当前分区，供下次 renderAdminPanel 恢复
+            this.adminTab = panel;
+            const tabs = $$('.admin-tab');
+            for (const tab of tabs) {
+                const active = tab.dataset.panel === panel;
+                tab.setAttribute('aria-selected', String(active));
+                tab.tabIndex = active ? 0 : -1;
+                tab.classList.toggle('is-active', active);
+            }
+            for (const el of $$('.admin-panel')) {
+                el.hidden = el.id !== `adminPanel${panel[0].toUpperCase()}${panel.slice(1)}`;
+            }
+            // 判据是「编辑器是否已渲染」，不是「配置是否已加载」：
+            // 首页模块区早就拉过 modulesConfig，用它当条件会让本分区永远停在
+            // 「加载中...」——面板 DOM 是新的，而配置已在内存里，于是什么都不做。
+            if (panel === 'modules' && !this.modulesEditorRendered) {
+                this.renderModulesEditor();
+            }
+        }
+
+        /** 模块分区的配置界面。加载失败必须显式落到容器里，不留「加载中...」。 */
+        async renderModulesEditor() {
+            const host = $('#modulesEditor');
+            if (!host) return;
+            this.modulesEditorRendered = false;
+            host.innerHTML = '<div class="webdav-loading">加载中...</div>';
+            const config = await this.loadModulesConfig();
+            if (!config) {
+                // 失败也要 render：静默失败过一次（WebDAV 分区的 429）
+                host.innerHTML = '<p class="fav-hint">模块配置加载失败，请关闭面板后重试。</p>';
+                return;
+            }
+            // 配置就绪不等于模块脚本已加载：首次进入时两者都不是，
+            // 开关列表需要一个已注册的定义才能取标题。
+            await this.ensureModulesLoaded();
+            this.renderModulesEditorContent(host, config);
+            this.modulesEditorRendered = true;
+        }
+
+        /** 确保已知模块的定义都已注册。注册表非空则直接返回。 */
+        async ensureModulesLoaded() {
+            for (const id of App.KNOWN_MODULES) {
+                if (this.getModule(id)) continue;
+                try {
+                    await this.loadModule(id);
+                } catch (e) {
+                    console.warn(`Preload module ${id} failed:`, e);
+                }
+            }
+        }
+
+        renderModulesEditorContent(host, config) {
+            const known = App.KNOWN_MODULES.map(id => this.getModule(id)).filter(Boolean);
+            // 每行：左侧「名称 + 说明」，右侧开关。
+            // 说明文字紧贴它描述的那一行，而不是汇总在区块底部——
+            // 早先把「启用后该模块会出现在首页模块区…」放在所有开关下面，
+            // 离得太远，读的时候要来回对照才知道说的是哪个模块。
+            const rows = known.map(def => {
+                const on = config.enabledModules.includes(def.id);
+                return `<div class="setting-row module-setting-row">
+                    <label>
+                        <span class="module-setting-label">${this.esc(def.title)}</span>
+                        ${def.summary ? `<span class="module-setting-hint">${this.esc(def.summary)}</span>` : ''}
+                        <span class="module-setting-toggle">
+                            <div class="toggle-switch">
+                                <input type="checkbox" data-module-toggle="${this.esc(def.id)}" ${on ? 'checked' : ''}>
+                                <span class="toggle-slider"></span>
+                            </div>
+                            <span class="module-setting-state">${on ? '已启用' : '未启用'}</span>
+                        </span>
+                    </label>
+                </div>`;
+            }).join('');
+
+            host.innerHTML = `
+                ${rows || '<p class="fav-hint">暂无已注册模块。</p>'}
+                <button class="btn btn-primary" id="saveModulesBtn">保存模块配置</button>
+                <span class="config-save-status" id="modulesSaveStatus" role="status" aria-live="polite"></span>
+                <div class="section-title">监控目标</div>
+                <div class="setting-row">
+                    <label>
+                        <span>更新周期</span>
+                        <select id="pollIntervalSelect">
+                            ${this.pollIntervalOptions(config.pollInterval)}
+                        </select>
+                    </label>
+                </div>
+                <p class="fav-hint" id="pollIntervalHint"></p>
+                <div id="serverList"></div>
+                <button class="btn" id="addServerBtn">添加服务器</button>
+            `;
+            this.updatePollIntervalHint(config.pollInterval);
+            $('#pollIntervalSelect').onchange = async (e) => {
+                const value = Number(e.target.value);
+                try {
+                    await API.post('/api/modules/config', {
+                        enabledModules: config.enabledModules,
+                        widgets: config.widgets,
+                        servers: config.servers,
+                        pollInterval: value
+                    });
+                    config.pollInterval = value;
+                    this.updatePollIntervalHint(value);
+                    this.showToast(`更新周期已设为 ${this.pollIntervalLabel(value)}`);
+                } catch (err) {
+                    console.error('Save poll interval failed:', err);
+                    // 失败要把下拉拨回去，否则界面显示的是一个没生效的值
+                    e.target.value = String(config.pollInterval ?? 15);
+                    this.showToast('保存失败，请重试', 'error');
+                }
+            };
+            this.renderServerList($('#serverList'), config);
+
+            $('#addServerBtn').onclick = () => this.showServerDialog(null, async () => {
+                await this.renderModulesEditor();
+            });
+
+            // 开关与它那一行的「已启用/未启用」文字必须同步，
+            // 否则文字会与实际状态相反——它紧贴开关，反而不一致时最刺眼。
+            for (const box of host.querySelectorAll('[data-module-toggle]')) {
+                const state = box.closest('.module-setting-toggle')
+                    ?.querySelector('.module-setting-state');
+                box.addEventListener('change', () => {
+                    if (state) state.textContent = box.checked ? '已启用' : '未启用';
+                });
+            }
+
+            const status = $('#modulesSaveStatus');
+            $('#saveModulesBtn').onclick = async () => {
+                const enabled = $$('[data-module-toggle]')
+                    .filter(box => box.checked)
+                    .map(box => box.dataset.moduleToggle);
+                const saveBtn = $('#saveModulesBtn');
+                saveBtn.disabled = true;
+                try {
+                    await API.post('/api/modules/config', {
+                        enabledModules: enabled,
+                        widgets: config.widgets,
+                        servers: config.servers
+                    });
+                    config.enabledModules = enabled;
+                    status.textContent = '已保存';
+                    status.dataset.state = 'success';
+                    this.showToast('模块配置已保存');
+                    await this.renderModuleZone();
+                } catch (e) {
+                    console.error('Save modules config failed:', e);
+                    // 失败态也要显示出来：静默失败过一次（WebDAV 的 429）
+                    status.textContent = '保存失败，请重试';
+                    status.dataset.state = 'error';
+                } finally {
+                    saveBtn.disabled = false;
+                }
+            };
+        }
+
+        /**
+         * 轮询周期的可选值。与服务端 server.js 的 POLL_INTERVALS 一一对应——
+         * 两边各写一份必然会漂移，所以这里只列 label，实际可选值由服务端白名单裁决。
+         */
+        pollIntervalLabel(seconds) {
+            return seconds >= 60 ? `${seconds / 60} 分钟` : `${seconds} 秒`;
+        }
+
+        /**
+         * 轮询周期的可选项。
+         *
+         * 值由服务端 `POLL_INTERVALS` 白名单裁决——前端这份只是把同样的值
+         * 渲染成下拉框。**两份列表必须保持一致**：前端多一项，服务端会静默
+         * 回落默认，用户选了一个「看起来存在」却不生效的周期；前端少一项，
+         * 则是给不出去。所以 `tests/monitor-agent.test.js` 有一条断言
+         * 逐项比较两侧的列表，而不是只断言服务端那份字面量。
+         */
+        pollIntervalOptions(current) {
+            const value = Number(current) || 15;
+            // 与 server.js 的 POLL_INTERVALS 逐项一致（见上）
+            return [10, 15, 30, 60, 300].map(s =>
+                `<option value="${s}" ${s === value ? 'selected' : ''}>每 ${this.pollIntervalLabel(s)}</option>`
+            ).join('');
+        }
+
+        /** 说明文字要写清「页面不可见时暂停」——否则用户会以为它一直在轮询。 */
+        updatePollIntervalHint(current) {
+            const hint = $('#pollIntervalHint');
+            if (!hint) return;
+            const seconds = Number(current) || 15;
+            hint.textContent = `每 ${this.pollIntervalLabel(seconds)}自动刷新一次；`
+                + '页面切到后台时暂停，回到前台立即刷新。';
+        }
+
+        /**
+         * 保存单台服务器的首页可见性。
+         *
+         * 立即落盘而不是等「保存模块配置」：可见性是一个开关式的即时决定，
+         * 让用户改完再去点另一个按钮，等于把两步合成一步却要两个动作。
+         * 与整体保存同一套合并语义——只改这一条的 enabled，
+         * order / side / 其他服务器一律原样带回（mergeModulesConfig 按 id 补回）。
+         */
+        async saveServerVisibility(key, shown, config) {
+            const widgets = (config.widgets || []).map(w => ({ ...w }));
+            const item = widgets.find(w => w.id === key);
+            if (item) item.enabled = shown;
+            else widgets.push({ id: key, enabled: shown, side: 'left', order: widgets.length, collapsed: false });
+
+            try {
+                await API.post('/api/modules/config', {
+                    enabledModules: config.enabledModules,
+                    widgets,
+                    servers: config.servers
+                });
+                config.widgets = widgets;
+                this.showToast(shown ? '已在首页显示' : '已从首页隐藏');
+                await this.renderModuleZone();
+            } catch (e) {
+                console.error('Save server visibility failed:', e);
+                this.showToast('保存失败，请重试', 'error');
+                // 失败要拨回去，否则界面显示的是一个没生效的状态
+                await this.renderModulesEditor();
+            }
+        }
+
+        /**
+         * 服务器列表。token 不回显——已配置的显示「已配置」，
+         * 编辑时留空表示保持原值（与 WebDAV 的「留空保持原密码」同一形状）。
+         */
+        renderServerList(host, config) {
+            if (!host) return;
+            const servers = config.servers || [];
+            if (!servers.length) {
+                host.innerHTML = '<p class="fav-hint">还没有配置远端服务器。'
+                    + '本机始终会被监控；要看别的机器，需要在目标机上部署 agent。</p>';
+                return;
+            }
+            host.innerHTML = servers.map(s => {
+                const key = `server-monitor:${s.id}`;
+                const item = (config.widgets || []).find(w => w.id === key);
+                const shown = item ? item.enabled !== false : true;
+                return `
+                <div class="server-item" data-server-id="${this.esc(s.id)}">
+                    <div class="server-item-main">
+                        <span class="server-item-name">${this.esc(s.name || s.url)}</span>
+                        <span class="server-item-url">${this.esc(s.url)}</span>
+                    </div>
+                    <span class="server-item-token">${s.hasToken ? '已配置 token' : '无 token'}</span>
+                    <span class="server-item-actions">
+                        <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
+                            <input type="checkbox" data-server-visible="${this.esc(key)}" ${shown ? 'checked' : ''}
+                                   aria-label="在首页显示 ${this.esc(s.name || s.url)}">
+                            <span>${shown ? '显示' : '隐藏'}</span>
+                        </label>
+                        <button class="btn btn-sm deploy-server">部署</button>
+                        <button class="btn btn-sm edit-server">编辑</button>
+                        <button class="btn btn-sm btn-danger del-server">删除</button>
+                    </span>
+                </div>`;
+            }).join('');
+
+            for (const row of host.querySelectorAll('.server-item')) {
+                const id = row.dataset.serverId;
+                const server = servers.find(s => s.id === id);
+                const showBox = row.querySelector('[data-server-visible]');
+                if (showBox) {
+                    showBox.onchange = async () => {
+                        const shown = showBox.checked;
+                        row.querySelector('.server-item-show span').textContent = shown ? '显示' : '隐藏';
+                        await this.saveServerVisibility(showBox.dataset.serverVisible, shown, config);
+                    };
+                }
+                row.querySelector('.deploy-server').onclick = () => this.showDeployDialog(server);
+                row.querySelector('.edit-server').onclick = () => this.showServerDialog(server, async () => {
+                    await this.renderModulesEditor();
+                });
+                row.querySelector('.del-server').onclick = async () => {
+                    if (!await this.confirmAction(`确定删除「${server.name || server.url}」？`, '删除服务器', true)) return;
+                    try {
+                        const res = await fetch(`/api/modules/servers/${encodeURIComponent(id)}`, {
+                            method: 'DELETE',
+                            credentials: 'same-origin'
+                        });
+                        if (!res.ok) {
+                            const body = await res.json().catch(() => ({}));
+                            throw new Error(body.error || `HTTP ${res.status}`);
+                        }
+                        this.showToast('已删除');
+                        await this.renderModulesEditor();
+                    } catch (e) {
+                        console.error('Delete server failed:', e);
+                        this.showToast(e.message || '删除失败', 'error');
+                    }
+                };
+            }
+        }
+
+        /**
+         * agent 部署命令。
+         *
+         * 为什么放在这里而不是 sylph.sh：sylph.sh 管的是**主服务**的安装与升级，
+         * 而 agent 部署在**别的机器**上，混进去会让两个角色互相干扰。
+         * 后台「模块 → 监控目标」是用户配置这些机器的地方，命令就该在这里。
+         *
+         * 命令里的 token 由服务端**下发**：前端拿不到明文（读接口只回 hasToken），
+         * 所以这里显示的是占位符，需要用户从自己的密码管理器或
+         * 「编辑」对话框里取——这是刻意的，避免明文 token 出现在页面 DOM 里。
+         */
+        showDeployDialog(server) {
+            const url = server.url || '';
+            const port = (() => {
+                try { return new URL(url).port || '4195'; } catch { return '4195'; }
+            })();
+            const origin = location.origin;
+            const token = server.hasToken ? '<你的 token>' : '<先在「编辑」里填 token>';
+
+            const steps = [
+                {
+                    title: '1. 下载 agent 到目标机',
+                    note: '在目标机上执行（需可访问本服务的地址）',
+                    code: `mkdir -p /opt/nav-agent && cd /opt/nav-agent\ncurl -fsSL ${origin}/agent/agent.js -o agent.js`
+                },
+                {
+                    title: '2. 先手工跑一次确认能通',
+                    note: '目标机需要 Node 18+；看到监听地址就说明正常',
+                    code: `NAVSYLPH_TOKEN=${token} node agent.js --port ${port} --host 0.0.0.0`
+                },
+                {
+                    title: '3. 确认能连上（另开一个终端）',
+                    note: '把 <TOKEN> 换成上一步用的 token',
+                    code: `curl -H "Authorization: Bearer <TOKEN>" ${url}/metrics`
+                },
+                {
+                    title: '4. 配成开机自启（systemd）',
+                    note: '需 root；写入 unit 并立即启动',
+                    code: [
+                        'sudo tee /etc/systemd/system/nav-agent.service >/dev/null <<EOF',
+                        '[Unit]',
+                        'Description=Nav Sylph 监控 agent',
+                        'After=network.target',
+                        '',
+                        '[Service]',
+                        'Environment=NAVSYLPH_TOKEN=<TOKEN>',
+                        'ExecStart=/usr/bin/node /opt/nav-agent/agent.js --port ' + port + ' --host 0.0.0.0',
+                        'Restart=always',
+                        'RestartSec=5',
+                        '',
+                        '[Install]',
+                        'WantedBy=multi-user.target',
+                        'EOF',
+                        '',
+                        'sudo systemctl daemon-reload',
+                        'sudo systemctl enable --now nav-agent'
+                    ].join('\n')
+                },
+                {
+                    title: '5. 放行防火墙（仅在启用了防火墙时）',
+                    note: 'firewalld 与 ufw 二选一',
+                    code: `# firewalld\nsudo firewall-cmd --permanent --add-port=${port}/tcp\nsudo firewall-cmd --reload\n\n# 或 ufw\nsudo ufw allow ${port}/tcp`
+                }
+            ];
+
+            // 一次只开一个面板。原来先弹 showUiDialog 说明再弹命令面板，
+            // 两次点击才看得到内容——命令才是这里的主产物。
+            this.showCommandPanel(`在目标机上部署 agent — ${server.name || server.url}`, steps, {
+                intro: '下面五步在「目标机终端」执行，不是在这台服务器上。'
+                    + '命令里的 token 是占位符——服务端不会把明文 token 发到浏览器，'
+                    + '请从你自己的密码管理器取。'
+            });
+        }
+
+        /** 可复制的命令面板。每段命令一个「复制」按钮。 */
+        showCommandPanel(title, steps, { intro = '' } = {}) {
+            document.querySelectorAll('.command-panel-overlay').forEach(o => o.remove());
+            const overlay = html(`
+                <div class="command-panel-overlay">
+                    <div class="command-panel" role="dialog" aria-modal="true" aria-label="${this.esc(title)}">
+                        <div class="command-panel-head">
+                            <h3>${this.esc(title)}</h3>
+                            <button type="button" class="command-panel-close" aria-label="关闭">×</button>
+                        </div>
+                        <div class="command-panel-body">
+                            ${intro ? `<p class="command-intro">${this.esc(intro)}</p>` : ''}
+                            ${steps.map(s => `
+                                <section class="command-step">
+                                    <h4>${this.esc(s.title)}</h4>
+                                    ${s.note ? `<p class="command-note">${this.esc(s.note)}</p>` : ''}
+                                    <div class="command-row">
+                                        <pre class="command-code">${this.esc(s.code)}</pre>
+                                        <button type="button" class="btn btn-sm command-copy">复制</button>
+                                    </div>
+                                </section>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>
+            `);
+            document.body.appendChild(overlay);
+
+            const close = () => {
+                overlay.remove();
+                document.removeEventListener('keydown', onKey);
+            };
+            const onKey = e => { if (e.key === 'Escape') close(); };
+            document.addEventListener('keydown', onKey);
+            overlay.querySelector('.command-panel-close').addEventListener('click', close);
+            overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+            for (const btn of overlay.querySelectorAll('.command-copy')) {
+                btn.addEventListener('click', async () => {
+                    const code = btn.closest('.command-row').querySelector('.command-code').textContent;
+                    try {
+                        await navigator.clipboard.writeText(code);
+                        btn.textContent = '已复制';
+                    } catch {
+                        // 剪贴板不可用（http 页面、非用户手势）时退回选中
+                        const range = document.createRange();
+                        range.selectNodeContents(btn.closest('.command-row').querySelector('.command-code'));
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                        btn.textContent = '已选中，按 ⌘C';
+                    }
+                    setTimeout(() => { btn.textContent = '复制'; }, 2400);
+                });
+            }
+        }
+
+        /**
+         * 添加 / 编辑一台服务器。
+         * 单独一个端点而不是走 /api/modules/config——token 必须由服务端加密，
+         * 前端提交的明文不能经那条路径落盘。
+         */
+        async showServerDialog(server, onDone) {
+            const isEdit = !!server;
+            const result = await this.showUiDialog({
+                title: isEdit ? '编辑服务器' : '添加服务器',
+                fields: [
+                    { label: '名称', type: 'text', value: server ? server.name : '', placeholder: '例如：家用 NAS' },
+                    { label: '地址', type: 'text', value: server ? server.url : '', placeholder: 'http://192.168.1.10:4195' },
+                    {
+                        label: isEdit && server.hasToken ? 'token（留空保持原值）' : 'token',
+                        type: 'password',
+                        value: '',
+                        placeholder: '与 agent 的 NAVSYLPH_TOKEN 一致'
+                    }
+                ],
+                validate: (values) => {
+                    if (!values[1] || !values[1].trim()) return '请填写服务器地址';
+                    const url = values[1].trim();
+                    if (!/^https?:\/\//i.test(url)) return '地址必须以 http:// 或 https:// 开头';
+                    return null;
+                }
+            });
+            if (!result) return;
+
+            const [name, url, token] = result.values;
+            try {
+                await API.post('/api/modules/servers', {
+                    id: server ? server.id : undefined,
+                    name: name.trim(),
+                    url: url.trim(),
+                    // 空值不提交：服务端据此保持原有密文
+                    token: token && token.trim() ? token.trim() : undefined
+                });
+                this.showToast(isEdit ? '服务器已更新' : '服务器已添加');
+                await onDone();
+            } catch (e) {
+                console.error('Save server failed:', e);
+                this.showToast('保存失败，请重试', 'error');
+            }
+        }
+
         renderAdminPanel() {
             const body = $('#modalBody');
+            // 三个分区：宽屏左侧常驻侧栏，≤899px 退化为顶部横向标签条。
+            // tab 三件套（tablist / tab / tabpanel）是本项目首次引入的交互模式。
             body.innerHTML = `
+                <div class="admin-tabs" role="tablist" aria-label="管理分区">
+                    <button type="button" class="admin-tab" role="tab" id="adminTabSite" aria-controls="adminPanelSite" aria-selected="false" tabindex="-1" data-panel="site">首页导航</button>
+                    <button type="button" class="admin-tab" role="tab" id="adminTabModules" aria-controls="adminPanelModules" aria-selected="false" tabindex="-1" data-panel="modules">模块</button>
+                    <button type="button" class="admin-tab" role="tab" id="adminTabAccount" aria-controls="adminPanelAccount" aria-selected="false" tabindex="-1" data-panel="account">账户与备份</button>
+                </div>
+                <div class="admin-panels">
+                <div class="admin-panel" role="tabpanel" id="adminPanelSite" aria-labelledby="adminTabSite" hidden>
                 <div class="section">
                     <div class="section-title">界面设置</div>
                     <div class="setting-row">
@@ -1791,6 +2937,32 @@
                         </label>
                     </div>
                 </div>
+                <div class="section section-collapsible">
+                    <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
+                        <span class="section-title">搜索引擎</span>
+                        <span class="section-toggle-label">展开</span>
+                    </button>
+                    <div class="section-body collapsed" id="enginesSection">
+                        <div id="enginesEditor"></div>
+                        <button class="add-btn" id="addEngine">添加搜索引擎</button>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="section-title">书签分类</div>
+                    <div id="catsEditor"></div>
+                    <button class="add-btn" id="addCat">添加分类</button>
+                </div>
+                </div>
+                <div class="admin-panel" role="tabpanel" id="adminPanelModules" aria-labelledby="adminTabModules" hidden>
+                <div class="section">
+                    <div class="section-title">模块</div>
+                    <p class="fav-hint">模块配置独立保存，不随上方的「保存」按钮提交。</p>
+                    <div id="modulesEditor">
+                        <div class="webdav-loading">加载中...</div>
+                    </div>
+                </div>
+                </div>
+                <div class="admin-panel" role="tabpanel" id="adminPanelAccount" aria-labelledby="adminTabAccount" hidden>
                 <div class="section">
                     <div class="section-title">登录安全</div>
                     <div class="setting-row">
@@ -1827,28 +2999,24 @@
                         <div class="webdav-loading">加载中...</div>
                     </div>
                 </div>
-                <div class="section section-collapsible">
-                    <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
-                        <span class="section-title">搜索引擎</span>
-                        <span class="section-toggle-label">展开</span>
-                    </button>
-                    <div class="section-body collapsed" id="enginesSection">
-                        <div id="enginesEditor"></div>
-                        <button class="add-btn" id="addEngine">添加搜索引擎</button>
-                    </div>
-                </div>
-                <div class="section">
-                    <div class="section-title">书签分类</div>
-                    <div id="catsEditor"></div>
-                    <button class="add-btn" id="addCat">添加分类</button>
-                </div>
                 <div class="section">
                     <button class="btn btn-danger" id="logoutBtn" style="width: 100%;">退出登录</button>
                 </div>
+                </div>
+                </div>
             `;
 
+            this.bindAdminTabs();
             this.renderEnginesEditor();
             this.renderCatsEditor();
+            // 面板 DOM 每次 openAdmin 都是新的，模块分区的容器也是；
+            // 不复位的话，上一会话渲染过就会让本分区跳过加载（停在「加载中...」）。
+            this.modulesEditorRendered = false;
+            // 回到上次停留的分区，而不是每次都弹回第一个。
+            // 收藏管理器就整块替换了 #modalBody，它内部的「← 返回」调的是
+            // renderAdminPanel()——早先这里固定选中站点，于是从
+            // 「账户与备份」点进收藏、点返回，会被弹到「首页导航」。
+            this.selectAdminTab(this.adminTab || 'site');
 
             $('#themeModeSelect').onchange = (e) => {
                 this.config.theme = e.target.value;
@@ -1934,6 +3102,12 @@
                     this.favorites = this.favorites.filter(fav => fav && !fav.private);
                     this.buildSearchIndex();
                 }
+                // 模块区最后收起：先清空配置缓存，再退出编辑模式，
+                // 顺序与 restoreSession 的展示路径相反。
+                this.modulesConfig = null;
+                this.modulesLoaded = false;
+                this.modulesError = null;
+                await this.syncModuleVisibility();
             };
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
@@ -3487,7 +4661,23 @@
                 this.authenticated = false;
                 API.envChangeNotified = false;
                 this.adminFavorites = null;
+                // 全部会话已被销毁，模块区必须一起收起——否则页面一边提示
+                // 「请重新登录」，一边还亮着只有登录态才有的模块入口。
+                this.modulesConfig = null;
+                this.modulesLoaded = false;
+                this.modulesError = null;
+                await this.syncModuleVisibility();
                 this.showToast('密码已修改，请重新登录', 'success', 5000);
+
+                // 未能迁移的凭据必须说出来——服务端为此专门收集了 details，
+                // 但它到不了用户就等于没有：用户不知道哪台 agent 要重填 token，
+                // 只会在某次备份或看监控时才撞上，那时已经想不起是改密码导致的。
+                const moved = res.credentials && res.credentials.details;
+                if (Array.isArray(moved) && moved.length) {
+                    await this.notice(
+                        `以下凭据未能随新密码重新加密，需要手动重新输入：\n\n· ${moved.join('\n· ')}`,
+                        '凭据需要重新输入');
+                }
             } else {
                 this.showToast(res.error || '修改失败', 'error');
             }

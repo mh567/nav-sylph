@@ -23,10 +23,75 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `lib/session-sqlite.js` | 会话的 SQLite 存储后端（实现 SessionStore 的 6 方法接口） |
 | `lib/db.js` | SQLite 连接、PRAGMA 与 `user_version` 迁移；驱动只在此文件出现 |
 | `lib/geo/` | ip2region 离线 IP 归属库（仅 IPv4）与其只读解析器 |
+| `lib/monitor.js` | 监控采集：本机读 `os`，远端读 agent |
+| `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码与 agent token 共用 |
+| `agent/agent.js` | 部署在**被监控目标机**上的只读采集脚本，单文件无依赖 |
+| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（当前 `server-monitor.js`） |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本 |
-| `tests/` | 备份隐私、移动收藏、对话框、接口数据边界和服务生命周期回归测试 |
+| `tests/` | 备份隐私、移动收藏、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
 服务使用 Node.js、Express 和原生浏览器代码。`package.json` 的 `start` 命令运行 `server.js`，`dev` 命令使用 nodemon。测试目前通过 `node --test tests/*.test.js` 运行。
+
+## 登录后模块平台
+
+首页与后台都要承载一批「登录后才可见」的模块（服务器监控、社交媒体、行情、稍后阅读、文件分享）。平台骨架已落地，四个业务模块尚未实现。
+
+**模块代码独立成文件，按需加载。** `public/app.js` 里的 `App.KNOWN_MODULES` 是 id 白名单，`registerModule()` 收定义，`loadModule(id)` 复用既有的 `loadScript()`（`/modules/<id>.js`）。**未在白名单里的 id 一律拒绝加载**——这些 id 会被拼进脚本路径，不是校验就等于任意路径可被请求。未登录访客不下载任何模块文件，首屏重量不受模块数量影响。
+
+**模块配置独立存 `.modules.json`，不进 `config.json`。** 两个理由，都是绕开而非修补：`toPublicConfig()` 只剥离 `privacyMode` 一个 key，放进 `config.json` 的任何新字段会**默认公开下发**给匿名用户；`mergeConfig()` 是顶层浅合并，嵌套对象会被客户端旧副本整块覆盖。该文件已在 `PRIVATE_FILES` 名单里，自动获得 `writeJSON()` 的 0600 收紧。
+
+**归一化不得补默认值。** `normalizeModulesConfig()` 对缺席的键保持 `undefined`（而非空数组），`mergeModulesConfig()` 才能区分「显式清空」与「没提交」。拖拽排序只提交 `widgets`；若归一化补了空数组，一次排序就会清空 `servers` 与 `symbols`。这条是真实服务端到端才发现的——单元测试当时直接调 `merge` 绕过了归一化，于是恒绿。
+
+**首页模块区在分类网格之后**（首屏视觉重心留给搜索框与收藏），未登录时 `hidden` 且不发起任何模块请求。显隐有三个钩子必须齐全：`restoreSession()` 成功分支、`#logoutBtn` 处理器、`API.notifyEnvChanged()`（环境变化自动登出）——少一个就会出现「登出后入口还亮着」。
+
+**编辑模式是显式开关，不是默认拖拽。** widget 卡片本身可点击（点开全屏面板），默认态开拖拽会劫持点击；且 `bookmark` 卡片已是拖拽排序的宿主（`moveBookmark`），两种拖拽语义混在一页会互相干扰。入口是右下角 `.utility-dock` 的「布局」按钮，仅登录后可见。拖拽用 Pointer Events，**终止监听挂 `window` 且同时处理 `pointerup` 与 `pointercancel`**，指针 capture 只是双保险——挂在元素上用 `{ once:true }` 会在指针于元素外释放时永久卡住状态（分享编辑器的 auto-grow 曾这样冻结整个会话）。排序是持久化状态，**拖完立即落盘、失败整体回滚并 render 出错误**，不做乐观更新。换边仅宽屏可用：窄屏模块区是横滑列表，横向拖拽会与横滑抢同一个手势。
+
+**后台分区导航**用 tab 三件套（`role="tablist"` / `tab` + `aria-selected` / `tabpanel`），宽屏（≥900px）左侧竖排常驻侧栏，≤899px 退化为顶部横向滚动标签条，同一套 DOM 与状态。**这些规则必须写在 `admin.css`**，不能写进 `styles.css`——后者先加载，而窄屏块内用 `.modal` 提高了特异性，写错文件会被静默压掉（见 :18）。
+
+**模块配置不共用 `#saveBtn`。** 它只保存 `config.json`；模块配置走独立端点、独立保存按钮，也不参与 `beginConfigEdit()` 的脏检查——否则用户改了个服务器名点「取消」会被「你有未保存的修改」拦住。模块分区首次进入时才拉 `/api/modules/config`，每次 `renderAdminPanel()` 都预取会累积撞上限流。
+
+**新增模块的落点**：定义放 `public/modules/<id>.js`，id 加入 `App.KNOWN_MODULES`，配置项加入 `normalizeModulesConfig()` 的白名单。需要增长或查询的数据（条目、缓存）在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不预建空表。新增 `public/` 文件必须同步 `sw.js` 的 `ASSETS` 与 `CACHE`——延后加载的文件若不预缓存，回访用户每次打开模块都要走一次网络，与延后加载的初衷相反。
+
+## 凭据加密
+
+凭据加密实现在 `lib/credentials.js`，WebDAV 密码与模块 agent token 共用。共用的理由不是省代码，而是两条规则必须一致：同一套算法与参数，以及**改密码时一起重新加密**。
+
+- **密钥从管理员密码哈希派生**，每个用途一个后缀：`webdav-config-key` / `modules-token-key`。同一把密钥跨用途会让一处泄露同时丢掉两个凭据。追加新用途可以，**改已有后缀不行**——会让已存的密文全部解不开。
+- **`token` 只进不出。** `GET /api/modules/config` 把每个 server 的 token 折成 `hasToken` 布尔；编辑时留空表示保持原值（与 WebDAV 的「留空保持原密码」同一形状）。
+- **保存模块配置不会抹掉 token。** 这是「不回显」的必然副作用：客户端手里的 server 对象没有 `token` 字段，直接采纳请求体就会清空密文。`mergeModulesConfig()` 因此对 `servers` 按 id 逐条合并、补回既有的密文。症状隐蔽——服务器还在，只是开始 401。
+- **修改密码时自动重加密。** `reencryptCredentials()` 先用旧密码解密全部凭据、用新密码重新加密，**全部成功才落盘**；任一失败则密码文件也不写。边解密边写会造成「密码改了、凭据只迁移了一半」，而那一半永久无法恢复。
+- **归一化不接受 `token` 字段。** `normalizeServer()` 的白名单里没有它——提交明文 token 会被丢弃，必须走服务端的加密路径。
+- **已知边界**：丢失 `.admin-password.json` 且无备份里的旧密码时，凭据永久无法恢复。这是「不另存主密钥」的直接代价，与 WebDAV 原有行为一致。
+
+## 多服务器监控
+
+**目标机上跑 agent，本服务定时拉取。** 本服务只能读到运行它自己的那台主机；要看别的机器，目标机上就得有一个东西去读 `/proc` 并把结果吐出来。
+
+```
+目标机 agent/agent.js ──HTTP /metrics──▶ 本服务 ──并发──▶ module_cache ──▶ 首页每台一张卡片
+  读 /proc/stat、/proc/meminfo              │
+  Bearer token 鉴权                          └─ 本机读 os，永远排第一
+```
+
+- **agent 单文件无依赖**，`node agent.js` 即可运行，token 从环境变量 `NAVSYLPH_TOKEN` 读、**不落盘**（命令行参数会出现在 `ps` 与 shell 历史里）。默认只监听 `127.0.0.1`，跨机访问需显式 `--host 0.0.0.0`。`/health` 不需鉴权，`/metrics` 需要。
+- **CPU 必须两次采样做差**。`os.cpus()` 与 `/proc/stat` 给的都是累计值，单次读没有百分比。
+- **两条采集路径必须返回同一种形状**（一个聚合对象，不是按核的数组）。形状不一致时 `current.total - previousCpu.total` 变成「数组减数字」= `NaN`，CPU 恒为 `null`，而返回的 JSON 完全合法——看不出出错，只是永远没有 CPU 数据。
+- **macOS 的内存不能用 `os.freemem()`。** 它返回的是「未被列为可用」的页，而 macOS 把大部分内存拿去做文件缓存——实测 16GB 机器上 `totalmem - freemem` 达 98.6%，显示成「内存 99%」，看着像要爆，实际完全正常。那个数衡量的是缓存占用，不是应用占用。正确口径是 `vm_stat` 的 `free + inactive + speculative + purgeable`（页数 × 页大小），`inactive` 是可回收的缓存，算作可用才是用户视角。服务端与 agent 两处都实现了同一口径。
+- **页大小用 `execSync('sysctl -n hw.pagesize')` 取**，不是 `readFileSync('/sysctl -n hw.pagesize')`——后者不是路径会抛 `ENOENT`。
+- **没有 `/proc` 的平台降级到 `os` 模块**，而不是启动即崩。agent 可能被拿去做 macOS/BSD 的自测；`vm_stat` 读不到时（容器、精简系统）也退回 `os`，数值口径粗一些但不至于不可用。
+- **协议版本两侧必须对齐**（`agent` 的 `VERSION` 与服务端的 `AGENT_PROTOCOL_VERSION`）。不一致时报错，**不把不认识的字段当 0 读进去**——那会显示「CPU 0%」，是一个错误的结论而不是一个可见的失败。
+- **一台离线不影响其它台。** `fetchRemoteMetrics()` 失败返回 `{ok:false, error}` 而不抛错；401 单独标记 `authFailed`，界面据此区分「凭据错」与「机器挂」。目标机**并发**拉取——串行会让 N 台耗时累加到超出前端轮询周期。
+- **每台一张卡片**，本机固定排第一且不需要配置；**每台可在后台单独开关是否在首页显示**（写进 `widgets[].enabled`，缺省为显示）。本机不可关——它是这个模块唯一的零配置产物，关掉后模块区可能全空却找不到入口开回来。隐藏只影响显示，顺序与左右原样保留，重新打开精确回到原位。
+- **`.app` 必须建立包含块**（`position: relative`）。否则 `.module-zone` 的 `left/right: 22px` 相对**视口**而非 `.app` 内容盒，而 `sideDockAvailable()` 又是用 `.app` 宽度算余量的——两个坐标系对不上。实测 1760 宽的窗口下 `.app` 左边缘在 160px，模块区却从视口 22px 开始，卡片被甩到窗口左侧。
+- **宽屏纵向偏移按实测高度排**，`--stack-top` 由 JS 写入。写死步进（166px）会压住更高的卡片——实测在线带延迟提示 174px、离线只有 98px。内容变化后要重排。
+- **拖拽要真的移动 DOM**：在 `pointermove` 里 `insertBefore`，而不是松手时按「DOM 当前顺序」写 order——后者读到的是从未变动过的顺序，拖了不换位。插入点用**拖拽开始时**缓存的中线判定：每帧读实时 `getBoundingClientRect()` 会因让位而漂移，比较在自己造成的移动中失配。
+- **插入导致的基准跳变要补进 transform。** 视觉位置 = 基准 + `transform`；基准突变而 transform 仍相对拖拽起点，合成后卡片会猛弹（实测 247px）。补上差量并同步 `dragData.startY`，单帧跳动可降到与指针位移一致。
+- **采集缓存的失效跟着配置走。** `module_cache` 缓存 5 分钟，但缓存的是「上次采到了什么」，而采集的目标由配置决定。加/改/删服务器时调用 `invalidateMetricsCache()` 让它失效——否则「新加的机器不出现、删掉的还在」，要等满 5 分钟才自愈。`POST /api/modules/config` 也用于拖拽排序与开关模块，那两种改动不影响采集目标，所以那里加了前后比较、只在 `servers` 真的变了才清；无条件清会让「加机器立刻可见」退化成「任何保存都重采」，TTL 就失去了意义。
+- **`agent/` 随发布包分发**（`scripts/release.sh` 里的 `cp -r agent`）。不打进包的话，多服务器功能对下载者等于不存在。
+- **部署命令在后台生成，不在 `sylph.sh`。** `sylph.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。命令在「模块 → 监控目标 → 部署」里按当前配置生成：端口取自你填的地址，token 是占位符（服务端不把明文发到浏览器）。另有一份 `agent/README.md` 供离线查阅。脚本本体由 `GET /agent/agent.js` 按需提供——它放在仓库根而非 `public/` 下，**不进 Service Worker 预缓存**（预缓存一个从不加载的文件只会在每次更新时多下载一次）。
+- **更新周期可配，白名单在服务端裁决。** 取值 10 / 15 / 30 / 60 / 300 秒，存在 `.modules.json` 的 `pollInterval`。10 秒是下限（再短会撞管理端限流 30 次/分钟），5 分钟是上限（再长与默认 TTL 相同、失去意义）。非法值回落默认。
+- **缓存 TTL 跟着周期走。** 取 `周期 + 10s`，夹在 20s–300s 之间。固定 5 分钟 TTL 会让「把周期改成 10 秒」变成一句空话——前端每 10 秒问一次、服务端 5 分钟内都回同一份缓存。`+10s` 的余量是为了让两次轮询错开 TTL 边界，否则永远拿不到新值。服务端把当前周期回给前端，前端据此重排自己的定时器，改完不必刷新页面。
+- **页面切到后台时轮询暂停**，回到前台立即刷新一次。
 
 ## 数据与请求路径
 
@@ -109,9 +174,9 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 分享编辑器在首页搜索框内完成。触发字符仍是 `>`（或全角 `》`），编辑区为 `<textarea>`——单行 `<input>` 在 HTML 规范上无法换行，也撑不开多行内容。搜索态保持单行（`min-height: 44px`，不写 inline height；44px 同时是触摸目标下限，同排的三个按钮同为 44px）；分享态下 `min-height: 96px` 起、`max-height: 60vh` 封顶。JS 的 `autoGrowPasteInput()` 在 `input` 事件中按 `scrollHeight` 写入 inline height 使其随内容增删同步伸缩并 clamp 到上限；进入分享态的首帧不测量，此时由 `min-height` 兜底。用户拖动右下角把手后置 `pasteUserResized`，此后不再自动跟随。回车发送、`Shift`/`Ctrl`/`Cmd`+回车换行，Esc 或左侧「退出」按钮返回搜索态（移动端无 Esc 键，退出按钮是主路径；两条路径共用 `exitPasteMode()`，复位逻辑只此一处）。搜索引擎按钮在分享态由 `.search.paste-mode #engineBtn` 隐藏，不用内联 `display`，否则无法参与过渡且会盖过样式表。
 
-搜索栏三个按钮共用一套拟物结构，只在色相与明度上分层：`--mode-hue`（网页/收藏，青灰）、`--engine-hue`（引擎，琥珀）、`--submit-hue`（搜索，陶土）。各自的 `--HUE` 是底色、光感与按压阴影的唯一来源（`styles.css:2726`），因此三者共享同一条光感规则而不会走样。三个锚点必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次（`styles.css:2590`/`2636`/`2689`），漏掉任一处则手动深色与系统深色表现分叉——`tests/homepage-material.test.js` 断言了三处计数与深色块的逐字一致。
+搜索栏三个按钮共用一套拟物结构，只在色相与明度上分层：`--mode-hue`（网页/收藏，青灰）、`--engine-hue`（引擎，琥珀）、`--submit-hue`（搜索，陶土）。各自的 `--HUE` 是底色、光感与按压阴影的唯一来源（`styles.css:2607`），因此三者共享同一条光感规则而不会走样。三个锚点必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次（`styles.css:2607`/`2661`/`2715`），漏掉任一处则手动深色与系统深色表现分叉——`tests/homepage-material.test.js` 断言了三处计数与深色块的逐字一致。
 
-按压语义分两级，不可混用同一视觉语言。**点击凹陷**是 `inset 0 4px 9px`（`--ctl-press-shadow`，过渡 28ms），比书签的 `inset 0 3px 6px` 更深更快；**模式按钮的选中态**（`[aria-pressed="true"]`，`styles.css:2745`）刻意做成「点亮」——外投影 + 更实的底色，不含整段 inset。若选中态也用 inset 阴影，用户无法区分「已切换到收藏」与「正在按下」。实心陶土按钮的凹陷另需加深填充才能读出效果，实心深底会盖住 inset 阴影。
+按压语义分两级，不可混用同一视觉语言。**点击凹陷**是 `inset 0 4px 9px`（`--ctl-press-shadow`，过渡 28ms），比书签的 `inset 0 3px 6px` 更深更快；**模式按钮的选中态**（`[aria-pressed="true"]`，`styles.css:2780`）刻意做成「点亮」——外投影 + 更实的底色，不含整段 inset。若选中态也用 inset 阴影，用户无法区分「已切换到收藏」与「正在按下」。实心陶土按钮的凹陷另需加深填充才能读出效果，实心深底会盖住 inset 阴影。
 
 三个按钮的**高度统一为 44px**（`--ctl-h`），与仿真的 40px 有意不同：44px 是触摸目标下限，改回 40px 等于重新引入此前列为 P1 的缺陷。
 

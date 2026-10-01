@@ -2720,7 +2720,9 @@ body {
     --ctl-press-motion: 28ms;
 }
 body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
-.app { max-width: 1040px; padding: 35px 22px 100px; }
+/* 1040 → 1440：给背板外侧的两侧模块留位置（936 背板 + 2×220 模块 + 间隙）。
+   背板本身仍是 936px 居中，宽度未变。 */
+.app { max-width: 1440px; padding: 35px 22px 100px; }
 .header { margin-bottom: 0; }
 .search-wrapper { max-width: 560px; }
 .search {
@@ -2921,3 +2923,147 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 窄屏完全退回现状：透明、无描边、无模糊、无圆角、无内边距 */
 @media (max-width: 1023px) { .backboard { width: auto; padding: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
     .backboard::before,.backboard::after { display: none; } }
+
+/* ========== 模块平台 ==========
+   登录后才出现的 widget 区。位置在分类网格之后，首屏视觉重心留给搜索框与收藏。
+
+   纪律（同本文件既有）：
+   - 本区块不重声明任何既有选择器。此前尾段重声明过 .search.paste-mode
+     .search-input 与 .bookmark 的 transition，两次把特性变成死代码。
+   - 不新增 CSS 自定义属性：一律复用既有 token，新增变量的深浅三块成对维护
+     成本高于收益。需要百分比时用内联的 --pct，它只在进度条这一处使用。
+   - **窄屏覆盖必须写在基础规则之后**。曾把窄屏段并入文件上方那条 ≤1023px 块，
+     结果基础规则落在它后面，同特异性下基础赢——手机上看模块区仍是两栏网格，
+     横向滚动根本没生效。位置比「并进同一块」更要紧。 */
+
+/* `.app` 必须建立包含块（position: relative），否则 .module-zone 的
+   `left/right: 22px` 会相对**视口**而不是 .app 的内容盒。
+   两者在 .app 有居中留白时必然错位：实测 1760 宽的窗口下 .app 左边缘在
+   160px，而模块区从视口的 22px 开始——卡片被甩到窗口左侧，离背板极远。
+   sideDockAvailable() 又是用 .app 宽度算余量的，两个坐标系对不上。 */
+.app { position: relative; }
+
+/* 宽屏：模块区贴在背板**外侧**左右两侧，不占背板内部。
+   .app 从 1040 放宽到 1440 正是为此——936 背板 + 两侧 200px 模块 + 间隙，
+   原先 996px 的内容盒放不下（几何核算：936+20*2+200*2 = 1376）。
+   背板内部的布局一行未动。
+
+   模块区本身铺满 .app 宽度、由各 widget 绝对定位到两侧；
+   .module-zone-inner 用 display:contents 让子节点直接参与外层定位，
+   不再多一层盒模型。
+   纵向次序由 JS 写入的 --i 决定（同一 side 的节点在 DOM 上不连续）。
+
+   两侧可用空间 = (.app 内容盒 − 936) / 2，视口越窄越小：
+   1440 上限时 220px，1280 视口只剩 150px，再窄会被压到 0。
+   所以模块宽度用 clamp() 跟着可用空间伸缩，而不是写死 200px——
+   写死的话在 1280 这类常见视口下会**压进背板 50px**（实测过）。
+   下限 132px 保证三条指标还读得出来。 */
+.module-zone { position: absolute; top: 48px; left: 22px; right: 22px; margin-top: 0; pointer-events: none; }
+.module-zone[hidden] { display: none; }
+.module-zone-inner { display: contents; }
+/* 纵向偏移由 JS 实测高度后写入 --stack-top，不是固定步进——
+   卡片高度随内容变化（在线带延迟提示 174px / 无提示 152px / 离线 98px），
+   写死 166px 会让带提示的卡片压住下一张（实测重叠 8px）。 */
+.module-widget[data-side="right"] { position: absolute; top: 0; right: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
+.module-widget[data-side="left"] { position: absolute; top: 0; left: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
+/* 模块区整体不接收指针事件，只有卡片本身可交互——否则它铺满全宽会挡住背板 */
+.module-zone-inner > .module-widget { pointer-events: auto; }
+
+/* 两侧放不下时（视口 < ~1180px）退回网格下方横滑。
+   判据由 JS 写入 data-dock，不用媒体查询——936 背板在 1024 下只留 44px、
+   在 1440 下留 252px，固定断点表达不了这个连续量。 */
+.module-zone[data-dock="below"] { position: static; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); pointer-events: auto; }
+.module-zone[data-dock="below"] .module-zone-inner { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; padding-bottom: 4px; mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); -webkit-mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); }
+.module-zone[data-dock="below"] .module-widget { position: static; flex: 0 0 auto; width: 190px; scroll-snap-align: start; margin-top: 0; }
+
+/* 让位动画。基准（--stack-top）一变，卡片就换到新位置；给一个短过渡，
+   让它「滑过去」而不是瞬移。没有过渡时其余卡片是硬跳的——用户说「生硬」
+   主要指这一段，而不是被拖的那张（被拖的由 transform 补偿，位置是连续的）。 */
+.module-widget { padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); box-shadow: var(--shadow); transition: box-shadow var(--bookmark-motion), border-color var(--bookmark-motion), margin-top 180ms cubic-bezier(.2,.8,.25,1); }
+/* 拖拽中的那张不参与纵向过渡：它的位置由 transform 连续控制，
+   再叠一个 margin 过渡会和基准补偿打架，出现二次抖动。 */
+.module-widget.is-dragging { transition: box-shadow var(--bookmark-motion), border-color var(--bookmark-motion); }
+/* 离线卡片：保留形状但压低存在感，让「哪台挂了」一眼可见，
+   而不是和在线卡片长得一样、只能靠读数字才发现 */
+.module-card[data-online="0"] { opacity: .62; border-style: dashed; }
+.module-card[data-online="0"] .module-widget-title::after { content: ' · 离线'; color: var(--text-muted); font-weight: 400; }
+.module-card-hint { margin-top: 2px; color: var(--text-muted); font-size: 10px; text-align: right; }
+.module-panel-list { margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); }
+.module-panel-list-title { margin-bottom: 8px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.module-panel-list-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+.module-panel-list-row[data-online="0"] .module-panel-list-value { color: var(--text-muted); }
+.module-panel-list-name { flex: 0 0 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+.module-panel-list-value { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.module-widget-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.module-widget-title { flex: 1; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }
+.module-widget-expand { min-height: 26px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 11px; font-family: inherit; cursor: pointer; transition: color 110ms, background 110ms; }
+.module-widget-expand:hover { background: var(--bg-hover); color: var(--accent); }
+
+/* 拖拽把手：默认隐藏，编辑模式才出现。触摸目标不设 44px——它是鼠标/长按操作，
+   窄屏的实际拖动落点在卡片本体上。 */
+.module-drag-handle { display: none; min-width: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 13px; line-height: 1; cursor: grab; touch-action: none; }
+.module-drag-handle::before { content: '⠿'; }
+.module-drag-handle:hover { background: var(--bg-hover); color: var(--accent); }
+.module-zone.is-editing .module-drag-handle { display: block; }
+.module-zone.is-editing .module-widget { cursor: grab; }
+.module-zone.is-editing .module-widget-expand { display: none; }
+.module-widget.is-dragging { z-index: 5; opacity: .92; cursor: grabbing; box-shadow: var(--shadow-lg); transition: none; }
+.module-widget.drop-target { border-color: var(--accent); }
+.module-zone[data-drop-side="left"] .module-widget[data-side="left"],
+.module-zone[data-drop-side="right"] .module-widget[data-side="right"] { border-color: var(--accent); }
+
+/* 指标行：标签 / 数值 / 进度条三段。进度不可知时 --pct 缺失，回落到 0 宽。 */
+.module-metric { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 8px; margin-bottom: 7px; }
+.module-metric:last-child { margin-bottom: 0; }
+.module-metric-label { color: var(--text-muted); font-size: 11px; }
+.module-metric-value { color: var(--text); font-size: 12px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.module-metric-bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--bg-hover); overflow: hidden; }
+.module-metric-fill { display: block; height: 100%; width: var(--pct, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-hover)); transition: width 320ms cubic-bezier(.2,.8,.25,1); }
+
+.module-widget-loading { padding: 8px 0; color: var(--text-muted); font-size: 11px; }
+.module-widget-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 0; }
+.module-widget-error-title { color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.module-widget-error-detail { color: var(--text-muted); font-size: 11px; }
+.module-widget-retry { min-height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-top); color: var(--text-secondary); font-size: 11px; font-family: inherit; cursor: pointer; }
+.module-widget-retry:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.module-widget-retry:disabled { opacity: .5; cursor: default; }
+.module-zone-error { display: flex; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); color: var(--text-muted); font-size: 11px; }
+
+/* 全屏模块面板 */
+.module-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+.module-panel { width: min(100%, 480px); max-height: min(84dvh, 640px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 16px; background: var(--glass-strong); box-shadow: inset 0 1px rgba(255,255,255,.57), 0 20px 48px rgba(35,27,21,.21); backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%); }
+.module-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px 12px; border-bottom: 1px solid var(--border); }
+.module-panel-head h2 { color: var(--text); font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+.module-panel-close { min-width: 32px; min-height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.module-panel-close:hover { background: var(--bg-hover); color: var(--text); }
+.module-panel-body { padding: 16px 18px 20px; }
+.module-panel-metrics { margin-bottom: 16px; }
+.module-panel-detail { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; padding-top: 13px; border-top: 1px solid var(--border); }
+.module-panel-detail dt { color: var(--text-muted); font-size: 11px; }
+.module-panel-detail dd { color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 降级：prefers-reduced-transparency 下模块面板退回不透明底色，
+   与 .backboard / .utility-dock 的同一处理。 */
+@media (prefers-reduced-transparency: reduce) {
+    .module-widget, .module-panel, .module-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); }
+}
+
+/* 模块区窄屏形态：单栏 + 横向滚动。右侧渐隐提示沿用 .category-tree 的
+   同一套 mask 语法，不发明第二种——横滑容器若没有可滑提示，
+   用户不知道右边还有内容。
+
+   **必须放在上面那条基础规则之后**：同特异性下后者胜。
+   之前并进文件上方那条 ≤1023px 块时，本段落在基础规则前面，
+   390px / 360px 实测 inner 仍算成 grid、横向滚动完全没生效。 */
+@media (max-width: 1023px) {
+    /* 窄屏把绝对定位全部撤掉，模块区回到文档流、落在背板（此断点下已是透明容器）下方。
+       这些 reset 必须与宽屏那条成对出现：只写宽屏定位而不写这里，
+       绝对定位会一路带到手机上，模块区脱离文档流、页面高度塌掉。 */
+    .app { max-width: 1200px; }
+    .module-zone { position: static; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); pointer-events: auto; }
+    .module-zone-inner { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; padding-bottom: 4px; mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); -webkit-mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); }
+    .module-widget { flex: 0 0 auto; width: 190px; scroll-snap-align: start; }
+    .module-widget[data-side] { position: static; width: 190px; margin-top: 0; right: auto; left: auto; top: auto; }
+    .module-overlay { padding: 12px; }
+    .module-panel { max-height: calc(100dvh - var(--kb-inset, 0px) - 24px); }
+}
