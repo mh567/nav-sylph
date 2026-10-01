@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-当前基线：分支 `main`；最新提交 `7c3fc16`（v1.5.26 之后的文档提交）；`package.json` 版本 `1.5.26`。**本次会话有一批未提交改动**：管理端会话改由 SQLite 落盘（见文末「会话落盘」一节），尚未提交、未发版。
+当前基线：分支 `main` 与 `origin/main` 一致；本次会话的改动已提交为 `17efea1` 并发布 **v1.5.27**；`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.27`。详见文末「会话落盘（SQLite）」一节。
 
 分享功能改动已提交为 `39acce5`，发布前的两个缺陷修复为 `ee77a39`，v1.5.7 发布为 `7ab0981`，分享接口滥用防护为 `d3ee955`，分享编辑器交互改版为 `04895fc`，审计与视觉核验修复为 `ff63fd7`，发布前审查修复为 `e5f3fae`，v1.5.8 发布为 `edff173`，模式切换状态错乱修复为 `14bd923`，v1.5.9 发布为 `382c89e`，分享弹窗紧凑化 `a5a2e00`/v1.5.10 `b4522e2`，收藏弹窗 `7779a64`/v1.5.11 `49f9f28`，横屏与软键盘修复为 v1.5.12，**首页材质改版为 v1.5.13**。
 
@@ -1289,11 +1289,36 @@ node --check <每个改动的 .js>       # 全部 OK
 
 **过程中我自己的一次失误**：E2E 脚本的 `start()` 写成 `( cd … && node … ) &`，写进 PID 文件的是子 shell 而非 node，`kill` 后留下一个 PPID=1 的孤儿进程占着 4195。已先用 `ps -o pid,lstart,command` 与 `lsof -a -p … -d cwd` 确认归属（cwd 指向已删除的临时目录，不是用户自己的服务）再清理，并改为 `exec` 让 `$!` 就是 node 的 PID。
 
+**代码审查（两轴，基线 `v1.5.26`，审查对象是未提交的工作树）**
+
+采纳并已修 5 项：
+
+- `server.js` 定时器旁的注释仍写「模块顶层 `const` 已完成初始化」——已是 `let`，改为「回调 60 秒后才读，而 `init()` 在开始监听前就已完成赋值；`init()` 失败则进程随即 `exit(1)`，安全性取决于调用时机而非代码顺序」。
+- `init()` 失败路径只 `exit(1)`、不关库，补上 `db.close()`，避免留下未 checkpoint 的 WAL。
+- `lib/db.js` 多导出 `runMigrations`、`lib/session.js` 多导出 `createMemoryBackend`，两者都无消费者，收回（`lib/db.js` 按要求只留 `openDatabase` + `MIGRATIONS`）。
+- 计划承诺的部署面源码形状守卫此前只是手工核对，已补 4 条断言（`nav-sylph.service` 的 `ReadWritePaths`、`sylph.sh` 的备份与放回、`.gitignore` 三项、`server.js` 的开库顺序），并逐个做了红/绿验证。
+
+复核后**驳回** 3 项（记录以免重复调查）：
+
+- 「db 文件名同时硬编码在 `sylph.sh` 与 unit，用 `DB_FILE` 覆盖时这两处会漏」——成立，但与本仓库既有模式一致（`LOG_DIR` / `DATA_FILE` 对 shell 与 unit 同样不可见），覆盖者本来就需要同步调整 unit；不为此新增机制。
+- 「`SessionStore` 构造参数已达 12 个（Data Clumps）」——既有形状，非本次引入，且当下没有打包成 options 类型的需求。
+- 「`sylph.sh` 只备份主 `.db`、不含 `-wal`，回滚会与新 WAL 错配」——**不成立**：该脚本自始至终不覆盖 db（tarball 里没有这个文件），所谓「回滚」只是把同一份字节拷回原处，构不成「旧主库 + 新 WAL」；且停服走 SIGTERM，关库时已 checkpoint。
+
+另有一条**保留为未验证**：「`ProtectSystem=strict` 下，用 `-` 前缀列出的 db 路径若在首装时尚不存在，可能不会被挂成可写」。本地无 systemd 无法验证，且实际部署运行的是 `sylph.sh do_enable` 生成的 unit（不设 `ProtectSystem`）。
+
+**发布 v1.5.27**
+
+- 前置检查：`git status --short` + `git diff <last-tag> --name-only` 对照 `release.sh` 的打包清单。`public/` **未改动** → `sw.js` 缓存保持 `nav-v34`，**无需升版**。本次是「确认命中」方向，不是拦下遗漏。
+- 三处版本号 → `1.5.27`，并用 `node -e` 重新解析确认 JSON 仍合法、三处一致；`CHANGELOG.json` 新增 `1.5.27` 条目（summary 一句 + 两条 highlights + improve 三条）。
+- 提交 `17efea1`；`bash scripts/release.sh` 产出 `nav-sylph-v1.5.27.tar.gz`（4.3M）、打 tag `v1.5.27`、创建 Release。
+- 脚本只推 tag，已手工 `git push origin main`（`7c3fc16..17efea1`）。
+- 产物核验：`/releases/latest` → `v1.5.27`；下载 tarball 解包确认 `lib/db.js`、`lib/session-sqlite.js` 在内，包内 `package.json` 为 `1.5.27`，`docs/`、`tests/`、`.git`、`node_modules` 均无泄漏，包内 README 已是「Node.js 22+」。
+
 **下一步**
 
 - 新模块在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不新建库文件
 - 若日后要把配置/收藏也迁入同一库，须先处理 `favorites.json` 的 HTML 导入导出与 WebDAV 往返格式
-- 本次改动尚未提交、未发版
+- 本次改动已提交 `17efea1`、已发布 v1.5.27
 
 ## 下一位 Agent 的启动步骤
 
