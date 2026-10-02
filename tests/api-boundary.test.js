@@ -154,8 +154,21 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         server.indexOf('// ========== Paste API =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
-    assert.equal(moduleRoutes.length, 5, `模块端点应恰好 5 条，实际 ${moduleRoutes.length}`);
+    assert.equal(moduleRoutes.length, 8, `模块端点应恰好 8 条，实际 ${moduleRoutes.length}`);
+
+    // 唯一的例外是推送端点：它**故意**不带 requireAdmin——
+    // agent 在内网、是裸 HTTP，拿不到浏览器会话，它的鉴权是推送凭据。
+    // 这条例外必须具名写出来，否则「把推送端点也加上 requireAdmin」
+    // （那会让推送彻底不可用）会显得像是在收紧守卫。
+    const PUSH_ROUTE = "app.post('/api/modules/agent-push'";
     for (const route of moduleRoutes) {
+        if (route === PUSH_ROUTE) {
+            assert.match(routes, /app\.post\('\/api\/modules\/agent-push',\s*pushLimit,/,
+                '推送端点只用独立限流桶，不挂 requireAdmin（agent 没有浏览器会话）');
+            assert.doesNotMatch(routes, /app\.post\('\/api\/modules\/agent-push',[^)]*requireAdmin/,
+                '推送端点一旦挂上 requireAdmin，agent 就再也推不上来了');
+            continue;
+        }
         assert.match(routes, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ', rateLimit, requireAdmin,'),
             `${route} 必须走 rateLimit + requireAdmin`);
     }

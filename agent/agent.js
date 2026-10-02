@@ -12,13 +12,22 @@
  * - macOS：用 `os` 模块 + `vm_stat`（`os.freemem()` 在 macOS 上不代表可用内存）
  * - 其它（BSD 等）：退回 `os` 模块
  *
+ * 两种上报方向
+ * - 拉取（默认）：起一个 HTTP 服务等本服务来连。适合目标机与本服务同网段或公网可达。
+ * - 推送（`--push`）：**不监听任何端口**，只做出站连接把指标送到本服务。
+ *   适合目标机在局域网内、本服务在公网——内网机器上一个端口都不用开。
+ *
  * 其它特性
  * - 无依赖、无构建步骤，单文件 `node agent.js` 即可运行。
  * - Bearer token 鉴权，token 从环境变量读、**不落盘**。
- * - 默认只监听 127.0.0.1；要跨机访问得显式 `--host 0.0.0.0`。
+ * - 拉取模式默认只监听 127.0.0.1；要跨机访问得显式 `--host 0.0.0.0`。
  *
  * 用法
+ *   # 拉取模式
  *   NAVSYLPH_TOKEN=<token> node agent.js --port 4195 --host 0.0.0.0
+ *   # 推送模式（不监听端口）
+ *   NAVSYLPH_PUSH_SECRET=<凭据> NAVSYLPH_SERVER_ID=<id> \
+ *     node agent.js --push https://nav.example.com
  *
  * 目标机需要 Node 18+。
  */
@@ -32,12 +41,31 @@ const VERSION = 1;
 // ========== 参数 ==========
 
 function parseArgs(argv) {
-    const out = { port: 4195, host: '127.0.0.1', exposeHostname: false };
+    const out = {
+        port: 4195,
+        host: '127.0.0.1',
+        exposeHostname: false,
+        push: null,
+        pushSecret: null,
+        serverId: null,
+        // 推送周期。与服务端的白名单一致，避免推送频率超出它的限流桶
+        // （20 台 × 6 次/分钟 = 120/min 是它的上限）。
+        interval: 15,
+        // 推送模式默认**不**监听端口。要同时保留拉取能力时显式加 --port
+        serveAlongsidePush: false
+    };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
-        if (arg === '--port' && argv[i + 1]) out.port = Number(argv[++i]);
-        else if (arg === '--host' && argv[i + 1]) out.host = argv[++i];
+        if (arg === '--port' && argv[i + 1]) {
+            out.port = Number(argv[++i]);
+            // 显式给了 --port 就是要两个模式都开着
+            out.serveAlongsidePush = true;
+        } else if (arg === '--host' && argv[i + 1]) out.host = argv[++i];
         else if (arg === '--token' && argv[i + 1]) out.token = argv[++i];
+        else if (arg === '--push' && argv[i + 1]) out.push = argv[++i].replace(/\/+$/, '');
+        else if (arg === '--push-secret' && argv[i + 1]) out.pushSecret = argv[++i];
+        else if (arg === '--server-id' && argv[i + 1]) out.serverId = argv[++i];
+        else if (arg === '--interval' && argv[i + 1]) out.interval = Number(argv[++i]);
         // /health 里带主机名。只有确定端口没暴露到不可信网络时才需要。
         else if (arg === '--expose-hostname') out.exposeHostname = true;
         else if (arg === '--help' || arg === '-h') out.help = true;
@@ -45,19 +73,63 @@ function parseArgs(argv) {
     return out;
 }
 
+/** 推送周期只接受服务端的同一组白名单值，其它回落 15。 */
+const PUSH_INTERVALS = [10, 15, 30, 60, 300];
+function resolveInterval(value) {
+    return PUSH_INTERVALS.includes(value) ? value : 15;
+}
+
 const args = parseArgs(process.argv.slice(2));
 
 if (args.help) {
-    console.log('用法: NAVSYLPH_TOKEN=<token> node agent.js [--port 4195] [--host 127.0.0.1] [--expose-hostname]');
+    console.log('用法（拉取模式，默认）:');
+    console.log('  NAVSYLPH_TOKEN=<token> node agent.js [--port 4195] [--host 127.0.0.1] [--expose-hostname]');
     console.log('  --host           监听地址；跨机访问必须显式设 0.0.0.0');
     console.log('  --expose-hostname 让 /health 也返回主机名（默认不返回，避免泄露）');
+    console.log('');
+    console.log('用法（推送模式，目标机在局域网时用）:');
+    console.log('  NAVSYLPH_PUSH_SECRET=<凭据> NAVSYLPH_SERVER_ID=<id> \\');
+    console.log('    node agent.js --push <本服务地址> [--interval 15] [--port 4195]');
+    console.log('  --push         本服务地址，进入推送模式；**默认不监听任何端口**');
+    console.log('  --interval     上报间隔秒数，可选 ' + PUSH_INTERVALS.join('/') + '（默认 15）');
+    console.log('  --server-id    目标机在后台的 id（也可用环境变量 NAVSYLPH_SERVER_ID）');
+    console.log('  --port         额外同时开启拉取模式（默认不监听）');
     process.exit(0);
 }
 
-// token 优先取环境变量，其次才轮到 --token。
+// 拉取模式的 token：优先环境变量，其次 --token。
 // 环境变量更安全：命令行参数会出现在 `ps` 输出与 shell 历史里。
 const TOKEN = process.env.NAVSYLPH_TOKEN || args.token;
-if (!TOKEN) {
+// 推送凭据与拉取 token 是**两回事**，分环境变量、分参数，互不顶替。
+const PUSH_SECRET = process.env.NAVSYLPH_PUSH_SECRET || args.pushSecret;
+const SERVER_ID = process.env.NAVSYLPH_SERVER_ID || args.serverId;
+
+const PUSH_MODE = Boolean(args.push);
+const SERVE_HTTP = !PUSH_MODE || args.serveAlongsidePush;
+
+if (PUSH_MODE) {
+    // 协议白名单与服务端写服务器时那条一致：其它协议（file:、gopher:）
+    // 经 fetch 会变成一个可被利用的请求面，而 --push 是用户从命令行传的。
+    let pushProtocol = null;
+    try {
+        pushProtocol = new URL(args.push).protocol;
+    } catch {
+        console.error(`--push 的地址无法解析：${args.push}`);
+        process.exit(1);
+    }
+    if (pushProtocol !== 'http:' && pushProtocol !== 'https:') {
+        console.error('--push 的地址必须以 http:// 或 https:// 开头。');
+        process.exit(1);
+    }
+    if (!PUSH_SECRET) {
+        console.error('推送模式缺少凭据。请设置环境变量 NAVSYLPH_PUSH_SECRET，或用 --push-secret 传入。');
+        process.exit(1);
+    }
+    if (!SERVER_ID) {
+        console.error('推送模式缺少 server id。请设置环境变量 NAVSYLPH_SERVER_ID，或用 --server-id 传入。');
+        process.exit(1);
+    }
+} else if (!TOKEN) {
     console.error('缺少 token。请设置环境变量 NAVSYLPH_TOKEN，或用 --token 传入。');
     process.exit(1);
 }
@@ -224,6 +296,7 @@ async function collect() {
  */
 function tokenMatches(provided) {
     if (typeof provided !== 'string') return false;
+    if (!TOKEN) return false;
     const a = Buffer.from(provided);
     const b = Buffer.from(TOKEN);
     // 先比长度会立刻暴露长度——对随机 token 来说长度不是秘密，
@@ -232,54 +305,162 @@ function tokenMatches(provided) {
     return require('crypto').timingSafeEqual(a, b);
 }
 
-const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
-        // /health 不需要鉴权（方便「agent 起来了吗」这类探测），所以**不能**返回
-        // 主机名：它会跟着其它信息一起泄露这台机器叫什么、内网里怎么称呼它。
-        // 早先这里返回 hostname，等于给每个能扫到该端口的人一份免费的资产清单。
-        // 需要主机名的人自己看 /metrics（那里要鉴权）。
-        const payload = { status: 'ok', version: VERSION };
-        if (args.exposeHostname) payload.hostname = os.hostname();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
-        return;
-    }
+// ========== 推送 ==========
 
-    if (req.method !== 'GET' || req.url !== '/metrics') {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'not found' }));
-        return;
-    }
+/** 退避上限（毫秒）。 */
+const PUSH_BACKOFF_MAX_MS = 300000;
+/** 单次上报的超时。太长会占住整个周期。 */
+const PUSH_TIMEOUT_MS = 8000;
 
-    const auth = req.headers.authorization || '';
-    const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    if (!tokenMatches(provided)) {
-        // 不回显 token 的一部分——401 里带上任何提示都会帮攻击者
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unauthorized' }));
-        return;
-    }
-
-    collect().then(metrics => {
-        res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store'
+/**
+ * 把一份指标送到本服务。
+ *
+ * 返回 true 表示成功。失败一律返回 false 而不抛错——推送是后台循环，
+ * 一次失败不该让 agent 退出。
+ */
+async function pushOnce(metrics) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PUSH_TIMEOUT_MS);
+    try {
+        const res = await fetch(`${args.push}/api/modules/agent-push`, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${PUSH_SECRET}`
+            },
+            body: JSON.stringify({ serverId: SERVER_ID, metrics })
         });
-        res.end(JSON.stringify(metrics));
-    }).catch(err => {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: String(err && err.message || err) }));
-    });
-});
-
-server.listen(args.port, args.host, () => {
-    console.log(`Nav Sylph agent v${VERSION}`);
-    console.log(`  监听 ${args.host}:${args.port}`);
-    console.log(`  主机名 ${os.hostname()}`);
-    console.log(`  端点 /metrics（Bearer 鉴权）、/health（无需鉴权）`);
-    if (args.host === '127.0.0.1') {
-        console.log('  提示：只监听本机，跨机访问需 --host 0.0.0.0');
+        if (res.ok) {
+            return { ok: true };
+        }
+        // 401/409 是配置问题，重试多少次都一样——照样报出来，
+        // 但退避要封顶，否则日志会被刷爆
+        let detail = `HTTP ${res.status}`;
+        try {
+            const body = await res.json();
+            if (body && body.error) detail = body.error;
+        } catch {
+            // 响应不是 JSON，用状态码即可
+        }
+        return { ok: false, error: detail, fatal: res.status === 401 || res.status === 409 };
+    } catch (err) {
+        return { ok: false, error: String(err && err.message || err) };
+    } finally {
+        clearTimeout(timer);
     }
-});
+}
 
-module.exports = { readProcStat, readMemInfo, readLoadAvg, collect, tokenMatches, VERSION };
+/**
+ * 推送循环。失败时指数退避，上限 5 分钟。
+ *
+ * 退避是必须的：本服务在 429 时已经在限流，无脑按原周期重试只会让
+ * 情况更糟，并可能把它的限流桶彻底耗光。
+ */
+function startPushing() {
+    const intervalMs = resolveInterval(args.interval) * 1000;
+    let backoff = 0;
+    let stopped = false;
+
+    console.log(`  推送目标 ${args.push}/api/modules/agent-push`);
+    console.log(`  上报间隔 ${intervalMs / 1000}s`);
+    console.log(`  server id ${SERVER_ID}`);
+    if (!SERVE_HTTP) {
+        console.log('  未监听任何端口（推送模式默认不开放端口）');
+    }
+
+    const tick = async () => {
+        if (stopped) return;
+        try {
+            const metrics = await collect();
+            const result = await pushOnce(metrics);
+            if (result.ok) {
+                if (backoff > 0) console.log(`[push] 恢复上报（退避 ${Math.round(backoff / 1000)}s）`);
+                backoff = 0;
+            } else {
+                if (backoff === 0) console.error(`[push] 上报失败：${result.error}`);
+                else console.error(`[push] 仍失败：${result.error}`);
+                // 配置类失败（401/409）封顶到 5 分钟：重试解决不了，
+                // 但也不能就此停掉——用户改完配置重启前，agent 得自己活着
+                backoff = Math.min(PUSH_BACKOFF_MAX_MS, backoff === 0 ? 5000 : backoff * 2);
+            }
+        } catch (err) {
+            console.error('[push] 采集失败:', err && err.message ? err.message : err);
+            backoff = Math.min(PUSH_BACKOFF_MAX_MS, backoff === 0 ? 5000 : backoff * 2);
+        }
+        if (!stopped) {
+            setTimeout(tick, backoff > 0 ? backoff : intervalMs);
+        }
+    };
+
+    tick();
+
+    // 停止推送（测试与优雅退出用）。定时器本身不阻止进程退出。
+    return () => { stopped = true; };
+}
+
+// ========== 启动 ==========
+
+if (SERVE_HTTP) {
+    const server = http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url === '/health') {
+            // /health 不需要鉴权（方便「agent 起来了吗」这类探测），所以**不能**返回
+            // 主机名：它会跟着其它信息一起泄露这台机器叫什么、内网里怎么称呼它。
+            // 早先这里返回 hostname，等于给每个能扫到该端口的人一份免费的资产清单。
+            // 需要主机名的人自己看 /metrics（那里要鉴权）。
+            const payload = { status: 'ok', version: VERSION };
+            if (args.exposeHostname) payload.hostname = os.hostname();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(payload));
+            return;
+        }
+
+        if (req.method !== 'GET' || req.url !== '/metrics') {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'not found' }));
+            return;
+        }
+
+        const auth = req.headers.authorization || '';
+        const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+        if (!tokenMatches(provided)) {
+            // 不回显 token 的一部分——401 里带上任何提示都会帮攻击者
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'unauthorized' }));
+            return;
+        }
+
+        collect().then(metrics => {
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store'
+            });
+            res.end(JSON.stringify(metrics));
+        }).catch(err => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(err && err.message || err) }));
+        });
+    });
+
+    server.listen(args.port, args.host, () => {
+        console.log(`  监听 ${args.host}:${args.port}`);
+        if (args.host === '127.0.0.1') {
+            console.log('  提示：只监听本机，跨机访问需 --host 0.0.0.0');
+        }
+    });
+}
+
+if (PUSH_MODE) {
+    startPushing();
+}
+
+console.log(`Nav Sylph agent v${VERSION}`);
+console.log(`  主机名 ${os.hostname()}`);
+if (SERVE_HTTP) {
+    console.log(`  端点 /metrics（Bearer 鉴权）、/health（无需鉴权）`);
+}
+
+module.exports = {
+    readProcStat, readMemInfo, readLoadAvg, collect, tokenMatches,
+    parseArgs, resolveInterval, pushOnce, PUSH_INTERVALS, VERSION
+};

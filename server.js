@@ -190,6 +190,11 @@ function pasteStorageBytes() {
 // 每60秒清理过期分享与过期限流记录。
 // 限流记录不清理会随 IP 数量无限增长；开启 trust proxy 后 key 等于访问者数量。
 // unref 避免该定时器阻止进程自然退出。
+// 推送端点的限流桶定义在下方「推送接收」小节里。这个定时器 60 秒后才触发，
+// 那时 const 已完成初始化——但把它列进清理时不能直接引用尚未声明的标识符，
+// 所以在这里声明这个 Map，下方直接复用同一个对象（不再重复声明）。
+const pushLimitMap = new Map();
+
 setInterval(() => {
     const now = Date.now();
     cleanExpiredPastes();
@@ -199,6 +204,8 @@ setInterval(() => {
     sweepRateLimitStore(globalLoginMap, now, 60000);
     // 失败锁定：按窗口清掉过期记录，锁定期已满的也会随之消失
     sweepRateLimitStore(loginFailMap, now, LOGIN_FAIL_WINDOW);
+    // 推送桶同样要清：它按来源 IP 计数，匿名可达且无会话，不清就会无限增长
+    sweepRateLimitStore(pushLimitMap, now, PUSH_LIMIT_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
     // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
@@ -231,6 +238,46 @@ const {
 const { openDatabase } = require('./lib/db');
 const { createSqliteBackend } = require('./lib/session-sqlite');
 const { readLocalMetrics, fetchRemoteMetrics } = require('./lib/monitor');
+
+// 推送凭据的随机数与哈希需要 Node 的 crypto。
+// **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
+// 粘贴功能的 AES-GCM 加解密依赖它（见下方 require 与 server.js:222 的警告）。
+// 写成 `const crypto = require('crypto')` 会遮蔽 WebCrypto，
+// 那个 bug 的表现是登录/解密时才炸，不会在启动时。
+const nodeCrypto = require('crypto');
+
+// ========== 推送凭据 ==========
+//
+// 推送端点是匿名可达的（内网 agent 主动连公网服务器），所以它的鉴权
+// **不能**是 requireAdmin（agent 是裸 HTTP，拿不到浏览器会话），
+// 也不能只验 agent token——服务端要拿 token 去解密 .modules.json 里的
+// 密文（密钥派生自管理员密码哈希），一旦 token 能触发解密+写库，
+// 它就等于配置写权限：可反复触发 bcrypt、可改写首页上所有机器的指标。
+//
+// 因此用独立的、绑定 server.id 的推送凭据：明文只在领取响应里出现一次，
+// 服务端只存哈希（与 .admin-password.json 同级处理）。
+const PUSH_SECRET_BYTES = 32;
+
+/** 生成一个推送凭据明文。base64url 无需转义，可直接进环境变量。 */
+function generatePushSecret() {
+    return nodeCrypto.randomBytes(PUSH_SECRET_BYTES).toString('base64url');
+}
+
+function hashPushSecret(secret) {
+    return nodeCrypto.createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+/**
+ * 定长比较，避免逐字符比较的时间差泄露哈希前缀。
+ * 长度不同直接拒绝——与 agent/agent.js 的 tokenMatches 同一处理。
+ */
+function pushSecretMatches(provided, storedHash) {
+    if (typeof provided !== 'string' || !provided || !storedHash) return false;
+    const a = Buffer.from(hashPushSecret(provided), 'hex');
+    const b = Buffer.from(storedHash, 'hex');
+    if (a.length !== b.length) return false;
+    return nodeCrypto.timingSafeEqual(a, b);
+}
 
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
@@ -1100,7 +1147,12 @@ function normalizeServer(raw) {
     const id = asTrimmedString(raw.id, 64);
     const url = asTrimmedString(raw.url, 300);
     if (!id || !url) return null;
-    return { id, name: asTrimmedString(raw.name, 60) || url, url };
+    // mode 决定采集方向：pull = 本服务去拉（默认），push = 目标机主动上报。
+    // 只接受两个已知值，其它一律回落 'pull'——一个拼错的字段不该把机器
+    // 静默切成推送。pushSecretHash **不**在这里：它只由服务端在"领取凭据"
+    // 那一步写入，永不出现在前端提交的请求体里（与 token 同理）。
+    const mode = raw.mode === 'push' ? 'push' : 'pull';
+    return { id, name: asTrimmedString(raw.name, 60) || url, url, mode };
 }
 
 function normalizeStringList(value) {
@@ -1173,8 +1225,14 @@ function mergeModulesConfig(existing, incoming) {
             const previous = existingById.get(server.id);
             if (!previous) return server;
             // hasToken 为 true 但没有 token 字段 = 前端只回显了状态，
-            // 此时保留原有的密文信封
-            return { ...server, token: previous.token };
+            // 此时保留原有的密文信封。pushSecretHash 同理：它只由服务端
+            // 在"领取推送凭据"时写入，归一化不接收，所以只能在这里补回。
+            // 若归一化顺手补了空串，下面的保留分支就永远走不到。
+            return {
+                ...server,
+                token: previous.token,
+                pushSecretHash: previous.pushSecretHash
+            };
         });
     } else {
         servers = current.servers || [];
@@ -1612,9 +1670,14 @@ app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
         // 但没必要让浏览器拿到本不该有的数据。
         res.json({
             ...config,
-            servers: (config.servers || []).map(({ token, ...rest }) => ({
+            servers: (config.servers || []).map(({ token, pushSecretHash, ...rest }) => ({
                 ...rest,
-                hasToken: isEnvelope(token)
+                // 两个凭据都只出状态不回明文：把信封原样回给前端等于
+                // 把密文也交出去——虽然解不开，但没必要让浏览器拿到
+                // 本不该有的数据。hasToken/hasPushSecret 让界面能显示
+                // 「已配置」，而空白提交仍表示保持原值。
+                hasToken: isEnvelope(token),
+                hasPushSecret: Boolean(pushSecretHash)
             }))
         });
     } catch {
@@ -1676,6 +1739,78 @@ function resolveServerToken(server, passwordHash) {
 }
 
 /**
+ * 推送模式的离线判定阈值。
+ *
+ * 刻意**不**复用 resolveCacheTtl()：那是聚合缓存的 TTL，与"某台机器是否还在
+ * 上报"无关。缓存命中时不会重采，复用它会让「缓存新鲜但推送已断」显示为在线。
+ *
+ * 最坏延迟：周期 10s → 50s；周期 300s → 630s。这仍是轮询，不是推送——
+ * 新鲜度始终由用户设的周期决定。
+ */
+function resolvePushTimeoutMs(pollIntervalSeconds) {
+    return (resolvePollInterval(pollIntervalSeconds) * 2 + 30) * 1000;
+}
+
+/**
+ * 读一台推送模式机器的上次上报。
+ *
+ * 与拉取模式的离线判定口径**根本不同**：拉取是"当场连一次，连不上就是离线"，
+ * 推送没有请求-响应，只能靠"多久没收到"来判断。
+ *
+ * 超阈值时**保留上次的数值**（metrics），并标 stale：能分辨"刚才还好好的、
+ * 网断了"与"一直没上来、配置就不对"这两种完全不同的排查方向。
+ */
+function buildPushResult(server, timeoutMs, now) {
+    let row = null;
+    try {
+        row = db.prepare('SELECT payload, received_at FROM agent_metrics WHERE server_id = ?')
+            .get(server.id);
+    } catch (err) {
+        console.error('读取推送指标失败:', err);
+        return {
+            id: server.id, name: server.name, url: server.url,
+            isLocal: false, online: false, error: '读取推送记录失败'
+        };
+    }
+
+    if (!row) {
+        return {
+            id: server.id, name: server.name, url: server.url,
+            isLocal: false, online: false, pushStale: true,
+            error: '尚未收到推送'
+        };
+    }
+
+    let metrics = null;
+    try {
+        metrics = JSON.parse(row.payload);
+    } catch {
+        // 载荷损坏（理论上不会：写入前已归一化并 JSON.stringify 过）
+        metrics = null;
+    }
+
+    const age = now - row.received_at;
+    if (age > timeoutMs) {
+        const minutes = Math.max(1, Math.round(age / 60000));
+        return {
+            id: server.id, name: server.name, url: server.url,
+            isLocal: false, online: false, pushStale: true,
+            error: `已 ${minutes} 分钟未收到推送`,
+            // 断线前的数值留着——它是有信息量的
+            metrics,
+            pushReceivedAt: row.received_at
+        };
+    }
+
+    return {
+        id: server.id, name: server.name, url: server.url,
+        isLocal: false, online: true,
+        metrics,
+        pushReceivedAt: row.received_at
+    };
+}
+
+/**
  * 采集全部服务器：本机 + 配置里的每台目标机。
  *
  * 本机始终排第一（id 用 `local`），它的卡片不需要配置、不会掉线。
@@ -1692,6 +1827,10 @@ async function collectAllServers(passwordHash) {
     const servers = Array.isArray(config.servers) ? config.servers : [];
     const results = [];
 
+    // 推送模式的离线阈值要按**实际生效的周期**算，不是写死的值
+    const pushTimeoutMs = resolvePushTimeoutMs(config.pollInterval);
+    const now = Date.now();
+
     // 本机
     results.push({
         id: 'local',
@@ -1704,6 +1843,10 @@ async function collectAllServers(passwordHash) {
 
     // 目标机：并发
     const remote = await Promise.all(servers.map(async server => {
+        // 推送模式：不去连它，改为读它上次上报的值
+        if (server.mode === 'push') {
+            return buildPushResult(server, pushTimeoutMs, now);
+        }
         const { token, error } = resolveServerToken(server, passwordHash);
         if (error) {
             return { id: server.id, name: server.name, url: server.url, online: false, error };
@@ -1773,7 +1916,7 @@ app.get('/api/modules/metrics', rateLimit, requireAdmin, async (req, res) => {
  */
 app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
     try {
-        const { id, name, url, token } = req.body || {};
+        const { id, name, url, token, mode } = req.body || {};
         if (typeof url !== 'string' || !url.trim()) {
             return res.status(400).json({ error: '请填写服务器地址' });
         }
@@ -1802,11 +1945,18 @@ app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
         const entry = {
             id: serverId,
             name: (typeof name === 'string' && name.trim()) || url.trim(),
-            url: url.trim()
+            url: url.trim(),
+            // 只有字面量 'push' 才算推送，其它（含缺席）一律拉取——
+            // 与 normalizeServer 同一裁决，免得两条写路径给出不同答案。
+            mode: mode === 'push' ? 'push' : 'pull'
         };
         if (index >= 0) {
-            // 编辑：token 空 = 保持原值，不回显所以用户无法「重新看到」它
+            // 编辑：token 空 = 保持原值，不回显所以用户无法「重新看到」它。
+            // pushSecretHash 同理，且**必须**在这里补回：它只由「领取凭据」
+            // 那一步写入，而本函数整体替换 entry —— 漏掉的后果是用户改个名字
+            // 就把刚领的推送凭据抹了，agent 从此 401，界面上却看不出原因。
             entry.token = servers[index].token;
+            entry.pushSecretHash = servers[index].pushSecretHash;
         }
 
         const passwordHash = await getPasswordHash();
@@ -1849,6 +1999,227 @@ app.delete('/api/modules/servers/:id', rateLimit, requireAdmin, async (req, res)
     } catch (err) {
         console.error('删除服务器失败:', err);
         res.status(500).json({ error: '删除失败: ' + err.message });
+    }
+});
+
+/**
+ * 领取某台机器的推送凭据。
+ *
+ * 明文只在这一次响应里出现，之后服务端只留哈希——所以界面上必须让用户
+ * 立刻复制走（部署命令面板就是干这个的）。重新领取即轮换：旧凭据立刻失效。
+ */
+app.post('/api/modules/servers/:id/push-secret', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const index = servers.findIndex(s => s.id === req.params.id);
+        if (index < 0) {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+
+        const secret = generatePushSecret();
+        servers[index] = { ...servers[index], pushSecretHash: hashPushSecret(secret) };
+        config.servers = servers;
+        await writeJSON(MODULES_FILE, config);
+        // 模式可能马上要切到 push，采集结果的来源变了，缓存必须失效
+        invalidateMetricsCache();
+
+        // 只回凭据与 id，**不回显 agent token**——这个响应会进浏览器 DOM
+        res.json({ secret, serverId: req.params.id });
+    } catch (err) {
+        console.error('领取推送凭据失败:', err);
+        res.status(500).json({ error: '领取失败: ' + err.message });
+    }
+});
+
+/**
+ * 连通性探测：真去拉一次目标机，告诉用户「这台机器够不够得着」。
+ *
+ * **401 算可达**——401 恰好证明路是通的，只是 token 不对。这是整个判定的关键：
+ * 按 IP 段猜私网是不可靠的（服务器本身可能就架在家里），只有真连一次才算数。
+ *
+ * 不写 module_cache：探测是用户主动发起的，不该污染聚合采集的缓存。
+ */
+app.post('/api/modules/servers/:id/probe', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const server = servers.find(s => s.id === req.params.id);
+        if (!server) {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+
+        const passwordHash = await getPasswordHash();
+        const { token, error } = resolveServerToken(server, passwordHash);
+        if (error) {
+            // 这条早退**必须**也带 hint：它是「探测了但连都没试」的情形，
+            // 而「没配 token / token 解不开」恰恰是最常见的误判场景。
+            // 只回 error 不回 hint 时前端拼出的是「够不着这台机器。」后面什么都没有，
+            // 而真实原因是凭据问题、够不够得着根本还没验证——两者的下一步完全不同。
+            return res.json({
+                reachable: false,
+                status: 'no_token',
+                error,
+                hint: '还没能试连：先在「编辑」里填 token，或确认这台机器是否改用「推送」'
+            });
+        }
+        const result = await fetchRemoteMetrics({ url: server.url, token });
+        res.json({
+            // 任何 HTTP 响应（含 401）都说明网络这条路是通的
+            reachable: result.ok || result.authFailed === true,
+            status: result.ok ? 'ok' : (result.authFailed ? 'unauthorized' : 'error'),
+            error: result.ok ? null : result.error,
+            hint: result.ok
+                ? '连接正常，可以用「拉取」'
+                : (result.authFailed
+                    ? '路是通的，只是 token 不匹配——改「拉取」前先重填 token'
+                    : '够不着这台机器：如果它在局域网内，改用「推送」')
+        });
+    } catch (err) {
+        console.error('探测服务器失败:', err);
+        res.status(500).json({ error: '探测失败: ' + err.message });
+    }
+});
+
+// ========== 推送接收 ==========
+//
+// 独立限流桶。复用 publicReadLimit 会让匿名首页流量消耗推送配额；
+// 复用 rateLimit（管理端 30/min）会把 10s 周期的 agent 直接限掉。
+//
+// ⚠️ 这些定义必须在**使用它的路由之上**。app.post 的第二个参数在注册时
+// 就要求中间件存在，而 `const` 有暂时性死区——定义在路由下方时，
+// 服务器启动即抛 ReferenceError，而 node --check 与全部单元测试都是绿的：
+// 语法检查不查标识符是否已定义，静态断言更看不出「谁在什么时候求值」。
+// 这条只有真正把服务器起起来才会暴露。
+const PUSH_LIMIT_WINDOW = 60000;
+// 20 台 × 6 次/分钟（最短周期 10s）= 120。这个数字是推导出来的：
+// 目标机上限 20 台（normalizeModulesConfig 的 slice），最短周期 10s。
+const PUSH_LIMIT_MAX = 120;
+// pushLimitMap 已在文件上方（清理定时器旁）声明——那里必须先于定时器存在，
+// 这里不再重复声明，只说明它服务于推送端点。
+
+/** 推送端点的限流中间件。与 publicReadLimit 同一形状，独立计数。 */
+function pushLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const { allowed } = consumeRateLimit(pushLimitMap, ip, Date.now(), PUSH_LIMIT_WINDOW, PUSH_LIMIT_MAX);
+    if (!allowed) {
+        return res.status(429).json({ error: '上报过于频繁，请稍后再试' });
+    }
+    next();
+}
+
+/** 载荷里允许的字节数。指标对象本身只有几百字节，4096 留足余量。 */
+const PUSH_METRICS_MAX_BYTES = 4096;
+
+/**
+ * 把推送来的 metrics 压到已知形状。
+ *
+ * 这是**未经信任的网络输入**直接进入首页渲染路径的入口：agent 在内网，
+ * 而写入的值会显示在所有人的首页上。压不进形状的压不进库，压不进库就
+ * 渲染不出来。数值越界回落为安全值，而不是原样写入——一台受控的机器
+ * 不该靠抬高 cpu: 1e9 就能撑破进度条。
+ */
+function normalizePushedMetrics(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+    // 区间内的有限数，夹取；区间外或非数一律回落 fallback
+    const clamp = (value, min, max, fallback) =>
+        (typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max)
+            ? value : fallback;
+    // 上界取 2^53：超过它的整数在 JS 里就不再精确，而字节数与秒数都远超这个量级，
+    // 真有机器报出 1e308 只能是坏数据——让它落库只会在 fmtBytes 里滚出一串无意义的字符。
+    const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+    const nonNegative = (value, fallback) =>
+        (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_SAFE)
+            ? value : fallback;
+    const shortString = (value, max) =>
+        (typeof value === 'string' ? value.slice(0, max) : '');
+
+    return {
+        // 越界回落 null 而不是 1：拉取路径遇到版本不符会明确报错（协议一致性检查），
+        // 推送路径若回落成 1 就把一台版本不同的机器静默当成同版本渲染——
+        // 同一种不一致，两条路径给出两种答案。null 让它在界面上显示为「—」。
+        version: Number.isInteger(raw.version) ? raw.version : null,
+        cpu: clamp(raw.cpu, 0, 1, null),
+        memoryUsed: nonNegative(raw.memoryUsed, 0),
+        memoryTotal: nonNegative(raw.memoryTotal, 0),
+        memoryPercent: clamp(raw.memoryPercent, 0, 1, null),
+        load1: nonNegative(raw.load1, 0),
+        load5: nonNegative(raw.load5, 0),
+        uptime: nonNegative(raw.uptime, 0),
+        cores: nonNegative(raw.cores, 0),
+        hostname: shortString(raw.hostname, 128),
+        platform: shortString(raw.platform, 32),
+        sampledAt: nonNegative(raw.sampledAt, 0)
+    };
+}
+
+/**
+ * 接收 agent 上报的指标。
+ *
+ * **没有 requireAdmin**：agent 在内网、是裸 HTTP，拿不到浏览器会话。
+ * 它的鉴权是推送凭据（见上方「推送凭据」小节的取舍说明）。
+ */
+app.post('/api/modules/agent-push', pushLimit, async (req, res) => {
+    try {
+        const auth = req.headers.authorization || '';
+        const provided = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            config = defaultModulesConfig;
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+
+        // 按凭据哈希反查机器。哈希比对是定长的，20 台的开销可忽略。
+        const matched = servers.find(s => s.pushSecretHash && pushSecretMatches(provided, s.pushSecretHash));
+        if (!matched) {
+            // 401 而非 404：凭据不对与"机器没配推送"在返回上无法真正区分，
+            // 而 404 会额外泄露"存在哪些机器"。记 IP 与时间供排查，不记凭据。
+            console.warn(`[push] 凭据被拒，来源 ${resolveClientIp(req)}`);
+            return res.status(401).json({ error: '推送凭据无效' });
+        }
+
+        // serverId 由 agent 带上，仅用于排错与防写错行；不一致时明确拒绝，
+        // 而不是默默把数据写到别的机器名下。
+        const body = req.body || {};
+        if (typeof body.serverId === 'string' && body.serverId && body.serverId !== matched.id) {
+            return res.status(409).json({ error: '凭据与 serverId 不匹配' });
+        }
+
+        const raw = JSON.stringify(body.metrics ?? null);
+        if (raw.length > PUSH_METRICS_MAX_BYTES) {
+            return res.status(400).json({ error: '指标载荷过大' });
+        }
+        const metrics = normalizePushedMetrics(body.metrics);
+        if (!metrics) {
+            return res.status(400).json({ error: '指标格式不正确' });
+        }
+
+        const now = Date.now();
+        db.prepare(
+            'INSERT INTO agent_metrics (server_id, payload, received_at) VALUES (?, ?, ?) ' +
+            'ON CONFLICT(server_id) DO UPDATE SET payload = excluded.payload, received_at = excluded.received_at'
+        ).run(matched.id, JSON.stringify(metrics), now);
+        // 推送是采集的输入之一，输入变了就得让聚合缓存失效
+        invalidateMetricsCache();
+
+        res.json({ ok: true, receivedAt: now });
+    } catch (err) {
+        console.error('接收推送失败:', err);
+        res.status(500).json({ error: '接收失败' });
     }
 });
 

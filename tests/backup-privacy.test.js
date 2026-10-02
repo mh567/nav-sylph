@@ -321,6 +321,33 @@ test('凭据只存在于内存，落盘的永远是密文', () => {
     assert.doesNotMatch(route, /console\.log\([^)]*plain/, '明文不进日志');
 });
 
+test('改密码时推送凭据哈希原样保留（它不派生自管理员密码）', () => {
+    // agent token 与 WebDAV 密码的密钥派生自管理员密码哈希，所以改密码时必须重加密。
+    // 推送凭据不是：它存的是 sha256(secret)，校验时重新哈希比对，从不解密。
+    // 因此重加密循环**不该碰它**——碰了反而是错（没有可解的密文，硬解会抛）。
+    //
+    // 真正的风险是另一条路径：若重写成「读出对象逐字段重建」而不是「就地改 token」，
+    // 就会把 pushSecretHash 一起丢掉，用户的 agent 从此全部 401。
+    // reencryptCredentials 走的是「读出整份 JSON → 改若干字段 → 写回」，所以它天然安全——
+    // 这条测试把这个「天然」钉住，而不是靠读代码时的印象。
+    const code = stripComments(server);
+    const fn = code.slice(code.indexOf('async function reencryptCredentials('),
+        code.indexOf("app.post('/api/change-password'"));
+
+    // 循环里只重写 token，不该出现对 pushSecretHash 的赋值或删除
+    assert.doesNotMatch(fn, /server\.pushSecretHash\s*=/,
+        '推送凭据哈希不得被重写');
+    assert.doesNotMatch(fn, /delete\s+\w+\.pushSecretHash/,
+        '推送凭据哈希不得被删除');
+
+    // 而且必须是「就地改 + 整份写回」：写回的对象来自读出来的那份，
+    // 未被触碰的字段（pushSecretHash、mode 等）自然留存。
+    assert.match(fn, /modulesRaw\s*=\s*await readJSON\(MODULES_FILE\)/,
+        '先读出整份模块配置');
+    assert.match(fn, /await writeJSON\(MODULES_FILE,\s*modulesRaw\)/,
+        '再把同一份对象写回——未触碰的字段随之保留');
+});
+
 test('模块配置的 token 字段不被归一化接受（明文不入盘）', () => {
     // normalizeServer 的白名单里没有 token：提交明文 token 会被丢弃，
     // 必须走服务端的加密路径。

@@ -205,8 +205,7 @@ test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
 });
 
 test('每台服务器可单独控制是否在首页显示', () => {
-    const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-    const appCode = stripComments(appSource);
+    const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
     const modCode = stripComments(moduleSource);
 
     // 过滤逻辑：enabled === false 才隐藏，缺省为显示
@@ -590,4 +589,403 @@ test('让位的卡片有短过渡，拖拽中的那张不参与', () => {
     const dragging = /\.module-widget\.is-dragging\s*\{([^}]*)\}/.exec(css);
     assert.ok(dragging, '拖拽态有独立规则');
     assert.doesNotMatch(dragging[1], /margin-top/, '拖拽中的卡片不参与纵向过渡');
+});
+
+// ========== 推送模式 ==========
+
+test('采集方式默认拉取，非法值一律回落而不是被静默接受', () => {
+    // 回归风险：把 mode 写成「非 push 即 push」会让一个拼错的字段把机器
+    // 静默切成推送——那台机器立刻掉线，而用户不知道自己改了什么。
+    const fn = /function normalizeServer\(raw\) \{[\s\S]*?\n\}/.exec(stripComments(serverSource));
+    assert.ok(fn, '找到 normalizeServer');
+    assert.match(fn[0], /raw\.mode\s*===\s*'push'\s*\?\s*'push'\s*:\s*'pull'/,
+        '只有字面量 push 才算推送，其它一律 pull');
+});
+
+test('推送模式默认不监听任何端口', () => {
+    // 这是推送最大的安全收益：内网机器上一个端口都不用开。
+    // 若 agent 在 --push 下仍默认 listen，用户以为没开端口，
+    // 实际却把一个只靠 token 保护的 HTTP 服务挂在了局域网里。
+    const code = stripComments(agentSource);
+    assert.match(code, /const SERVE_HTTP\s*=\s*!PUSH_MODE\s*\|\|\s*args\.serveAlongsidePush/,
+        '是否监听由「是否推送模式」与「是否显式要求」共同决定');
+    assert.match(code, /if\s*\(SERVE_HTTP\)\s*\{\s*(?:const server = http\.createServer|server\.listen)/,
+        'HTTP 服务只在 SERVE_HTTP 为真时创建');
+});
+
+test('推送凭据与拉取 token 是两个独立的环境变量，不互相顶替', () => {
+    // 顶替的后果：把推送凭据填进 NAVSYLPH_TOKEN 会让推送 401，
+    // 而错误信息只说「凭据无效」，用户查不到是自己填错了变量名。
+    const code = stripComments(agentSource);
+    assert.match(code, /NAVSYLPH_PUSH_SECRET/, '推送凭据有自己的环境变量');
+    assert.match(code, /NAVSYLPH_SERVER_ID/, 'server id 有自己的环境变量');
+    assert.doesNotMatch(code, /PUSH_SECRET\s*=\s*process\.env\.NAVSYLPH_TOKEN/,
+        '推送凭据不从拉取 token 的变量里取');
+});
+
+test('推送周期与服务端的白名单一致，且非法值回落', () => {
+    // 两侧必须逐项一致：agent 若能推送得比服务端限流桶更密，
+    // 正常配置就会自己把自己限掉（表现是间歇性 429）。
+    const agentIntervals = /const PUSH_INTERVALS\s*=\s*\[([\d,\s]+)\]/.exec(agentSource);
+    const serverIntervals = /const POLL_INTERVALS\s*=\s*\[([\d,\s]+)\]/.exec(serverSource);
+    assert.ok(agentIntervals, 'agent 声明了推送周期白名单');
+    assert.ok(serverIntervals, '服务端声明了周期白名单');
+    const normalize = s => s.split(',').map(x => Number(x.trim())).filter(Number.isFinite).sort((a, b) => a - b);
+    assert.deepEqual(normalize(agentIntervals[1]), normalize(serverIntervals[1]),
+        'agent 与服务端的周期白名单逐项一致');
+    assert.match(stripComments(agentSource), /PUSH_INTERVALS\.includes\(value\)\s*\?\s*value\s*:\s*15/,
+        '非法周期回落默认值，而不是照单全收');
+});
+
+test('推送失败时退避，且退避有上限', () => {
+    // 无脑按原周期重试会持续消耗服务端的限流桶——而那个桶是全局的
+    // （按 IP 计数），一台机器的重试风暴会影响其它所有 agent。
+    const code = stripComments(agentSource);
+    assert.match(code, /PUSH_BACKOFF_MAX_MS/, '退避有上限');
+    assert.match(code, /backoff\s*=\s*Math\.min\(PUSH_BACKOFF_MAX_MS,/, '退避被夹在上限内');
+    assert.match(code, /backoff\s*\*\s*2/, '失败时指数增长');
+});
+
+test('推送载荷先校验形状再写库，越界值不得原样落盘', () => {
+    // 推送来的 metrics 会流到所有人的首页上，而 agent 在内网——
+    // 这是未经信任的网络输入进入渲染路径的入口。
+    // 回归表现：一台受控的机器靠 cpu: 1e9 就能把进度条撑破。
+    const code = stripComments(serverSource);
+    const fn = /function normalizePushedMetrics\(raw\) \{[\s\S]*?\n\}/.exec(code);
+    assert.ok(fn, '找到 normalizePushedMetrics');
+    assert.match(fn[0], /clamp\(raw\.cpu,\s*0,\s*1,\s*null\)/,
+        'cpu 被夹在 [0,1]，越界回落 null（界面显示「—」）');
+    assert.match(fn[0], /clamp\(raw\.memoryPercent,\s*0,\s*1,\s*null\)/, '内存百分比同样夹取');
+    assert.match(fn[0], /nonNegative\(raw\.memoryUsed,\s*0\)/, '内存字节数夹取下界');
+    assert.match(fn[0], /shortString\(raw\.hostname,\s*128\)/, '主机名有长度上限');
+    assert.match(fn[0], /shortString\(raw\.platform,\s*32\)/, '平台名有长度上限');
+
+    // version 越界必须回落 null：**不能**回落成 1。
+    // 拉取路径遇到版本不符会明确报错（lib/monitor.js 的协议一致性检查），
+    // 推送路径若把 99 当成 1 就静默渲染——同一种不一致、两种答案。
+    assert.match(fn[0], /version:\s*Number\.isInteger\(raw\.version\)\s*\?\s*raw\.version\s*:\s*null/,
+        'version 越界回落 null，而不是伪装成当前版本');
+
+    // 字节数与秒数要有**上界**：只有下界时 1e308 会原样落库，
+    // 进 fmtBytes 滚出一串无意义字符，而它本来是个「不可能的坏数据」。
+    assert.match(fn[0], /MAX_SAFE\s*=\s*Number\.MAX_SAFE_INTEGER/, '声明了安全整数上界');
+    assert.match(fn[0], /value\s*>=\s*0\s*&&\s*value\s*<=\s*MAX_SAFE/,
+        'nonNegative 同时夹取下界与上界——只有下界时 1e308 会原样落库');
+
+    // 写入顺序：校验必须在写库之前。反过来就是「先存后筛」，
+    // 越界值已经落盘，只是不显示——换一次渲染路径就又显示出来了。
+    const route = code.slice(code.indexOf("app.post('/api/modules/agent-push'"));
+    const normAt = route.indexOf('normalizePushedMetrics(body.metrics)');
+    const insertAt = route.indexOf('INSERT INTO agent_metrics');
+    assert.ok(normAt > 0 && insertAt > 0, '推送端点里有校验与写入');
+    assert.ok(normAt < insertAt, '先校验形状，再写库');
+});
+
+test('推送端点不挂 requireAdmin，但也不回显任何凭据', () => {
+    // agent 是裸 HTTP，拿不到浏览器会话——挂上 requireAdmin 推送就废了。
+    // 但它是全仓库第一个匿名可达的写端点，所以两件事必须同时成立：
+    // 没有会话守卫，且错误响应不泄露任何凭据信息。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/agent-push'");
+    assert.ok(start > 0, '推送端点存在');
+    const body = code.slice(start, code.indexOf('\napp.', start) > 0 ? code.indexOf('\napp.', start) : code.length);
+    assert.doesNotMatch(body, /requireAdmin/, '推送端点不带 requireAdmin');
+    assert.match(body, /pushLimit/, '推送端点有自己的限流桶');
+    assert.doesNotMatch(body, /echo.*secret|json\(\{\s*secret/i,
+        '推送端点的错误响应不回显凭据');
+});
+
+test('推送模式断线后保留上次数值，而不是清空', () => {
+    // 回归表现：卡片在推送断掉后变回「未获取到数据」，
+    // 用户分不清「刚才还好好的、网断了」与「一直没上来、配置就不对」。
+    const serverCode = stripComments(serverSource);
+    const fn = /function buildPushResult\(server, timeoutMs, now\) \{[\s\S]*?\n\}\n/.exec(serverCode);
+    assert.ok(fn, '找到 buildPushResult');
+    assert.match(fn[0], /age\s*>\s*timeoutMs/, '超阈值判为离线');
+
+    // 切片锚在**离线分支的起点**上。`metrics,` 在函数里出现两次
+    // （在线分支、离线分支各一），从函数开头切会读到在线分支那一处，
+    // 于是把离线分支的 metrics 删掉时断言照样全绿。
+    const offlineAt = fn[0].indexOf('age > timeoutMs');
+    assert.ok(offlineAt > 0, '找到离线判定分支');
+    const offlineBranch = fn[0].slice(offlineAt);
+    assert.match(offlineBranch, /metrics\s*,/,
+        '离线分支保留上次的 metrics —— 断线前的数值是有信息量的');
+    assert.doesNotMatch(offlineBranch, /metrics:\s*null/,
+        '离线分支不得把 metrics 置空');
+
+    // 渲染侧：不能按「离线就清空」处理，否则又把它抹掉了。
+    // 只扫 server-monitor.js 本文件——app.js 里的 innerHTML 是后台模板，
+    // 与推送值的渲染路径无关，混进来数会让这条断言恒红。
+    const modCode = stripComments(moduleSource);
+    assert.match(modCode, /if\s*\(!entry\s*\|\|\s*\(!entry\.online\s*&&\s*!entry\.metrics\)\)/,
+        '只有连 metrics 都没有时才走错误分支');
+    assert.match(modCode, /lastUpdatedText/, '渲染最后更新时间');
+    // 全部文本写入仍须是 textContent——推送值是网络输入
+    const innerHtml = modCode.match(/\.innerHTML\s*=/g) || [];
+    assert.equal(innerHtml.length, 0, '模块内不得有 innerHTML 写入');
+});
+
+test('推送的超时阈值独立于聚合缓存的 TTL', () => {
+    // 复用 resolveCacheTtl 会让「缓存新鲜但推送已断」显示为在线：
+    // 缓存命中时压根不会重采，也就不会重新判断推送的死活。
+    //
+    // 断言要钉的是**公式本身**，不是「有没有出现 resolveCacheTtl 这个名字」——
+    // 早先只查了名字，于是把函数体换成等价的手写算式时断言照样全绿。
+    const code = stripComments(serverSource);
+    const fn = /function resolvePushTimeoutMs\(pollIntervalSeconds\) \{([\s\S]*?)\n\}/.exec(code);
+    assert.ok(fn, '找到 resolvePushTimeoutMs');
+    const body = fn[1];
+    assert.match(body, /resolvePollInterval/, '用实际生效的轮询周期算');
+    // 阈值必须严格大于周期：等于周期时，恰好在边界上的那次上报会被判为过期
+    assert.match(body, /\*\s*2\s*\+\s*30/, '阈值是「周期 × 2 + 30 秒」——两倍余量加固定宽限');
+    assert.doesNotMatch(body, /Math\.min|Math\.max/, '不夹在聚合缓存的上下界里');
+    assert.doesNotMatch(body, /resolveCacheTtl/, '不复用聚合缓存的 TTL');
+});
+
+test('推送端点真的校验了凭据，而不是拿到就写库', () => {
+    // 这是推送端点唯一的防线。它没有 requireAdmin（agent 拿不到浏览器会话），
+    // 所以「凭据不匹配就 401」是匿名可达的写路径上全部的访问控制。
+    // 回归表现：把 `if (!matched)` 写成 `if (false)` 后，任何人都能改写
+    // 首页上所有服务器的指标，而测试全绿。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/agent-push'");
+    const end = code.indexOf('\napp.', start);
+    const body = code.slice(start, end > 0 ? end : code.length);
+    assert.match(body, /if\s*\(!matched\)/, '凭据没匹配上就拒绝');
+    assert.match(body, /res\.status\(401\)/, '凭据不对返回 401');
+    assert.match(body, /pushSecretMatches\(provided,\s*s\.pushSecretHash\)/,
+        '比对的是推送凭据的哈希');
+    // 匹配到机器之后才比对 serverId：不一致要明确拒绝，而不是默默写错行
+    assert.match(body, /body\.serverId\s*!==\s*matched\.id/, 'serverId 错配要拦住');
+    assert.match(body, /status\(409\)/, '错配返回 409');
+});
+
+test('推送端点不因限流而静默：未匹配凭据要留日志', () => {
+    // 401 对用户是「推送没上来」，对管理员是「有个来源在试」。
+    // 不记日志的话，agent 反复 401 而用户只能看到卡片离线，无从排查。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/agent-push'");
+    const end = code.indexOf('\napp.', start);
+    const body = code.slice(start, end > 0 ? end : code.length);
+    assert.match(body, /console\.warn\(`\[push\]/,
+        '凭据被拒时记一条日志（记来源与时间，不记凭据）');
+    assert.doesNotMatch(body, /console\.(?:log|warn|error)\([^)]*provided/,
+        '日志里不得出现凭据本身');
+});
+
+test('推送凭据只存哈希，明文只在领取响应里出现一次', () => {
+    // 与 .admin-password.json 同一处理：落盘的必须是哈希。
+    // 若把明文写进 .modules.json，备份（WebDAV 会带上它）就等于交出凭据。
+    const code = stripComments(serverSource);
+    assert.match(code, /function hashPushSecret/, '有哈希函数');
+    const gen = /function generatePushSecret\(\) \{[\s\S]*?\n\}/.exec(code);
+    assert.ok(gen, '找到 generatePushSecret');
+    assert.match(gen[0], /randomBytes\(/, '凭据来自 CSPRNG，不是可预测的序列');
+
+    // 领取端点：只回 secret + id，不回显 agent token
+    const start = code.indexOf("app.post('/api/modules/servers/:id/push-secret'");
+    assert.ok(start > 0, '领取端点存在');
+    const end = code.indexOf('\napp.', start);
+    const route = code.slice(start, end > 0 ? end : code.length);
+    assert.match(route, /requireAdmin/, '领取凭据必须登录后才能做');
+    assert.match(route, /hashPushSecret\(secret\)/, '落盘的是哈希');
+    assert.match(route, /json\(\{\s*secret,\s*serverId/, '响应只含凭据与 id');
+    assert.doesNotMatch(route, /token:\s*(?:s\.|server\.)/, '不回显 agent token');
+});
+
+test('推送凭据的哈希与 agent token 一样只进不出', () => {
+    // 读接口把哈希折成布尔状态，明文与密文都不该进浏览器 DOM。
+    // 若归一化顺手接收 pushSecretHash，merge 的按 id 补回分支就永远走不到。
+    const code = stripComments(serverSource);
+    const norm = /function normalizeServer\(raw\) \{[\s\S]*?\n\}/.exec(code);
+    assert.ok(norm, '找到 normalizeServer');
+    assert.doesNotMatch(norm[0], /pushSecretHash/,
+        '归一化不接收 pushSecretHash —— 它只由领取那一步写入');
+
+    const merge = /function mergeModulesConfig\(existing, incoming\) \{[\s\S]*?\n\}\n/.exec(code);
+    assert.ok(merge, '找到 mergeModulesConfig');
+    assert.match(merge[0], /pushSecretHash:\s*previous\.pushSecretHash/,
+        '按 id 合并时补回既有的凭据哈希');
+});
+
+test('agent 推送的 URL 只接受 http/https', () => {
+    // 服务端在写服务器时校验了协议白名单，agent 侧推送目标同理——
+    // 否则 `--push file:///…` 经 fetch 会变成一个可被利用的请求面，
+    // 而 --push 是用户从命令行传的输入。
+    //
+    // 回归记录：这条测试原本叫这个名字却**没有任何协议断言**，而 agent
+    // 确实不校验——测试名把没实现的约束写成了已实现。
+    const code = stripComments(agentSource);
+    assert.match(code, /new URL\(args\.push\)\.protocol/,
+        '解析 --push 的协议');
+    assert.match(code, /pushProtocol\s*!==\s*'http:'\s*&&\s*pushProtocol\s*!==\s*'https:'/,
+        '只放行 http 与 https');
+    assert.match(code, /必须以 http:\/\/ 或 https:\/\/ 开头/,
+        '拒绝时给出可读的原因');
+
+    assert.match(code, /api\/modules\/agent-push/, '推送到服务端声明的端点');
+    // serverId 必须随请求带上：服务端按凭据找机器后要核对，
+    // 不一致返回 409 而不是默默把数据写到别的机器名下。
+    assert.match(code, /serverId:\s*SERVER_ID/, '请求带 serverId 供服务端核对');
+});
+
+test('离线分支不带 metrics，而推送断线分支带着', () => {
+    // 渲染侧现在按「有没有 metrics」决定是否走错误框（推送断线要保留上次数值），
+    // 而不再按 online——这要求服务端保持一条约定：**离线就不带 metrics**。
+    //
+    // 这条约定此前只存在于实现的巧合里，没有守卫。将来若有人给某个离线分支
+    // 加上 metrics，一台实际离线的机器就会被渲染成「有数值」的样子
+    // （`data-online="0"` 但显示着 CPU/内存），且没有任何测试会红。
+    //
+    // 范围要覆盖**两处**：离线分支分布在 collectAllServers（拉取路径的
+    // token 解不开 / 拉取失败）与 buildPushResult（推送的读库失败 / 断线），
+    // 只扫前者会漏掉推送那两处——而那里恰恰是「带 metrics」的那个例外。
+    const code = stripComments(serverSource);
+    const collectStart = code.indexOf('async function collectAllServers');
+    const collectEnd = code.indexOf("\napp.get('/api/modules/metrics'", collectStart);
+    assert.ok(collectStart > 0 && collectEnd > collectStart, '切出 collectAllServers');
+    const collect = code.slice(collectStart, collectEnd);
+
+    const pushStart = code.indexOf('function buildPushResult');
+    const pushEnd = code.indexOf('async function collectAllServers', pushStart);
+    assert.ok(pushStart > 0 && pushEnd > pushStart, '切出 buildPushResult');
+    const push = code.slice(pushStart, pushEnd);
+
+    // 拉取路径的离线分支：一处都没有 metrics
+    const pullOffline = collect.match(/\{[^{}]*\bonline:\s*false[^{}]*\}/g) || [];
+    assert.ok(pullOffline.length >= 2,
+        `collectAllServers 里应至少有 2 处 offline 分支，实际 ${pullOffline.length}`);
+    for (const b of pullOffline) {
+        assert.doesNotMatch(b, /metrics\s*[:,]/,
+            `拉取的 offline 分支不得带 metrics：${b.replace(/\s+/g, ' ').slice(0, 90)}`);
+    }
+
+    // 推送侧：「读库失败」不带 metrics（真的没数据），「断线」必须带（保留上次数值）
+    assert.match(push, /online:\s*false,\s*error:\s*'读取推送记录失败'\s*\}/,
+        '推送读库失败是一个不带 metrics 的离线分支');
+    assert.match(push, /pushStale:\s*true,[\s\S]{0,200}?metrics,/,
+        '推送断线分支**必须**带着上次的 metrics，否则「保留上次数值」失效');
+});
+
+test('连通性探测的每个分支都带 hint', () => {
+    // 前端把提示拼进 toast：`res.hint || ''`。所以**任何**一条没有 hint 的
+    // 分支，用户看到的就是「够不着这台机器。」后面什么都没有。
+    //
+    // 回归记录：没配 token 的那条早退原本只回 {reachable,status,error}，
+    // 而「没配 token / token 解不开」恰恰是最常见的误判场景——
+    // 真实原因是凭据问题，「够不够得着」根本还没验证，两者的下一步完全不同。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/servers/:id/probe'");
+    assert.ok(start > 0, '探测端点存在');
+    const end = code.indexOf('\napp.', start);
+    const route = code.slice(start, end > 0 ? end : code.length);
+
+    // 早退分支（凭据问题）：必须**就地**带 hint。
+    // 不能用 `if (error) {[\s\S]*?hint:` 这种跨函数的惰性匹配——
+    // 它会一路找到后面正常分支里的 hint，于是把早退分支的 hint 删掉也照样匹配上，
+    // 断言恒绿。所以切片要止于「下一个 return」或下一个分支起点。
+    const earlyAt = route.indexOf('if (error) {');
+    assert.ok(earlyAt > 0, '找到 token 解不开的早退分支');
+    const earlyEnd = route.indexOf('const result = await fetchRemoteMetrics', earlyAt);
+    assert.ok(earlyEnd > earlyAt, '早退分支的结束位置可定位');
+    const earlyBranch = route.slice(earlyAt, earlyEnd);
+    assert.match(earlyBranch, /hint:\s*'/,
+        'token 解不开的早退分支必须带 hint —— 前端拼的是 `res.hint || \'\'`，没有就什么都不显示');
+    assert.match(earlyBranch, /status:\s*'no_token'/,
+        '并标明这是「没能试连」而非「够不着」');
+
+    // 正常分支
+    assert.match(route.slice(earlyEnd), /hint:/, '试连后的分支必须带 hint');
+
+    // 401 算可达——这是整个判定的关键，路是通的、只是 token 不对
+    assert.match(route, /reachable:\s*result\.ok\s*\|\|\s*result\.authFailed === true/,
+        '401 算可达：路是通的');
+
+    // 不写缓存：探测是用户主动发起的，不该污染聚合采集的缓存
+    assert.doesNotMatch(route, /writeCacheRow|module_cache/,
+        '探测不得写采集缓存');
+});
+
+test('编辑推送机器不会自动领取新凭据（旧凭据应继续有效）', () => {
+    // 回归表现（审查发现）：编辑对话框保存后无条件打开部署面板，而部署面板
+    // 会调 push-secret 领取新凭据——领取即作废旧凭据。于是「改个机器名」这种
+    // 无害操作会让正在运行的 agent 从此每次上报都 401，而界面上看不出关联。
+    //
+    // 只有**新建**时该自动引导（用户下一步必然是领凭据）；编辑时若要换凭据，
+    // 点列表行的「部署」按钮，那是有意领取、用户知道后果。
+    const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const start = appCode.indexOf('async showServerDialog(');
+    const end = appCode.indexOf('\n        renderAdminPanel(', start);
+    assert.ok(start > 0 && end > start, '切出 showServerDialog');
+    const fn = appCode.slice(start, end);
+    assert.match(fn, /!isEdit\s*&&\s*mode === 'push'/,
+        '自动打开部署面板的判断必须带 !isEdit');
+    assert.match(fn, /showDeployDialog\(/, '新建推送机器时给出部署引导');
+});
+
+test('写服务器的路由真的把 mode 落盘了', () => {
+    // 回归记录：界面上选了「推送」、归一化也认 push，但写服务器的路由
+    // 没解构也没存 mode——于是 mode 是 undefined，采集仍走拉取分支，
+    // 表现为「推送怎么推都不上来」。而这条路径上没有单元测试：
+    // 归一化的单元测试是对的，坏的是另一条写路径。
+    // 只有真的走一次 HTTP 写盘才看得见，见 docs/current-work.md。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/servers',");
+    assert.ok(start > 0, '写服务器的路由存在');
+    const end = code.indexOf('\napp.', start);
+    const route = code.slice(start, end > 0 ? end : code.length);
+    assert.match(route, /\{\s*id,\s*name,\s*url,\s*token,\s*mode\s*\}/,
+        '请求体解构出 mode');
+    assert.match(route, /mode:\s*mode\s*===\s*'push'\s*\?\s*'push'\s*:\s*'pull'/,
+        '写盘时裁决 mode，且与 normalizeServer 同一套规则');
+});
+
+test('编辑一台机器不会抹掉已领取的推送凭据', () => {
+    // 回归表现（浏览器/端到端实测）：给推送机改个名字，pushSecretHash 被抹掉，
+    // 读接口的 hasPushSecret 变成 false，agent 从此每次上报都 401——
+    // 而界面上没有任何地方解释为什么，改名字和凭据失效看不出关联。
+    //
+    // 根因是**整体替换 entry**：这条写路径只补回了 token，漏了 pushSecretHash。
+    // mergeModulesConfig 那条路径补对了，所以「保存模块配置」不会丢——
+    // 两条写路径里只有这条漏了，只测 merge 会完全看不见。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/servers',");
+    const end = code.indexOf('\napp.', start);
+    const route = code.slice(start, end > 0 ? end : code.length);
+
+    const editBranch = route.slice(route.indexOf('if (index >= 0)'));
+    assert.ok(editBranch.length > 0, '找到编辑分支');
+    assert.match(editBranch, /entry\.token\s*=\s*servers\[index\]\.token/,
+        '编辑时补回 token');
+    assert.match(editBranch, /entry\.pushSecretHash\s*=\s*servers\[index\]\.pushSecretHash/,
+        '编辑时**同样**补回 pushSecretHash —— 漏掉就会因改个名字而使凭据失效');
+
+    // 领取凭据那一步写的正是同一个字段，两条路径必须对上
+    const issue = code.slice(code.indexOf("app.post('/api/modules/servers/:id/push-secret'"));
+    assert.match(issue.slice(0, issue.indexOf('\napp.')), /pushSecretHash:\s*hashPushSecret\(secret\)/,
+        '领取端点写入的就是 pushSecretHash');
+});
+
+test('推送端点用到的中间件与常量都在路由之上定义', () => {
+    // 回归记录：pushLimit 的 Map/常量定义在路由下方，app.post 的第二个
+    // 参数在注册时就要求中间件存在，而 const 有暂时性死区——
+    // 服务器启动即抛 `pushLimit is not defined`。
+    //
+    // 为什么 193 个单元测试和 node --check 都是绿的：语法检查不查标识符
+    // 是否已定义，静态断言更看不出「谁在什么时候求值」。只有真正把
+    // 服务器起起来才会暴露——所以这条断言比较的是**位置**。
+    const code = stripComments(serverSource);
+    const defAt = code.indexOf('function pushLimit(');
+    const routeAt = code.indexOf("app.post('/api/modules/agent-push'");
+    assert.ok(defAt > 0, 'pushLimit 中间件已定义');
+    assert.ok(routeAt > 0, '推送路由存在');
+    assert.ok(defAt < routeAt, 'pushLimit 必须定义在路由之上（否则启动即 ReferenceError）');
+
+    // 限流 Map 也要在清理定时器之上：那个定时器 60 秒后才触发并引用它
+    const sweepAt = code.indexOf('sweepRateLimitStore(pushLimitMap');
+    const mapAt = code.indexOf('const pushLimitMap');
+    assert.ok(sweepAt > 0, '清理定时器扫了推送桶');
+    assert.ok(mapAt > 0, 'pushLimitMap 已声明');
+    assert.ok(mapAt < sweepAt, 'pushLimitMap 必须在定时器之前声明');
 });

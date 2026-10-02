@@ -545,13 +545,26 @@ test('登录与登出都会同步 sessionTrusted', () => {
 
 // ========== 源码形状守卫 ==========
 
-test('18 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
+test('20 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
     // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
     // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
     const code = stripComments(server);
-    const guarded = code.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
-    // 11 特权路由 + change-password + trust-device + 模块平台 5 条 = 18
-    assert.equal(guarded.length, 18, '特权路由 + change-password + trust-device + 模块 5 条共 18 处');
+    // 推送端点是**故意**没有 requireAdmin 的：agent 在内网、是裸 HTTP，
+    // 拿不到浏览器会话，它的鉴权是推送凭据（tests/api-boundary.test.js 有对应用例）。
+    // 把它算进「特权路由」会让这条断言要么被迫放水、要么逼迫加上那个会让
+    // 推送彻底失效的守卫——所以先把它摘出去，再数剩下的。
+    //
+    // 摘除的边界锚在**下一个 app.* 路由**上，而不是按分号切：处理函数体内
+    // 到处是分号（每个 if/for 都有），按 `[^;]*?` 切会在中途停下，
+    // 摘不干净就变成一条恒绿的断言。
+    const pushStart = code.indexOf("app.post('/api/modules/agent-push'");
+    assert.ok(pushStart > 0, '推送端点存在于源码中（找不到则本条断言的摘除逻辑已失效）');
+    const afterPush = code.indexOf('\napp.', pushStart);
+    const withoutPush = code.slice(0, pushStart) + code.slice(afterPush > pushStart ? afterPush : pushStart);
+    assert.ok(withoutPush.length > 0 && withoutPush.length < code.length, '推送端点被摘出');
+    const guarded = withoutPush.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
+    // 11 特权路由 + change-password + trust-device + 模块平台 7 条 = 20
+    assert.equal(guarded.length, 20, '特权路由 + change-password + trust-device + 模块 7 条共 20 处');
     assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
         '手写守卫必须全部移除');
 });

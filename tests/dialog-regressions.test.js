@@ -559,3 +559,61 @@ test('Enter on a merging category opens one confirmation despite input blur', as
     assert.equal(confirmations, 1);
     assert.equal(selectButton.hidden, true);
 });
+
+test('对话框内边距四边对称，overlay 上不留单边覆盖', () => {
+    // 回归表现（浏览器实测 1280×800 / 834×1112 / 844×390）：对话框 top 留白
+    // 比 bottom 多 8px，四个视口里三个都不居中。
+    //
+    // 根因是两条规则打架：overlay 先写 `padding: 20px`（四边），
+    // 后面再写 `padding-bottom: calc(12px + …)`（只改底边）——
+    // top 留 20px、bottom 留 12px，`place-items: center` 居中的是内容盒，
+    // 而内容盒被不对称的内边距整体上推了 4px。
+    //
+    // 只查 .ui-dialog-overlay，**不查 .fav-dialog-overlay**：后者在 styles.css
+    // 的 ≤768px 块里有一条四边吃安全区的规则，而本文件后加载、特异性相同，
+    // 若在这里也给它一条四边简写就会把那四边整个覆盖掉——收藏弹窗在 iPhone 上
+    // 就丢掉安全区。它保持只写 padding-bottom 是有意的。
+    const rules = [...adminCss.matchAll(/\.ui-dialog-overlay\s*\{([^}]*)\}/g)].map(m => m[1]);
+    assert.ok(rules.length > 0, '找到 .ui-dialog-overlay 的规则');
+    for (const body of rules) {
+        assert.doesNotMatch(body, /padding-(top|bottom|left|right)\s*:/,
+            `overlay 规则里不得单边覆盖内边距（会造成上下/左右不对称）：${body.trim()}`);
+    }
+    // 既要写内边距，又必须是简写（一次给全四边）
+    assert.ok(rules.some(b => /padding\s*:/.test(b)),
+        'overlay 用 padding 简写声明内边距');
+});
+
+test('收藏弹窗 overlay 的安全区规则不被 admin.css 覆盖掉', () => {
+    // 回归记录：本轮修对话框居中时把 .fav-dialog-overlay 并进了同一条简写，
+    // 而 styles.css 的 ≤768px 块里那个选择器有一条四边吃安全区的规则——
+    // 两处特异性相同、admin.css 后加载，于是收藏弹窗在 iPhone 上
+    // 丢掉 top/right/left 的安全区。样式表跨文件覆盖，静态读代码看不出来。
+    //
+    // 断言：admin.css 里对 .fav-dialog-overlay **只准**改 padding-bottom，
+    // 不得出现会整体覆盖的简写。
+    const rules = [...adminCss.matchAll(/\.fav-dialog-overlay\s*[,{]([^}]*)\}/g)].map(m => m[1]);
+    assert.ok(rules.length > 0, 'admin.css 里有 .fav-dialog-overlay 规则');
+    for (const body of rules) {
+        assert.doesNotMatch(body, /^\s*padding\s*:/m,
+            `不得给 .fav-dialog-overlay 写 padding 简写（会覆盖 styles.css 的四边安全区）：${body.trim()}`);
+    }
+    // 且 styles.css 那条安全区规则必须还在
+    assert.match(stylesCss, /\.fav-dialog-overlay\s*\{[^}]*padding:[^}]*safe-area-inset-top/,
+        'styles.css 的 ≤768px 块仍保有四边安全区规则');
+});
+
+test('横屏矮视口下对话框的操作区钉在底部', () => {
+    // 回归表现（浏览器实测 844×390）：对话框内容 615px、视口只有 390px，
+    // 「确定/取消」落在首屏外 582px 处——用户看到的是一张只有输入框的弹窗，
+    // 不知道下面还有控件，也点不到确认。
+    //
+    // 容器本身可滚，所以内容能到达；缺的是「操作区始终可点」这一条。
+    const block = mediaBlock(adminCss, '@media (max-height: 500px) and (orientation: landscape)', '.ui-dialog-actions');
+    assert.match(block, /\.ui-dialog-actions\s*\{[^}]*position:\s*sticky/,
+        '操作区在横屏下 sticky');
+    assert.match(block, /\.ui-dialog-actions\s*\{[^}]*bottom:\s*-?\d/, 'sticky 需要一个 bottom 锚点');
+    // sticky 的底色要跟着主题走，否则叠在输入框上分不清边界
+    assert.match(block, /background:\s*var\(--bg-card\)/,
+        '操作区用主题底色，不要硬编码颜色');
+});

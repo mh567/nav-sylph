@@ -89,8 +89,21 @@
         return box;
     }
 
+    /**
+     * 「最后更新 N 前」。推送模式才有——拉取模式是当场拉一次，没有"上次"的概念。
+     */
+    function lastUpdatedText(receivedAt) {
+        if (!Number.isFinite(receivedAt)) return null;
+        const seconds = Math.max(0, Math.round((Date.now() - receivedAt) / 1000));
+        if (seconds < 60) return '最后更新 不到 1 分钟前';
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return `最后更新 ${minutes} 分钟前`;
+        const hours = Math.round(minutes / 60);
+        return `最后更新 ${hours} 小时前`;
+    }
+
     function renderCardBody(body, entry) {
-        if (!entry || !entry.online || !entry.metrics) {
+        if (!entry || (!entry.online && !entry.metrics)) {
             // 凭据被拒与机器挂掉要给不同的处置：前者去重填 token，后者去查机器。
             // 只给一行文本的话，用户得自己判断是哪一种。
             const box = errorBox((entry && entry.error) || '未获取到数据');
@@ -104,14 +117,29 @@
             body.replaceChildren(box);
             return;
         }
-        const nodes = metricRows(entry.metrics);
-        if (Number.isFinite(entry.latencyMs)) {
-            const hint = document.createElement('div');
-            hint.className = 'module-card-hint';
-            hint.textContent = `${entry.latencyMs}ms`;
-            nodes.push(hint);
+
+        // 推送模式断线时服务端**保留**了上次数值：能看到「断线前一切正常」
+        // 与「一直没上来」的区别，这两个排查方向完全不同。所以这里只在
+        // 真的没有 metrics 时才走上面的错误分支。
+        if (entry.metrics) {
+            const nodes = metricRows(entry.metrics);
+            if (Number.isFinite(entry.latencyMs)) {
+                const hint = document.createElement('div');
+                hint.className = 'module-card-hint';
+                hint.textContent = `${entry.latencyMs}ms`;
+                nodes.push(hint);
+            }
+            if (Number.isFinite(entry.pushReceivedAt)) {
+                const hint = document.createElement('div');
+                hint.className = 'module-card-hint';
+                hint.dataset.pushStale = entry.pushStale ? '1' : '0';
+                hint.textContent = lastUpdatedText(entry.pushReceivedAt) || '';
+                nodes.push(hint);
+            }
+            body.replaceChildren(...nodes);
+            return;
         }
-        body.replaceChildren(...nodes);
+        body.replaceChildren(errorBox('未获取到数据'));
     }
 
     /**
@@ -316,7 +344,7 @@
     function renderPanelBody(body, entry, all) {
         const nodes = [];
 
-        if (!entry.online || !entry.metrics) {
+        if (!entry.metrics) {
             nodes.push(errorBox(entry.error || '未获取到数据'));
         } else {
             const m = entry.metrics;
@@ -340,7 +368,13 @@
             add('运行时长', fmtDuration(m.uptime));
             if (m.hostname) add('主机名', m.hostname);
             if (Number.isFinite(entry.latencyMs)) add('响应时间', `${entry.latencyMs}ms`);
-            add('数据来源', lastPayload && lastPayload.cached ? '缓存' : '实时采集');
+            // 推送模式：数据来源是"上次上报"，没有响应时间可言
+            if (Number.isFinite(entry.pushReceivedAt)) {
+                add('数据来源', '目标机推送');
+                add('最后更新', lastUpdatedText(entry.pushReceivedAt) || '—');
+            } else {
+                add('数据来源', lastPayload && lastPayload.cached ? '缓存' : '实时采集');
+            }
             nodes.push(detail);
         }
 

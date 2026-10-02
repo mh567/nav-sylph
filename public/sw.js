@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v46：多服务器监控新增「推送」模式（后台采集方式单选、模式徽章、
+// 连通性探测按钮、推送版部署命令），并修对话框在宽屏偏上 8px 与
+// 横屏下操作区不可见。改了 app.js、admin.css、modules/server-monitor.js。
 // nav-v45：agent /health 不再泄露主机名 + 后台说明 token 后果。
 // nav-v44：后台恢复选项与备份列表加入「模块」。
 // nav-v43：.app 建立包含块，修模块区在 .app 有居中留白时错位。
@@ -13,7 +16,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v45';
+const CACHE = 'nav-v46';
 const ASSETS = [
     '/',
     '/index.html',

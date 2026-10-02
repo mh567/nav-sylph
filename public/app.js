@@ -2661,19 +2661,28 @@
                 const key = `server-monitor:${s.id}`;
                 const item = (config.widgets || []).find(w => w.id === key);
                 const shown = item ? item.enabled !== false : true;
+                const isPush = s.mode === 'push';
                 return `
                 <div class="server-item" data-server-id="${this.esc(s.id)}">
                     <div class="server-item-main">
                         <span class="server-item-name">${this.esc(s.name || s.url)}</span>
                         <span class="server-item-url">${this.esc(s.url)}</span>
                     </div>
-                    <span class="server-item-token">${s.hasToken ? '已配置 token' : '无 token'}</span>
+                    <span class="server-item-mode" data-mode="${isPush ? 'push' : 'pull'}"
+                          title="${isPush
+                            ? '推送：目标机主动送上来，不开放端口'
+                            : '拉取：本服务去连这台机器'}">${isPush ? '推送' : '拉取'}</span>
+                    <span class="server-item-token">${isPush
+                        ? (s.hasPushSecret ? '已领取推送凭据' : '未领取推送凭据')
+                        : (s.hasToken ? '已配置 token' : '无 token')}</span>
                     <span class="server-item-actions">
                         <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
                             <input type="checkbox" data-server-visible="${this.esc(key)}" ${shown ? 'checked' : ''}
                                    aria-label="在首页显示 ${this.esc(s.name || s.url)}">
                             <span>${shown ? '显示' : '隐藏'}</span>
                         </label>
+                        ${isPush ? '' : `<button class="btn btn-sm probe-server"
+                            title="真去连一次这台机器，判断本服务够不够得着">检测连通性</button>`}
                         <button class="btn btn-sm deploy-server">部署</button>
                         <button class="btn btn-sm edit-server">编辑</button>
                         <button class="btn btn-sm btn-danger del-server">删除</button>
@@ -2693,6 +2702,30 @@
                     };
                 }
                 row.querySelector('.deploy-server').onclick = () => this.showDeployDialog(server);
+
+                // 连通性探测：真去连一次。只对拉取模式的机器有意义——
+                // 推送模式是目标机来找我们，"够不够得着"是反过来的问题。
+                const probeBtn = row.querySelector('.probe-server');
+                if (probeBtn) {
+                    probeBtn.onclick = async () => {
+                        probeBtn.disabled = true;
+                        const original = probeBtn.textContent;
+                        probeBtn.textContent = '检测中…';
+                        try {
+                            const res = await API.post(`/api/modules/servers/${encodeURIComponent(id)}/probe`);
+                            const label = res.reachable ? '连接正常' : '够不着';
+                            this.showToast(`${server.name || server.url}：${label}。${res.hint || ''}`,
+                                res.reachable ? 'success' : 'error');
+                        } catch (e) {
+                            console.error('Probe server failed:', e);
+                            this.showToast('检测失败，请重试', 'error');
+                        } finally {
+                            probeBtn.disabled = false;
+                            probeBtn.textContent = original;
+                        }
+                    };
+                }
+
                 row.querySelector('.edit-server').onclick = () => this.showServerDialog(server, async () => {
                     await this.renderModulesEditor();
                 });
@@ -2735,6 +2768,14 @@
             })();
             const origin = location.origin;
             const token = server.hasToken ? '<你的 token>' : '<先在「编辑」里填 token>';
+
+            // 推送模式：目标机在局域网、够不着本服务。步骤完全不同——
+            // 没有监听端口、没有防火墙，核心是领一枚推送凭据。
+            if (server.mode === 'push') {
+                const serverId = server.id || '<服务器 id>';
+                this.showPushDeploySteps({ origin, serverId, name: server.name || url });
+                return;
+            }
 
             const steps = [
                 {
@@ -2788,6 +2829,78 @@
                 intro: '下面五步在「目标机终端」执行，不是在这台服务器上。'
                     + '命令里的 token 是占位符——服务端不会把明文 token 发到浏览器，'
                     + '请从你自己的密码管理器取。'
+            });
+        }
+
+        /**
+         * 推送模式的部署步骤。
+         *
+         * 与拉取模式的差别不只是命令不同，而是**安全模型不同**：拉取要在
+         * 目标机上开一个监听端口并放行防火墙，推送一个端口都不开。
+         *
+         * 凭据必须先领才能给出可复制的命令——服务端只存哈希，明文只出现
+         * 这一次。所以这里先调接口，拿到凭据再渲染面板；用户复制走之后
+         * 重新打开这个面板会拿到一枚新的（旧的随即失效）。
+         */
+        async showPushDeploySteps({ origin, serverId, name }) {
+            this.showToast('正在领取推送凭据…');
+            let secret;
+            try {
+                const res = await API.post(`/api/modules/servers/${encodeURIComponent(serverId)}/push-secret`);
+                secret = res.secret;
+            } catch (e) {
+                console.error('Issue push secret failed:', e);
+                this.showToast('领取推送凭据失败，请重试', 'error');
+                return;
+            }
+            if (!secret) {
+                this.showToast('未取得推送凭据，请重试', 'error');
+                return;
+            }
+
+            const steps = [
+                {
+                    title: '1. 下载 agent 到目标机',
+                    note: '在目标机上执行（需能访问本服务的地址）',
+                    code: `mkdir -p /opt/nav-agent && cd /opt/nav-agent\ncurl -fsSL ${origin}/agent/agent.js -o agent.js`
+                },
+                {
+                    title: '2. 先手工跑一次确认能推上去',
+                    note: '推送模式不监听任何端口，所以没有放行防火墙这一步',
+                    code: `NAVSYLPH_PUSH_SECRET=${secret} NAVSYLPH_SERVER_ID=${serverId} \\\n  node agent.js --push ${origin}`
+                },
+                {
+                    title: '3. 配成开机自启（systemd）',
+                    note: '需 root；凭据写在 unit 里，权限按 600 收紧',
+                    code: [
+                        'sudo tee /etc/systemd/system/nav-agent.service >/dev/null <<EOF',
+                        '[Unit]',
+                        'Description=Nav Sylph 监控 agent（推送模式）',
+                        'After=network.target',
+                        '',
+                        '[Service]',
+                        `Environment=NAVSYLPH_PUSH_SECRET=${secret}`,
+                        `Environment=NAVSYLPH_SERVER_ID=${serverId}`,
+                        `ExecStart=/usr/bin/node /opt/nav-agent/agent.js --push ${origin}`,
+                        'Restart=always',
+                        'RestartSec=5',
+                        '',
+                        '[Install]',
+                        'WantedBy=multi-user.target',
+                        'EOF',
+                        '',
+                        'sudo chmod 600 /etc/systemd/system/nav-agent.service',
+                        'sudo systemctl daemon-reload',
+                        'sudo systemctl enable --now nav-agent'
+                    ].join('\n')
+                }
+            ];
+
+            this.showCommandPanel(`在目标机上部署 agent（推送）— ${name}`, steps, {
+                intro: '下面三步在「目标机终端」执行。'
+                    + '这台机器不需要开放任何端口——agent 只做出站连接。'
+                    + '推送凭据只显示这一次，服务端只留哈希；'
+                    + '重新打开本面板会换一枚新的，旧的随即失效。'
             });
         }
 
@@ -2855,6 +2968,9 @@
          */
         async showServerDialog(server, onDone) {
             const isEdit = !!server;
+            // 默认拉取。已有配置里没有 mode 字段的（升级前写的）也当拉取——
+            // 那是它们一直在跑的方式，静默改成推送会让够得着的机器掉线。
+            const currentMode = (server && server.mode === 'push') ? 'push' : 'pull';
             const result = await this.showUiDialog({
                 title: isEdit ? '编辑服务器' : '添加服务器',
                 // 说明 token 的后果：它是那台机器的只读监控凭据，泄露即泄露。
@@ -2872,6 +2988,21 @@
                         placeholder: '与 agent 的 NAVSYLPH_TOKEN 一致'
                     }
                 ],
+                options: [
+                    {
+                        name: 'mode', kind: 'radio', value: 'pull',
+                        label: '拉取：本服务去连这台机器',
+                        checked: currentMode !== 'push',
+                        hint: '默认。适合两台机器网络能互相到达（同一局域网，或公网可达）'
+                    },
+                    {
+                        name: 'mode', kind: 'radio', value: 'push',
+                        label: '推送：目标机主动送上来',
+                        checked: currentMode === 'push',
+                        hint: '适合目标机在家里局域网、够不着本服务。'
+                            + '这种情况下 agent 不需要开放任何端口'
+                    }
+                ],
                 validate: (values) => {
                     if (!values[1] || !values[1].trim()) return '请填写服务器地址';
                     const url = values[1].trim();
@@ -2882,15 +3013,27 @@
             if (!result) return;
 
             const [name, url, token] = result.values;
+            const mode = result.choices.mode === 'push' ? 'push' : 'pull';
             try {
-                await API.post('/api/modules/servers', {
+                const saved = await API.post('/api/modules/servers', {
                     id: server ? server.id : undefined,
                     name: name.trim(),
                     url: url.trim(),
+                    mode,
                     // 空值不提交：服务端据此保持原有密文
                     token: token && token.trim() ? token.trim() : undefined
                 });
                 this.showToast(isEdit ? '服务器已更新' : '服务器已添加');
+                // **仅新建时**自动打开部署面板：用户下一步必然是去领推送凭据。
+                //
+                // 编辑时**不能**这么做——部署面板会调 push-secret 领取新凭据，
+                // 而领取即作废旧凭据。于是「改个名字」这种无害操作会让正在运行的
+                // agent 从此每次上报都 401，而界面上看不出这两件事有关联。
+                // 编辑推送机器时若确实要换凭据，点列表行的「部署」按钮即可，
+                // 那是有意领取、用户知道后果。
+                if (!isEdit && mode === 'push' && saved && saved.id) {
+                    this.showDeployDialog({ id: saved.id, name: name.trim(), url: url.trim(), mode: 'push' });
+                }
                 await onDone();
             } catch (e) {
                 console.error('Save server failed:', e);
