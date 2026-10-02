@@ -204,6 +204,14 @@ else
 fi
 git push origin "v${VERSION}" 2>/dev/null || log_warn "tag v${VERSION} 推送失败（可能已存在），继续"
 
+# 提醒推送分支。本脚本只推 tag，不推分支——曾因此让 develop 停在旧提交上分叉。
+# 分支策略见 AGENTS.md 第 8 条：只用 main，开发直接提交在 main 上。
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+log_info "当前分支: ${CURRENT_BRANCH}（本脚本只推 tag，分支需自行 git push）"
+if [ "${CURRENT_BRANCH}" != "main" ]; then
+    log_warn "不在 main 上发布。仓库约定只用 main（见 AGENTS.md 第 8 条）。"
+fi
+
 # 发布到 GitHub Release
 log_step "发布到 GitHub Release..."
 if gh release view "v${VERSION}" >/dev/null 2>&1; then

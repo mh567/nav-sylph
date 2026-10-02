@@ -11,6 +11,7 @@
 5. 交接时更新 `docs/current-work.md` 中的目标、完成状态、实际验证和下一步。稳定的架构变化更新 `docs/architecture.md`。不要在仓库文档中写入密码、密钥或私人书签数据。
 6. 发布一律用仓库自带的 `scripts/release.sh`，不要手写 `git` / `gh` 命令。它会依次完成：读取 `version.json` 的版本号 → 打包（`server.js`、`public/`、`lib/`、配置示例等）为 `nav-sylph-v<版本>.tar.gz` → 从 `CHANGELOG.json` 摘 highlights 生成发布说明 → `git tag -a` → `gh release create` 上传附件。**漏掉最后一步的后果是 `./sylph.sh update` 永远提示旧版本**：`sylph.sh` 的 `get_latest_release()` 读的是 GitHub Release（`/releases/latest` 的 `tag_name` 与 `browser_download_url`），**不是 git tag**——推 tag 不会产生 Release。版本号需在 `package.json`、`version.json`、`CHANGELOG.json` 三处保持一致，改完用 `node -e` 重新解析以证明 JSON 仍合法。
 7. 运行与开发需要 **Node ≥ 22**：`better-sqlite3@13` 的 `engines` 是 `>=22`，低版本加载它会**段错误退出**，而 `npm install` 阶段不报任何错。私有数据现在是两套存储：**登录会话在 SQLite**（`nav-sylph.db`，连接与迁移见 `lib/db.js`，会话后端见 `lib/session-sqlite.js`），配置/收藏/密码/WebDAV 配置仍是 JSON。新增模块要建表时，往 `lib/db.js` 的 `MIGRATIONS` 数组**尾部追加**一个台阶，不要新建库文件，也不要改动已发布的迁移项——老库的 `user_version` 已领先，被改动的那一步不会再执行。私有文件（含会话库）由服务自身在写入时收紧为 0600，不要只依赖 `sylph.sh` 的 chmod。
+8. **只用 `main` 一个分支**，不要建 `develop` 之类的长期分支。开发直接提交在 `main` 上，发布时打 tag。理由：`docs/current-work.md` 以「基线锚定发布提交」描述状态，隐含前提是 **任何时刻 `main` 都代表已发布状态**；多一个长期分支会与这个前提冲突。实际教训：v1.6.0 期间曾建过 `develop` 承接后续模块，合并发布后没有同步回来，它随后落后 main 两个提交、成为分叉状态，而 `release.sh` **只推 tag 不管分支**，于是后来的修复全落在 `main` 上，`develop` 静默失效。**发布后若发现某个分支落后或分叉，直接删掉它**，不要花力气维护一条已经没人用的并行线。
 
 ## 文档分工
 
