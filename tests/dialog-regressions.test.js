@@ -603,17 +603,47 @@ test('收藏弹窗 overlay 的安全区规则不被 admin.css 覆盖掉', () => 
         'styles.css 的 ≤768px 块仍保有四边安全区规则');
 });
 
-test('横屏矮视口下对话框的操作区钉在底部', () => {
-    // 回归表现（浏览器实测 844×390）：对话框内容 615px、视口只有 390px，
+test('横屏矮视口下对话框的操作区固定在底部', () => {
+    // 回归表现（浏览器实测 844×390）：对话框内容 584px、视口只有 390px，
     // 「确定/取消」落在首屏外 582px 处——用户看到的是一张只有输入框的弹窗，
     // 不知道下面还有控件，也点不到确认。
     //
     // 容器本身可滚，所以内容能到达；缺的是「操作区始终可点」这一条。
+    // 四轮实测的结论写在 admin.css 同一处注释里，改动前先读它。
     const block = mediaBlock(adminCss, '@media (max-height: 500px) and (orientation: landscape)', '.ui-dialog-actions');
-    assert.match(block, /\.ui-dialog-actions\s*\{[^}]*position:\s*sticky/,
-        '操作区在横屏下 sticky');
-    assert.match(block, /\.ui-dialog-actions\s*\{[^}]*bottom:\s*-?\d/, 'sticky 需要一个 bottom 锚点');
-    // sticky 的底色要跟着主题走，否则叠在输入框上分不清边界
-    assert.match(block, /background:\s*var\(--bg-card\)/,
+    const actions = /\.ui-dialog-actions\s*\{([^}]*)\}/.exec(block);
+    assert.ok(actions, '横屏块里有 .ui-dialog-actions 规则');
+    assert.match(actions[1], /position:\s*sticky/,
+        '操作区在横屏下 sticky —— absolute 实测无效：.ui-dialog 既是滚动容器'
+        + '又是定位基准，padding-bottom 不给内容流留空间');
+    assert.match(actions[1], /bottom:\s*-?\d/, 'sticky 需要一个 bottom 锚点');
+    // 底色要跟着主题走，否则叠在输入框上分不清边界
+    assert.match(actions[1], /background:\s*var\(--bg-card\)/,
         '操作区用主题底色，不要硬编码颜色');
+
+    // 压缩必须作用在真正的空间来源上
+    assert.match(block, /\.ui-dialog-message\s*\{[^}]*max-height/,
+        '横屏下限制提示正文的高度（实测省下 26px）');
+    assert.match(block, /\.ui-dialog-hint\s*\{[^}]*max-height/,
+        '横屏下限制 hint 的高度（实测每个省下 15px）');
+    // 并排两列是压缩里唯一拿到足够空间的一刀（实测再省约 59px）
+    assert.match(block, /\.ui-dialog-options\.is-plain\s*\{[^}]*grid-template-columns:\s*1fr 1fr/,
+        '扁平 options 在横屏下并排两列');
+});
+
+test('扁平 options 默认维持竖排，只有横屏才并排', () => {
+    // 本轮给扁平 options（采集方式等）补上了 .ui-dialog-options 容器，
+    // 而该类的 base 是 grid-template-columns: 1fr 1fr —— 那是给分组里的
+    // 四档有效期设计的。顺带套上去会改掉分享有效期、PIN 等对话框的既有布局。
+    // 所以 base 上必须有 .is-plain 覆写回竖排。
+    const plain = /\.ui-dialog-options\.is-plain\s*\{([^}]*)\}/.exec(adminCss);
+    assert.ok(plain, '有 .ui-dialog-options.is-plain 的基础规则');
+    assert.match(plain[1], /grid-template-columns:\s*1fr\s*;/,
+        '默认竖排（1fr 单列），不继承 .ui-dialog-options 的两列');
+
+    // 分组里的四档有效期必须仍是 2×2
+    const base = /\.ui-dialog-options\s*\{([^}]*)\}/.exec(adminCss);
+    assert.ok(base, '有 .ui-dialog-options 的基础规则');
+    assert.match(base[1], /grid-template-columns:\s*1fr 1fr/,
+        '分组里的多档选项保持 2×2');
 });

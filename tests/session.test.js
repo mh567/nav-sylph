@@ -469,13 +469,77 @@ test('损坏的库文件被拒绝，不返回错误地区', () => {
 });
 
 test('查询走的是索引查找而非线性扫描', () => {
+    // 回归记录：这条断言原先用 `assert.ok(ms < 250)` 卡 5000 次查询的耗时，
+    // 而 node --test 会并发跑 13 个测试文件，CPU 争用能让同一个查询从
+    // 几毫秒涨到 700ms —— 于是它偶发失败（实测一次 722.7ms，随后多次全量
+    // 均全绿、单跑不复现）。一次 flaky 会让人开始怀疑整个套件。
+    //
+    // 计时测的是**机器有多快**，而这条断言的意图是「查找方式对不对」。
+    // 意图可以用不依赖速度的方式表达，所以改为断言机制本身。
+    //
+    // 办法是包一层 Buffer 的两个读方法，数一次查询实际读了多少次：
+    // 索引查找固定读 4 次——两次 readUInt32LE 读 vector index 拿
+    // startPtr/endPtr，一次 readUInt16LE 读命中段的 dataLen，
+    // 一次 readUInt32LE 读该段的 dataPtr。实测七个不同 IP 全部恰好 4 次，
+    // 与所在区段大小无关：区段从 14 字节到 1078 字节（1 段 vs 77 段）都是 4 次。
+    // 线性扫描则会一路读穿整个数据段，读次数随区段大小线性增长。
+    //
+    // 曾试过用「触及的最大偏移」做指标，**行不通**：索引里的 startPtr 是
+    // 文件的绝对偏移，落在文件各处很正常，实测十个 IP 的占比 30%–99%，
+    // 与实现方式无关。
+    //
+    // 而只包 readUInt32LE 同样行不通：线性扫描那版读的是 UInt16 的
+    // （每段读一次长度字段），探针一次都不响，断言恒绿 ——
+    // 这也是红/绿验证时才发现的，破坏落地了而测试全绿。
     const { Ip2Region } = require(path.join(ROOT, 'lib', 'geo', 'xdb.js'));
     const geo = new Ip2Region();
     geo.ensureLoaded(GEO_DB);
-    const started = process.hrtime.bigint();
-    for (let i = 0; i < 5000; i++) geo.lookupRegion('114.114.114.114', 'province');
-    const ms = Number(process.hrtime.bigint() - started) / 1e6;
-    assert.ok(ms < 250, `5000 次查询耗时 ${ms.toFixed(1)}ms，疑似线性扫描`);
+    assert.ok(geo.loaded, '库文件已载入');
+
+    const buf = geo.buffer;
+    // 数一次查询实际读了多少次数据。**必须同时包住 readUInt16LE 与
+    // readUInt32LE**：线性扫描那版恰恰是读 UInt16 的（每个 14 字节段读一次
+    // 长度字段），只包 UInt32 的话探针一次都不响，断言恒绿。
+    // 这个漏法是红/绿验证时才发现的——破坏落地了、测试却全绿。
+    const READ_METHODS = ['readUInt16LE', 'readUInt32LE'];
+    function readCount(ip) {
+        let reads = 0;
+        const originals = {};
+        for (const m of READ_METHODS) {
+            originals[m] = buf[m];
+            buf[m] = function () { reads++; return originals[m].apply(buf, arguments); };
+        }
+        let region;
+        try {
+            region = geo.lookupRegion(ip, 'province');
+        } finally {
+            for (const m of READ_METHODS) buf[m] = originals[m];
+        }
+        return { reads, region };
+    }
+
+    // 命中与未命中都要测：未命中（保留地址）会提前返回、读得更少，
+    // 不能拿它当「索引查找读 4 次」的样本。
+    for (const ip of ['114.114.114.114', '8.8.8.8', '223.5.5.5', '210.22.70.3', '202.96.128.86']) {
+        const { reads, region } = readCount(ip);
+        assert.ok(region, `${ip} 应能查到地区`);
+        assert.equal(reads, 4,
+            `${ip} 查询应恰好读 4 次（2 次 vector index + 1 次段长 + 1 次段指针），实际 ${reads} 次 —— `
+            + `读次数随区段大小增长即为线性扫描`);
+    }
+
+    // 区段大小差两个数量级（1 段 vs 77 段），读次数却一样 ——
+    // 这才是「与区段大小无关」的直接证据。
+    const small = readCount('223.5.5.5');   // 单段
+    const large = readCount('202.96.128.86'); // 多段
+    assert.equal(small.reads, large.reads,
+        '区段大小不同但读次数相同，说明查找成本与区段大小无关');
+
+    // 保留地址必须在读任何数据之前就返回——否则一次私网 IP 查询
+    // 就会真的去扫库。
+    const before = readCount('192.168.1.1');
+    assert.equal(before.region, null, '私网地址查不到地区');
+    assert.equal(before.reads, 0, `私网地址应在读取任何数据之前返回，实际读了 ${before.reads} 次`);
 });
 
 test('setTrusted 可双向设置，并立即按新档位重算有效期', () => {

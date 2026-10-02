@@ -204,6 +204,62 @@ test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
     assert.ok(commitKey.length >= 2, '落盘与落点高亮也用同一套键');
 });
 
+test('服务器列表的触控目标不得低于 44px', () => {
+    // 回归记录：列表曾是一行一台、按钮挤在右侧，实测 26px——低于 44px 触摸下限。
+    // 那个高度是为「三个按钮挤一行」刻意定的（本轮加的「检测连通性」变成四个），
+    // 改成一台一张卡、横向 grid 排多台后，卡内竖排才有空间做达标的目标。
+    //
+    // 守卫要钉的是**两半**：目标达标 + 不退回单行紧凑排布。
+    // 只查 min-height 的话，把容器改回一行一台照样能过——那正是当初的形态。
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8');
+
+    // 按钮与开关都要达标
+    const btn = /\.modal \.server-item-actions \.btn\s*\{([^}]*)\}/.exec(css);
+    assert.ok(btn, '找到 .server-item-actions .btn 规则');
+    const h = Number(/min-height:\s*(\d+)px/.exec(btn[1])?.[1]);
+    assert.ok(h >= 44, `列表行按钮 min-height 应 ≥44px，实际 ${h}px`);
+
+    const show = /\.modal \.server-item-show\s*\{([^}]*)\}/.exec(css);
+    assert.ok(show, '找到 .server-item-show 规则');
+    const sh = Number(/min-height:\s*(\d+)px/.exec(show[1])?.[1]);
+    assert.ok(sh >= 44, `可见性开关 min-height 应 ≥44px，实际 ${sh}px`);
+
+    // 容器是 grid：一台一张卡、横向排多台
+    const list = /\.modal #serverList\s*\{([^}]*)\}/.exec(css);
+    assert.ok(list, '找到 #serverList 规则');
+    assert.match(list[1], /display:\s*grid/, '列表容器是 grid');
+    assert.match(list[1], /grid-template-columns:\s*repeat\(auto-fill/, '按可用宽度自动增列');
+
+    // 卡内竖排（flex-direction: column），这是纵向腾出空间的前提
+    const card = /\.modal \.server-item\s*\{([^}]*)\}/.exec(css);
+    assert.ok(card, '找到 .server-item 规则');
+    assert.match(card[1], /flex-direction:\s*column/, '卡内竖排');
+    // 退回一行一台的旧形态：flex-direction 不再有 column
+    assert.doesNotMatch(card[1], /flex-direction:\s*row/, '不得退回单行横排');
+
+    // 窄屏缩字号但**不降高度**——窄屏正是触摸设备，降高度只会把
+    // 已经达标的目标打回 26。正向要求：窄屏块里根本不出现按钮高度声明。
+    const narrow = mediaBlockOf(css, '@media (max-width: 700px)');
+    assert.ok(narrow, '存在 max-width: 700px 块');
+    assert.doesNotMatch(narrow, /server-item-actions\s+\.btn[^{]*\{[^}]*min-height/,
+        '窄屏块里不得下调按钮高度');
+    assert.doesNotMatch(narrow, /server-item-show[^{]*\{[^}]*min-height/,
+        '窄屏块里不得下调开关高度');
+});
+
+/** 取出某个 @media 查询的正文（取第一个同查询块）。 */
+function mediaBlockOf(css, query) {
+    const start = css.indexOf(query);
+    if (start === -1) return null;
+    const open = css.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+        if (css[i] === '{') depth++;
+        else if (css[i] === '}') { depth--; if (depth === 0) return css.slice(open + 1, i); }
+    }
+    return null;
+}
+
 test('每台服务器可单独控制是否在首页显示', () => {
     const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
     const modCode = stripComments(moduleSource);

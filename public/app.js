@@ -2243,7 +2243,9 @@
                                 <span>${this.esc(field.label)}</span>
                                 <input name="field${index}" type="${field.type === 'password' ? 'password' : 'text'}" value="${this.esc(field.value || '')}" placeholder="${this.esc(field.placeholder || '')}" ${field.readonly ? 'readonly' : ''} autocomplete="off">
                             </label>`).join('')}
-                            ${options.map(renderOption).join('')}
+                            ${options.length ? `<div class="ui-dialog-options is-plain">
+                                ${options.map(renderOption).join('')}
+                            </div>` : ''}
                             ${revealOption ? `<div class="ui-dialog-reveal" hidden>
                                 <label class="ui-dialog-field">
                                     <span>${this.esc(revealOption.label)}</span>
@@ -2662,20 +2664,26 @@
                 const item = (config.widgets || []).find(w => w.id === key);
                 const shown = item ? item.enabled !== false : true;
                 const isPush = s.mode === 'push';
+                // 一台一张卡、卡内竖排：横向由 grid 排多台，纵向因此有空间做
+                // 达标的触控目标。此前是一行一台、按钮挤在右侧一行里（实测 26px，
+                // 低于 44px 触摸下限），而那个密度是为三个按钮写的——
+                // 本轮加了「检测连通性」变四个，紧凑单行更挤不下了。
                 return `
                 <div class="server-item" data-server-id="${this.esc(s.id)}">
-                    <div class="server-item-main">
+                    <div class="server-item-head">
                         <span class="server-item-name">${this.esc(s.name || s.url)}</span>
                         <span class="server-item-url">${this.esc(s.url)}</span>
                     </div>
-                    <span class="server-item-mode" data-mode="${isPush ? 'push' : 'pull'}"
-                          title="${isPush
-                            ? '推送：目标机主动送上来，不开放端口'
-                            : '拉取：本服务去连这台机器'}">${isPush ? '推送' : '拉取'}</span>
-                    <span class="server-item-token">${isPush
-                        ? (s.hasPushSecret ? '已领取推送凭据' : '未领取推送凭据')
-                        : (s.hasToken ? '已配置 token' : '无 token')}</span>
-                    <span class="server-item-actions">
+                    <div class="server-item-badges">
+                        <span class="server-item-mode" data-mode="${isPush ? 'push' : 'pull'}"
+                              title="${isPush
+                                ? '推送：目标机主动送上来，不开放端口'
+                                : '拉取：本服务去连这台机器'}">${isPush ? '推送' : '拉取'}</span>
+                        <span class="server-item-token">${isPush
+                            ? (s.hasPushSecret ? '已领取推送凭据' : '未领取推送凭据')
+                            : (s.hasToken ? '已配置 token' : '无 token')}</span>
+                    </div>
+                    <div class="server-item-actions">
                         <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
                             <input type="checkbox" data-server-visible="${this.esc(key)}" ${shown ? 'checked' : ''}
                                    aria-label="在首页显示 ${this.esc(s.name || s.url)}">
@@ -2686,7 +2694,7 @@
                         <button class="btn btn-sm deploy-server">部署</button>
                         <button class="btn btn-sm edit-server">编辑</button>
                         <button class="btn btn-sm btn-danger del-server">删除</button>
-                    </span>
+                    </div>
                 </div>`;
             }).join('');
 
