@@ -4,7 +4,7 @@
 
 ## 当前基线
 
-当前基线：分支 `main` 与 `origin/main` 一致；**代码基线是发布提交 `5c774d1`（v1.5.28）**，其之上只有文档提交、没有任何代码改动。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.5.28`。本会话两轮：先做会话落盘（SQLite，`17efea1` → v1.5.27），再做全面审查与修复（`5c774d1` → v1.5.28）。详见文末两节。
+当前基线：分支 `main` 与 `origin/main` 一致，**代码基线是发布提交 `ada60c6`（v1.6.0）**，其上只有文档提交。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.6.0`。本次发布把 `develop` 上的模块平台合并到 `main`：`1.5.28` 之前是会话落盘与全面审查修复，`1.6.0` 是登录后模块平台与多服务器监控。详见文末两节。
 
 > 基线只锚定**发布提交与版本号**，不写「最新提交是哪个」：把 tip 的 hash 写进文档，会被承载它的那一笔提交本身顶掉一位——上一版就写成了 `d9713f8`，而包含这行字的提交是 `9eafbb5`。锚定不变的发布提交就不会漂。
 
@@ -21,16 +21,16 @@
 | 项 | 位置 | 说明 |
 | --- | --- | --- |
 | 删站点标识 | `index.html:35` | `.site-identity` 元素连同两条 CSS 规则一并删除，不留死代码。 |
-| 三色按钮 | `styles.css:2726` 起 | 网页/收藏=青灰、引擎=琥珀、搜索=实心陶土。各自 `--HUE` 派生底色与光感，三者共用一条规则。 |
-| 快捷键说明行 | `index.html:54`、`styles.css:2852` | 桌面显示，`≤600px` 隐藏（`styles.css:2854`）。 |
-| 书签光影 | `styles.css:2817` | 新增 `::after` 顶边高光；浅色光晕 `.32→.46`、悬浮加外投影。**尺寸 96×42 与圆角 7px 一律未动。** |
-| 宽屏背板 | `index.html:35`、`styles.css:2866` | `≥1024px` 收进 936px 玻璃面；`≤1023px` 兜底（`styles.css:2880`）完全退回原布局。 |
+| 三色按钮 | `styles.css:2607` 起 | 网页/收藏=青灰、引擎=琥珀、搜索=实心陶土。各自 `--HUE` 派生底色与光感，三者共用一条规则。 |
+| 快捷键说明行 | `index.html:54`、`styles.css:2894` | 桌面显示，`≤600px` 隐藏（`styles.css:2896`）。 |
+| 书签光影 | `styles.css:2853` | 新增 `::after` 顶边高光；浅色光晕 `.32→.46`、悬浮加外投影。**尺寸 96×42 与圆角 7px 一律未动。** |
+| 宽屏背板 | `index.html:35`、`styles.css:2910` | `≥1024px` 收进 936px 玻璃面；`≤1023px` 兜底（`styles.css:2924`）完全退回原布局。 |
 
 ### 发布后按用户反馈补正的四处（v1.5.13 已含前三处的错误版本）
 
 用户比对后发现引擎按钮与搜索按钮的观感与仿真不一致。用「真实指针悬停/按下 + 逐属性 dump」在两种主题下比对，定位到四处差异：
 
-**已修 1：引擎按钮丢失下拉箭头。** 标记里只有 `<span class="engine-name">`，没有箭头 `<svg>`；而旧样式保留着两条 `.engine-arrow` 规则，样式落在一个不存在的元素上，成为死代码——箭头是「这个按钮能点开」的唯一视觉线索。已补 `<svg class="engine-arrow">`，并把箭头定义整块收进材质层。删除旧的那条 `.search-engine.active .engine-arrow` **不是因为不命中**（`app.js:314` 确实会设 `.active`），而是同一状态有 `.active` 与 `aria-expanded` 两个钩子，保留两条规则会各自旋转一次；统一只认 `[aria-expanded="true"]`。
+**已修 1：引擎按钮丢失下拉箭头。** 标记里只有 `<span class="engine-name">`，没有箭头 `<svg>`；而旧样式保留着两条 `.engine-arrow` 规则，样式落在一个不存在的元素上，成为死代码——箭头是「这个按钮能点开」的唯一视觉线索。已补 `<svg class="engine-arrow">`，并把箭头定义整块收进材质层。删除旧的那条 `.search-engine.active .engine-arrow` **不是因为不命中**，而是同一状态有 `.active` 与 `aria-expanded` 两个钩子，保留两条规则会各自旋转一次；统一只认 `[aria-expanded="true"]`。
 
 **已修 2：搜索按钮按下态没有边框色。** `:active` 未写 `border-color`，而指针按下时仍停在按钮上、`:hover` 依然命中，于是悬停的浅色描边 `rgba(214,161,129,.7)` 留在了深色实心底上（正确值是 `rgba(148,94,74,.62)`）。**只在按住不放时才看得见**，单击太快根本捕捉不到。已显式补上。
 
@@ -66,7 +66,7 @@
 
 - **`sw.js` 缓存未升**：本次改了 `public/index.html` 与 `public/styles.css`，两者都在 `ASSETS` 白名单里，缓存却仍是 `nav-v22`。已升 **`nav-v23`**。不升的话老用户继续吃旧资源。
 - **下拉选项缺按下反馈**：仿真 `.engine-choice:active` 有 `--press-shadow`，移植时漏了。
-- **我写错的一条理由**：我在注释、`architecture.md` 和测试里都写了「旧样式 `.search-engine.active .engine-arrow` 永远不命中，因为 JS 设的是 aria-expanded」。**这是错的**——`app.js:314` 会同时设 `.active` 类和 aria-expanded，那条选择器本来能命中。删它的真实理由是：同一状态有两个钩子，留两条规则会各自旋转一次，统一只认 `[aria-expanded="true"]`。三处已改正，并补断言禁止 `.search-engine.active` 再长回来。
+- **我写错的一条理由**：我在注释、`architecture.md` 和测试里都写了「旧样式 `.search-engine.active .engine-arrow` 永远不命中，因为 JS 设的是 aria-expanded」。**这是错的**——那一行确实能命中。删它的真实理由是：同一状态有两个钩子，留两条规则会各自旋转一次，统一只认 `[aria-expanded="true"]`。三处已改正，并补断言禁止 `.search-engine.active` 再长回来。
 - **另一条写错的注释**：我写「两个下拉在仿真里圆角 11 vs 10」——11 是**本项目**收藏下拉的值，仿真里收藏面板是 **13px**。已改正。
 - **死声明**：`≤768px` 的 `.engine-dropdown { right: auto }`，基础规则从未设过 `right`，已删。
 - **`.engine-option` 两条背靠背规则**已合并为一条。
@@ -141,7 +141,7 @@
 
 **根因不是搜索框本身，是覆盖不全**：项目里早就有两处 `-webkit-tap-highlight-color: transparent`，但只针对 `.fav-item`、`.fav-manager-item`、`.btn`——收藏项与管理按钮。搜索栏三个按钮、书签、引擎选项、右下角 dock 都不在其中。
 
-已在材质层新增一条兜底（`styles.css:2865`）：
+已在材质层新增一条兜底（`styles.css:2909`）：
 
 ```css
 @media (hover: none) and (pointer: coarse) {
@@ -225,7 +225,7 @@
 
 **已修 C：验证过程中自己的测试是假绿的。** 上面第 B 条最初没被测出来，因为断言只检查「基础规则有 `display:flex`」和「`≤600px` 块里有 `display:none`」，两条都满足，但层叠结果是错的。另外加琥珀色断言时，它匹配到了我自己写的解释性注释里的 `#f59e0b` 字样——剥注释后才是正确判定。
 
-**已修 D：`--kb-inset` 的验证夹具漏字段。** 两次手写 fixture 都漏了 `searchEngines`，页面直接白屏「加载失败」（`app.js:193` 读 `config.searchEngines.find`），报错只出现在浏览器控制台。**对策：fixture 应从服务端默认配置派生，而不是手写。** 手写的那次还误把服务器配置写进了 `config.json`（书签数据文件），并一度用不完整的 `server-config.json` 覆盖默认配置导致 `paths` 丢失——端口改用环境变量 `PORT=` 传递，不要写配置文件。
+**已改 D：`--kb-inset` 的验证夹具漏字段。** 两次手写 fixture 都漏了 `searchEngines`，页面直接白屏「加载失败」（`app.js:599` 读 `config.searchEngines.find`），报错只出现在浏览器控制台。**对策：fixture 应从服务端默认配置派生，而不是手写。** 手写的那次还误把服务器配置写进了 `config.json`（书签数据文件），并一度用不完整的 `server-config.json` 覆盖默认配置导致 `paths` 丢失——端口改用环境变量 `PORT=` 传递，不要写配置文件。
 
 ### 验证记录
 
@@ -256,7 +256,7 @@ git diff --check                     → 无空白问题
 
 - **深色三色相区分度 —— 已确认可用**。1280×800 深色截图肉眼比对：网页=浅青灰、引擎=琥珀金、搜索=亮陶土，三者边界清晰。数值上三色锚点（`138,160,168`/`208,162,96`/`223,169,140`）亮度差足够，原先的顾虑不成立。
 - **书签 hover 态 —— 已确认**。`agent-browser` 真实指针悬停：`:hover` 命中、`transform: translateY(-1px)` 生效、`box-shadow` 含新增外投影（`0 2px 5px` + `0 9px 18px`）、`::after` 顶边渐变生效、`::before` 光晕 `opacity: 0.46`。截图可见该卡片明显浮起且边缘更亮，与同排静止项对比清晰。
-- **软键盘让位 —— 接线已验证，但「键盘本身」仍未复测**。无头浏览器不会真的弹出软键盘，因此直接驱动机制输入：把 `--kb-inset` 置为 300px 后，分享编辑区 `max-height` 从 `420px` 收到 `120px`（`styles.css:637`）。另有两条消费点同样在 `calc()` 内：`styles.css:1629/1637`（收藏弹窗）与 `admin.css:294/295`（UI 对话框）。**这证明接线正确，不证明真机键盘行为一致**——真机仍需看一眼分享编辑区底部按钮是否被键盘遮住。
+- **软键盘让位 —— 接线已验证，但「键盘本身」仍未复测**。无头浏览器不会真的弹出软键盘，因此直接驱动机制输入：把 `--kb-inset` 置为 300px 后，分享编辑区 `max-height` 从 `420px` 收到 `120px`（`styles.css:641`）。另有两条消费点同样在 `calc()` 内：`styles.css:1633/1641`（收藏弹窗）与 `admin.css:517/518`（UI 对话框）。**这证明接线正确，不证明真机键盘行为一致**——真机仍需看一眼分享编辑区底部按钮是否被键盘遮住。
 
 ### 仍未验证（本地造不出该环境）
 
@@ -802,7 +802,7 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 ## 已排除的误判（本次移动端审计）
 
 - **「分享弹窗没有 CSS 定位，所以掉到页面最底部」** —— 不成立。`.ui-dialog-overlay` 在 `admin.css:290` 一直有 `position: fixed; inset: 0; display: grid; place-items: center`，桌面端表现正常。真因是 `admin.css:401` 的 ≤480px 规则写了 `align-items: end` 覆盖成底部抽屉。**不要**去 `styles.css` 里补一份 `.ui-dialog` 定位，那会变成第三处声明。
-- **「`styles.css:2854` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2787 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2787 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
+- **「`styles.css:2896` 的 `repeat(auto-fill, 96px)` 是死代码」** —— 成立但成因不是"漏写"：它与 2787 行的三列规则同在 ≤480px、同特异性，后者在文件更靠后，因此前者被覆盖。已把 2787 的 `max-width: 304px` 改为 `100%`，两行现在语义一致。
 - **「placeholder 偏上是 `padding` 造成的」** —— 部分成立但不是主因。主因是 `styles.css:2772` 在文件末尾的 `font-size: 15px` 覆盖了移动端 16px（会触发 iOS 缩放），次因是 `line-height: 20px` 在 36px 容器内基线偏上。已两者一并修正。
 - **「引擎下拉在横屏下可能超出视口」** —— 记录严重性被低估。实测 12 个引擎时横屏 844×390 下超出视口 199px，且 `max-height: none` + `overflow: visible` 无法滚动，**6 个引擎完全选不中**。已修（v1.5.12）。教训：写「可能」之前先量一次。
 
@@ -1352,6 +1352,190 @@ P0 的根因值得记住：`sylph.sh:473` 的 `chmod 600 .admin-password.json` �
 - 提交 `5c774d1`；`bash scripts/release.sh` 产出 `nav-sylph-v1.5.28.tar.gz`；脚本只推 tag，分支为手工推送（`f10e93c..5c774d1`）。
 - 产物核验：`server-config/` 只有 `defaults.js index.js`（**P1 在真实产物上确认修复**）；包内版本 `1.5.28`；`restrictPrivateFileModes` 与 `REQUIRED_NODE_MAJOR=22` 均已随包；无 `docs/`、`tests/`、`.git`、`node_modules` 泄漏。
 - **在产物里真实的 `sylph.sh` 上跑了一次闸门**：伪造 Node 20 → 打印拒绝信息并以 `exit 1` 结束，未停服、未联网。
+
+## 登录后模块平台（地基 + 第一个模块，已随 v1.6.0 发布）
+
+本节改动已合并到 `main` 并发布为 v1.6.0（发布提交 `ada60c6`）。计划文件：`~/.commandcode/plans/nav-sylph-module-platform.md`。
+
+> **四个模块尚未实现**：本节交付的是平台骨架 + 服务器监控。文件分享、稍后阅读清单、社交媒体监控、行情监控（股票 + 加密货币）都还没做各自的业务逻辑——它们需要三件本轮没有的决定：稍后阅读的外部分享入口如何鉴权、行情数据源是否引入外部依赖、文件分享「下载不需登录」下的链接猜测成本与过期策略。
+
+### 目标
+
+为服务器监控、社交媒体监控、行情监控、稍后阅读清单、文件分享五个「登录后才可见」的模块建立骨架，并落地其中一个（服务器监控，唯一无外部依赖者）验证整条链路。四个业务模块留给后续。
+
+### 做了什么
+
+| 项 | 位置 | 说明 |
+| --- | --- | --- |
+| 模块配置独立文件 | `server.js` 的 `MODULES_FILE` / `defaultModulesConfig` / `normalizeModulesConfig` / `mergeModulesConfig` | `.modules.json`，已入 `PRIVATE_FILES`（自动 0600）与 `.gitignore`。**不进 `config.json`** |
+| SQLite 台阶 | `lib/db.js` 的 `MIGRATIONS` 第 2 项 | 只建 `module_cache` 一张表，`user_version` 1→2。其余三张表留给各自的模块 |
+| 三个特权端点 | `server.js` 模块平台 API 段 | `GET/POST /api/modules/config`、`GET /api/modules/metrics`，全部 `rateLimit + requireAdmin` |
+| 本机采集 | `lib/monitor.js` | CPU 用两次采样的累计时间差分（单次读恒为 0）；内存、负载、运行时长 |
+| 模块平台（前端） | `public/app.js` | `KNOWN_MODULES` 白名单、`registerModule`/`loadModule`、模块区渲染、编辑模式与拖拽 |
+| 模块区 DOM | `public/index.html` | `<section class="module-zone" id="moduleZone" hidden>` 在 `main.grid#grid` **之后**；dock 加「布局」按钮（`#layoutBtn`，默认 `hidden`） |
+| 第一个模块 | `public/modules/server-monitor.js` | 三指标 widget + 全屏面板 + 15 秒轮询（页面隐藏时停表） |
+| 样式 | `public/styles.css` 尾段、`public/admin.css` 尾段 | 模块区样式并入 `styles.css`；tab 侧栏样式写进 `admin.css` |
+| 缓存 | `public/sw.js` | `nav-v34` → `nav-v35`，`ASSETS` 加入 `/modules/server-monitor.js` |
+| 后台分区 | `public/app.js` 的 `renderAdminPanel`/`bindAdminTabs`/`selectAdminTab` | tab 三件套；宽屏侧栏、≤899px 顶部横滑标签条 |
+
+### 本次发现并修掉的一个真缺陷
+
+**归一化补默认值导致「缺席」与「显式清空」无法区分。** `normalizeModulesConfig()` 早先把缺失的键一律补成空数组，于是 `mergeModulesConfig()` 的 `incoming[key] !== undefined` 恒为真，保留分支永远走不到。后果很具体：**用户在首页拖一次 widget 排序（只提交 `widgets`），`servers` 与 `symbols` 被清空。**
+
+发现途径是真实服务端到端，不是读代码。当时的单元测试直接调 `mergeModulesConfig(existing, 部分对象)`，**绕过了归一化**，所以对着有 bug 的实现恒绿。已把测试改成走「归一化 → 合并」两步，并补一条专门断言「归一化不补缺席的键」；重新施加原缺陷后两条测试同时变红。
+
+这个缺陷之所以值得记：它同时命中本仓库的两条既有教训——「合并而非覆盖」的守卫若只测 merge 不测真实调用链，等于没测；单元测试在结构上就看不见「归一化把缺失补成空」这一层。
+
+### 验证
+
+- `node --test tests/*.test.js` → **240 通过 0 失败**（基线 226，新增 14 条）
+- **红绿验证共 11 处**（服务端 6 处 + 浏览器 5 处），每处都先用 `node -e` 断言锚点存在、缺失即 `exit 1`，并 `diff` 确认文件真的变了：
+  1. 从 `/api/modules/metrics` 摘掉 `requireAdmin` → 端点守卫测试红
+  2. 让 merge 的缺席分支回落空数组 → 合并测试红
+  3. 改名 `module_cache` 表 → 迁移幂等测试红
+  4. 从 `PRIVATE_FILES` 移除 `MODULES_FILE` → 权限测试红
+  5. 移除 `enabledModules` 的 id 白名单 → 归一化测试红
+  另加第 6 处：恢复最初的归一化缺陷 → 两条测试红（这是修复后的回归证明）
+  浏览器轮的 5 处见下文「红绿验证（本轮新增 5 处）」表
+- **真实服务端到端**（`tar` 复制到 `/tmp` 临时目录、`node_modules` 符号链接、`PORT=4319` 覆盖）：
+  - 启动创建 `.modules.json`，五个私有文件全部 `-rw-------`
+  - 匿名访问三个端点全部 **401**
+  - 登录 → 写配置：路径穿越 `../../etc/passwd` 被挡、`token` 字段不在白名单内故不落盘、字符串两端空白被裁
+  - `GET /api/modules/metrics` 首次 `cached:false`（真实采集 CPU 23.9%），第二次 `cached:true`（命中 5 分钟缓存，不重采）
+  - 只提交 `widgets` 后 `servers`/`socialAccounts`/`symbols` **保留**（缺陷修复的实测确认）
+  - 畸形请求体 `[]` / `"string"` / `42` / `null` 全部 **400**
+  - 登出后三个端点重新 **401**；匿名 `GET /api/config` 的顶层键只有 `theme, searchEngine, showBookmarkIcons, categories, searchEngines`，无任何模块字段
+- 测试进程已按 PID 确认归属后终止，4319 端口已释放，4195–4320 全扫无残留
+
+### 浏览器实测发现并修掉的五个缺陷
+
+单元测试与真实服务端端到端都跑完之后，浏览器里又抓出五个。前两个只有真机能看出来，因为它们在接口返回 200、内存状态齐全的情况下才发生。
+
+**1. 页面内登录不加载模块区。** `openAdmin` 里密码验证成功那条路径设了 `authenticated = true`，却没有调 `syncModuleVisibility()`——它与首屏的 `restoreSession` 是两条独立路径。症状是「密码正确、已进入管理，但首页模块区空的、布局按钮不出现」。改密码那条路径同样问题：会话已全部销毁，模块入口却还亮着。已给四条登录态切换路径各补一次同步，并加了一条枚举式护栏。
+
+**2. `mountModule` 先查定义再加载脚本。** 顺序反了，于是首次进入必然显示「模块未注册」——脚本其实加载成功了，只是注册发生在检查之后。单元测试看不见：注册表在测试里始终是空的，而错误态与正常态渲染成同一个 `.module-widget` 外壳。
+
+**3. 窄屏规则写在基础规则之前。** 我一度把窄屏段并进文件上方那条 `≤1023px` 块（想避免同查询出现第二条），结果基础规则落在它**后面**，同特异性下基础赢。实测 390×844 与 360×640：`.module-zone-inner` 仍算成 `grid`、横向滚动完全没生效，360px 下还被挤成 `190px + 105px` 两列。这正是本文件尾段注释警告过的覆盖顺序陷阱，我又踩了一次。已把窄屏段移回基础规则之后，并加了一条**比较两处源码位置**的断言——只断言两条规则都在，永远为真。
+
+**4. 拖拽把手写了 `hidden` 属性。** 模块在 `mountWidget` 里写 `handle.hidden = !state.editLayout`，而挂载时 `editLayout` 几乎总是 `false`；`hidden` 属性压过任何 CSS，于是进编辑模式后把手实测 **0×0**、点不到。已交回平台侧用 `.module-zone.is-editing` 控制，模块不再碰 `hidden`。
+
+**5. 后台侧栏没有并排。** 只把 `.admin-tabs` 改成 `column` 不够——它与 `.admin-panels` 是 `#modalBody` 里的同级块，各占满整行，实测每个标签 **827px 宽**、右侧大片空白（截图可见）。要让两者并排，必须让 `#modalBody` 本身成为横向 flex 容器。修后侧栏 172px、内容列 643px。
+
+另外修了一处判据错误：模块分区用 `!this.modulesConfig` 判断是否加载，而首页早已拉过配置，于是切进分区什么都不做、永远停在「加载中...」。改成 `!this.modulesEditorRendered`，并在 `renderAdminPanel` 里复位（面板 DOM 每次都是新的）。
+
+### 五视口实测量表
+
+单位 px。每轮测量前都 `unregister()` + `caches.delete()` 清掉全部 key 并加 cache-busting query——本仓库已因 SW 缓存误判过三次，实测中确实有一次量到的是上一轮的旧 CSS。
+
+| 视口 | 模块区 top | 模块区高 | 模块区宽 | 网格→区间距 | inner 布局 | 横向溢出 | widget |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 390×844 | 419.5 | 177 | 366 | 24 | flex | 否 | 190×152 |
+| 360×640 | 419.5 | 177 | 321 | 24 | flex | 否 | 190×152 |
+| 834×1112 | 446 | 177 | 790 | 24 | flex | 否 | 190×152 |
+| 844×390 | 446 | 177 | 785 | 24 | flex | 否 | 190×152 |
+| 1280×800 | 500 | 152 | 876 | 30 | grid 两栏 | 否 | 425×152 |
+
+窄屏 widget 固定 190px、模块区单行横滑（`overflow-x:auto` + `scroll-snap` + 右侧渐隐 mask）；当前只有一个模块故 `overflowX` 实测为否，多模块时才会溢出。宽屏两栏各 425px，B 方案的「网格末行与模块区粘连」风险未出现（间距 30px，与既有分类间距同量级）。
+
+### 交互实测
+
+- **拖拽换边**：指针在元素**外**移动 200px 后松手 → `side` 由 `left` 落盘为 `right`；`dragData` 清空、`.is-dragging` 移除、`transform` 归零，无残留
+- **pointercancel**：拖拽中派发 cancel → 同样全部清理干净，`data-drop-side` 与 `.drop-target` 归零
+- **编辑模式往返 10 次**：每一步 `editLayout`、`.is-editing`、把手数量（恒 1）、`.is-dragging`（恒 0）、`.drop-target`（恒 0）、把手 display 全部一致，无状态残留
+- **登出（且正处于编辑态）**：`editLayout=false`、模块区 `hidden` 且 `children=0`、`#layoutBtn` 隐藏、`modulesConfig` 清空、`dragData` 为 null
+- **详情面板**：六项明细齐全（内存绝对值、核数、负载、运行时长、采样时间、数据来源），`aria-modal=true`
+- **深色模式**：沿用既有 token，widget 底 `rgba(65,58,51,.7)`、文字 `rgb(243,238,232)`、进度条渐变取到 `--accent`/`--accent-hover` 的深色值
+
+### 红绿验证（本轮新增 5 处，均已确认变红）
+
+| 变异 | 变红的测试 |
+| --- | --- |
+| `mountModule` 改回先查后加载 | mountModule 先加载脚本再取定义 |
+| 分区判据改回 `!this.modulesConfig` | 模块分区按「是否已渲染」判定 |
+| 删掉 `renderAdminPanel` 里的标志复位 | 同上 |
+| 模块重新写 `handle.hidden` | 拖拽把手不由模块自己写 hidden |
+| 窄屏段移到基础规则之前 | 模块区的窄屏覆盖写在基础规则之后 |
+
+### 我在验证过程中自己搞错的三处（都已修，且都属同一类）
+
+1. **三处护栏的断言写错了，读起来像代码有 bug**：`mountModule` 的顺序判据（我把「第二次查询」当成了「第一次」）、`renderAdminPanel` 的切片窗口（复位在 ~14288 字符处，被切在外面）、`beginWidgetDrag` 的切片窗口（三个 `addEventListener` 落在 1825–1941，1800 的窗口正好切掉）。**第一处与第三处都曾让「删掉修复」后测试仍然绿**——护栏自己失效了，是重跑变异才发现的。已全部改成按方法边界切片，并在注释里记下窗口大小与偏移。
+2. **一次 `perl`/锚点替换静默无操作**：M3 变异声称应用成功、测试却全绿，追查发现是锚点虽然匹配、但我替换成的目标文本与原文本等价。改用显式 before/after 断言后才暴露。
+3. **一次量到的是缓存**：未清 SW 就测量，390px 读到 `grid`，差点误判为修复无效。
+
+### 仍未验证
+
+- **agent 在真实 Linux 上读 `/proc` 的路径**：本轮全部验证跑在 macOS 上，走的是 `os`/`vm_stat` 分支。`/proc/stat`、`/proc/meminfo`、`/proc/loadavg` 的解析逻辑未经实测——它们在 Linux 上的真实输出格式需要一台 Linux 机器才能验证。
+- **触摸设备的真实拖拽手势**：headless Chrome 不产生真实 touch 事件，`set device` 也无法提供 `pointer: coarse`。把手实测 26×26px，低于既有 `--ctl-h: 44px` 的触摸下限——**这是已知的设计取舍（鼠标/长按操作），但真机上是否够用需要你按一下才知道**。
+- **软键盘顶起时的模块面板**：`.module-panel` 已按既有 `--kb-inset` 写了 `max-height`，机制与站内对话框一致，但键盘真的弹起来时未实测。
+- `prefers-reduced-transparency` 下的实际观感。
+
+### 用户实测后修掉的两处
+
+**1. 首页只有一张卡片且无数据。** 原因不是代码缺陷，而是**指标有 5 分钟缓存**：`module_cache` 里存着配置服务器**之前**的那份结果（当时还没有远端服务器，只有本机）。刷新读到的还是旧值，看起来就是「一张空卡片」。
+
+**已修**：加 `invalidateMetricsCache()`，在**改变采集目标的三条写入路径**上调用——添加/编辑服务器、删除服务器、以及 `/api/modules/config` 里 `servers` 实际发生变化时。
+
+关键取舍：`/api/modules/config` 也用于拖拽排序与开关模块，那两种改动**不影响采集目标**，所以那里加了前后比较、只在 `servers` 真的变了才清。无条件清缓存会让「加一台机器立刻可见」这个修复退化成「任何保存都重采」，5 分钟 TTL 就再没有意义。
+
+实测：加一台服务器 → 缓存行数 1→0 → 下次采集立刻出现新机器（`cached:false`，服务器数 5→6）；只改布局 → 缓存行数保持 1。
+
+**2. macOS 上内存恒为 99%。** `os.freemem()` 在 macOS 上返回的是「未被列为可用」的页，而 macOS 把大部分内存拿去做文件缓存——实测 16GB 机器上 `totalmem - freemem` 达 **98.6%**，显示成「内存 99%」，看着像要爆，实际完全正常。那个数衡量的是缓存占用，不是应用占用。已改为读 `vm_stat` 的 `free + inactive + speculative + purgeable`（`inactive` 是可回收缓存，算作可用才是用户视角），实测从 99.5% 降到 76.2%。**服务端与 agent 两处都改了**，口径一致。
+
+macOS 支持是这一轮补上的：原先只在「缺 `/proc` 时不崩」这个意义上支持，指标口径仍是 Linux 的。Linux 走 `/proc`、macOS 走 `vm_stat`、其它平台退回 `os`。
+
+### 布局与拖拽：用户实测后修掉的三处
+
+**卡片重叠。** 宽屏纵向偏移写死了 `calc(var(--i) * 166px)`，而卡片高度随内容变：在线带延迟提示 174px、在线无提示 152px、离线只有 98px。174 > 166，带提示的卡片就压住下一张——实测两处重叠，都是 8px。已改为 JS 实测高度后逐张累加写入 `--stack-top`；CSS 侧接受这个值。用 CSS 变量表达「每张卡自己的偏移」做不到，因为偏移依赖前面**所有**卡的高度和。内容变化（上线多一行提示、掉线整张变矮）后也要重排。
+
+**后台监控目标列表太松。** 每台 59px 两行 → 37px 单行（名称与地址并排），三台从 176px 降到 110px。窄屏换行时保留 token 徽章——「这台配没配 token」正是判断离线原因的关键，藏掉用户只能靠猜。
+
+**拖拽不换位（本轮最隐蔽的一个）。** 症状是「把本机拖到 NAS 的位置，两者不互换」。根因是**拖拽过程中从未移动过 DOM**：只在松手时按「DOM 当前顺序」写 `order`，而节点位置从没变，读回来的自然还是原顺序。已改为在 `pointermove` 里用 `insertBefore` 真正插入。
+
+修完第一个又暴露第二个：**中线必须量一次并缓存**，不能每帧读实时 `getBoundingClientRect()`。因为卡片一旦让位，上方那张的实时中线也跟着移位，「指针 < 中线」这个比较会在自己造成的移动中失配——实测「把最后一张拖到最前」怎么拖都插不进去。已在 `dragData.bounds` 里缓存拖拽开始时的中线，并确保每次新拖拽把它清空。
+
+实测四种位置全部生效：最后一张拖到最前、 第一张拖到最后、中间两张互换、跨边（right→left）。刷新后顺序保持，卡片零重叠。
+
+**红绿验证 3 处**：拖拽中不插入、每帧重读中线、不清缓存 —— 全部变红。
+
+**拖拽切换生硬、跳动幅度过大。** 修好换位之后用户指出「跳得太猛」。量出来是两个叠加的问题：
+
+1. **被拖的卡片会「弹」一下。** 视觉位置 = 基准（`--stack-top`）+ `transform`。插入会让基准突变（实测 376 → 188，跳了两张卡的高度），而 `transform` 仍相对拖拽起点 —— 合成后卡片猛跳 **247px**，用户看到的是「先弹回原处再跟上指针」。修法是记住基准差量、补进 `transform`，并同步 `dragData.startY`（否则下一帧仍用旧参照，位置逐帧漂移）。实测单帧跳动从 247px 降到 **21px**，与指针位移完全一致。
+2. **让位的卡片是硬跳的。** 给 `margin-top` 加 **180ms** 过渡。但**被拖的那张不能有**——它的位置由 `transform` 连续控制，再叠一个 `margin` 过渡会和基准补偿打架，出现二次抖动。所以单独给 `.is-dragging` 一条不含 `margin-top` 的 transition。
+
+**红绿验证 4 处**：不做基准补偿、差量不加进 transform、不同步 `startY`、撤掉让位过渡 —— 全部变红。
+
+### 发布前审查（双轴）发现的缺陷，均已修
+
+规范轴与需求轴各跑一轮。**需求轴那一路跑满了轮次上限，没交出结论** —— 我自己把它怀疑的几条逐条核实了一遍。
+
+**1. 模块区定位的包含块错了（P0，影响真实观感）。** `.app` 没有 `position`，所以 `.module-zone` 的 `left/right: 22px` 相对**视口**而不是 `.app` 内容盒；而 `sideDockAvailable()` 又是拿 `.app` 宽度算两侧余量的 —— 两个坐标系对不上。实测 1760 宽的窗口：`.app` 左边缘在 160px，模块区却从视口 22px 开始，卡片被甩到窗口左侧。已给 `.app` 加 `position: relative`；六档视口复测，卡片稳定落在背板外侧 20px。
+
+这条能查出来是因为审查员坚持要「打开文件确认」，而不是接受「实测表上是好的」。那张表当时确实没量「卡片与背板边缘的间距」——**指标齐不等于覆盖到**。
+
+**2. 两条护栏是恒绿的（P0）。**
+
+- 「远端拉取不得抛错」写成「成功 return 之前不许有 `throw`」，而那个锚点（`return { ok: true }`）在真实代码里**根本不存在**（实际是 `return { ok: true, metrics: … }`），`slice(0, -1)` 扫的区间不含真正的抛出点。变异验证：在 401 分支前插 `throw`，旧断言全绿。已改为直接盯 catch 块。
+- 「周期变化时重排定时器」用 `[\s\S]*?` 扫全文件，在 `startPolling()` 里就命中了 —— 那儿本来就有一对 `clearInterval`+`setInterval`，与这条路径无关。变异验证：把 poll 里的 `if (pollTimer)` 改成 `if (false)`（彻底关掉重排），旧断言全绿。已改为只扫 `poll()` 函数体。
+
+两条都已重跑变异确认变红。
+
+**3. 前后端周期白名单各写一份，且没有测试比较它们。** 前端多一项，服务端会静默回落默认 —— 用户选了一个「看起来存在」却不生效的周期。已补一条**逐项比较两侧列表**的断言（变异：前端多一项 600 → 变红）。
+
+**4. 死代码与「承诺了但没实现」** —— 删掉 `lib/webdav-backup.js` 重构后遗留的四个加密常量、`agent/agent.js` 里每次采样跑两次 `execSync` 却从不返回的 `wired`/`compressed`、`lib/monitor.js` 四个无消费者的导出、`dragData.move`/`settle` 两处冗余赋值。
+
+**5. 两处「说了但没做」** —— 服务端为改密码精心收集的 `credentials.details` 前端**从未读过**，那四句「（无法解密，已保留原值）」等于死字符串；`authFailed` 标记在 `server.js` 丢掉了，界面拿不到，`docs/architecture.md` 记的「界面据此区分凭据错与机器挂」是假的。都已接通：改密码后会弹窗列出需要重输的凭据；凭据被拒的卡片额外提示「去重填 token」。
+
+**6. `#layoutBtn` 的 `title` 承诺了 `Alt+L` 快捷键，全仓库零实现。** 已删掉这个假承诺（`#adminBtn` 的 `Alt+A` 同样是假的，但那是本轮之前就有的，未动）。
+
+**7. 文档引用漂移。** 抽查 `styles.css` / `admin.css` 的四处 `file:line`，**四处全错**（我这一轮大量编辑把它们顶下去了）。已重新定位并改正 10 处。另发现 `docs/architecture.md` 里两处跨节引用（`:145`、`:51`/`:78`）也失效，一并修正；`instanceId` 那段还记着**已被推翻的旧方案**（「加序号」），改为记录实现与理由。
+
+**我这轮自己写错的一处**：改 `pollIntervalOptions` 注释时打进了一个乱码字（`却��效`），已发现并修掉。
+
+### 下一步
+
+发布 **v1.6.0**（三处版本已升、CHANGELOG 已写）。走 `AGENTS.md` 第 6 条 `bash scripts/release.sh`，**不要手写 `git` / `gh`**。发布前置检查已完成：`public/` 有改动、`CACHE` 已升到 `nav-v43`。
+
+之后可考虑：真机确认（agent 在真实 Linux 上读 `/proc` 的路径、systemd 部署命令、触摸拖拽把手尺寸），或实现下一个模块（稍后阅读清单、文件分享、社交媒体、行情）。
 
 ## 下一位 Agent 的启动步骤
 

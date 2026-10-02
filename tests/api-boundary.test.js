@@ -8,11 +8,19 @@ const vm = require('node:vm');
 // projection and merge helpers directly, as backup-privacy.test.js does.
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const begin = server.indexOf('function toPublicConfig(');
-const end = server.indexOf('// 获取收藏书签', begin);
-assert.ok(begin >= 0 && end > begin, 'public view helpers are present');
+assert.ok(begin >= 0, 'public view helpers are present');
 
-const { toPublicConfig, toPublicFavorites, mergeFavorites, mergeConfig } = vm.runInNewContext(
-    `${server.slice(begin, end)}; ({ toPublicConfig, toPublicFavorites, mergeFavorites, mergeConfig })`
+// toPublicConfig 到「获取收藏书签」这一段里，公开视图与模块平台的
+// 归一化/合并助手都在内（模块平台配置段紧接在公开视图之后），
+// 所以单次切片即可，不需要第二段——两段会因重复声明而 SyntaxError。
+const modulesEnd = server.indexOf('// 获取收藏书签', begin);
+assert.ok(modulesEnd > begin, 'projection and merge helpers are present');
+
+const { toPublicConfig, toPublicFavorites, mergeFavorites, mergeConfig,
+    normalizeModulesConfig, mergeModulesConfig } = vm.runInNewContext(
+    `${server.slice(begin, modulesEnd)}; ` +
+    `({ toPublicConfig, toPublicFavorites, mergeFavorites, mergeConfig,
+        normalizeModulesConfig, mergeModulesConfig })`
 );
 
 function fav(id, extra = {}) {
@@ -114,4 +122,441 @@ test('the favorites write route merges instead of overwriting the whole file', (
     const route = server.slice(server.indexOf("app.post('/api/favorites'"), server.indexOf("app.post('/api/favorites/import'"));
     assert.match(route, /mergeFavorites\(existing, favorites\)/);
     assert.doesNotMatch(route, /favorites: favorites\s*[,}]/, 'must not write the request body straight to disk');
+});
+
+// ========== 模块平台配置边界 ==========
+// 模块配置刻意不走 config.json：那里的新 key 默认经 toPublicConfig 下发给匿名
+// 用户，而 mergeConfig 是顶层浅合并、嵌套对象会被客户端旧副本整块覆盖。
+// 下面几条钉住「绕开」这个决定成立，而不是钉住某一行代码。
+
+test('模块配置不进 config.json，也不出现在匿名可见的投影里', () => {
+    // toPublicConfig 仍只剥离 privacyMode——这正是模块配置必须另立文件的原因。
+    // 若日后有人把模块配置搬进 config.json，这条会先失败。
+    const view = toPublicConfig({
+        theme: 'dark',
+        privacyMode: true,
+        categories: [],
+        monitorServers: [{ id: 'srv_1', url: 'http://10.0.0.1' }]
+    });
+    assert.equal('privacyMode' in view, false);
+    assert.equal(
+        'monitorServers' in view, true,
+        'toPublicConfig 不剥离未登记的 key —— 模块配置因此不能放进 config.json'
+    );
+
+    // 模块配置的端点必须全部是特权路由，匿名用户连「在监控哪些服务器」都不该看到。
+    // 断言用「枚举全部 /api/modules 路由 → 每条都必须带守卫」而不是
+    // 「排除不匹配的」：后者用负向前瞻写成会匹配到它本该排除的那段文本，
+    // 于是一条都没排除掉，测试恒绿。守卫缺失时这里的数量差会暴露。
+    // 切片边界用 Paste 段做锚——早先只切到「模块平台 API」标题处，
+    // 新加的端点落在标题之后，切片里一条都看不到（数量断言恒为 0）。
+    const routes = server.slice(server.indexOf('// ========== 模块平台 API =========='),
+        server.indexOf('// ========== Paste API =========='));
+    assert.ok(routes.length > 500, '模块平台段被正确切出');
+    const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
+    assert.equal(moduleRoutes.length, 5, `模块端点应恰好 5 条，实际 ${moduleRoutes.length}`);
+    for (const route of moduleRoutes) {
+        assert.match(routes, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ', rateLimit, requireAdmin,'),
+            `${route} 必须走 rateLimit + requireAdmin`);
+    }
+});
+
+test('模块配置的写入合并：请求体缺席的数组保留而非清空', () => {
+    // 拖拽排序只提交 widgets；若整份覆盖，用户调一次布局就把服务器列表清空。
+    //
+    // 关键：必须走「归一化 → 合并」两步，不能直接调 merge。
+    // 早先的版本直接喂 merge 一个部分对象，于是它恒绿——而真实路径上
+    // 归一化会把缺席的键补成空数组，merge 的保留分支永远走不到，
+    // 一次拖拽就把 servers 清空。这是靠真实服务端到端才发现的，
+    // 不是靠读代码。
+    const existing = {
+        version: 1,
+        enabledModules: ['server-monitor'],
+        widgets: [{ id: 'server-monitor', enabled: true, side: 'left', order: 0, collapsed: false }],
+        servers: [{ id: 'srv_1', name: 'NAS', url: 'http://10.0.0.1' }],
+        socialAccounts: ['@someone'],
+        symbols: ['BTC']
+    };
+    const submitted = { widgets: [{ id: 'server-monitor', enabled: true, side: 'right', order: 3 }] };
+
+    const merged = mergeModulesConfig(existing, normalizeModulesConfig(submitted));
+
+    assert.equal(merged.widgets[0].side, 'right', '提交的值生效');
+    assert.equal(merged.widgets[0].order, 3);
+    assert.equal(merged.servers.length, 1, '缺席的 servers 保留');
+    assert.deepEqual([...merged.socialAccounts], ['@someone'], '缺席的 socialAccounts 保留');
+    assert.deepEqual([...merged.symbols], ['BTC'], '缺席的 symbols 保留');
+    assert.deepEqual([...merged.enabledModules], ['server-monitor'], '缺席的 enabledModules 保留');
+});
+
+test('模块配置区分「显式清空」与「没提交」', () => {
+    const existing = { version: 1, servers: [{ id: 'srv_1', name: 'NAS', url: 'http://10.0.0.1' }] };
+
+    // 显式提交空数组 = 用户真的删光了
+    const cleared = mergeModulesConfig(existing, normalizeModulesConfig({ servers: [] }));
+    assert.equal(cleared.servers.length, 0, '显式空数组是清空，不是保留');
+
+    // 归一化不得把缺席的键补成空数组，否则两条路径无法区分
+    const normalized = normalizeModulesConfig({ widgets: [] });
+    assert.equal('servers' in normalized, false, '归一化不补缺席的键');
+    assert.equal(normalized.servers, undefined);
+
+    // 合并结果永远五个键齐全，读侧不必处理 undefined
+    const merged = mergeModulesConfig({}, normalizeModulesConfig({}));
+    for (const key of ['enabledModules', 'widgets', 'servers', 'socialAccounts', 'symbols']) {
+        assert.ok(Array.isArray(merged[key]), `${key} 在合并结果里是数组`);
+    }
+});
+
+test('模块配置写入端点用 mergeModulesConfig，不把请求体直接落盘', () => {
+    const route = server.slice(server.indexOf("app.post('/api/modules/config'"),
+        server.indexOf("app.post('/api/modules/servers'"));
+    assert.match(route, /mergeModulesConfig\(existing, normalized\)/);
+    assert.doesNotMatch(route, /writeJSON\(MODULES_FILE, req\.body\)/);
+    assert.match(route, /normalizeModulesConfig\(req\.body\)/, '写前必须过校验闸门');
+});
+
+test('模块配置读接口不回显 token，只给 hasToken', () => {
+    // 回显信封等于把密文交给浏览器——虽然解不开，但本不该有的数据不必给。
+    const route = server.slice(server.indexOf("app.get('/api/modules/config'"),
+        server.indexOf("app.post('/api/modules/config'"));
+    assert.match(route, /hasToken:\s*isEnvelope\(token\)/, 'token 折成布尔状态');
+    assert.doesNotMatch(route, /res\.json\(await readJSON\(MODULES_FILE\)\)/,
+        '不能把整个配置原样回传——那会把 token 一并带出去');
+});
+
+test('保存模块配置不会抹掉已存的 token', () => {
+    // 这是读接口不回显带来的必然副作用：客户端手里的 server 没有 token 字段，
+    // 直接采纳请求体就会把密文清掉。症状隐蔽——服务器还在，只是开始 401。
+    const existing = {
+        servers: [
+            { id: 'srv_1', name: 'NAS', url: 'http://a', token: { iv: 'a', data: 'b', tag: 'c' } },
+            { id: 'srv_2', name: 'VPS', url: 'http://b', token: { iv: 'd', data: 'e', tag: 'f' } }
+        ]
+    };
+    // 前端保存布局时回传的对象：只有 hasToken，没有 token
+    const submitted = normalizeModulesConfig({
+        widgets: [{ id: 'server-monitor', enabled: true, side: 'right', order: 0 }],
+        servers: [
+            { id: 'srv_1', name: 'NAS', url: 'http://a' },
+            { id: 'srv_2', name: 'VPS', url: 'http://b' }
+        ]
+    });
+    const merged = mergeModulesConfig(existing, submitted);
+    assert.equal(merged.servers[0].token.data, 'b', 'srv_1 的密文被补回');
+    assert.equal(merged.servers[1].token.data, 'e', 'srv_2 的密文被补回');
+
+    // 删除一台要真的删掉——没提交就不在 incoming 里
+    const afterDelete = mergeModulesConfig(existing, normalizeModulesConfig({
+        servers: [{ id: 'srv_1', name: 'NAS', url: 'http://a' }]
+    }));
+    assert.equal(afterDelete.servers.length, 1, '未提交的服务器被移除');
+    assert.equal(afterDelete.servers[0].token.data, 'b', '留下的那条 token 仍在');
+});
+
+test('服务器地址只接受 http/https', () => {
+    // 其它协议（file:、gopher:）会被 agent 拉取时当成一个可利用的服务端请求面
+    const route = server.slice(server.indexOf("app.post('/api/modules/servers'"),
+        server.indexOf("app.delete('/api/modules/servers/:id'"));
+    assert.match(route, /new URL\(url\.trim\(\)\)/, '先按 URL 解析');
+    assert.match(route, /parsed\.protocol\s*!==\s*'http:'\s*&&\s*parsed\.protocol\s*!==\s*'https:'/,
+        '协议白名单只放 http/https');
+    assert.match(route, /res\.status\(400\)/, '不合法时 400');
+});
+
+test('服务器写端点对 token 只加密、不落明文', () => {
+    const route = server.slice(server.indexOf("app.post('/api/modules/servers'"),
+        server.indexOf("app.delete('/api/modules/servers/:id'"));
+    // 提交了 token 才加密；空值表示保持原值
+    assert.match(route, /entry\.token\s*=\s*encrypt\(token\.trim\(\),\s*passwordHash,\s*'modules'\)/,
+        'token 经服务端加密后落盘');
+    assert.match(route, /entry\.token\s*=\s*servers\[index\]\.token/, '编辑时默认沿用原密文');
+});
+
+test('多服务器采集：一台离线不影响其它台', () => {
+    const fn = server.slice(server.indexOf('async function collectAllServers('),
+        server.indexOf("app.get('/api/modules/metrics'"));
+    assert.match(fn, /Promise\.all\(servers\.map/, '目标机并发拉取，串行会让耗时累加');
+    assert.match(fn, /isLocal:\s*true/, '本机固定排第一');
+    assert.match(fn, /online:\s*false/, '失败的一台标记为离线而不是抛错');
+    // 凭据解不开要与「服务器离线」区分开
+    assert.match(server, /凭据无法解密，请重新输入 token/,
+        '解不开凭据要给出可操作的原因，不能与离线混为一谈');
+});
+
+test('模块配置的归一化丢弃非法条目，而不是把它们写进配置', () => {
+    // 这些字段都会变成对外的轮询目标或脚本路径，必须逐条过闸门
+    const out = normalizeModulesConfig({
+        enabledModules: ['server-monitor', '../../etc/passwd', 'BAD ID', 'server-monitor'],
+        widgets: [
+            { id: 'server-monitor', side: 'middle', order: 'x', enabled: false },
+            { side: 'left' },                       // 无 id，丢弃
+            null
+        ],
+        servers: [
+            { id: 'srv_1', name: '  NAS  ', url: ' http://10.0.0.1 ' },
+            { id: 'srv_2' },                        // 无 url，丢弃
+            { id: 'srv_3', url: 'http://x', token: 'secret' }   // token 不在白名单内
+        ]
+    });
+
+    // enabledModules 会拼进脚本路径，白名单必须挡住路径穿越
+    assert.deepEqual([...out.enabledModules], ['server-monitor'], '路径穿越与重复项都被挡掉');
+    assert.equal(out.widgets.length, 1, '缺 id 的条目被丢弃');
+    assert.equal(out.widgets[0].side, 'left', '非法 side 回落到 left');
+    assert.equal(out.widgets[0].enabled, false, '显式 false 保留');
+    assert.equal(out.widgets[0].order, 0, '非数字 order 回落到 0');
+    assert.equal(out.servers.length, 2);
+    assert.equal(out.servers[0].name, 'NAS', '字符串两端空白被裁掉');
+    assert.equal(out.servers[0].url, 'http://10.0.0.1');
+    assert.equal('token' in out.servers[1], false, '白名单外的字段不进配置');
+});
+
+test('模块配置的归一化拒绝根本不是对象的请求体', () => {
+    // 返回 null 会让路由回 400；返回对象等于放行畸形输入
+    for (const bad of [null, undefined, 'string', 42, []]) {
+        assert.equal(normalizeModulesConfig(bad), null, `拒绝 ${JSON.stringify(bad)}`);
+    }
+    // 字段类型不对时归一化到空数组，而不是把对象当数组用
+    const out = normalizeModulesConfig({ widgets: 'nope', servers: { a: 1 } });
+    assert.deepEqual([...out.widgets], []);
+    assert.deepEqual([...out.servers], []);
+});
+
+// ========== 前端登录态钩子 ==========
+
+test('每一处写入登录态的地方都同步模块区的显隐', () => {
+    // 修复前：只有 restoreSession（首屏探测）调了 syncModuleVisibility。
+    // 但页面内通过密码框登录（openAdmin）是另一条路径，它设了
+    // authenticated = true 却不触发模块加载——于是「密码正确、已进入管理」，
+    // 首页模块区仍是空的、「布局」按钮也不出现。改密码那条路径同理，
+    // 会话已全部销毁却仍亮着模块入口。
+    //
+    // 断言用「枚举全部写入点 → 每个都必须在同一段里同步显隐」而不是
+    // 「搜一下有没有调用」：新增写入点时数量差会把它暴露出来。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const stripped = appSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const lines = stripped.split('\n');
+
+    // 逐行扫，而不是用一个大正则配 1200 字符窗口：窗口会跨过方法边界，
+    // 把下一个方法体里的内容误算进当前写入点的「邻近区域」，
+    // 断言就成了看运气。逐行的邻近范围是确定的。
+    const hits = [];
+    lines.forEach((line, i) => {
+        const m = /this\.authenticated\s*=\s*(true|false)\s*;/.exec(line);
+        if (m) hits.push({ line: i + 1, value: m[1] });
+    });
+
+    // constructor 的初始值不算「登录态变化」，其余每一处都必须同步显隐
+    const transitions = hits.filter(h => h.line > 120);
+    assert.equal(transitions.length, 4,
+        `登录态切换应恰好 4 处（首屏探测 / 页面内登录 / 登出 / 改密后失效），实际 ${transitions.length}：`
+        + transitions.map(h => `L${h.line}=${h.value}`).join(', '));
+
+    for (const t of transitions) {
+        // 往后 30 行内必须出现同步调用
+        const after = lines.slice(t.line - 1, t.line + 30).join('\n');
+        assert.match(after, /syncModuleVisibility\(\)/,
+            `L${t.line} 写入 authenticated = ${t.value} 后必须同步模块区显隐`);
+    }
+});
+
+test('模块区在未登录时不发起任何请求', () => {
+    // 首屏不因模块变重：未登录访客不下载任何模块文件。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const zoneStart = appSource.indexOf('async renderModuleZone()');
+    const zoneEnd = appSource.indexOf('async mountModule(', zoneStart);
+    assert.ok(zoneStart >= 0 && zoneEnd > zoneStart, 'renderModuleZone 存在');
+    const body = appSource.slice(zoneStart, zoneEnd);
+
+    // 未登录分支必须在拉配置之前就 return
+    const unauthAt = body.indexOf('if (!this.authenticated)');
+    const loadAt = body.indexOf('loadModulesConfig()');
+    assert.ok(unauthAt >= 0, 'renderModuleZone 有未登录分支');
+    assert.ok(unauthAt < loadAt, '未登录分支在拉配置之前返回');
+});
+
+test('mountModule 先加载脚本再取定义', () => {
+    // 修复前：先 getModule 再 loadModule，于是首次进入时模块必然显示
+    // 「模块未注册」——脚本其实加载成功了，只是注册发生在检查之后。
+    // 这条只有真实浏览器能看出来：单元测试里注册表是空的，
+    // 而错误态与正常态都渲染成同一个 .module-widget 外壳。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('async mountModule(');
+    assert.ok(start >= 0, 'mountModule 存在');
+    const body = appSource.slice(start, start + 1600);
+
+    // 判据是「拿到的定义」而不是「加载调用」的位置：
+    // 正确写法是 if (!this.getModule(id)) await this.loadModule(id)，
+    // 即第一次查询命中空值、随后的加载补上注册，第二次查询才拿到定义。
+    // 要钉的是**第二次**查询在加载之后。
+    const guardAt = body.indexOf('if (!this.getModule(id))');
+    const loadAt = body.indexOf('loadModule(id)');
+    const defAt = body.indexOf('const def = this.getModule(id)');
+    assert.ok(guardAt >= 0 && loadAt >= 0 && defAt >= 0, 'mountModule 同时有守卫、加载与取值');
+    assert.ok(guardAt < loadAt, '先确认未注册，再加载');
+    assert.ok(loadAt < defAt, '加载之后才取定义用于挂载');
+    assert.match(body.slice(defAt, defAt + 300), /if \(!def\)/, '定义仍为空时要 render 出错误态');
+});
+
+test('模块分区按「是否已渲染」判定，不按「配置是否已加载」', () => {
+    // 修复前：条件是 !this.modulesConfig。但首页模块区早就拉过配置，
+    // 于是切到模块分区时条件为假、什么都不做，面板永远停在「加载中...」。
+    // 这类判据错误只有真机点进去才看得见：接口 200、配置也在内存里。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('selectAdminTab(panel)');
+    assert.ok(start >= 0, 'selectAdminTab 存在');
+    const body = appSource.slice(start, start + 1400);
+
+    assert.match(body, /panel === 'modules' && !this\.modulesEditorRendered/,
+        '判据必须是 modulesEditorRendered，而不是 modulesConfig');
+    assert.doesNotMatch(body, /panel === 'modules' && !this\.modulesConfig/,
+        'modulesConfig 会被首页提前填满，用它当条件会让分区永不加载');
+
+    // 面板 DOM 每次 openAdmin 都是新的，标志必须复位。
+    // 切片必须覆盖整个 renderAdminPanel 方法体（约 14k 字符）：
+    // 早先切到 toggleSection 之前，而复位在 ~14288 处被切在外面，
+    // 于是变异「删掉复位」后测试仍绿——护栏自己失效了。
+    const panelStart = appSource.indexOf('renderAdminPanel() {');
+    assert.ok(panelStart >= 0, 'renderAdminPanel 存在');
+    // 方法体结束：下一个顶格方法定义（8 空格缩进的 `name(` 或空行+缩进）
+    const rest = appSource.slice(panelStart + 20);
+    const nextMethod = rest.search(/\n        [a-zA-Z_$][\w$]*\s*\(/);
+    assert.ok(nextMethod > 0, 'renderAdminPanel 的结束位置可定位');
+    const panel = appSource.slice(panelStart, panelStart + 20 + nextMethod);
+    assert.match(panel, /this\.modulesEditorRendered = false/,
+        'renderAdminPanel 必须复位 modulesEditorRendered');
+});
+
+test('拖拽把手不由模块自己写 hidden 属性', () => {
+    // 修复前：模块在 mountWidget 里写 handle.hidden = !state.editLayout。
+    // 挂载时 editLayout 几乎总是 false，而 hidden 属性压过任何 CSS——
+    // 于是进编辑模式后把手仍是 0x0、点不到。显隐交给平台的
+    // .module-zone.is-editing 规则，模块不得再写 hidden。
+    const modPath = path.join(__dirname, '..', 'public', 'modules', 'server-monitor.js');
+    const mod = fs.readFileSync(modPath, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
+    assert.doesNotMatch(mod, /handle\.hidden\s*=/,
+        '拖拽把手的显隐由 .module-zone.is-editing 控制，模块不得写 hidden 属性');
+
+    // 反面：平台侧那条规则必须还在
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+    assert.match(css, /\.module-zone\.is-editing \.module-drag-handle\s*\{[^}]*display:\s*block/,
+        '平台侧必须有让把手在编辑模式显示的规则');
+});
+
+test('拖拽落盘后必须重排，宽屏下卡片要真的移动', () => {
+    // 宽屏模块是绝对定位（left/right + --i），改配置不会自动改界面。
+    // 漏掉 applyWidgetLayout 的症状很隐蔽：落盘正确、配置已变，
+    // 但卡片停在原处——浏览器实测才发现（拖完 side 已是 right，卡片却还在左边）。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('async commitWidgetDrag(');
+    assert.ok(start >= 0, 'commitWidgetDrag 存在');
+    const rest = appSource.slice(start);
+    const end = rest.search(/\n        [a-zA-Z_$][\w$]*\s*\(/);
+    const body = rest.slice(0, end > 0 ? end : 1500);
+
+    const saveAt = body.indexOf('saveWidgetLayout(');
+    const layoutAt = body.indexOf('applyWidgetLayout()');
+    assert.ok(saveAt >= 0 && layoutAt >= 0, 'commitWidgetDrag 里有落盘与重排');
+    assert.ok(layoutAt > saveAt,
+        '重排必须在落盘之后——落盘失败时 saveWidgetLayout 会回滚并重绘，不能先重排');
+});
+
+test('管理分区记住当前分区，重渲染后恢复而不是弹回第一个', () => {
+    // 收藏管理器整块替换 #modalBody，它内部的「← 返回」调 renderAdminPanel()。
+    // 那里若固定选中第一个 tab，从「账户与备份」进收藏、点返回就会被弹到「首页导航」。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    assert.match(appSource, /selectAdminTab\(panel\)\s*\{[\s\S]*?this\.adminTab\s*=\s*panel/,
+        'selectAdminTab 必须记住当前分区');
+    assert.match(appSource, /this\.selectAdminTab\(this\.adminTab \|\| 'site'\)/,
+        'renderAdminPanel 恢复上次分区，无记录时才回落到默认');
+
+    // 默认分区只能是 site，且模板里不能有任何一个 aria-selected="true"
+    const panelStart = appSource.indexOf('renderAdminPanel() {');
+    const rest = appSource.slice(panelStart);
+    const panelEnd = rest.search(/\n        [a-zA-Z_$][\w$]*\s*\(/);
+    const template = rest.slice(0, panelEnd > 0 ? panelEnd : 12000);
+    assert.doesNotMatch(template, /aria-selected="true"/,
+        '模板里不得硬编码选中的 tab——选中态由 selectAdminTab 统一写入');
+});
+
+test('模块分区的说明文字紧贴它描述的那一行，不汇总在区块底部', () => {
+    // 早先是「启用后该模块会出现在首页模块区…」一句放在所有开关下面，
+    // 离得太远，要来回对照才知道说的是哪个模块。
+    // 现在每行自带 summary，紧贴名称；状态文字紧贴开关。
+    //
+    // 每行的标记在 **rows 的 map 里**（@1042 起），不在 host.innerHTML 模板里
+    // （模板只插 `${rows}`）。只切模板会一个都找不到——这里切整个方法体。
+    //
+    // 方法边界不能用「下一个顶格方法定义」找：内部有一个 catch 块，
+    // `console.warn(...)` 之后换行的形式会误判成新方法，把切片截在 ~489 处。
+    // 改用「下一处同缩进的 `}` 」——方法体结束就是它。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('renderModulesEditorContent(');
+    assert.ok(start >= 0, 'renderModulesEditorContent 存在');
+    const rest = appSource.slice(start);
+    const end = rest.indexOf('\n        }\n', rest.indexOf('const status ='));
+    assert.ok(end > 0, 'renderModulesEditorContent 的方法体结束位置可定位');
+    const body = rest.slice(0, end);
+
+    // 每行：名称 + 可选说明 + 开关 + 状态文字，四者同在一条 setting-row 里
+    assert.match(body, /module-setting-label[\s\S]*?module-setting-hint[\s\S]*?module-setting-toggle[\s\S]*?module-setting-state/,
+        '说明与开关在同一行内依次出现');
+    // 说明文字取自模块自己的 summary，不是硬编码的一句话
+    assert.match(body, /def\.summary\s*\?/, '说明文字由各模块的 summary 提供，便于后续模块复用同一形状');
+
+    // 汇总式的那句提示不该再出现在**可执行代码**里。
+    // 必须剥注释再查：解释这次改动的注释里正写着那句话本身，
+    // 不剥的话断言会把自己的说明当成违规代码。
+    const codeOnly = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    assert.doesNotMatch(codeOnly, /启用后该模块会出现在首页模块区/,
+        '汇总提示已被每行 summary 取代（注释里的历史说明不算）');
+
+    // 状态文字必须随开关同步，否则紧贴开关的两者会互相矛盾
+    assert.match(body, /box\.checked\s*\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换');
+    assert.match(body, /addEventListener\('change'/, 'change 事件里同步状态文字');
+});
+
+test('模块列表行不再有「启用状态」区块标题', () => {
+    // 标题已由每行的名称与状态文字取代——一行一个模块，
+    // 再加一个统称反而不知道它在统称什么。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('renderModulesEditorContent(');
+    const rest = appSource.slice(start);
+    const tplStart = rest.indexOf('host.innerHTML = `');
+    const tplEnd = rest.indexOf('`;', tplStart);
+    const tpl = rest.slice(tplStart, tplEnd);
+    assert.doesNotMatch(tpl, /启用状态/, '模块列表不再有「启用状态」标题');
+});
+
+test('模块列表行不再有「启用状态」区块标题', () => {
+    // 标题已由每行的名称与状态文字取代——一行一个模块，
+    // 再加一个统称反而不知道它在统称什么。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('renderModulesEditorContent(');
+    const rest = appSource.slice(start);
+    const tplStart = rest.indexOf('host.innerHTML = `');
+    const tplEnd = rest.indexOf('`;', tplStart);
+    const tpl = rest.slice(tplStart, tplEnd);
+    assert.doesNotMatch(tpl, /启用状态/,
+        '模块列表不再有「启用状态」标题');
+});
+
+test('拖拽终止监听挂在 window 且同时处理 pointercancel', () => {
+    // 挂在元素上用 { once:true } 会在指针于元素外释放时永久卡住状态
+    // （分享编辑器的 auto-grow 曾这样冻结整个会话）。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const start = appSource.indexOf('beginWidgetDrag(event, widget)');
+    assert.ok(start >= 0, 'beginWidgetDrag 存在');
+    // 窗口要够大：三个 addEventListener 落在 ~1825–1941 处，
+    // 早先的 1800 字符窗口正好把它们切在外面，读起来像「监听没挂 window」。
+    const body = appSource.slice(start, start + 2600);
+
+    assert.match(body, /window\.addEventListener\('pointerup', settle\)/, 'pointerup 挂 window');
+    assert.match(body, /window\.addEventListener\('pointercancel', settle\)/, 'pointercancel 也要挂');
+    assert.match(body, /removeEventListener\('pointerup', settle\)/, 'pointerup 要解绑');
+    assert.match(body, /removeEventListener\('pointercancel', settle\)/, 'pointercancel 要解绑');
+    assert.match(body, /removeEventListener\('pointermove', move\)/, 'pointermove 也必须解绑，否则拖拽后事件持续累积');
 });

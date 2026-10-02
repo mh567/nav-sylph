@@ -1,6 +1,17 @@
 // 首页性能优化：admin.css 改非阻塞加载、pinyin/qrcode 延迟加载，
-// index.html 与 app.js 已变，命中缓存的老用户拿不到，必须升缓存名
-const CACHE = 'nav-v34';
+// index.html 与 app.js 已变，命中缓存的老用户拿不到，必须升缓存名。
+// 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
+// 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
+// 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v43：.app 建立包含块，修模块区在 .app 有居中留白时错位。
+// nav-v42：每台服务器可单独控制首页显示 + 布局键改绑服务器 id。
+// nav-v41：拖拽加基准补偿 + 让位过渡（修「切换生硬、跳动过大」）。
+// nav-v40：拖拽真正移动 DOM（修「拖了不换位」）。
+// nav-v39：模块卡片按实测高度堆叠（修重叠）+ 后台监控目标列表压紧，改了 app.js、admin.css、styles.css。
+// nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
+// nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
+// 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
+const CACHE = 'nav-v43';
 const ASSETS = [
     '/',
     '/index.html',
@@ -10,6 +21,7 @@ const ASSETS = [
     '/lib/uFuzzy.iife.min.js',
     '/lib/pinyin.js',
     '/lib/qrcode.js',
+    '/modules/server-monitor.js',
     '/favicon.svg',
     '/icon.svg',
     '/manifest.json'

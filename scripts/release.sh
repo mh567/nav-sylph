@@ -113,6 +113,9 @@ cp -r public "$DIST_DIR/${RELEASE_NAME}/"
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/server-config"
 cp server-config/*.js "$DIST_DIR/${RELEASE_NAME}/server-config/"
 cp -r lib "$DIST_DIR/${RELEASE_NAME}/"
+# agent/ 要随包分发：用户需要在目标机上部署它才能监控多台服务器。
+# 不打进去的话，多服务器功能对下载者等于不存在。
+cp -r agent "$DIST_DIR/${RELEASE_NAME}/"
 
 # 创建空目录
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/logs"

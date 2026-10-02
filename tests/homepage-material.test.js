@@ -174,9 +174,13 @@ test('宽屏背板在窄屏完全退回透明容器', () => {
     assert.match(base, /width:\s*min\(100%,\s*936px\)/, '宽屏收束到 936px');
     assert.match(base, /backdrop-filter/, '宽屏使用毛玻璃');
 
-    // 单一来源：≤1023px 的兜底只能有一条，否则后写的会静默覆盖前一条
-    const fallbacks = mediaBlocks(code, '@media (max-width: 1023px)');
-    assert.equal(fallbacks.length, 1, `≤1023px 兜底块应只有一条，实际 ${fallbacks.length}`);
+    // 单一来源：≤1023px 的**背板**兜底只能有一条，否则后写的会静默覆盖前一条。
+    // 这里按「含 .backboard 的块」过滤，而不是数全部 ≤1023px 块——
+    // 模块区另有一条同查询的窄屏段（位置纪律另有一条测试守着），
+    // 但它不碰 .backboard，两者在属性上互不覆盖。
+    const fallbacks = mediaBlocks(code, '@media (max-width: 1023px)')
+        .filter(b => /\.backboard/.test(b));
+    assert.equal(fallbacks.length, 1, `≤1023px 的背板兜底块应只有一条，实际 ${fallbacks.length}`);
     const fb = fallbacks[0];
     assert.match(fb, /\.backboard\s*\{[^}]*background:\s*none/, '窄屏背板不填充');
     assert.match(fb, /\.backboard\s*\{[^}]*box-shadow:\s*none/, '窄屏背板无投影');
@@ -187,6 +191,96 @@ test('宽屏背板在窄屏完全退回透明容器', () => {
 test('站点标识已从标记与样式中一并移除', () => {
     assert.equal(/class="site-identity"/.test(indexHtml), false, 'index.html 不应再有 .site-identity');
     assert.equal(/site-identity/.test(code), false, 'styles.css 不应再有 .site-identity 规则');
+});
+
+test('模块区的窄屏覆盖写在基础规则之后', () => {
+    // 位置本身就是契约，不只是「两条规则都在」：
+    // 曾把窄屏段并进文件上方那条 ≤1023px 块，于是它落在基础规则**之前**，
+    // 同特异性下基础赢——390px / 360px 实测 .module-zone-inner 仍算成 grid，
+    // 横向滚动完全没生效，360px 下还被挤成 190px+105px 两列。
+    // 断言必须比较两处的源码位置，光断言存在永远为真。
+    //
+    // 宽屏形态已从「两栏网格」改为「背板外侧绝对定位」（display:contents），
+    // 所以这里钉的是 flex 那条窄屏声明的位置。
+    const baseAt = code.search(/^\.module-zone-inner\s*\{[^}]*display:\s*contents/m);
+    assert.ok(baseAt >= 0, '.module-zone-inner 有基础规则（display:contents，让子节点直接参与外层定位）');
+
+    const narrowAt = code.search(/\.module-zone-inner\s*\{[^}]*display:\s*flex/);
+    assert.ok(narrowAt >= 0, '窄屏段把 module-zone-inner 改为 flex');
+
+    assert.ok(narrowAt > baseAt,
+        `窄屏覆盖必须写在基础规则之后（base@${baseAt} → narrow@${narrowAt}），`
+        + '否则同特异性下基础规则胜出，窄屏形态整段失效');
+});
+
+test('宽屏模块区绝对定位在背板外侧，放不下时退回网格下方', () => {
+    // 宽屏：模块贴背板左右外侧，靠 position:absolute + 实测高度算出的纵向次序。
+    // 窄屏或余量不足：必须整段撤掉绝对定位——只写宽屏定位而不写 reset，
+    // 绝对定位会一路带到手机上，模块区脱离文档流、页面高度塌掉。
+    assert.match(code, /\.module-zone\s*\{[^}]*position:\s*absolute/,
+        '宽屏模块区绝对定位');
+    // 宽度跟着可用余量伸缩，不写死：936 背板在 1280 视口下左右只剩 150px，
+    // 写死 200px 实测会压进背板 50px。
+    assert.match(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*position:\s*absolute[^}]*width:\s*clamp\(/,
+        '宽屏 widget 绝对定位且宽度用 clamp 跟随可用空间');
+    // 纵向偏移按实测高度算，不是固定步进——见 stackWidgetsByHeight。
+    assert.match(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*margin-top:\s*var\(--stack-top/,
+        '纵向偏移取 JS 实测的 --stack-top');
+    assert.doesNotMatch(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*margin-top:\s*calc\(var\(--i/,
+        '不得写死步进——卡片高度随内容变，写死会压住下一张（实测重叠 8px）');
+
+    // 「放不下」的兜底形态由 JS 写 data-dock 触发，不用媒体查询：
+    // 936 背板在 1024 下留 44px、1440 下留 252px，断点表达不了这个连续量。
+    assert.match(code, /\.module-zone\[data-dock="below"\]\s*\{[^}]*position:\s*static/,
+        'data-dock=below 时模块区回到文档流');
+    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-widget\s*\{[^}]*position:\s*static/,
+        'data-dock=below 时 widget 也撤掉绝对定位');
+    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/,
+        'data-dock=below 时横向滚动');
+
+    const narrow = mediaBlocks(code, '@media (max-width: 1023px)')
+        .filter(b => /module-zone/.test(b));
+    assert.equal(narrow.length, 1, '模块区窄屏规则应恰好一条');
+    const block = narrow[0];
+    assert.match(block, /\.module-zone\s*\{[^}]*position:\s*static/, '窄屏模块区回到文档流');
+    assert.match(block, /\.module-widget\[data-side\]\s*\{[^}]*position:\s*static/, '窄屏 widget 也撤掉绝对定位');
+    assert.match(block, /\.module-widget\[data-side\]\s*\{[^}]*margin-top:\s*0/, '窄屏清掉 --i 带来的纵向偏移');
+    assert.match(block, /\.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/, '窄屏横向滚动');
+    assert.match(block, /\.module-widget\s*\{[^}]*flex:\s*0 0 auto/, '窄屏 widget 固定宽度，不参与网格分配');
+});
+
+test('背板外侧放得下：.app 宽度足够容纳 936 背板 + 两侧模块', () => {
+    // .app 内容盒 = max-width - 2×padding。模块用 clamp 伸缩，
+    // 所以这里只钉「最大宽度下两侧有余量」：1440 上限时每侧 252px。
+    // 1280 这类窄一点的视口由 JS 的 sideDockAvailable() 判为 below。
+    const appRule = /^\.app\s*\{([^}]*)\}/m.exec(code);
+    assert.ok(appRule, '.app 有基础规则');
+    const maxWidth = Number(/max-width:\s*(\d+)px/.exec(appRule[1])?.[1]);
+    const padX = Number(/padding:\s*[\d.]+px\s+(\d+)px/.exec(appRule[1])?.[1]);
+    assert.ok(Number.isFinite(maxWidth) && Number.isFinite(padX), '.app 的 max-width 与左右 padding 可解析');
+
+    const sideAtMax = (maxWidth - padX * 2 - 936) / 2;
+    assert.ok(sideAtMax >= 220,
+        `.app 上限 ${maxWidth}px 时每侧余量 ${sideAtMax}px，需 ≥ 220px`);
+
+    // 背板本身宽度不变——两侧模块是新增的，不该顺带改动既有主体宽度
+    const bb = ruleBlock(code, '.backboard', 'width:');
+    assert.match(bb, /width:\s*min\(100%,\s*936px\)/, '背板仍是 936px 居中');
+});
+
+test('模块区停靠方式由 JS 按实际余量判定，不靠媒体查询', () => {
+    // 1024 视口下 936 背板左右只剩 44px，1440 下有 252px——
+    // 固定断点只能二选一，另一头必然出错，所以判据是实测量。
+    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+    assert.match(appSource, /sideDockAvailable\(\)\s*\{[\s\S]*?getBoundingClientRect\(\)\.width/,
+        '判据必须读实际渲染宽度');
+    assert.match(appSource, /side\w*\s*>=\s*MIN_SIDE\s*\+\s*GAP/,
+        '余量不足最小宽度加间隙时判为放不下');
+    assert.match(appSource, /zone\.dataset\.dock\s*=\s*this\.sideDockAvailable\(\)\s*\?\s*'outside'\s*:\s*'below'/,
+        '两种停靠方式都要有对应的 data-dock 值');
+    // 跨过阈值要重新摆放，否则窗口拉宽后模块仍挤在下方
+    assert.match(appSource, /addEventListener\('resize'[\s\S]*?sideDockAvailable\(\)[\s\S]*?renderModuleZone\(\)/,
+        'resize 时要重算并重绘');
 });
 
 test('主操作按钮在网页态与收藏态是同一种材质', () => {
@@ -533,10 +627,14 @@ test('进入管理页的两个请求并发发出，不串行叠加两次密码�
     assert.match(body, /this\.loadPrivacyMode\(\)/, '仍需取回 privacyMode 的真实值');
 });
 
-test('三个下拉框都被同一条 option 规则覆盖', () => {
+test('每个下拉框都被同一条 option 规则覆盖', () => {
     // 只修主面板的两个、漏掉收藏弹窗里的那个，等于留一个同样的坑。
+    //
+    // 断言的是「每个下拉框都被同一条 option 规则覆盖」这个事实，
+    // 而不是某个固定数量——新增下拉框时数量会变（模块分区的「更新周期」是
+    // 第四个），写死 3 会让正常的新增变成测试失败。
     const selects = [...appSource.matchAll(/<select\b[^>]*id="([^"]+)"/g)].map(m => m[1]);
-    assert.equal(selects.length, 3, `应恰好三个下拉框，实际 ${selects.length}: ${selects.join(', ')}`);
+    assert.ok(selects.length >= 3, `应至少三个下拉框，实际 ${selects.length}: ${selects.join(', ')}`);
     // 一条 :is(...) 规则同时挂载三处弹窗，收藏弹窗里的 favCategorySelect
     // 因此不必单独再写一条。断言的是「三处都被覆盖」这个事实。
     const optionRule = /:is\(([^)]*)\)\s*select option\s*\{/.exec(adminCode);
@@ -545,4 +643,9 @@ test('三个下拉框都被同一条 option 规则覆盖', () => {
         assert.ok(optionRule[1].includes(host),
             `option 规则未覆盖 ${host}，该弹窗里的下拉框会漏`);
     }
+    // 新增的下拉框必须在 .modal 里，否则它会退回浏览器默认的 UA 配色：
+    // 深色页面上的原生 option 弹层是白底（实测过）。
+    const moduleSelects = selects.filter(id => id === 'pollIntervalSelect');
+    assert.deepEqual(moduleSelects, ['pollIntervalSelect'],
+        '模块分区的更新周期下拉框存在，且位于 .modal 内（被上面那条规则覆盖）');
 });

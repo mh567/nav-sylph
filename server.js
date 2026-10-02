@@ -209,9 +209,14 @@ const CONFIG_FILE = path.join(config.rootDir, 'config.json');
 const FAVORITES_FILE = path.join(config.rootDir, 'favorites.json');
 const PASSWORD_FILE = config.security.adminPasswordFile;
 const WEBDAV_CONFIG_FILE = path.join(config.rootDir, '.webdav-config.json');
+// 登录后模块的平台配置：服务器监控目标、社交账号、自选代码、widget 布局。
+// 独立于 config.json —— 那里的新 key 默认会经 toPublicConfig 下发给匿名用户，
+// 且 mergeConfig 是顶层浅合并，嵌套对象会被客户端旧副本整块覆盖。
+const MODULES_FILE = path.join(config.rootDir, '.modules.json');
 
 // WebDAV Backup module
 const { WebDAVBackup } = require('./lib/webdav-backup');
+const { encrypt, decrypt, isEnvelope } = require('./lib/credentials');
 
 // 管理端会话：设备指纹 + 地理绑定
 // 注意：本文件另有粘贴相关的 globalThis.crypto（WebCrypto）用法，
@@ -225,6 +230,7 @@ const {
 } = require('./lib/session');
 const { openDatabase } = require('./lib/db');
 const { createSqliteBackend } = require('./lib/session-sqlite');
+const { readLocalMetrics, fetchRemoteMetrics } = require('./lib/monitor');
 
 // 禁用 X-Powered-By 头
 app.disable('x-powered-by');
@@ -283,6 +289,24 @@ app.use(express.static(path.join(config.rootDir, 'public'), {
     index: 'index.html',
     extensions: ['html', 'htm']
 }));
+
+// agent 脚本本体。放在仓库根的 agent/ 而非 public/ 下——它不在首页的
+// 静态资源清单里，不该进 Service Worker 的预缓存（预缓存一个从不加载的
+// 文件只会在每次更新时多下载一次）。这里按需提供，部署命令直接 curl 它。
+app.get('/agent/agent.js', async (req, res) => {
+    try {
+        const file = path.join(config.rootDir, 'agent', 'agent.js');
+        const source = await fs.readFile(file, 'utf8');
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        // 脚本内容会随版本变，但 URL 不变——不给长缓存，
+        // 否则用户照着旧命令 curl 到的是过期的 agent。
+        res.setHeader('Cache-Control', 'no-cache');
+        res.send(source);
+    } catch (err) {
+        console.error('提供 agent 脚本失败:', err);
+        res.status(404).send('// agent.js not found in this installation');
+    }
+});
 
 app.use((req, res, next) => {
     const time = new Date().toISOString();
@@ -455,13 +479,29 @@ const defaultFavorites = {
 };
 
 /**
+ * 模块平台配置。全部是扁平数组，没有嵌套对象——
+ * 嵌套结构在这个文件里语义不对：它整体读、整体写，不参与 mergeConfig 的浅合并。
+ */
+const defaultModulesConfig = {
+    version: 1,
+    enabledModules: [],
+    widgets: [],
+    servers: [],
+    socialAccounts: [],
+    symbols: [],
+    // 首页轮询周期（秒）。不在白名单里的值会回落到默认——
+    // 这是唯一允许的取值来源，前端与服务端共用同一份。
+    pollInterval: 15
+};
+
+/**
  * 承载用户数据或凭据的文件，权限统一收到 600。
  *
  * 不依赖 sylph.sh 的 chmod：`.admin-password.json` 等文件是**应用**在首次启动时才创建的，
  * 脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，等于空操作——实测全新安装后密码哈希
  * 与私密收藏都是 644，反而是本次新增的会话库为 600。
  */
-const PRIVATE_FILES = [CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE];
+const PRIVATE_FILES = [CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE, MODULES_FILE];
 
 /** 兜底校正既有安装：老版本写下的文件可能仍是 644，每次启动收敛一次。 */
 async function restrictPrivateFileModes() {
@@ -582,6 +622,7 @@ async function init() {
 
     await ensureFile(CONFIG_FILE, defaultConfig);
     await ensureFile(FAVORITES_FILE, defaultFavorites);
+    await ensureFile(MODULES_FILE, defaultModulesConfig);
     await ensureFile(PASSWORD_FILE, {
         passwordHash: await bcrypt.hash(config.security.defaultPassword, 10)
     });
@@ -725,6 +766,73 @@ app.post('/api/logout', rateLimit, async (req, res) => {
     res.json({ success: true });
 });
 
+/**
+ * 用新密码重新加密所有依赖密码派生的凭据。
+ *
+ * 修复前的行为：改密码直接覆盖 .admin-password.json，而 WebDAV 密码是用
+ * 旧密码哈希派生的密钥加密的——改完之后**再也解不开**，只能重新填一次，
+ * 且没有任何提示。模块的 agent token 会踩同一个坑，所以在这里一起处理。
+ *
+ * 三条纪律：
+ *  1. **先全部算完再落盘**。边解密边写会出现「密码改了、凭据只重加密了一半」，
+ *     而那一半永久无法恢复。
+ *  2. 任何一项失败就整体放弃，密码文件也不写——宁可让用户再点一次。
+ *  3. 明文只在内存里经过，不写中间文件、不进日志。
+ *
+ * @returns {Promise<{reencrypted:number, details:string[]}>}
+ */
+async function reencryptCredentials(oldHash, newHash) {
+    const details = [];
+    let reencrypted = 0;
+
+    // 1) WebDAV 密码
+    let webdavRaw = null;
+    try {
+        webdavRaw = await readJSON(WEBDAV_CONFIG_FILE);
+    } catch {
+        webdavRaw = null;
+    }
+    if (webdavRaw && isEnvelope(webdavRaw.password)) {
+        try {
+            const plain = decrypt(webdavRaw.password, oldHash, 'webdav');
+            webdavRaw.password = encrypt(plain, newHash, 'webdav');
+            reencrypted++;
+            details.push('WebDAV 密码');
+        } catch (e) {
+            // 旧密文本身已解不开（可能更早改过密码）：不能挡着改密码，
+            // 保留原样并记录，让用户在该分区看到需要重新输入。
+            details.push('WebDAV 密码（无法解密，已保留原值）');
+        }
+    }
+
+    // 2) 模块 agent token
+    let modulesRaw = null;
+    try {
+        modulesRaw = await readJSON(MODULES_FILE);
+    } catch {
+        modulesRaw = null;
+    }
+    if (modulesRaw && Array.isArray(modulesRaw.servers)) {
+        for (const server of modulesRaw.servers) {
+            if (!server || !isEnvelope(server.token)) continue;
+            try {
+                const plain = decrypt(server.token, oldHash, 'modules');
+                server.token = encrypt(plain, newHash, 'modules');
+                reencrypted++;
+                details.push(`${server.name || server.id} 的凭据`);
+            } catch (e) {
+                details.push(`${server.name || server.id} 的凭据（无法解密，已保留原值）`);
+            }
+        }
+    }
+
+    // 全部算完才写。writeJSON 各自 chmod 600，与首次创建时同一套收紧。
+    if (webdavRaw) await writeJSON(WEBDAV_CONFIG_FILE, webdavRaw);
+    if (modulesRaw) await writeJSON(MODULES_FILE, modulesRaw);
+
+    return { reencrypted, details };
+}
+
 // 改密码必须重新验证**当前密码**，会话 Cookie 不足以授权。
 // 密码是这里唯一的根凭据：只凭一个会话就改掉它，等于让任何拿到会话的人
 // 完成账号接管，而且受害者改完密码反而把自己锁在门外。
@@ -745,14 +853,33 @@ app.post('/api/change-password', rateLimit, requireAdmin, async (req, res) => {
     }
 
     try {
+        const oldHash = await getPasswordHash();
         const passwordHash = await bcrypt.hash(newPassword, 10);
+
+        // 先把凭据重算完。失败就整体放弃，密码文件一个字都不写——
+        // 「密码改了、凭据只迁移了一半」是不可恢复的状态。
+        let migration = { reencrypted: 0, details: [] };
+        if (oldHash) {
+            try {
+                migration = await reencryptCredentials(oldHash, passwordHash);
+            } catch (err) {
+                console.error('凭据重加密失败，密码未修改:', err);
+                return res.status(500).json({
+                    error: '凭据重新加密失败，密码未修改。请检查磁盘写入权限后重试。'
+                });
+            }
+        }
+
         await writeJSON(PASSWORD_FILE, { passwordHash });
         // 换密码后终止全部会话（含本会话），否则已泄露的令牌仍能继续用，
         // 这个补救动作就失去意义。客户端已无凭据可重放，需重新登录。
         const revoked = sessionStore.destroyAll();
-        console.log(`[Server] 密码已修改，终止 ${revoked} 个会话`);
+        console.log(`[Server] 密码已修改，终止 ${revoked} 个会话`
+            + (migration.reencrypted ? `，重加密 ${migration.reencrypted} 项凭据` : ''));
         sessionStore.clearSessionCookie(res, req);
-        res.json({ success: true, reauth: true });
+        // details 告诉前端哪些凭据没能迁移——不能静默：用户不知道
+        // WebDAV 与 agent 需要重新填 token，就会在某次备份时才撞上。
+        res.json({ success: true, reauth: true, credentials: migration });
     } catch (err) {
         console.error('修改密码失败:', err);
         res.status(500).json({ error: '修改密码失败' });
@@ -927,6 +1054,143 @@ function mergeFavorites(existing, incoming) {
 // 直接整份覆盖会静默抹掉该设置。
 function mergeConfig(existing, incoming) {
     return { ...(existing || {}), ...(incoming || {}) };
+}
+
+// ========== 模块平台配置 ==========
+// 与 config.json 分离的两条理由：那里的新 key 默认经 toPublicConfig 下发给
+// 匿名用户，而 mergeConfig 是顶层浅合并、嵌套对象会被客户端旧副本整块覆盖。
+// 所以模块配置不进 config.json，也不共享它的保存按钮。
+
+const WIDGET_SIDES = new Set(['left', 'right']);
+const MODULES_CONFIG_MAX = 64 * 1024;
+
+function asTrimmedString(value, max = 200) {
+    if (typeof value !== 'string') return '';
+    return value.trim().slice(0, max);
+}
+
+/**
+ * 首页轮询周期的可选值（秒）。
+ * 白名单而非自由输入：周期直接决定请求频率，10 秒以下会撞管理端限流
+ * （30 次/分钟），而 5 分钟以上与缓存 TTL 相同、失去意义。
+ */
+const POLL_INTERVALS = [10, 15, 30, 60, 300];
+
+function resolvePollInterval(value) {
+    const n = Number(value);
+    return POLL_INTERVALS.includes(n) ? n : 15;
+}
+
+function normalizeWidget(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = asTrimmedString(raw.id, 64);
+    if (!id) return null;
+    const order = Number(raw.order);
+    return {
+        id,
+        enabled: raw.enabled !== false,
+        side: WIDGET_SIDES.has(raw.side) ? raw.side : 'left',
+        order: Number.isFinite(order) ? order : 0,
+        collapsed: raw.collapsed === true
+    };
+}
+
+function normalizeServer(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = asTrimmedString(raw.id, 64);
+    const url = asTrimmedString(raw.url, 300);
+    if (!id || !url) return null;
+    return { id, name: asTrimmedString(raw.name, 60) || url, url };
+}
+
+function normalizeStringList(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map(item => asTrimmedString(item, 120))
+        .filter(Boolean)
+        .slice(0, 200);
+}
+
+/**
+ * 校验请求体，返回规范化后的配置；形状不对时返回 null。
+ * 这里是唯一的写入闸门：POST /api/config 只有一条 categories 检查，
+ * 模块配置比它更严格，因为每个字段都会变成对外的轮询目标。
+ *
+ * **缺席的键不补默认值**：缺失的键在结果里保持 undefined，
+ * 这样 mergeModulesConfig 才能区分「显式清空」与「没提交」。
+ * 早先这里把缺失一律补成空数组，于是 merge 的保留分支永远走不到——
+ * 单元测试直接调 merge 绕过了归一化，所以是真实服务端到端才发现的：
+ * 只提交 widgets 的一次拖拽排序，把 servers 与 symbols 清空了。
+ */
+function normalizeModulesConfig(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const out = { version: 1 };
+
+    // enabledModules 要被 URL 路径使用，白名单只允许已知形状的短 id
+    if (body.enabledModules !== undefined) {
+        out.enabledModules = [...new Set(normalizeStringList(body.enabledModules)
+            .filter(id => /^[a-z0-9][a-z0-9-]{0,63}$/.test(id)))];
+    }
+    if (body.widgets !== undefined) {
+        out.widgets = (Array.isArray(body.widgets) ? body.widgets : [])
+            .map(normalizeWidget)
+            .filter(Boolean)
+            .slice(0, 50);
+    }
+    if (body.servers !== undefined) {
+        out.servers = (Array.isArray(body.servers) ? body.servers : [])
+            .map(normalizeServer)
+            .filter(Boolean)
+            .slice(0, 20);
+    }
+    if (body.socialAccounts !== undefined) out.socialAccounts = normalizeStringList(body.socialAccounts);
+    if (body.symbols !== undefined) out.symbols = normalizeStringList(body.symbols);
+    if (body.pollInterval !== undefined) out.pollInterval = resolvePollInterval(body.pollInterval);
+
+    return out;
+}
+
+/**
+ * 按 id 合并模块配置写入。
+ * 请求体里缺席的数组一律保留而非清空——拖拽排序只提交 widgets，
+ * 若整份覆盖，用户调整一次布局就会把服务器列表清空。
+ *
+ * servers 额外按 id 逐条合并：读接口只回 `hasToken`、不回信封，
+ * 所以客户端手里的 server 对象**没有** token 字段。若直接采纳请求体，
+ * 每保存一次配置就会把所有已存的 token 抹掉。
+ */
+function mergeModulesConfig(existing, incoming) {
+    const current = existing && typeof existing === 'object' ? existing : {};
+    const pick = key => (incoming[key] !== undefined ? incoming[key] : current[key]);
+
+    // 服务器：请求体里有这条就用它（但补回既有的 token），
+    // 没提交（= 用户删了）才真的移除。
+    let servers;
+    if (incoming.servers !== undefined) {
+        const existingById = new Map(
+            (Array.isArray(current.servers) ? current.servers : []).map(s => [s.id, s]));
+        servers = incoming.servers.map(server => {
+            const previous = existingById.get(server.id);
+            if (!previous) return server;
+            // hasToken 为 true 但没有 token 字段 = 前端只回显了状态，
+            // 此时保留原有的密文信封
+            return { ...server, token: previous.token };
+        });
+    } else {
+        servers = current.servers || [];
+    }
+
+    return {
+        version: 1,
+        enabledModules: pick('enabledModules') || [],
+        widgets: pick('widgets') || [],
+        servers,
+        socialAccounts: pick('socialAccounts') || [],
+        symbols: pick('symbols') || [],
+        // 缺席时沿用既有值（不回落默认）——前端保存布局时通常不提交这个键，
+        // 无条件重置成 15 会让用户设过的周期被悄悄改掉
+        pollInterval: resolvePollInterval(pick('pollInterval'))
+    };
 }
 
 // 获取收藏书签
@@ -1245,6 +1509,325 @@ app.post('/api/webdav/delete', rateLimit, requireAdmin, async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         console.error('删除备份失败:', err);
+        res.status(500).json({ error: '删除失败: ' + err.message });
+    }
+});
+
+// ========== 模块平台 API ==========
+// 三个端点全部是特权路由：模块配置与采集值不进公开视图，
+// 匿名用户连"有哪些服务器在监控"都不该看到。
+
+const METRICS_CACHE_KEY = 'local';
+// 兜底 TTL。实际用 resolveCacheTtl()：它跟着用户设的轮询周期走。
+const METRICS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * 缓存 TTL 跟着轮询周期走。
+ *
+ * 固定 5 分钟会让「把周期改成 10 秒」变成一句空话——前端每 10 秒问一次，
+ * 服务端 5 分钟内都拿同一份缓存返回。实测里用户设了短周期却看不到更实时的数据，
+ * 根因就是这里。
+ *
+ * 取 `周期 + 10s` 而不是等于周期：等于周期时，两个轮询刚好落在 TTL 边界外，
+ * 永远拿不到新值。10 秒的余量让边界错开。
+ */
+function resolveCacheTtl(pollIntervalSeconds) {
+    const seconds = resolvePollInterval(pollIntervalSeconds);
+    // 下限 20 秒、上限 5 分钟：太短会每次请求都重采（顺带把目标机也拖住）
+    return Math.min(300, Math.max(20, seconds + 10)) * 1000;
+}
+
+/** 读当前配置里的轮询周期（秒），供采集端算 TTL。 */
+async function readPollInterval() {
+    try {
+        const config = await readJSON(MODULES_FILE);
+        return resolvePollInterval(config?.pollInterval);
+    } catch {
+        return 15;
+    }
+}
+
+function readCacheRow(db, key) {
+    const row = db.prepare('SELECT payload, updated_at FROM module_cache WHERE key = ?').get(key);
+    if (!row) return null;
+    try {
+        return { value: JSON.parse(row.payload), updatedAt: row.updated_at };
+    } catch {
+        return null;
+    }
+}
+
+function writeCacheRow(db, key, value, now) {
+    db.prepare(
+        'INSERT INTO module_cache (key, payload, updated_at) VALUES (?, ?, ?) ' +
+        'ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at'
+    ).run(key, JSON.stringify(value), now);
+}
+
+/**
+ * 让采集缓存失效。
+ *
+ * 缓存 TTL 是 5 分钟，但它缓存的是「上次采到了什么」，而采集的目标由配置决定。
+ * 改完服务器列表不清缓存的话，下一次轮询拿到的仍是**改动之前**那份采集结果——
+ * 症状是「新加的机器不出现、删掉的还在」，而且要等满 5 分钟才自愈。
+ *
+ * 用户实测时正是这样看到的：配好了四台机器，首页仍只有一张空卡片。
+ * 配置是缓存的输入，输入变了就必须让缓存失效——这不是优化，是正确性。
+ */
+function invalidateMetricsCache() {
+    try {
+        if (db) db.prepare('DELETE FROM module_cache WHERE key = ?').run(METRICS_CACHE_KEY);
+    } catch (err) {
+        // 缓存清不掉不该阻断配置保存——配置已落盘，下一次采集自己会覆盖
+        console.error('清除监控缓存失败:', err);
+    }
+}
+
+app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        const config = await readJSON(MODULES_FILE).catch(() => defaultModulesConfig);
+        // token 只出不来：回一个 hasToken 布尔即可，前端显示「已配置」。
+        // 把信封原样回给前端等于把密文也交出去——虽然解不开，
+        // 但没必要让浏览器拿到本不该有的数据。
+        res.json({
+            ...config,
+            servers: (config.servers || []).map(({ token, ...rest }) => ({
+                ...rest,
+                hasToken: isEnvelope(token)
+            }))
+        });
+    } catch {
+        // 文件缺失时回落到默认值，而不是 500——配置丢了不该让模块整体不可用
+        res.json(defaultModulesConfig);
+    }
+});
+
+app.post('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        if (JSON.stringify(req.body ?? {}).length > MODULES_CONFIG_MAX) {
+            return res.status(413).json({ error: '配置过大' });
+        }
+
+        const normalized = normalizeModulesConfig(req.body);
+        if (!normalized) {
+            return res.status(400).json({ error: '无效的模块配置格式' });
+        }
+
+        let existing = {};
+        try {
+            existing = await readJSON(MODULES_FILE);
+        } catch {
+            existing = defaultModulesConfig;
+        }
+
+        const merged = mergeModulesConfig(existing, normalized);
+        await writeJSON(MODULES_FILE, merged);
+
+        // 服务器列表变了才清缓存：这条路由也用于拖拽排序与开关模块，
+        // 那两种改动不影响采集目标，每次都清会让缓存形同虚设。
+        if (normalized.servers !== undefined) {
+            const before = JSON.stringify(existing.servers || []);
+            const after = JSON.stringify(merged.servers || []);
+            if (before !== after) invalidateMetricsCache();
+        }
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('保存模块配置失败:', err);
+        res.status(500).json({ error: '保存失败: ' + err.message });
+    }
+});
+
+/**
+ * 解密一台目标机的 token。失败时返回 null 并说明原因——
+ * 静默跳过会让「token 错了」和「服务器离线」在界面上长得一样。
+ */
+function resolveServerToken(server, passwordHash) {
+    if (!isEnvelope(server.token)) {
+        // 没有 token 说明用户没配，或沿用了本机模式（不需要凭据）
+        return { token: null, error: null };
+    }
+    try {
+        return { token: decrypt(server.token, passwordHash, 'modules'), error: null };
+    } catch {
+        return { token: null, error: '凭据无法解密，请重新输入 token' };
+    }
+}
+
+/**
+ * 采集全部服务器：本机 + 配置里的每台目标机。
+ *
+ * 本机始终排第一（id 用 `local`），它的卡片不需要配置、不会掉线。
+ * 目标机并发拉取——串行会让 N 台的总耗时累加到超出前端轮询周期。
+ */
+async function collectAllServers(passwordHash) {
+    let config = defaultModulesConfig;
+    try {
+        config = await readJSON(MODULES_FILE);
+    } catch {
+        // 配置文件缺失时只返回本机
+    }
+
+    const servers = Array.isArray(config.servers) ? config.servers : [];
+    const results = [];
+
+    // 本机
+    results.push({
+        id: 'local',
+        name: '本机',
+        url: null,
+        isLocal: true,
+        online: true,
+        metrics: await readLocalMetrics()
+    });
+
+    // 目标机：并发
+    const remote = await Promise.all(servers.map(async server => {
+        const { token, error } = resolveServerToken(server, passwordHash);
+        if (error) {
+            return { id: server.id, name: server.name, url: server.url, online: false, error };
+        }
+        const result = await fetchRemoteMetrics({ url: server.url, token });
+        if (!result.ok) {
+            return {
+                id: server.id,
+                name: server.name,
+                url: server.url,
+                online: false,
+                error: result.error,
+                // authFailed 透传给界面：凭据被拒与机器挂掉需要不同的处置
+                // （前者去重填 token，后者去查机器），只给一行文本会逼用户自己猜
+                authFailed: result.authFailed === true
+            };
+        }
+        return {
+            id: server.id,
+            name: server.name,
+            url: server.url,
+            isLocal: false,
+            online: true,
+            metrics: result.metrics,
+            latencyMs: result.latencyMs
+        };
+    }));
+    results.push(...remote);
+
+    return results;
+}
+
+app.get('/api/modules/metrics', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+
+        const now = Date.now();
+        // TTL 跟着用户设的轮询周期走，而不是固定 5 分钟——
+        // 否则「把周期改成 10 秒」只是名义上的，服务端仍 5 分钟才重采一次。
+        const pollInterval = await readPollInterval();
+        const ttl = resolveCacheTtl(pollInterval);
+        // 缓存新鲜就直接回，避免每个轮询都付一次 200ms 的本机采样 + N 次远端请求
+        const cached = readCacheRow(db, METRICS_CACHE_KEY);
+        if (cached && now - cached.updatedAt < ttl) {
+            return res.json({
+                servers: cached.value.servers,
+                updatedAt: cached.updatedAt,
+                cached: true,
+                pollInterval
+            });
+        }
+
+        const passwordHash = await getPasswordHash();
+        const servers = await collectAllServers(passwordHash);
+        const payload = { servers };
+        writeCacheRow(db, METRICS_CACHE_KEY, payload, now);
+        res.json({ servers, updatedAt: now, cached: false, pollInterval });
+    } catch (err) {
+        console.error('读取监控指标失败:', err);
+        res.status(500).json({ error: '读取失败: ' + err.message });
+    }
+});
+
+/**
+ * 服务器配置的增删改。token 只进不出：
+ * 读接口只回 hasToken，保存时空值表示保持原值。
+ */
+app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        const { id, name, url, token } = req.body || {};
+        if (typeof url !== 'string' || !url.trim()) {
+            return res.status(400).json({ error: '请填写服务器地址' });
+        }
+        // 只允许 http/https：其它协议（file:、gopher:）经 agent 拉取时
+        // 会变成一个可被利用的服务端请求面
+        let parsed;
+        try {
+            parsed = new URL(url.trim());
+        } catch {
+            return res.status(400).json({ error: '地址格式不正确' });
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return res.status(400).json({ error: '地址必须以 http:// 或 https:// 开头' });
+        }
+
+        let config = defaultModulesConfig;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            config = defaultModulesConfig;
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const serverId = typeof id === 'string' && id.trim() ? id.trim() : `srv_${Date.now()}`;
+        const index = servers.findIndex(s => s.id === serverId);
+
+        const entry = {
+            id: serverId,
+            name: (typeof name === 'string' && name.trim()) || url.trim(),
+            url: url.trim()
+        };
+        if (index >= 0) {
+            // 编辑：token 空 = 保持原值，不回显所以用户无法「重新看到」它
+            entry.token = servers[index].token;
+        }
+
+        const passwordHash = await getPasswordHash();
+        if (typeof token === 'string' && token.trim()) {
+            entry.token = encrypt(token.trim(), passwordHash, 'modules');
+        }
+
+        if (index >= 0) servers[index] = entry;
+        else servers.push(entry);
+
+        config.servers = servers;
+        await writeJSON(MODULES_FILE, config);
+        // 加/改一台机器后立刻重采，否则要等满 5 分钟 TTL 才看到新目标
+        invalidateMetricsCache();
+        res.json({ success: true, id: serverId });
+    } catch (err) {
+        console.error('保存服务器失败:', err);
+        res.status(500).json({ error: '保存失败: ' + err.message });
+    }
+});
+
+app.delete('/api/modules/servers/:id', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const before = servers.length;
+        config.servers = servers.filter(s => s.id !== req.params.id);
+        if (config.servers.length === before) {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        await writeJSON(MODULES_FILE, config);
+        // 删掉的机器不该再出现在下一次采集结果里
+        invalidateMetricsCache();
+        res.json({ success: true });
+    } catch (err) {
+        console.error('删除服务器失败:', err);
         res.status(500).json({ error: '删除失败: ' + err.message });
     }
 });
