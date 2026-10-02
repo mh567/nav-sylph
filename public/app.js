@@ -2857,6 +2857,11 @@
             const isEdit = !!server;
             const result = await this.showUiDialog({
                 title: isEdit ? '编辑服务器' : '添加服务器',
+                // 说明 token 的后果：它是那台机器的只读监控凭据，泄露即泄露。
+                // 不写在这里，用户只能从 agent/README.md 里知道——而大多数人不会去读。
+                message: 'token 等同于那台机器的实时只读监控凭据：拿到它就能读到'
+                    + 'CPU、内存与主机名。请每台用不同的值，不要复用；'
+                    + '泄露后在下方「编辑」里填新值即可让旧的立即失效。',
                 fields: [
                     { label: '名称', type: 'text', value: server ? server.name : '', placeholder: '例如：家用 NAS' },
                     { label: '地址', type: 'text', value: server ? server.url : '', placeholder: 'http://192.168.1.10:4195' },
@@ -3257,7 +3262,7 @@
                         msgEl.textContent = res.message || '配置和收藏没有变化，无需备份';
                         msgEl.className = 'webdav-message';
                     } else {
-                        const files = [res.configFilename, res.bookmarksFilename].filter(Boolean);
+                        const files = [res.configFilename, res.bookmarksFilename, res.modulesFilename].filter(Boolean);
                         msgEl.textContent = `备份成功: ${files.join(', ')}`;
                         msgEl.className = 'webdav-message success';
                         await this.loadWebDAVConfig();
@@ -3306,15 +3311,18 @@
                                     const isLegacy = !!b.legacyFile;
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
+                                    const hasModules = !!b.modulesFile;
                                     const displayName = b.timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
                                     const files = [];
                                     if (isLegacy) files.push('旧版备份');
                                     if (hasConfig) files.push('配置');
                                     if (hasBookmarks) files.push('收藏');
+                                    if (hasModules) files.push('模块');
                                     return `
                                     <div class="webdav-backup-item"
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
+                                         data-modules="${this.esc(b.modulesFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
                                          data-timestamp="${this.esc(b.timestamp)}">
                                         <div class="webdav-backup-info">
@@ -3347,11 +3355,13 @@
                         const item = btn.closest('.webdav-backup-item');
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
+                        const modulesFile = item.dataset.modules;
                         const legacyFile = item.dataset.legacy;
 
                         this.showRestoreOptionsDialog({
                             configFile,
                             bookmarksFile,
+                            modulesFile,
                             legacyFile
                         }, dialog);
                     };
@@ -3363,6 +3373,7 @@
                         const item = btn.closest('.webdav-backup-item');
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
+                        const modulesFile = item.dataset.modules;
                         const legacyFile = item.dataset.legacy;
                         const timestamp = item.dataset.timestamp;
                         const displayName = timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
@@ -3373,7 +3384,8 @@
                         btn.textContent = '删除中...';
 
                         try {
-                            const filesToDelete = [configFile, bookmarksFile, legacyFile].filter(Boolean);
+                            // 模块文件必须一起删，否则远端会留下孤儿文件
+                            const filesToDelete = [configFile, bookmarksFile, modulesFile, legacyFile].filter(Boolean);
                             for (const file of filesToDelete) {
                                 await API.post('/api/webdav/delete', { filename: file });
                             }
@@ -3402,6 +3414,7 @@
         showRestoreOptionsDialog(backup, parentDialog) {
             const hasConfig = !!(backup.configFile || backup.legacyFile);
             const hasBookmarks = !!(backup.bookmarksFile || backup.legacyFile);
+            const hasModules = !!backup.modulesFile;
 
             const optionsDialog = html(`
                 <div class="fav-dialog-overlay" id="restoreOptionsDialog">
@@ -3411,7 +3424,7 @@
                             ${hasConfig && hasBookmarks ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="all" checked>
-                                <span>同时恢复配置和收藏</span>
+                                <span>同时恢复配置和收藏${hasModules ? '（含模块设置）' : ''}</span>
                             </label>
                             ` : ''}
                             ${hasConfig ? `
@@ -3424,6 +3437,12 @@
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="bookmarks" ${hasConfig ? '' : 'checked'}>
                                 <span>只恢复收藏</span>
+                            </label>
+                            ` : ''}
+                            ${hasModules ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="modules" ${hasConfig || hasBookmarks ? '' : 'checked'}>
+                                <span>只恢复模块设置（监控目标、布局、token）</span>
                             </label>
                             ` : ''}
                         </div>
@@ -3442,6 +3461,7 @@
                 const restoreType = $('input[name="restoreType"]:checked').value;
                 const restoreConfig = restoreType === 'all' || restoreType === 'config';
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
+                const restoreModules = restoreType === 'all' || restoreType === 'modules';
                 if (!await this.confirmAction('恢复将覆盖当前对应的数据，确定继续吗？', '确认恢复')) return;
 
                 optionsDialog.querySelector('.btn-primary').disabled = true;
@@ -3451,9 +3471,11 @@
                     const restoreRes = await API.post('/api/webdav/restore', {
                         configFile: backup.configFile,
                         bookmarksFile: backup.bookmarksFile,
+                        modulesFile: backup.modulesFile,
                         legacyFile: backup.legacyFile,
                         restoreConfig,
-                        restoreBookmarks
+                        restoreBookmarks,
+                        restoreModules
                     });
 
                     if (restoreRes.success) {

@@ -102,6 +102,99 @@ test('WebDAV 配置保存后同样收紧为 600', () => {
         '里面存着加密后的 WebDAV 密码');
 });
 
+// ========== 模块配置纳入备份 ==========
+// v1.6.0 引入了 .modules.json（监控目标、token、顺序与显示开关），
+// 但备份只覆盖 config.json 与 favorites.json。换机器或文件丢失后，
+// 监控配置全部重来——这里钉住它必须跟着一起走。
+
+test('备份包含 .modules.json，且 token 仍是密文', () => {
+    const code = stripComments(backupSource);
+    const backupFn = code.slice(code.indexOf('async createBackup('),
+        code.indexOf('async listBackups('));
+
+    // 上传
+    assert.match(backupFn, /nav-sylph-modules-\$\{timestamp\}\.json/,
+        '上传 nav-sylph-modules-{时间戳}.json');
+    assert.match(backupFn, /type:\s*'nav-sylph-modules'/, '带自己的 type 标记');
+    // token 走的是 data.modules 原文，不做转换 —— 密文进、密文出
+    assert.match(backupFn, /data:\s*modulesData/, '原样带出模块配置');
+
+    // **要断言真的上传了**，只匹配文件名是不够的：
+    // 把 `if (modulesData)` 改成 `if (false)` 后，文件名与 type 仍在源码里，
+    // 两条断言照样全绿，而备份里永远不会出现 modules 文件。
+    // 所以要盯住从存在性判断到 putFileContents 这一段。
+    // 锚点用 `let modulesFilename` —— 存在性判断在它之后、对象字面量之前，
+    // 用 `const modulesBackup` 会把 `if (modulesData)` 切到外面去。
+    // 也不能用注释当锚点：code 已剥掉注释，indexOf 会返回 -1 而切片仍是全文。
+    const uploadBlock = backupFn.slice(backupFn.indexOf('let modulesFilename'));
+    assert.ok(uploadBlock.length > 100, '找到 modules 上传段');
+    assert.match(uploadBlock, /if \(modulesData\)/, '上传段有存在性判断');
+    assert.match(uploadBlock, /putFileContents\([\s\S]*?modulesFilePath/,
+        'modules 文件真的被 put 上传');
+    assert.match(backupFn, /modulesFilename = `nav-sylph-modules-/, '上传后记录文件名供界面显示');
+
+    // 「有无变化」判定也要算上它：只改监控目标却判成 noChanges，
+    // 远端会留一份旧布局，恢复时拿到过期数据
+    assert.match(backupFn, /lastModulesChecksum === modulesChecksum/,
+        '模块配置参与 noChanges 判定');
+});
+
+test('.admin-password.json 始终不进备份', () => {
+    // 把密码哈希交出去等于把账号交出去。不管备份覆盖多少文件，这一条不能破。
+    const code = stripComments(backupSource);
+    const backupFn = code.slice(code.indexOf('async createBackup('),
+        code.indexOf('async listBackups('));
+    assert.doesNotMatch(backupFn, /PASSWORD_FILE|admin-password|passwordHash\s*[:=]/,
+        '备份不得包含管理密码哈希');
+});
+
+test('恢复时校验 modules 文件的 type 与 checksum', () => {
+    // 不校验就是把任意 JSON 当配置写进 .modules.json。
+    const code = stripComments(backupSource);
+    const restoreFn = code.slice(code.indexOf('async restoreBackup('),
+        code.indexOf('async deleteBackup('));
+    assert.match(restoreFn, /backup\.type !== 'nav-sylph-modules'/, '校验 type');
+    assert.match(restoreFn, /verifyChecksum\(backup\)/, '校验 checksum');
+});
+
+test('备份列表把 modules 文件归到同一时间戳分组，删除时一并清理', () => {
+    const code = stripComments(backupSource);
+    const listFn = code.slice(code.indexOf('async listBackups('),
+        code.indexOf('async cleanupOldBackups('));
+    assert.match(listFn, /\^nav-sylph-modules-\(\\d\{8\}-\\d\{6\}\)\\\.json\$/,
+        '识别 modules 文件名');
+    assert.match(listFn, /backupGroups\[ts\]\.modulesFile = item\.basename/,
+        '归入同一时间戳分组——否则它会变成孤儿文件');
+
+    // 清理按分组算：孤儿文件既不被计入也不会被清走，长期堆积在 WebDAV 上
+    const cleanFn = code.slice(code.indexOf('async cleanupOldBackups('),
+        code.indexOf('async restoreBackup('));
+    assert.match(cleanFn, /if \(backup\.modulesFile\)[\s\S]*?deleteBackup\(backup\.modulesFile\)/,
+        '删除备份时一并删除 modules 文件');
+});
+
+test('服务端把 .modules.json 传进备份并写回', () => {
+    const code = stripComments(server);
+    const backupRoute = code.slice(code.indexOf("app.post('/api/webdav/backup'"),
+        code.indexOf("app.post('/api/webdav/list'"));
+    assert.match(backupRoute, /modulesData = await readJSON\(MODULES_FILE\)/,
+        '备份时读取 .modules.json');
+    assert.match(backupRoute, /createBackup\([\s\S]*?modulesData\)/,
+        '传给 createBackup');
+    // 文件不存在（旧版本升级）时不能因此失败
+    assert.match(backupRoute, /modulesData = await readJSON\(MODULES_FILE\);\s*\} catch \{\}/,
+        '读不到时降级为 null，而不是抛错');
+
+    const restoreRoute = code.slice(code.indexOf("app.post('/api/webdav/restore'"),
+        code.indexOf("app.post('/api/webdav/delete'"));
+    assert.match(restoreRoute, /writeJSON\(MODULES_FILE, result\.data\.modules\)/,
+        '恢复时写回 .modules.json');
+    assert.match(restoreRoute, /restoreModules = true/, '默认恢复模块配置');
+    // 缺失的 modules 文件不能被当成「没选」，否则整个恢复被 400 挡下
+    assert.match(restoreRoute, /!configFile && !bookmarksFile && !modulesFile && !legacyFile/,
+        '只选模块文件也能恢复');
+});
+
 // ========== 凭据加密 ==========
 // 凭据加密的归属测试。原先的实现在 lib/webdav-backup.js 里，模块 token
 // 要复用就得抄一份——抄出来的两份会各自漂移，改密码时也只重加密其中一份。

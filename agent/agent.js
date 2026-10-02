@@ -32,12 +32,14 @@ const VERSION = 1;
 // ========== 参数 ==========
 
 function parseArgs(argv) {
-    const out = { port: 4195, host: '127.0.0.1' };
+    const out = { port: 4195, host: '127.0.0.1', exposeHostname: false };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--port' && argv[i + 1]) out.port = Number(argv[++i]);
         else if (arg === '--host' && argv[i + 1]) out.host = argv[++i];
         else if (arg === '--token' && argv[i + 1]) out.token = argv[++i];
+        // /health 里带主机名。只有确定端口没暴露到不可信网络时才需要。
+        else if (arg === '--expose-hostname') out.exposeHostname = true;
         else if (arg === '--help' || arg === '-h') out.help = true;
     }
     return out;
@@ -46,7 +48,9 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 
 if (args.help) {
-    console.log('用法: NAVSYLPH_TOKEN=<token> node agent.js [--port 4195] [--host 127.0.0.1]');
+    console.log('用法: NAVSYLPH_TOKEN=<token> node agent.js [--port 4195] [--host 127.0.0.1] [--expose-hostname]');
+    console.log('  --host           监听地址；跨机访问必须显式设 0.0.0.0');
+    console.log('  --expose-hostname 让 /health 也返回主机名（默认不返回，避免泄露）');
     process.exit(0);
 }
 
@@ -230,8 +234,14 @@ function tokenMatches(provided) {
 
 const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
+        // /health 不需要鉴权（方便「agent 起来了吗」这类探测），所以**不能**返回
+        // 主机名：它会跟着其它信息一起泄露这台机器叫什么、内网里怎么称呼它。
+        // 早先这里返回 hostname，等于给每个能扫到该端口的人一份免费的资产清单。
+        // 需要主机名的人自己看 /metrics（那里要鉴权）。
+        const payload = { status: 'ok', version: VERSION };
+        if (args.exposeHostname) payload.hostname = os.hostname();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', version: VERSION, hostname: os.hostname() }));
+        res.end(JSON.stringify(payload));
         return;
     }
 

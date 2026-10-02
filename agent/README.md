@@ -40,13 +40,14 @@ NAVSYLPH_TOKEN=<你的 token> node agent.js --port 4195 --host 0.0.0.0
 | `--port` | 4195 | 监听端口 |
 | `--host` | 127.0.0.1 | 监听地址。跨机访问必须显式设 `0.0.0.0` |
 | `--token` | 无 | Bearer token。**优先用环境变量 `NAVSYLPH_TOKEN`**——命令行参数会出现在 `ps` 输出和 shell 历史里 |
+| `--expose-hostname` | 关 | 让 `/health` 也返回主机名。默认**不返回**，因为 `/health` 不需要鉴权 |
 
 ## 端点
 
 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- |
-| `GET /health` | 否 | 存活检查，返回 `{"status":"ok","version":1,"hostname":"..."}` |
-| `GET /metrics` | **是** | 指标 JSON，需要 `Authorization: Bearer <token>` |
+| `GET /health` | 否 | 存活检查，返回 `{"status":"ok","version":1}`。**不含主机名** —— 它不需要鉴权，泄露主机名等于给每个能扫到该端口的人一份资产清单 |
+| `GET /metrics` | **是** | 指标 JSON，需要 `Authorization: Bearer <token>`。主机名在这里 |
 
 `/metrics` 返回：
 
@@ -126,10 +127,48 @@ sudo ufw allow 4195/tcp
 
 ## 安全
 
+### token 泄露意味着什么
+
+**拿到 agent token ≈ 拿到那台机器的实时只读监控数据。** 具体是：CPU 与内存占用、系统负载、运行时长、主机名（`/metrics` 里返回）。
+
+**不能**通过 agent 执行命令、改配置、读文件或访问内网其它主机 —— agent 只读系统计数器，只回 JSON。
+
+真正要防的是信息泄露与被当作跳板：
+
+1. **内网信息泄露。** 监控目标通常是 NAS、软路由、家用机，这些恰好常在局域网。token 一旦泄露且那台机器可达，攻击者就知道你家有哪些机器、叫什么、什么时候开着。
+2. **公开暴露的 agent。** 若某台 agent 设了 `--host 0.0.0.0` 而防火墙又没关，那它就是一个公开的「你的机器都在这里」的信息源。
+3. **横向移动的跳板。** 主机名 + 内网角色信息（NAS、路由器）会帮攻击者判断下一步打哪台。
+
+**token 是明文等价的凭据**：它在命令行与环境变量里都是明文，`ps` 输出与 shell 历史都看得到。所以：
+
+- 优先用**环境变量** `NAVSYLPH_TOKEN` 而非 `--token`
+- 目标机上的 token 用**每台不同**的值，别所有机器共用一个 —— 共用时泄一台等于泄全部
+- agent 只在你信任的网络里用 `--host 0.0.0.0`；能走 VPN 或 SSH 隧道就别直接暴露端口
+
+### 泄露后怎么办
+
+1. 在 Nav Sylph 后台「模块 → 监控目标」点该服务器的「编辑」，**填一个全新的 token**（清空再填新值即覆盖旧值）
+2. 到目标机上改 `NAVSYLPH_TOKEN` 并重启 agent：
+
+   ```bash
+   sudo systemctl edit nav-agent   # 或直接编辑 unit 文件
+   # 把 Environment=NAVSYLPH_TOKEN=... 换成新值
+   sudo systemctl daemon-reload && sudo systemctl restart nav-agent
+   ```
+
+3. 确认新 token 生效：后台卡片恢复在线，或 `curl -H "Authorization: Bearer <新token>" http://<目标机>:4195/health`（返回 `{"status":"ok"}` 即鉴权通过）
+
+旧 token 立刻失效，无需额外操作 —— 它只存在于配置里，服务端不保存明文。
+
+> 改 token **不需要**改 Nav Sylph 的管理密码，也不需要重新部署 agent。两者是独立的凭据。
+
+### 已有防护
+
 - token 只从环境变量或 `--token` 读，**不写任何文件**
-- `/metrics` 需要鉴权，`/health` 不需要（只返回版本与主机名，不含任何指标）
-- 未授权的响应体是 `{"error":"unauthorized"}`——不提示 token 的长度或前缀，避免帮攻击者缩小猜测空间
+- `/metrics` 需要鉴权；未授权返回 `{"error":"unauthorized"}` —— 不提示 token 的长度或前缀，避免帮攻击者缩小猜测空间
 - token 比较用 `crypto.timingSafeEqual` 定长比较
+- **`/health` 默认不返回主机名**。它不需要鉴权，所以只回 `{"status":"ok","version":1}`；主机名只出现在需要鉴权的 `/metrics` 里。只有确定端口没暴露到不可信网络时，才用 `--expose-hostname` 让 `/health` 也带上它
+- agent 只读 `/proc`（或 `os` 模块），不写任何文件、不执行外部命令
 
 ## 协议版本
 

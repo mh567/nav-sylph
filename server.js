@@ -1386,6 +1386,12 @@ app.post('/api/webdav/backup', rateLimit, requireAdmin, async (req, res) => {
         try {
             favoritesData = await readJSON(FAVORITES_FILE);
         } catch {}
+        // 模块平台配置。丢了它，监控目标、每台的 token、顺序与显示开关全部重来，
+        // 所以它必须跟配置、收藏一起进备份。文件不存在时（旧版本）跳过。
+        let modulesData = null;
+        try {
+            modulesData = await readJSON(MODULES_FILE);
+        } catch {}
 
         // Get app version
         let appVersion = '1.0.0';
@@ -1394,7 +1400,7 @@ app.post('/api/webdav/backup', rateLimit, requireAdmin, async (req, res) => {
             appVersion = versionData.version;
         } catch {}
 
-        const result = await webdav.createBackup(configData, favoritesData, appVersion, generateBookmarkHtml);
+        const result = await webdav.createBackup(configData, favoritesData, appVersion, generateBookmarkHtml, modulesData);
 
         // Auto cleanup: keep only latest 5 backups
         try {
@@ -1435,12 +1441,14 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         const {
             configFile,
             bookmarksFile,
+            modulesFile,
             legacyFile,
             restoreConfig = true,
-            restoreBookmarks = true
+            restoreBookmarks = true,
+            restoreModules = true
         } = req.body;
 
-        if (!configFile && !bookmarksFile && !legacyFile) {
+        if (!configFile && !bookmarksFile && !modulesFile && !legacyFile) {
             return res.status(400).json({ error: '请选择要恢复的备份文件' });
         }
 
@@ -1455,9 +1463,11 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         const result = await webdav.restoreBackup({
             configFile,
             bookmarksFile,
+            modulesFile,
             legacyFile,
             restoreConfig,
-            restoreBookmarks
+            restoreBookmarks,
+            restoreModules
         });
 
         // Write restored data
@@ -1475,11 +1485,21 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
         }
 
+        // 模块配置。token 保持密文原样写回——换机器时用同一个管理员密码
+        // 才能解开，所以这里不做任何转换。恢复后要重置内存里的配置与缓存，
+        // 否则页面还拿着恢复前的服务器列表。
+        let modulesRestored = false;
+        if (result.data.modules && restoreModules) {
+            await writeJSON(MODULES_FILE, result.data.modules);
+            modulesRestored = true;
+        }
+
         res.json({
             success: true,
-            message: '恢复成功',
+            message: modulesRestored ? '恢复成功（含模块配置）' : '恢复成功',
             restoredConfig: !!(result.data.config && restoreConfig),
             restoredBookmarks: !!(result.data.favorites || result.data.bookmarksHtml) && restoreBookmarks,
+            restoredModules: modulesRestored,
             createdAt: result.createdAt,
             appVersion: result.appVersion
         });

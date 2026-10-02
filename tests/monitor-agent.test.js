@@ -368,6 +368,52 @@ test('前端按服务端回的周期重排自己的定时器', () => {
     assert.match(mod, /document\.hidden/, '不可见时停表');
 });
 
+test('agent 的 health 端点不泄露主机名', () => {
+    // /health 不需要鉴权（方便「agent 起来了吗」这类探测），
+    // 所以返回主机名等于给每个能扫到该端口的人一份免费的资产清单。
+    // 主机名只该出现在需要鉴权的 /metrics 里。
+    const code = stripComments(agentSource);
+    const health = code.slice(code.indexOf("req.url === '/health'"),
+        code.indexOf("req.url !== '/metrics'"));
+    assert.ok(health.length > 100, '切出 health 分支');
+    assert.doesNotMatch(health, /hostname:\s*os\.hostname\(\)/,
+        'health 默认不得返回主机名');
+    // 确实想要时可以显式打开
+    assert.match(health, /if \(args\.exposeHostname\)/, '主机名改为显式开关');
+    assert.match(code, /'--expose-hostname'/, '有对应的命令行参数');
+
+    // /metrics 仍然返回主机名（那里要鉴权）
+    const metrics = code.slice(code.indexOf('async function collect('));
+    assert.match(metrics, /hostname:\s*os\.hostname\(\)/, 'metrics 里保留主机名');
+});
+
+test('README 与 agent 源码的变量名一致，且不泄露凭据后果', () => {
+    // 我在文档里把 NAVSYLPH_TOKEN 一度手写成 NAVSYP_TOKEN ——
+    // 用户照着设了一个 agent 根本不读的环境变量，鉴权必然失败。
+    // 变量名是这类文档最容易被改坏又最难被发现的东西，要有守卫。
+    const agentCode = agentSource;
+    const readme = fs.readFileSync(path.join(ROOT, 'agent', 'README.md'), 'utf8');
+    const realName = /process\.env\.([A-Z_]+)/.exec(agentCode)?.[1];
+    assert.equal(realName, 'NAVSYLPH_TOKEN', '源码里的变量名');
+    assert.doesNotMatch(readme, /NAVSYP_TOKEN/, '文档里不得出现拼错的变量名');
+    assert.ok(readme.includes(realName), '文档引用了正确的变量名');
+
+    // token 的后果与轮换流程必须写在文档里
+    assert.match(readme, /## 安全[\s\S]*token 泄露意味着什么/, '写了泄露意味着什么');
+    assert.match(readme, /## 安全[\s\S]*泄露后怎么办/, '写了泄露后怎么办');
+});
+
+test('添加/编辑服务器时说明 token 的后果', () => {
+    // 写在 agent/README.md 里还不够：那是给读文档的人看的，
+    // 而大多数人是从「添加服务器」这个对话框进来的。
+    const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+    const fn = appSource.slice(appSource.indexOf('async showServerDialog(server, onDone)'));
+    assert.ok(fn.length > 400, '切出 showServerDialog');
+    assert.match(fn, /message:\s*'token 等同于/, '对话框里有 token 后果说明');
+    assert.match(fn, /每台用不同的值/, '提醒不要多台复用同一个 token');
+    assert.match(fn, /泄露后在下方「编辑」里填新值/, '给出轮换入口');
+});
+
 test('agent 脚本可被下载，供部署命令直接 curl', () => {
     // agent/ 在仓库根而非 public/ 下（不进 SW 预缓存），所以必须有一条
     // 专门路由提供它，否则部署命令第一步就 404。
