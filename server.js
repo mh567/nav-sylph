@@ -237,7 +237,7 @@ const {
 } = require('./lib/session');
 const { openDatabase } = require('./lib/db');
 const { createSqliteBackend } = require('./lib/session-sqlite');
-const { readLocalMetrics, fetchRemoteMetrics } = require('./lib/monitor');
+const { readLocalMetrics, fetchRemoteMetrics, fetchPeerCert } = require('./lib/monitor');
 
 // 推送凭据的随机数与哈希需要 Node 的 crypto。
 // **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
@@ -1231,7 +1231,12 @@ function mergeModulesConfig(existing, incoming) {
             return {
                 ...server,
                 token: previous.token,
-                pushSecretHash: previous.pushSecretHash
+                pushSecretHash: previous.pushSecretHash,
+                // 证书同理：只由「确认指纹」写入，归一化不接收。
+                // 拖拽排序会走这条路径（提交整个 servers 列表），
+                // 不补回就会把配对好的证书抹掉。
+                certPem: previous.certPem,
+                certFingerprint: previous.certFingerprint
             };
         });
     } else {
@@ -1670,15 +1675,24 @@ app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
         // 但没必要让浏览器拿到本不该有的数据。
         res.json({
             ...config,
-            servers: (config.servers || []).map(({ token, pushSecretHash, ...rest }) => ({
-                ...rest,
-                // 两个凭据都只出状态不回明文：把信封原样回给前端等于
-                // 把密文也交出去——虽然解不开，但没必要让浏览器拿到
-                // 本不该有的数据。hasToken/hasPushSecret 让界面能显示
-                // 「已配置」，而空白提交仍表示保持原值。
-                hasToken: isEnvelope(token),
-                hasPushSecret: Boolean(pushSecretHash)
-            }))
+            // 证书 PEM 不回给前端：它不是秘密，但有 1KB+ 且前端用不到。
+            // 前端只需要知道「配对过没有」，据此显示状态而不是让用户
+            // 反复重新确认同一张证书。
+            servers: (config.servers || []).map(
+                ({ token, pushSecretHash, certPem, ...rest }) => ({
+                    ...rest,
+                    // 两个凭据都只出状态不回明文：把信封原样回给前端等于
+                    // 把密文也交出去——虽然解不开，但没必要让浏览器拿到
+                    // 本不该有的数据。hasToken/hasPushSecret 让界面能显示
+                    // 「已配置」，而空白提交仍表示保持原值。
+                    hasToken: isEnvelope(token),
+                    hasPushSecret: Boolean(pushSecretHash),
+                    hasCert: Boolean(certPem),
+                    // 指纹本身回显：它是公开标识（印在目标机终端上），
+                    // 用户据此核对「我确认的是哪一张」
+                    certFingerprint: rest.certFingerprint || null
+                })
+            )
         });
     } catch {
         // 文件缺失时回落到默认值，而不是 500——配置丢了不该让模块整体不可用
@@ -1851,7 +1865,7 @@ async function collectAllServers(passwordHash) {
         if (error) {
             return { id: server.id, name: server.name, url: server.url, online: false, error };
         }
-        const result = await fetchRemoteMetrics({ url: server.url, token });
+        const result = await fetchRemoteMetrics({ url: server.url, token, certPem: server.certPem });
         if (!result.ok) {
             return {
                 id: server.id,
@@ -1861,7 +1875,14 @@ async function collectAllServers(passwordHash) {
                 error: result.error,
                 // authFailed 透传给界面：凭据被拒与机器挂掉需要不同的处置
                 // （前者去重填 token，后者去查机器），只给一行文本会逼用户自己猜
-                authFailed: result.authFailed === true
+                authFailed: result.authFailed === true,
+                // 证书相关的两种结果要分开呈现：needTrust 是「还没做配对这一
+                // 步」，certMismatch 是「配对过了但证书变了」。后者是安全事件，
+                // 不该和前者共用一句话。
+                needTrust: result.needTrust === true,
+                certMismatch: result.certMismatch === true,
+                // 明文传输已停用 —— 界面据此给迁移引导，而不是只显示「离线」
+                insecure: result.insecure === true
             };
         }
         return {
@@ -1920,16 +1941,23 @@ app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
         if (typeof url !== 'string' || !url.trim()) {
             return res.status(400).json({ error: '请填写服务器地址' });
         }
-        // 只允许 http/https：其它协议（file:、gopher:）经 agent 拉取时
-        // 会变成一个可被利用的服务端请求面
+        // 只允许 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。
+        // 这不只是"写个地址"的问题——file:、gopher: 经 agent 拉取时会变成
+        // 一个可被利用的服务端请求面，而 http: 会把凭据摊在网络上。
         let parsed;
         try {
             parsed = new URL(url.trim());
         } catch {
-            return res.status(400).json({ error: '地址格式不正确' });
+            return res.status(400).json({ error: '地址格式不正确（需以 https:// 开头）' });
         }
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-            return res.status(400).json({ error: '地址必须以 http:// 或 https:// 开头' });
+        if (parsed.protocol !== 'https:') {
+            return res.status(400).json({
+                error: parsed.protocol === 'http:'
+                    ? '监控目标必须使用 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。'
+                      + '请在目标机上运行「node agent.js --gen-cert /etc/nav-agent」生成证书，'
+                      + '带 --tls-cert/--tls-key 重启 agent，然后把地址改成 https://'
+                    : '地址必须以 https:// 开头'
+            });
         }
 
         let config = defaultModulesConfig;
@@ -1957,6 +1985,11 @@ app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
             // 就把刚领的推送凭据抹了，agent 从此 401，界面上却看不出原因。
             entry.token = servers[index].token;
             entry.pushSecretHash = servers[index].pushSecretHash;
+            // 证书**也必须**补回：它由「确认指纹」那一步写入，而这个函数
+            // 整体替换 entry。漏掉的后果是用户改个名字就抹掉配对，
+            // 于是采集重新报「证书未受信任」——而界面上看不出这两件事有关。
+            entry.certPem = servers[index].certPem;
+            entry.certFingerprint = servers[index].certFingerprint;
         }
 
         const passwordHash = await getPasswordHash();
@@ -2073,21 +2106,114 @@ app.post('/api/modules/servers/:id/probe', rateLimit, requireAdmin, async (req, 
                 hint: '还没能试连：先在「编辑」里填 token，或确认这台机器是否改用「推送」'
             });
         }
-        const result = await fetchRemoteMetrics({ url: server.url, token });
+        const result = await fetchRemoteMetrics({ url: server.url, token, certPem: server.certPem });
+
+        // TOFU：证书还没配对过时，把对方出示的证书指纹交给界面显示，
+        // 由用户核对后确认（agent 生成证书时把同一串指纹印在目标机终端上，
+        // 所以用户有一条**独立于本服务**的核对途径——这正是 TOFU 的前提）。
+        // 指纹在这里取不到就当 null：拿不到指纹不该覆盖掉真正的网络错误。
+        if (result.needTrust) {
+            return res.json({
+                reachable: false,
+                status: 'need_trust',
+                error: result.error,
+                fingerprint: result.fingerprint || null,
+                hint: result.fingerprint
+                    ? '核对这串指纹与目标机上「node agent.js --gen-cert」打印的一致后，确认信任'
+                    : '证书未受信任，但这次没能取到它的指纹（网络可能同时也不通）。请先确认目标机能连上，再重试。'
+            });
+        }
+
         res.json({
             // 任何 HTTP 响应（含 401）都说明网络这条路是通的
             reachable: result.ok || result.authFailed === true,
-            status: result.ok ? 'ok' : (result.authFailed ? 'unauthorized' : 'error'),
+            status: result.ok ? 'ok'
+                : (result.authFailed ? 'unauthorized'
+                    : (result.certMismatch ? 'cert_mismatch' : 'error')),
             error: result.ok ? null : result.error,
+            // 每条分支都要给出下一步。这是这个端点该有的形状：用户点了
+            // 「检测连通性」，任何一种结果都必须告诉他接着做什么。
             hint: result.ok
                 ? '连接正常，可以用「拉取」'
                 : (result.authFailed
                     ? '路是通的，只是 token 不匹配——改「拉取」前先重填 token'
-                    : '够不着这台机器：如果它在局域网内，改用「推送」')
+                    : (result.certMismatch
+                        ? '这台机器的证书与已确认的不一致。如果你在目标机上重新生成过证书，请重新确认指纹；否则可能有中间人。'
+                        : (result.insecure
+                            ? '明文传输已停用：在目标机上生成证书并带 --tls-cert/--tls-key 重启，然后把地址改成 https://'
+                            : '够不着这台机器：如果它在局域网内，改用「推送」')))
         });
     } catch (err) {
         console.error('探测服务器失败:', err);
         res.status(500).json({ error: '探测失败: ' + err.message });
+    }
+});
+
+/**
+ * 确认某台机器的自签证书（TOFU 配对的第二步）。
+ *
+ * **为什么存证书 PEM 而不是指纹**：Node 的 `https.request` 只支持把某张证书
+ * 作为可信锚点传进 `ca`，没有「按指纹信任」的接口。实测（Node 22）：自签证书
+ * 会先被 OpenSSL 链校验拦下（DEPTH_ZERO_SELF_SIGNED_CERT），
+ * `checkServerIdentity` 在这种情况下**根本不会被调用**——所以「自定义一个
+ * 指纹比对函数」这条路在 Node 上走不通，只能存 PEM。
+ *
+ * 请求体带用户核对过的指纹，服务端重新抓一次目标机的证书比对：不一致就拒。
+ * 这一步防的是「用户点确认」和「服务端抓取」之间的时间差里证书被换掉。
+ */
+app.post('/api/modules/servers/:id/trust-cert', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const index = servers.findIndex(s => s.id === req.params.id);
+        if (index < 0) {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const server = servers[index];
+
+        const expected = typeof req.body?.fingerprint === 'string' ? req.body.fingerprint.trim() : '';
+        if (!expected) {
+            return res.status(400).json({ error: '缺少指纹' });
+        }
+
+        // 一次握手拿指纹和 PEM，避免两次连接之间证书被换掉
+        let peer;
+        try {
+            peer = await fetchPeerCert(new URL(server.url));
+        } catch {
+            peer = { fingerprint: null, pem: null };
+        }
+        if (!peer.fingerprint) {
+            return res.status(502).json({ error: '取不到目标机的证书，请先确认这台机器能连上' });
+        }
+        // 大小写与分隔符都可能被用户改动，只比字面量会误拒
+        const norm = s => String(s || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+        if (norm(peer.fingerprint) !== norm(expected)) {
+            // 不写任何一边：抓到的证书与用户核对的不一致，说明中间人或时序问题
+            return res.status(409).json({
+                error: '证书与指纹不一致，未保存',
+                fingerprint: peer.fingerprint
+            });
+        }
+        if (!peer.pem) {
+            return res.status(502).json({ error: '取不到证书内容，未保存' });
+        }
+
+        servers[index] = { ...server, certPem: peer.pem, certFingerprint: peer.fingerprint };
+        config.servers = servers;
+        await writeJSON(MODULES_FILE, config);
+        // 配对后下一次采集就能通了，缓存里那份「证书未受信任」是过期状态
+        invalidateMetricsCache();
+
+        res.json({ success: true, fingerprint: peer.fingerprint });
+    } catch (err) {
+        console.error('确认证书失败:', err);
+        res.status(500).json({ error: '确认失败: ' + err.message });
     }
 });
 

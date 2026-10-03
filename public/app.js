@@ -2682,6 +2682,12 @@
                         <span class="server-item-token">${isPush
                             ? (s.hasPushSecret ? '已领取推送凭据' : '未领取推送凭据')
                             : (s.hasToken ? '已配置 token' : '无 token')}</span>
+                        ${isPush ? '' : `<span class="server-item-cert${s.hasCert ? ' is-ok' : ''}"
+                            title="${s.hasCert
+                                ? '证书已确认信任'
+                                : '证书尚未确认：点「检测连通性」核对指纹'}">${s.hasCert
+                                ? '证书已确认'
+                                : '待确认证书'}</span>`}
                     </div>
                     <div class="server-item-actions">
                         <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
@@ -2721,6 +2727,57 @@
                         probeBtn.textContent = '检测中…';
                         try {
                             const res = await API.post(`/api/modules/servers/${encodeURIComponent(id)}/probe`);
+
+                            // TOFU：目标机用的是自签证书，服务端第一次见到它时
+                            // 无从判断真假——把对方出示的指纹摆出来，由用户核对。
+                            // 这一步之所以成立，是因为 agent 生成证书时把**同一串**
+                            // 指纹印在目标机终端上，用户有一条独立于本服务的核对途径。
+                            if (res.status === 'need_trust' && res.fingerprint) {
+                                this.showToast(`${server.name || server.url}：待确认证书指纹`, 'error');
+                                const ok = await this.showUiDialog({
+                                    title: '确认这台机器的证书',
+                                    // **完整指纹必须印在这里**，不能只给前几段加省略号：
+                                    // 文案让用户「逐字核对」，而只显示 4 段时用户根本
+                                    // 无法执行这一步——那是一条兑现不了的承诺。
+                                    // message 的 CSS 是 white-space:pre-line，所以 \n 生效。
+                                    message: '目标机用的是自签证书，下面是它出示的 SHA-256 指纹：\n\n'
+                                        + `${res.fingerprint}\n\n`
+                                        + '请与目标机上「node agent.js --gen-cert」打印的那一串逐字核对。\n'
+                                        + '一致才是同一台机器；不一致就别确认。',
+                                    options: [{
+                                        name: 'trust', kind: 'checkbox', value: true,
+                                        label: '我已与目标机终端上的指纹逐字核对，一致',
+                                        checked: false
+                                    }],
+                                    confirmText: '确认信任并保存',
+                                    cancelText: '不确认'
+                                });
+                                if (!ok || !ok.choices.trust) {
+                                    // 勾选框是**默认关闭**的，而对话框一关就没了。
+                                    // 静默 return 会让「没勾」与「点了取消」表现完全
+                                    // 一样：徽章不变、没有任何文字，用户只会以为
+                                    // 证书已经配好了。实测就是这个现象。
+                                    if (ok) {
+                                        this.showToast('需要先勾选「已逐字核对」才能确认——'
+                                            + '证书没核对过就确认，等于没验证对面是谁', 'error');
+                                    }
+                                    return;
+                                }
+                                await API.post(`/api/modules/servers/${encodeURIComponent(id)}/trust-cert`, {
+                                    fingerprint: res.fingerprint
+                                });
+                                this.showToast('证书已确认，正在重新采集…', 'success');
+                                // 重绘走与「编辑」「删除」同一入口（见下方两处）。
+                                // 早先这里写的是 `await onDone()` —— 那是
+                                // showServerDialog 的参数名，本方法
+                                // renderServerList(host, config) 根本没有它，
+                                // 于是配对成功后抛 ReferenceError，被 catch
+                                // 吞成「检测失败，请重试」：**服务端已存好证书，
+                                // 界面却显示失败且不刷新徽章**。
+                                await this.renderModulesEditor();
+                                return;
+                            }
+
                             const label = res.reachable ? '连接正常' : '够不着';
                             this.showToast(`${server.name || server.url}：${label}。${res.hint || ''}`,
                                 res.reachable ? 'success' : 'error');
@@ -2792,17 +2849,25 @@
                     code: `mkdir -p /opt/nav-agent && cd /opt/nav-agent\ncurl -fsSL ${origin}/agent/agent.js -o agent.js`
                 },
                 {
-                    title: '2. 先手工跑一次确认能通',
-                    note: '目标机需要 Node 18+；看到监听地址就说明正常',
-                    code: `NAVSYLPH_TOKEN=${token} node agent.js --port ${port} --host 0.0.0.0`
+                    title: '2. 生成 TLS 证书',
+                    note: 'token 是那台机器的只读监控凭据，明文传输等于公开，所以 agent 没有证书就不肯启动。'
+                        + '这一步会打印证书指纹，**第 4 步要核对它**——先把它抄下来',
+                    code: `sudo node agent.js --gen-cert /opt/nav-agent`
                 },
                 {
-                    title: '3. 确认能连上（另开一个终端）',
-                    note: '把 <TOKEN> 换成上一步用的 token',
-                    code: `curl -H "Authorization: Bearer <TOKEN>" ${url}/metrics`
+                    title: '3. 先手工跑一次确认能通',
+                    note: '目标机需要 Node 18+；看到「监听 https://…」和证书指纹就说明正常',
+                    code: `NAVSYLPH_TOKEN=${token} node agent.js \\\n  --tls-cert /opt/nav-agent/cert.pem \\\n  --tls-key /opt/nav-agent/key.pem \\\n  --host 0.0.0.0 --port ${port}`
                 },
                 {
-                    title: '4. 配成开机自启（systemd）',
+                    title: '4. 在后台点「检测连通性」，核对证书指纹',
+                    note: '回到这台服务器的后台，点这台机器那一行的「检测连通性」。'
+                        + '它会弹出 agent 刚才打印的那串指纹，**逐字核对一致后再确认**——'
+                        + '不一致就别确认。确认后本服务才会信任这张自签证书',
+                    code: '# 无需命令：点「检测连通性」→ 核对指纹 → 勾选确认'
+                },
+                {
+                    title: '5. 配成开机自启（systemd）',
                     note: '需 root；写入 unit 并立即启动',
                     code: [
                         'sudo tee /etc/systemd/system/nav-agent.service >/dev/null <<EOF',
@@ -2812,7 +2877,7 @@
                         '',
                         '[Service]',
                         'Environment=NAVSYLPH_TOKEN=<TOKEN>',
-                        'ExecStart=/usr/bin/node /opt/nav-agent/agent.js --port ' + port + ' --host 0.0.0.0',
+                        'ExecStart=/usr/bin/node /opt/nav-agent/agent.js --tls-cert /opt/nav-agent/cert.pem --tls-key /opt/nav-agent/key.pem --host 0.0.0.0 --port ' + port,
                         'Restart=always',
                         'RestartSec=5',
                         '',
@@ -2825,7 +2890,7 @@
                     ].join('\n')
                 },
                 {
-                    title: '5. 放行防火墙（仅在启用了防火墙时）',
+                    title: '6. 放行防火墙（仅在启用了防火墙时）',
                     note: 'firewalld 与 ufw 二选一',
                     code: `# firewalld\nsudo firewall-cmd --permanent --add-port=${port}/tcp\nsudo firewall-cmd --reload\n\n# 或 ufw\nsudo ufw allow ${port}/tcp`
                 }
@@ -2834,9 +2899,10 @@
             // 一次只开一个面板。原来先弹 showUiDialog 说明再弹命令面板，
             // 两次点击才看得到内容——命令才是这里的主产物。
             this.showCommandPanel(`在目标机上部署 agent — ${server.name || server.url}`, steps, {
-                intro: '下面五步在「目标机终端」执行，不是在这台服务器上。'
+                intro: '下面六步在「目标机终端」执行，不是在这台服务器上。'
                     + '命令里的 token 是占位符——服务端不会把明文 token 发到浏览器，'
                     + '请从你自己的密码管理器取。'
+                    + '第 4 步要回到本后台核对证书指纹，那是唯一能确认「对面确实是那台机器」的地方。'
             });
         }
 
@@ -2988,7 +3054,7 @@
                     + '泄露后在下方「编辑」里填新值即可让旧的立即失效。',
                 fields: [
                     { label: '名称', type: 'text', value: server ? server.name : '', placeholder: '例如：家用 NAS' },
-                    { label: '地址', type: 'text', value: server ? server.url : '', placeholder: 'http://192.168.1.10:4195' },
+                    { label: '地址', type: 'text', value: server ? server.url : '', placeholder: 'https://192.168.1.10:4195' },
                     {
                         label: isEdit && server.hasToken ? 'token（留空保持原值）' : 'token',
                         type: 'password',
@@ -3014,7 +3080,13 @@
                 validate: (values) => {
                     if (!values[1] || !values[1].trim()) return '请填写服务器地址';
                     const url = values[1].trim();
-                    if (!/^https?:\/\//i.test(url)) return '地址必须以 http:// 或 https:// 开头';
+                    // 只收 https：token 是那台机器的只读监控凭据，明文传输等于公开。
+                    // 与服务端那条校验同一裁决，免得用户填完了才被拒。
+                    if (/^http:\/\//i.test(url)) {
+                        return '必须用 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。'
+                            + '请在目标机上生成证书并带 --tls-cert/--tls-key 启动。';
+                    }
+                    if (!/^https:\/\//i.test(url)) return '地址必须以 https:// 开头';
                     return null;
                 }
             });

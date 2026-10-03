@@ -609,7 +609,7 @@ test('登录与登出都会同步 sessionTrusted', () => {
 
 // ========== 源码形状守卫 ==========
 
-test('20 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
+test('21 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
     // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
     // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
     const code = stripComments(server);
@@ -627,8 +627,8 @@ test('20 个特权路由 + change-password 都改用 requireAdmin 中间件', ()
     const withoutPush = code.slice(0, pushStart) + code.slice(afterPush > pushStart ? afterPush : pushStart);
     assert.ok(withoutPush.length > 0 && withoutPush.length < code.length, '推送端点被摘出');
     const guarded = withoutPush.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
-    // 11 特权路由 + change-password + trust-device + 模块平台 7 条 = 20
-    assert.equal(guarded.length, 20, '特权路由 + change-password + trust-device + 模块 7 条共 20 处');
+    // 11 特权路由 + change-password + trust-device + 模块平台 8 条 = 21
+    assert.equal(guarded.length, 21, '特权路由 + change-password + trust-device + 模块 8 条共 21 处');
     assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
         '手写守卫必须全部移除');
 });

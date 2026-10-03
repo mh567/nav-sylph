@@ -500,11 +500,23 @@ test('部署命令在后台生成，且不泄露明文 token', () => {
     assert.doesNotMatch(appCode, /showDeployDialog[\s\S]*?decrypt\(/,
         '部署命令不得去解密 token');
 
-    // 命令要覆盖完整流程：下载 → 试跑 → 自检 → 开机自启 → 防火墙
+    // 命令要覆盖完整流程：下载 → 生成证书 → 试跑 → 核对指纹 → 开机自启 → 防火墙
+    //
+    // ⚠️ 「curl /metrics 自检」这一步是被**替换**掉的，不是被删掉的：目标机现在
+    // 起 HTTPS，自签证书会让 `curl https://...` 直接报证书错误，用户以为是故障。
+    // 它的位置被「在后台核对证书指纹」接替——那一步同时验证了连通性与身份。
     const fn = appCode.slice(appCode.indexOf('showDeployDialog(server)'));
-    for (const step of ['curl -fsSL', 'NAVSYLPH_TOKEN=', '/metrics', 'systemd', 'firewall']) {
+    for (const step of ['curl -fsSL', 'NAVSYLPH_TOKEN=', '--gen-cert', 'systemd', 'firewall']) {
         assert.ok(fn.includes(step), `部署命令包含「${step}」这一步`);
     }
+    // 证书生成与启动都必须带 --tls-cert/--tls-key，否则照抄命令起不来
+    // （agent 没有证书会拒绝启动，见「拉取模式强制 TLS」那条）
+    assert.match(fn, /--tls-cert/, '启动命令带证书路径');
+    assert.match(fn, /--tls-key/, '启动命令带私钥路径');
+    // 指纹核对这一步必须在，且要说清它替代了 curl 自检
+    assert.match(fn, /检测连通性/, '部署面板提示回后台核对证书指纹');
+    assert.doesNotMatch(fn, /curl\s+-H\s+"Authorization[^\n]*\/metrics/,
+        '不再用裸 curl 自检（自签证书会让它失败）；改由后台探测端点完成');
     // 端口从用户填的地址里取，而不是写死
     assert.match(appCode, /new URL\(url\)\.port \|\| '4195'/, '端口取自填写的地址');
 
@@ -661,12 +673,29 @@ test('采集方式默认拉取，非法值一律回落而不是被静默接受',
 test('推送模式默认不监听任何端口', () => {
     // 这是推送最大的安全收益：内网机器上一个端口都不用开。
     // 若 agent 在 --push 下仍默认 listen，用户以为没开端口，
-    // 实际却把一个只靠 token 保护的 HTTP 服务挂在了局域网里。
+    // 实际却把一个只靠 token 保护的 HTTPS 服务挂在了局域网里。
     const code = stripComments(agentSource);
     assert.match(code, /const SERVE_HTTP\s*=\s*!PUSH_MODE\s*\|\|\s*args\.serveAlongsidePush/,
         '是否监听由「是否推送模式」与「是否显式要求」共同决定');
-    assert.match(code, /if\s*\(SERVE_HTTP\)\s*\{\s*(?:const server = http\.createServer|server\.listen)/,
-        'HTTP 服务只在 SERVE_HTTP 为真时创建');
+    // 监听块与创建 server 已经被拆开（requestHandler 提取成具名变量，
+    // 好让 https.createServer 与 http.createServer 共用它），
+    // 所以这里钉住的是「创建与 listen 都在 SERVE_HTTP 之内」这个事实。
+    const serveBlock = code.slice(code.indexOf('if (SERVE_HTTP) {'));
+    assert.ok(serveBlock.length > 200, '拿到的是监听块而不是空壳');
+    assert.match(serveBlock, /createServer\(/,
+        'server 在 SERVE_HTTP 块内创建');
+    assert.match(serveBlock, /server\.listen\(/,
+        'listen 也在同一块内');
+    // 负向断言：推送启动之后不得再出现 listen。
+    // 锚点用 `startPushing();` 这个**调用点**而不是 `if (PUSH_MODE) {`——
+    // 后者在文件里出现两次（参数校验处、启动处），indexOf 会命中前面那个，
+    // 而它后面还隔着整个采集实现与监听块，断言于是红在正确代码上。
+    const pushCall = code.indexOf('startPushing();');
+    assert.ok(pushCall > 0, '推送启动调用存在于源码中');
+    const startupTail = code.slice(pushCall);
+    assert.ok(startupTail.length > 50, '切片拿到的是启动尾部而不是空壳');
+    assert.doesNotMatch(startupTail, /\.listen\(/,
+        '推送启动之后没有 listen');
 });
 
 test('推送凭据与拉取 token 是两个独立的环境变量，不互相顶替', () => {
@@ -1044,4 +1073,306 @@ test('推送端点用到的中间件与常量都在路由之上定义', () => {
     assert.ok(sweepAt > 0, '清理定时器扫了推送桶');
     assert.ok(mapAt > 0, 'pushLimitMap 已声明');
     assert.ok(mapAt < sweepAt, 'pushLimitMap 必须在定时器之前声明');
+});
+
+// ========== 传输加密：pull 模式强制 HTTPS ==========
+
+test('拉取模式缺 TLS 证书时拒绝启动，不监听明文', () => {
+    // 修之前的形状：agent 永远 http.createServer，token 明文过网。
+    // token 是那台机器的只读监控凭据，拿到就能读 CPU、内存、主机名——
+    // 所以这里钉的是「没有证书就没有监听」，而不是「有证书就走 https」。
+    const code = stripComments(agentSource);
+    const gate = /if\s*\(\s*!hasCert\s*&&\s*!args\.insecureHttp\s*\)[\s\S]*?process\.exit\(1\)/.exec(code);
+    assert.ok(gate, '缺证书且未显式 --insecure-http 时退出');
+    assert.match(code, /const hasCert\s*=\s*Boolean\(args\.tlsCert\s*&&\s*args\.tlsKey\)/,
+        '两个路径都给了才算有证书（只给一个必须失败）');
+    // 逃生门必须是显式的，不能成为默认
+    assert.match(code, /insecureHttp:\s*false/, '--insecure-http 默认关闭');
+});
+
+test('agent 有证书时起 HTTPS，且证书在启动时校验可读', () => {
+    const code = stripComments(agentSource);
+    assert.match(code, /https\.createServer\(\{[\s\S]*?cert:\s*fs\.readFileSync\(args\.tlsCert\)/,
+        '带证书时用 https.createServer');
+    assert.match(code, /key:\s*fs\.readFileSync\(args\.tlsKey\)/, '同时读私钥');
+    // 证书路径写了却读不到，要指名文件而不是抛一段无关 ENOENT
+    assert.match(code, /--tls-cert['"]\s*,\s*args\.tlsCert[\s\S]*?--tls-key['"]\s*,\s*args\.tlsKey[\s\S]*?fs\.accessSync/,
+        '启动前校验证书与私钥可读');
+});
+
+test('证书生成只经参数传入，不拼 shell 字符串', () => {
+    // 主机名来自 os.hostname()，而主机名可以含分号。拼进 shell 字符串
+    // 等于给一台叫 "x; rm -rf ~" 的机器开了执行的口子。
+    const code = stripComments(agentSource);
+    assert.match(code, /execFileSync\(\s*'openssl'/, '用 execFileSync 传参数');
+    assert.doesNotMatch(code, /exec\(\s*`openssl[^`]*\$\{/,
+        '不得把变量拼进 shell 命令字符串');
+    assert.match(code, /'-subj',\s*`\/CN=\$\{subjectName\}`/,
+        '主机名作为独立参数传入');
+});
+
+test('拉取时拒 http，且证书类错误不塌缩成「机器离线」', async () => {
+    const { fetchRemoteMetrics } = require(path.join(ROOT, 'lib', 'monitor'));
+
+    // 明文直接拒，不发请求
+    const insecure = await fetchRemoteMetrics({ url: 'http://192.168.1.10:4195', token: 'x' });
+    assert.equal(insecure.ok, false);
+    assert.equal(insecure.insecure, true, '回 insecure 标记，界面据此给迁移引导');
+    assert.match(insecure.error, /https/, '错误信息指向 https');
+
+    // 连接不通时必须是「无法连接」，不能是证书相关——两者处置完全不同
+    const unreachable = await fetchRemoteMetrics({ url: 'https://127.0.0.1:1', token: 'x' });
+    assert.equal(unreachable.ok, false);
+    assert.match(unreachable.error, /无法连接/);
+    assert.notEqual(unreachable.needTrust, true, '连不上不等于「待确认证书」');
+    assert.notEqual(unreachable.certMismatch, true);
+});
+
+test('服务端 require 的每个 monitor 导出都真实存在', () => {
+    // 回归记录：函数改名 fetchPeerFingerprint → fetchPeerCert 时漏改导出，
+    // require 得到的 fetchPeerCert 是 undefined，配对端点真实运行时永远 502。
+    // 而当时 334 条测试全绿——它们断言的是**源码形状**（服务端调用了
+    // fetchPeerCert），不是「这个导出真的存在」。形状对了、值为 undefined，
+    // 源码形状断言无从发现。所以这条直接取实际导出并逐个断言是函数。
+    //
+    // 同时钉住「服务端 import 的名字 ⊆ 模块导出的名字」这个不变量，
+    // 让同类改名漏改在编译期之外的第一道检查就被抓住。
+    const monitor = require(path.join(ROOT, 'lib', 'monitor'));
+    for (const name of ['readLocalMetrics', 'fetchRemoteMetrics', 'fetchPeerCert']) {
+        assert.equal(typeof monitor[name], 'function', `${name} 是可调用的导出`);
+    }
+    // 反向：服务端 import 的每个名字都必须有导出
+    const imported = serverSource.match(/const \{([^}]+)\} = require\('\.\/lib\/monitor'\)/);
+    assert.ok(imported, '服务端确实从 lib/monitor import');
+    for (const raw of imported[1].split(',')) {
+        const name = raw.trim();
+        if (!name) continue;
+        assert.notEqual(monitor[name], undefined,
+            `服务端 import 的 ${name} 在 lib/monitor 里没有导出`);
+    }
+});
+
+test('改名后不留悬空引用：配对端点不引用已不存在的变量', () => {
+    // 回归记录：fetchPeerFingerprint 改名成 fetchPeerCert 后，配对端点的
+    // 响应里还写着 `fingerprint: actual` —— 那个变量早已不存在，于是
+    // 真实运行时抛 ReferenceError 回 500。而 node --check 不查标识符是否
+    // 定义，源码形状断言也只核对「调用了 fetchPeerCert」。
+    //
+    // 不用「枚举路由里所有裸标识符」那种写法：白名单要么漏一个（假红）、
+    // 要么宽到永远绿（假绿），实测两条路都走不通。改成直接钉住这个缺陷的
+    // 形状——响应里那个字段必须来自实际存在的变量。
+    const code = stripComments(serverSource);
+    const start = code.indexOf("app.post('/api/modules/servers/:id/trust-cert'");
+    assert.ok(start > 0, '配对路由存在');
+    // 边界用「下一个路由声明」并断言它真的找到了。⚠️ 锚点必须是**代码**：
+    // code 是 stripComments 之后的源码，注释行去 indexOf 会返回 -1，
+    // 而 slice(start, -1) 会静默切出「从 -1 到末尾」的整段，把后面几十个
+    // 函数的标识符全算进来（实测踩过）。
+    const nextRoute = code.indexOf("\napp.post('/api/modules/agent-push'", start);
+    assert.ok(nextRoute > start, '找到路由的下边界');
+    const body = code.slice(start, nextRoute);
+    assert.ok(body.length > 200 && body.length < 4000,
+        `切片是单条路由的长度（${body.length}），不是空壳也不是整个文件`);
+
+    assert.match(body, /res\.json\(\{ success: true, fingerprint: peer\.fingerprint \}\)/,
+        '成功响应里的指纹来自实际存在的 peer');
+    // 负向：`actual` 这类改名前的局部变量不得再出现
+    assert.doesNotMatch(body, /:\s*actual\b/,
+        '不引用改名后已不存在的变量 actual');
+});
+
+test('lib/monitor 本轮新增的导出都被 server.js 用到', () => {
+    // fetchPeerFingerprint 改名后既没导出也没被调用，注释还写着
+    // 「探测端点与 fetchRemoteMetrics 用它」—— 两个调用点都改用了
+    // fetchPeerCert。注释与事实相反会误导下一个改动。
+    const code = stripComments(monitorSource);
+    assert.doesNotMatch(code, /function fetchPeerFingerprint/,
+        '只指纹的包装函数已无消费者，应删除');
+    // 只钉**本轮新增**的那个导出。AGENT_PROTOCOL_VERSION 是既有的死导出
+    // （server.js 里零引用），把它算进来会让这条断言红在一个与本次改动
+    // 无关的既有问题上——那属于待办，不属于这次的红。
+    assert.match(code, /fetchPeerCert/,
+        'fetchPeerCert 已导出');
+    assert.ok(serverSource.includes('fetchPeerCert'),
+        'server.js 确实消费 fetchPeerCert');
+    // 反向：服务端 import 的名字必须在导出里（改名漏改导出正是本轮真发生的 bug）
+    const imported = serverSource.match(/const \{([^}]+)\} = require\('\.\/lib\/monitor'\)/);
+    assert.ok(imported, '服务端确实从 lib/monitor import');
+    const monitor = require(path.join(ROOT, 'lib', 'monitor'));
+    for (const raw of imported[1].split(',')) {
+        const name = raw.trim();
+        if (!name) continue;
+        assert.notEqual(monitor[name], undefined,
+            `服务端 import 的 ${name} 在 lib/monitor 里没有导出`);
+    }
+});
+
+test('两种证书结果分开：未配对 vs 已配对但证书变了', () => {
+    // 这两种情况都表现为「拉不到数据」，但一个是「还没做这一步」，
+    // 另一个是安全事件。塌缩成同一句话会让用户照着错误方向排查。
+    const code = stripComments(monitorSource);
+    assert.match(code, /if\s*\(server\.certPem\)\s*\{[\s\S]*?certMismatch:\s*true/,
+        '已配对却仍报证书错 → certMismatch');
+    assert.match(code, /needTrust:\s*true/, '未配对 → needTrust');
+    // 证书错误码要单列，否则会落进 ECONNREFUSED 分支显示成机器离线
+    assert.match(code, /SELF_SIGNED_CODES\s*=\s*new Set\(\[([\s\S]*?)DEPTH_ZERO_SELF_SIGNED_CERT/,
+        '自签证书错误码被显式枚举');
+});
+
+test('拉取用 https.request 并透传 ca，才能验自签证书', () => {
+    const code = stripComments(monitorSource);
+    // 实测（Node 22）：checkServerIdentity 在证书链无效时根本不会被调用，
+    // OpenSSL 先抛 DEPTH_ZERO_SELF_SIGNED_CERT。所以「自定义指纹比对」不可行，
+    // 唯一可行的是把该机器的证书作为可信锚点传进 ca。
+    assert.match(code, /https\.request\(/, '走 node:https 而不是内置 fetch');
+    assert.match(code, /ca,/, '把 ca 透传给请求');
+    assert.doesNotMatch(code, /checkServerIdentity/,
+        '不依赖 checkServerIdentity（实测在自签证书场景下不会被调用）');
+});
+
+test('SNI 不给 IP，否则触发 DEP0123 弃用警告', () => {
+    const code = stripComments(monitorSource);
+    assert.match(code, /servername:\s*net\.isIP\(parsed\.hostname\)\s*\?\s*undefined\s*:\s*parsed\.hostname/,
+        '按是否为 IP 决定要不要设 servername');
+});
+
+test('两条写路径都补回已配对的证书，改个名字不会抹掉它', () => {
+    // 症状隐蔽：配对好好的机器，用户改了个名字，采集又报「证书未受信任」，
+    // 而界面上看不出这两件事有关联。
+    const code = stripComments(serverSource);
+    const merge = code.slice(code.indexOf('function mergeModulesConfig('),
+        code.indexOf('\nfunction ', code.indexOf('function mergeModulesConfig(') + 10));
+    assert.match(merge, /certPem:\s*previous\.certPem/,
+        '模块配置合并补回 certPem（拖拽排序走这条路）');
+    assert.match(merge, /certFingerprint:\s*previous\.certFingerprint/,
+        '并补回 certFingerprint');
+
+    const route = code.slice(code.indexOf("app.post('/api/modules/servers'"),
+        code.indexOf("app.delete('/api/modules/servers/:id'"));
+    assert.ok(route.length > 200, '切片拿到整条写路由');
+    assert.match(route, /entry\.certPem\s*=\s*servers\[index\]\.certPem/,
+        '编辑单台机器时补回 certPem');
+    assert.match(route, /entry\.certFingerprint\s*=\s*servers\[index\]\.certFingerprint/,
+        '并补回 certFingerprint');
+});
+
+test('确认证书前重抓一次比对，不一致就不写', () => {
+    // 用户点「确认」到服务端落盘之间有个时间差。服务端自己再抓一次，
+    // 对不上就拒——否则那段时间里换掉的证书会被当成「用户认可的」。
+    const code = stripComments(serverSource);
+    const route = code.slice(code.indexOf("app.post('/api/modules/servers/:id/trust-cert'"),
+        code.indexOf('\napp.', code.indexOf("app.post('/api/modules/servers/:id/trust-cert'") + 10));
+    assert.ok(route.length > 200, '切片拿到整条配对路由');
+    assert.match(route, /fetchPeerCert/, '落盘前重新抓一次证书');
+    assert.match(route, /409/, '不一致时 409');
+    // 409 分支必须真的不写
+    const mismatch = route.slice(route.indexOf('409'));
+    const writeAt = route.indexOf('await writeJSON');
+    assert.ok(writeAt > mismatch.indexOf('409'), '写盘发生在 409 之后，即不一致时已返回');
+});
+
+test('读接口不回显证书 PEM，只给配对状态', () => {
+    // PEM 有 1KB+ 且前端用不到；前端只需要知道「配对过没有」，
+    // 否则用户会被反复要求确认同一张证书。
+    const code = stripComments(serverSource);
+    const read = code.slice(code.indexOf("app.get('/api/modules/config'"),
+        code.indexOf("app.post('/api/modules/config'"));
+    assert.match(read, /\{\s*token,\s*pushSecretHash,\s*certPem,\s*\.\.\.rest\s*\}/,
+        '解构时摘掉 certPem');
+    assert.match(read, /hasCert:\s*Boolean\(certPem\)/, '只回布尔状态');
+});
+
+test('前端：探测遇到待确认证书时弹指纹核对，确认后才落盘', () => {
+    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const probe = app.slice(app.indexOf('.probe-server'));
+    assert.ok(probe.length > 200, '切片拿到探测按钮的处理逻辑');
+    assert.match(probe, /need_trust/, '识别 need_trust 分支');
+    assert.match(probe, /trust-cert/, '确认后调配对端点');
+    assert.match(probe, /fingerprint:\s*res\.fingerprint/, '把指纹带上去');
+    // 确认框必须默认不勾选：默认勾选等于把「核对」这个动作架空
+    assert.match(probe, /checked:\s*false/, '确认框默认未勾选');
+    // 未勾选就点确认必须有提示。实测发现静默 return 的后果：对话框一关，
+    // 徽章不变、没有任何文字，「没勾」与「点了取消」表现完全一样，
+    // 用户会以为证书已经配好了。
+    //
+    // ⚠️ 不能写成 `if (...) {[\s\S]*?showToast(` —— 那个 `[\s\S]*?` 没有上界，
+    // 会越过 if 块去匹配后面别的分支里的 showToast，删掉提示照样绿（实测踩过）。
+    // 这里显式切出 if 块本身，再在块内找 showToast。
+    const noTrustAt = probe.indexOf('if (!ok || !ok.choices.trust)');
+    assert.ok(noTrustAt > 0, '找到未勾选的处理分支');
+    const blockEnd = probe.indexOf('}', probe.indexOf('return;', noTrustAt));
+    assert.ok(blockEnd > noTrustAt, '找到该分支的结束');
+    const trustBlock = probe.slice(noTrustAt, blockEnd);
+    assert.ok(trustBlock.length < 600, `分支长度合理（${trustBlock.length}）`);
+    assert.match(trustBlock, /showToast\(/,
+        '未勾选时给出提示，而不是静默返回');
+    assert.match(trustBlock, /if\s*\(ok\)/,
+        '只有「点了确认但没勾选」才提示；真取消时不该打扰用户');
+});
+
+test('renderServerList 里不引用它没有的参数', () => {
+    // 回归记录（浏览器实测发现）：配对成功后写的是 `await onDone()`，
+    // 而 onDone 是 showServerDialog 的参数名，本方法
+    // renderServerList(host, config) 根本没有它 —— 真实点击时抛
+    // ReferenceError，被外层 catch 吞成「检测失败，请重试」。
+    // **服务端其实已经存好证书**，界面却显示失败且徽章不刷新，
+    // 用户会以为配对没成功而反复重来。
+    //
+    // 这类缺陷对源码形状断言是隐形的：它看起来只是一句正常的重绘调用。
+    // 所以这里比对「方法签名声明了什么」与「方法体里用了哪些局部标识符」。
+    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const sigAt = app.indexOf('renderServerList(host, config) {');
+    assert.ok(sigAt > 0, '找到 renderServerList 方法');
+    // 边界：下一个同缩进的方法定义
+    const nextAt = app.indexOf('\n        async ', sigAt);
+    assert.ok(nextAt > sigAt, '找到方法的下边界');
+    const body = app.slice(sigAt, nextAt);
+    assert.ok(body.length > 500, `方法体长度合理（${body.length}）`);
+
+    // 签名里声明的参数
+    const params = ['host', 'config'];
+    // 早先的缺陷：`await onDone()`
+    assert.doesNotMatch(body, /\bonDone\b/,
+        'renderServerList 没有 onDone 参数，不能引用它');
+    // 重绘必须走本方法真实可用的入口
+    assert.match(body, /await this\.renderModulesEditor\(\)/,
+        '配对成功后走 renderModulesEditor 重绘（与编辑/删除同一入口）');
+    // 参数确实都在用（反向：声明了却没用是另一种残留）
+    for (const p of params) {
+        assert.ok(body.includes(p), `参数 ${p} 有被使用`);
+    }
+});
+
+test('指纹核对框里必须显示完整指纹，不能截断', () => {
+    // 回归记录（浏览器实测发现）：确认框的文案写着「请逐字核对」，
+    // 而勾选项只显示前 4 段加省略号，**完整指纹从未进入 DOM**——
+    // 用户被要求执行一个界面上根本做不到的核对。实测：
+    //   optLabel = "我已核对，指纹一致（AD:24:26:71…）"
+    //   fullFingerprintInDOM = "未找到完整指纹"
+    // 源码形状断言看不出这个：它只关心「有没有 fingerprint 字段」。
+    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const branch = app.slice(app.indexOf("res.status === 'need_trust'"),
+        app.indexOf("res.status === 'need_trust'") + 2000);
+    assert.ok(branch.length > 200, '切片拿到 need_trust 分支');
+
+    // message 里必须插入完整的 res.fingerprint
+    assert.match(branch, /message:[\s\S]*\$\{res\.fingerprint\}/,
+        '完整指纹进 message（用户要逐字核对的就是它）');
+    // 勾选项不再重复截断的前缀
+    assert.doesNotMatch(branch, /split\('\:'\)\.slice\(0,\s*\d+\)/,
+        '不要把指纹截断成前缀——那样界面上无法核对');
+    // 文案要求「逐字核对」，就必须真的给得出完整串
+    assert.match(branch, /逐字核对/, '文案仍要求逐字核对');
+});
+
+test('前端：http 地址在对话框里就被拒，并给出迁移步骤', () => {
+    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const validate = app.slice(app.indexOf('async showServerDialog(server, onDone)'));
+    // 用字面量而不是正则断言这条：/^http:\/\// 的斜杠转义在正则字面量里
+    // 极易写错（写成 /\/^http:\\\/\\\// 直接是语法错误，整个文件加载失败），
+    // 而这里要断言的事实就是「源码里就是这几个字符」。
+    assert.ok(validate.includes('/^http:\\/\\//i.test(url)'), 'http 单独判');
+    assert.ok(validate.includes('/^https:\\/\\//i.test(url)'), '只接受 https');
+    // http 的拒绝必须带迁移步骤，否则用户以为是自己地址写错了
+    assert.ok(validate.includes('--tls-cert'), '错误信息含迁移步骤');
 });

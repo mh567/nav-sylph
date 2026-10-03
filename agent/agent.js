@@ -12,8 +12,8 @@
  * - macOS：用 `os` 模块 + `vm_stat`（`os.freemem()` 在 macOS 上不代表可用内存）
  * - 其它（BSD 等）：退回 `os` 模块
  *
- * 两种上报方向
- * - 拉取（默认）：起一个 HTTP 服务等本服务来连。适合目标机与本服务同网段或公网可达。
+* 两种上报方向
+ * - 拉取（默认）：起一个 **HTTPS** 服务等本服务来连。适合目标机与本服务同网段或公网可达。
  * - 推送（`--push`）：**不监听任何端口**，只做出站连接把指标送到本服务。
  *   适合目标机在局域网内、本服务在公网——内网机器上一个端口都不用开。
  *
@@ -21,10 +21,15 @@
  * - 无依赖、无构建步骤，单文件 `node agent.js` 即可运行。
  * - Bearer token 鉴权，token 从环境变量读、**不落盘**。
  * - 拉取模式默认只监听 127.0.0.1；要跨机访问得显式 `--host 0.0.0.0`。
+ * - **拉取模式强制 TLS**：缺 `--tls-cert/--tls-key` 时拒绝启动。
+ *   token 是那台机器的只读监控凭据，明文传输等于把它公开，所以这里
+ *   宁可起不来，也不提供「默认明文」这个选项。逃生门是 `--insecure-http`。
  *
  * 用法
- *   # 拉取模式
- *   NAVSYLPH_TOKEN=<token> node agent.js --port 4195 --host 0.0.0.0
+ *   # 拉取模式（先 node agent.js --gen-cert /etc/nav-agent 生成证书）
+ *   NAVSYLPH_TOKEN=<token> node agent.js \
+ *     --tls-cert /etc/nav-agent/cert.pem --tls-key /etc/nav-agent/key.pem \
+ *     --host 0.0.0.0
  *   # 推送模式（不监听端口）
  *   NAVSYLPH_PUSH_SECRET=<凭据> NAVSYLPH_SERVER_ID=<id> \
  *     node agent.js --push https://nav.example.com
@@ -33,6 +38,7 @@
  */
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const os = require('os');
 
@@ -52,7 +58,15 @@ function parseArgs(argv) {
         // （20 台 × 6 次/分钟 = 120/min 是它的上限）。
         interval: 15,
         // 推送模式默认**不**监听端口。要同时保留拉取能力时显式加 --port
-        serveAlongsidePush: false
+        serveAlongsidePush: false,
+        // TLS 证书路径。不给则监听明文 http——而明文会把 Bearer token
+        // 摊在网上，所以拉取模式下缺证书直接拒绝启动（见下方校验）。
+        tlsCert: null,
+        tlsKey: null,
+        // 证书生成子命令：node agent.js --gen-cert <目录>
+        genCert: null,
+        // 逃生门：显式承认「这台机器只能走明文」。不是默认值。
+        insecureHttp: false
     };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
@@ -66,6 +80,10 @@ function parseArgs(argv) {
         else if (arg === '--push-secret' && argv[i + 1]) out.pushSecret = argv[++i];
         else if (arg === '--server-id' && argv[i + 1]) out.serverId = argv[++i];
         else if (arg === '--interval' && argv[i + 1]) out.interval = Number(argv[++i]);
+        else if (arg === '--tls-cert' && argv[i + 1]) out.tlsCert = argv[++i];
+        else if (arg === '--tls-key' && argv[i + 1]) out.tlsKey = argv[++i];
+        else if (arg === '--gen-cert' && argv[i + 1]) out.genCert = argv[++i];
+        else if (arg === '--insecure-http') out.insecureHttp = true;
         // /health 里带主机名。只有确定端口没暴露到不可信网络时才需要。
         else if (arg === '--expose-hostname') out.exposeHostname = true;
         else if (arg === '--help' || arg === '-h') out.help = true;
@@ -81,11 +99,110 @@ function resolveInterval(value) {
 
 const args = parseArgs(process.argv.slice(2));
 
+// ========== 证书生成 ==========
+
+/**
+ * 生成自签证书。
+ *
+ * Node 内置 crypto 只有 `X509Certificate`（**解析**证书），**没有签发 API**，
+ * 所以这里必须调 openssl CLI——这是「agent 零依赖」与「自签证书」之间
+ * 唯一的调和方式。openssl 在所有目标 Linux 发行版上默认存在。
+ *
+ * 用 execFileSync 而非 exec：主机名作为参数传入而不拼进 shell 字符串，
+ * 否则一个叫 `; rm -rf ~` 的主机名就成了一条命令。
+ *
+ * @returns {{certPath:string, keyPath:string, fingerprint:string}}
+ */
+function generateSelfSignedCert(dir) {
+    const { execFileSync } = require('child_process');
+    const path = require('path');
+
+    // -subj 里的 CN 用 IP/主机名形式；openssl 对含点号的 CN 会告警但仍接受，
+    // SAN 由 -addext 单独给，缺的正是这个（现代校验先看 SAN，CN 只是回退）
+    const subjectName = os.hostname();
+    const certPath = path.join(dir, 'cert.pem');
+    const keyPath = path.join(dir, 'key.pem');
+
+    try {
+        execFileSync('openssl', [
+            'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            '-keyout', keyPath,
+            '-out', certPath,
+            '-days', '3650',
+            '-subj', `/CN=${subjectName}`,
+            '-addext', `subjectAltName=DNS:${subjectName},IP:127.0.0.1`
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch (err) {
+        // openssl 缺失是最可能的原因（精简容器 / alpine）。给可执行的提示，
+        // 而不是把 execFileSync 的 ENOENT 原样抛给用户
+        const stderr = (err.stderr && err.stderr.toString()) || '';
+        if (err.code === 'ENOENT') {
+            console.error('找不到 openssl，无法自动生成证书。');
+            console.error('请先安装它（apt install openssl / yum install openssl），');
+            console.error('或手工生成：');
+            console.error(`  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \\`);
+            console.error(`    -keyout ${keyPath} -out ${certPath} \\`);
+            console.error(`    -subj "/CN=${subjectName}" -addext "subjectAltName=DNS:${subjectName}"`);
+        } else {
+            console.error('生成证书失败:', stderr.trim() || err.message);
+        }
+        process.exit(1);
+    }
+
+    // 私钥必须 0600：同一台机器上的其它用户读到私钥就能冒充这台 agent
+    fs.chmodSync(keyPath, 0o600);
+    fs.chmodSync(certPath, 0o644);
+
+    return { certPath, keyPath, fingerprint: certFingerprint(certPath) };
+}
+
+/**
+ * 算证书的 SHA-256 指纹（大小写不敏感的十六进制，冒号分隔）。
+ * 服务端在「检测连通性」时把这个值显示给用户确认——这就是 TOFU 的那一步。
+ */
+function certFingerprint(certPath) {
+    const { X509Certificate, createHash } = require('crypto');
+    const pem = fs.readFileSync(certPath, 'utf8');
+    const der = new X509Certificate(pem).raw;
+    return createHash('sha256').update(der).digest('hex')
+        .toUpperCase().match(/.{2}/g).join(':');
+}
+
+if (args.genCert) {
+    const target = args.genCert;
+    try {
+        fs.mkdirSync(target, { recursive: true });
+    } catch (err) {
+        console.error(`无法创建目录 ${target}:`, err.message);
+        process.exit(1);
+    }
+    console.log(`正在为目标机生成自签证书（${os.hostname()}）…`);
+    const { certPath, keyPath, fingerprint } = generateSelfSignedCert(target);
+    console.log('');
+    console.log(`  证书 ${certPath}`);
+    console.log(`  私钥 ${keyPath}（权限已收紧为 600）`);
+    console.log('');
+    console.log('  证书 SHA-256 指纹（在后台「检测连通性」时核对这一串）：');
+    console.log(`  ${fingerprint}`);
+    console.log('');
+    console.log('  指纹是这台机器的身份凭据——它只印在目标机终端上，');
+    console.log('  后台拿不到，必须由你亲自核对后再确认。');
+    process.exit(0);
+}
+
 if (args.help) {
     console.log('用法（拉取模式，默认）:');
-    console.log('  NAVSYLPH_TOKEN=<token> node agent.js [--port 4195] [--host 127.0.0.1] [--expose-hostname]');
+    console.log('  NAVSYLPH_TOKEN=<token> node agent.js --tls-cert cert.pem --tls-key key.pem \\');
+    console.log('      [--port 4195] [--host 127.0.0.1] [--expose-hostname]');
+    console.log('  --tls-cert / --tls-key  TLS 证书与私钥路径。**拉取模式必填**——');
+    console.log('      Bearer token 是那台机器的只读监控凭据，明文过网等于凭据公开');
     console.log('  --host           监听地址；跨机访问必须显式设 0.0.0.0');
     console.log('  --expose-hostname 让 /health 也返回主机名（默认不返回，避免泄露）');
+    console.log('  --insecure-http  逃生门：明文监听。仅限已确认走可信网络的场景');
+    console.log('');
+    console.log('先生成自签证书（只需一次，在目标机上执行）:');
+    console.log('  node agent.js --gen-cert /etc/nav-agent');
+    console.log('  # 会打印证书 SHA-256 指纹，在后台「检测连通性」时核对它');
     console.log('');
     console.log('用法（推送模式，目标机在局域网时用）:');
     console.log('  NAVSYLPH_PUSH_SECRET=<凭据> NAVSYLPH_SERVER_ID=<id> \\');
@@ -129,9 +246,42 @@ if (PUSH_MODE) {
         console.error('推送模式缺少 server id。请设置环境变量 NAVSYLPH_SERVER_ID，或用 --server-id 传入。');
         process.exit(1);
     }
-} else if (!TOKEN) {
-    console.error('缺少 token。请设置环境变量 NAVSYLPH_TOKEN，或用 --token 传入。');
-    process.exit(1);
+} else {
+    if (!TOKEN) {
+        console.error('缺少 token。请设置环境变量 NAVSYLPH_TOKEN，或用 --token 传入。');
+        process.exit(1);
+    }
+    // 拉取模式下 token 是唯一的鉴权凭据，明文 HTTP 会把它摊在网上。
+    // 所以缺证书时**拒绝启动**，而不是默默监听明文——错误出现在目标机
+    // 终端里，用户当场就看得见；否则它只会表现为后台里一台离线的机器。
+    const hasCert = Boolean(args.tlsCert && args.tlsKey);
+    if (!hasCert && !args.insecureHttp) {
+        console.error('拉取模式需要 TLS 证书：Bearer token 是那台机器的只读监控凭据，');
+        console.error('走明文 HTTP 等于把它公开在网络上。');
+        console.error('');
+        console.error('生成证书（只需一次）：');
+        console.error('  node agent.js --gen-cert /etc/nav-agent');
+        console.error('');
+        console.error('然后带证书启动：');
+        console.error('  NAVSYLPH_TOKEN=<token> node agent.js \\');
+        console.error('    --tls-cert /etc/nav-agent/cert.pem --tls-key /etc/nav-agent/key.pem \\');
+        console.error('    --host 0.0.0.0');
+        console.error('');
+        console.error('确实要走明文（仅限已确认的可信网络）：加 --insecure-http');
+        process.exit(1);
+    }
+    if (hasCert) {
+        // 证书给了却读不出来，报错要指名文件，否则用户看到的是一段
+        // 无关的 ENOENT 栈
+        for (const [label, p] of [['--tls-cert', args.tlsCert], ['--tls-key', args.tlsKey]]) {
+            try {
+                fs.accessSync(p, fs.constants.R_OK);
+            } catch {
+                console.error(`${label} 指定的文件不可读：${p}`);
+                process.exit(1);
+            }
+        }
+    }
 }
 
 // ========== 采集 ==========
@@ -402,7 +552,7 @@ function startPushing() {
 // ========== 启动 ==========
 
 if (SERVE_HTTP) {
-    const server = http.createServer((req, res) => {
+    const requestHandler = (req, res) => {
         if (req.method === 'GET' && req.url === '/health') {
             // /health 不需要鉴权（方便「agent 起来了吗」这类探测），所以**不能**返回
             // 主机名：它会跟着其它信息一起泄露这台机器叫什么、内网里怎么称呼它。
@@ -440,12 +590,29 @@ if (SERVE_HTTP) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: String(err && err.message || err) }));
         });
-    });
+    };
+
+    // 有证书就走 HTTPS。证书在启动时读一次即可——轮转由 systemd 重启承担，
+    // 而热重载会让一次正在进行的请求行为不可预测。
+    let server;
+    const secure = Boolean(args.tlsCert && args.tlsKey);
+    if (secure) {
+        server = https.createServer({
+            cert: fs.readFileSync(args.tlsCert),
+            key: fs.readFileSync(args.tlsKey)
+        }, requestHandler);
+    } else {
+        server = http.createServer(requestHandler);
+    }
 
     server.listen(args.port, args.host, () => {
-        console.log(`  监听 ${args.host}:${args.port}`);
+        const scheme = secure ? 'https' : 'http';
+        console.log(`  监听 ${scheme}://${args.host}:${args.port}`);
         if (args.host === '127.0.0.1') {
             console.log('  提示：只监听本机，跨机访问需 --host 0.0.0.0');
+        }
+        if (secure) {
+            console.log(`  证书指纹 ${certFingerprint(args.tlsCert)}`);
         }
     });
 }
@@ -462,5 +629,6 @@ if (SERVE_HTTP) {
 
 module.exports = {
     readProcStat, readMemInfo, readLoadAvg, collect, tokenMatches,
-    parseArgs, resolveInterval, pushOnce, PUSH_INTERVALS, VERSION
+    parseArgs, resolveInterval, pushOnce, PUSH_INTERVALS, VERSION,
+    certFingerprint, generateSelfSignedCert
 };

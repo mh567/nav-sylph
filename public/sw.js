@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v48：拉取模式强制 HTTPS（agent 内置 TLS + 指纹配对 TOFU），
+// 改了 app.js、admin.css、sw.js。改了 public/ 下的文件必须同批升缓存名，
+// 否则老用户继续吃旧 bundle、本次修复对他们完全不生效，而本地测试是绿的。
 // nav-v47：服务器列表改卡片网格（按钮从 26px 抬到 44px 触控下限，
 // 横向多台并排），横屏对话框压缩（选项并排两列），以及一条 flaky 计时断言
 // 改为机制断言。改了 app.js、admin.css、sw.js。
@@ -19,7 +22,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v47';
+const CACHE = 'nav-v48';
 const ASSETS = [
     '/',
     '/index.html',

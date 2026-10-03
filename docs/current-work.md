@@ -1956,3 +1956,183 @@ DOM 相应改动：`server-item-main` → `server-item-head`，新增 `server-it
   （`release.sh` 只推 tag 不推分支，漏掉这步 `./sylph.sh update` 会停在旧版本）
 
 测试 322 项全绿。下一轮可从上面「本轮未完成」的五条里挑。
+
+## 监控 agent 传输加密：拉取模式强制 HTTPS（本轮完成，未发布）
+
+用户提出：**坚决不能用 http，起码要 https 或加密的 websocket**。核实后确认这是真实的缺口
+——`agent/agent.js` 原来只起纯 `http.createServer`，而拉取模式下 Bearer token 是**唯一**的
+鉴权凭据，能读到那台机器的 CPU、内存与主机名。走明文等于把这个凭据公开在网络上。
+
+**代码已改完并全量验证，但尚未提交、尚未发布。** 下一位若接手发布，注意这三点：
+改了 `public/app.js` 与 `public/admin.css` → **`sw.js` 的 `CACHE` 必须同批升**；
+模块端点从 8 条变 9 条、特权路由从 20 处变 21 处（`tests/api-boundary.test.js:160` 与
+`tests/session.test.js:631` 的计数断言已更新）。
+
+### 三条已定的决策
+
+| 决策 | 选择 | 理由 |
+| --- | --- | --- |
+| TLS 责任 | agent 内置 HTTPS + 自签证书 | `https`/`tls` 是 Node 内置模块，不破 agent「单文件无依赖」的硬约束 |
+| 指纹录入 | 只在「检测连通性」里交互式 TOFU | 用户不需要在表单里维护证书字段 |
+| 兼容策略 | 硬切，拒 http | 读写两侧都拒，界面给带迁移步骤的错误 |
+
+### 逐文件改动
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `agent/agent.js` | 新增 `--tls-cert`/`--tls-key`/`--gen-cert`/`--insecure-http`；缺证书**拒绝启动**；`https.createServer`；新增 `certFingerprint()` 与 `generateSelfSignedCert()` 并导出 |
+| `lib/monitor.js` | `fetch` 换 `node:https`（为了能传 `ca`）；入口拒 `http:`；证书错误单列；新增 `fetchPeerCert()` |
+| `server.js` | 写入只收 `https:`；新增 `POST .../trust-cert` 配对端点；探测端点返回 `need_trust` + 指纹；读接口给 `hasCert`；两条写路径补回 `certPem`/`certFingerprint` |
+| `public/app.js` | 校验改 https；探测遇 `need_trust` 弹指纹确认框；部署面板改 6 步；卡片加证书状态徽章 |
+| `public/admin.css` | 新增 `.server-item-cert` 徽章样式（浅色 `#a44c46` / 深色 `#e9a69d`，沿用 `.btn-danger` 那一套色值） |
+| `agent/README.md` | 快速开始改 4 步、参数表补 4 项、排错表补 4 条、新增「传输为什么必须是 HTTPS」 |
+
+### 实施时推翻计划的一个假设（实测，非推测）
+
+计划里写「存指纹 + `checkServerIdentity` 自定义校验」。**实测（Node 22）走不通**：
+
+```
+A rejectUnauthorized:false          → HTTP 200, authorizationError=DEPTH_ZERO_SELF_SIGNED_CERT
+B rejectUnauthorized:true + 自定义    → ERR DEPTH_ZERO_SELF_SIGNED_CERT，checkServerIdentity **未被调用**
+C ca=<该证书自身>                   → HTTP 200, authorized=true
+D 完全默认                          → ERR DEPTH_ZERO_SELF_SIGNED_CERT
+```
+
+B 那行是关键：OpenSSL 的链校验先抛错，`checkServerIdentity` **根本不会被调用**。
+所以「按指纹比对」这条路在 Node 上不存在，唯一可行的是**把该机器的证书 PEM 作为
+可信锚点传进 `ca`**（C 行）。这也是 `fetchRemoteMetrics` 必须从 `fetch` 换成
+`node:https` 的原因——内置 fetch 不接受 dispatcher 选项。
+
+顺带修掉一个实测发现的缺陷：`tls.connect` 给 IP 设 `servername` 会触发 Node 的
+`DEP0123` 弃用警告（RFC 6066 不允许 IP 作 SNI），已按 `net.isIP()` 分支处理。
+
+### e2e 走通的 7 步（真实 server + 真实 agent）
+
+```
+1. http 写入          → 400 + 带迁移步骤的错误
+2. https 写入         → 200, id=srv_xxx
+3. 探测（未配对）      → status=need_trust, 指纹与 agent 打印的逐字一致
+4a. 错误指纹配对       → 409「证书与指纹不一致，未保存」
+4b. 正确指纹配对       → 200（大小写与冒号归一化后接受）
+5. 真实采集           → online=true, cpu/mem/hostname 均有真实值
+6. 读接口投影         → hasCert=true；无 certPem、无 token 字段
+7. 换掉 agent 证书     → cached=false 后 certMismatch=true，探测 status=cert_mismatch
+```
+
+第 7 步第一次测时看到 `online=true`，原因是命中了聚合缓存（`cached:true`，TTL 跟着
+轮询周期走）；等缓存过期重采才拿到 `certMismatch`。**这不是漏检**，但它说明改证书后
+最多要等一个 TTL 才反映出来。
+
+### 过程中我自己搞出又修掉的两处
+
+1. **`fetchPeerCert` 改名后漏改 `module.exports`。** 服务端 `require` 得到 `undefined`，
+   配对端点真实运行时永远 502。**334 条测试全绿**——因为它们断言的是「服务端调用了
+   `fetchPeerCert`」这个源码形状，不是「这个导出真的存在」。
+2. **`trust-cert` 路由里残留 `fingerprint: actual`**，那个变量在改名后已不存在，
+   真实运行时抛 `ReferenceError` 回 500。`node --check` 不查标识符是否定义。
+
+两处都只有真实 HTTP 走一遍才暴露。已各补一条守卫：导出必须 `typeof === 'function'`
+（并反向断言「服务端 import 的每个名字都有导出」），以及成功响应的指纹必须来自
+`peer.fingerprint`。
+
+### 我自己写坏又改掉的两条测试
+
+- 先写的负向断言 `doesNotMatch(/parsed\.protocol\s*!==\s*'http:'\s*&&/)` **对变异绿过**：
+  它依赖「http 紧跟在 `&&` 后面」这个顺序，变异写成 `!== 'https:' && !== 'http:'`
+  就漏了。已改成 `/!==\s*'http:'/` 加一条正面计数（整条路由只允许一个 protocol 放行分支）。
+- 计数正则写成 `[a-z]+` **匹配不到 `'https:'`**（协议字符串带冒号），等于恒绿。
+  已改成 `[a-z]+:`。这两条都写完才发现「绿」的含义不对——**恒绿的断言比没有断言更糟**。
+
+### 仍未验证 / 未做
+
+- ~~浏览器实测未做~~ —— **已做**，见上一节。三个真实缺陷已修并补了守卫。
+- **多视口视觉未做。** 徽章在 1280×577 下量过无溢出，但 390×844 / 360×640 /
+  834×1112 / 844×390 四档没走（agent-browser 无法改视口，需 `set device`；
+  而本项目此前实测记录：headless 下 `set device` 报 `maxTouchPoints: 0`、
+  `(hover: none)` 为 false，依赖粗指针的媒体查询在那里测不了）。
+  按本项目自己的判据「能在本地跑出数值的就不写进未验证」，这四条**本轮做不了**。
+- **老式 http 配置的编辑路径未走**：写入侧会 400，错误文案带 `--gen-cert` 步骤，
+  但「改个名字就存不了」这个具体场景没在浏览器里点过。
+- **`--gen-cert` 在 openssl 缺失时的降级提示**未实测（本机有 openssl）。
+- **push 模式的传输未加密**（本轮明确不在范围内）：`server.js` 的推送端点注释仍写着
+  「裸 HTTP」。改它取决于主服务是否 100% 走 https，而本地 `HTTPS_ENABLED=false`
+  的调试路径仍需可用，所以本轮不动。
+- `lib/monitor.js` 导出的 `AGENT_PROTOCOL_VERSION` 在 `server.js` 里零引用，
+  是既有的死导出（非本轮引入），未处理。
+
+### 实际验证记录
+
+```bash
+# 语法检查（派生列表，非硬编码）
+for f in $(git ls-files '*.js' | grep -v node_modules); do node --check "$f" || echo "FAIL $f"; done
+
+# 全量回归：337 项全绿（本轮新增 15 条，更新 5 条旧断言）
+node --test tests/*.test.js
+
+# 变异验证：6 处破坏各自让对应断言变红
+#   去掉 TLS 缺失闸门 / 服务端放行 http / 编辑不补回 certPem
+#   / 确认框默认勾选 / 把 actual 塞回去 / 把 fetchPeerFingerprint 包装函数加回来
+# 每处破坏后都用 cp 备份还原并 diff 校验
+
+# e2e 环境（树外 /tmp，私有文件泄漏检查 7 项全 absent）
+# 服务端端口 4601、agent 端口 4610，测完已停、目录已删
+```
+
+**测试数从 322 涨到 339**，其中新增的 17 条都经过变异验证——「新增测试」本身也必须是红的才算有效。
+
+### 浏览器实测（补做，发现 3 个真实缺陷）
+
+用 agent-browser 驱动真实页面（树外环境 + 真实 agent，端口 4701/4710）。**这一轮又抓出 3 个
+源码形状断言看不见的缺陷，全部已修**：
+
+1. **指纹核对框里根本没有完整指纹。** 文案写着「请逐字核对」，而勾选项只显示
+   `AD:24:26:71…`（前 4 段），实测 `fullFingerprintInDOM = "未找到完整指纹"`。
+   **用户被要求执行一个界面上根本做不到的核对。** 已把完整 32 段指纹放进
+   dialog 的 `message`（CSS 是 `white-space:pre-line`，换行生效），勾选项不再重复截断。
+2. **配对成功后抛 `ReferenceError`。** 写的是 `await onDone()`，而 `onDone` 是
+   `showServerDialog` 的参数名；本方法 `renderServerList(host, config)` 根本没有它。
+   后果特别恶劣：**服务端已把证书存好，界面却显示「检测失败，请重试」且徽章不刷新**——
+   状态不一致，用户会以为没成功而反复重来。已改走 `this.renderModulesEditor()`
+   （与「编辑」「删除」同一入口）。
+3. **未勾选点确认时静默返回。** 对话框一关，徽章不变、**没有任何文字**，
+   「没勾」与「点了取消」表现完全一样，用户会以为证书已配好。已加错误提示。
+
+**实测数值（不是「正常」）**：
+
+| 项 | 实测值 |
+| --- | --- |
+| 徽章尺寸（三张卡一致） | 64 × 19，`flex-wrap` 未折行 |
+| 徽章颜色 | 已确认 `rgb(148,94,74)`（accent）/ 待确认 `rgb(164,76,70)`（警示红） |
+| 完整指纹 | 32 段全部在 DOM 内 |
+| 确认框勾选项 | 354 × 46（触摸目标达标），默认 `checked=false` |
+| 确认框高度 | 355.6px（视口 577px 内），确认按钮 `hitSelf=true`、高 35px |
+| 卡片横向溢出 | 徽章与按钮右边界均 −11px（未溢出），无横向滚动 |
+| 采集结果 | 3 台 https 机器 `online=true` 且有真实 cpu/mem/hostname；老式 http 那台 `online=false` 且错误文案含迁移指引 |
+
+**已排除的两条误判**：
+
+- 「删除按钮换行到第二行」是**既有布局**，不是本轮徽章挤出来的。证据有二：
+  三张卡的 `按钮容器高` 全是 93px、`删除按钮top` 全是 479.1（完全一致），
+  且本轮 `git diff public/admin.css` 只新增了 `.server-item-cert` 四条规则，
+  未触碰 `.server-item-actions`。
+- 换证书后卡片一度仍显示 `online=true`，那是**聚合缓存**（`cached:true`），
+  TTL 过期重采后才变 `certMismatch` —— 不是漏检，但说明改证书最多等一个 TTL 才反映。
+
+**又一次踩到 `[\s\S]*?` 没有上界**：新写的断言
+`/if (...) \{[\s\S]*?showToast\(/` 在删掉提示后**照样绿**——那个惰性匹配越过了 if 块，
+去匹配后面 `trust-cert` 之后另一个分支里的 `showToast`。已改成显式切出 if 块再在块内找，
+并加了 `trustBlock.length < 600` 的上界断言。这是本项目第三次因它踩坑。
+
+**本轮我自己搞出又修掉的还有两处测试写法错误**（详见上文「我自己写坏又改掉的两条测试」
+与上面的 `[\s\S]*?` 一节）：`[a-z]+` 匹配不到 `'https:'`、切片锚点用了
+stripComments 后不存在的注释行。**恒绿的断言比没有断言更糟**，每次新增都要变异验证。
+
+### 仍未验证
+
+- **多视口视觉未做。** 徽章在 1280×577 下量过无溢出，但 390×844 / 360×640 /
+  834×1112 / 844×390 四档没走（agent-browser 无法改视口，需 `set device`；
+  而本项目此前实测记录：headless 下 `set device` 报 `maxTouchPoints: 0`）。
+  按本项目自己的判据「能在本地跑出数值的就不写进未验证」，这四条**应该做但本轮做不了**。
+- `--gen-cert` 在 openssl 缺失时的降级提示未实测（本机有 openssl）。
+- 老式 http 配置的**编辑路径**未走：写入侧会 400，弹出的错误文案里带了
+  `--gen-cert` 步骤，但「改个名字就存不了」这个具体场景没在浏览器里点过。

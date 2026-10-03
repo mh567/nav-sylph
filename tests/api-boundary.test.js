@@ -154,7 +154,10 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         server.indexOf('// ========== Paste API =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
-    assert.equal(moduleRoutes.length, 8, `模块端点应恰好 8 条，实际 ${moduleRoutes.length}`);
+    // 9 条 = 8 条既有 + trust-cert（确认自签证书，TOFU 配对的第二步）。
+    // 数量必须逐条跟上：少一条是漏枚举，多一条可能是有人新加了路由却
+    // 没走到下面的守卫循环——那正是本条断言存在的意义。
+    assert.equal(moduleRoutes.length, 9, `模块端点应恰好 9 条，实际 ${moduleRoutes.length}`);
 
     // 唯一的例外是推送端点：它**故意**不带 requireAdmin——
     // agent 在内网、是裸 HTTP，拿不到浏览器会话，它的鉴权是推送凭据。
@@ -267,14 +270,38 @@ test('保存模块配置不会抹掉已存的 token', () => {
     assert.equal(afterDelete.servers[0].token.data, 'b', '留下的那条 token 仍在');
 });
 
-test('服务器地址只接受 http/https', () => {
-    // 其它协议（file:、gopher:）会被 agent 拉取时当成一个可利用的服务端请求面
+test('服务器地址只接受 https', () => {
+    // 两层防护同时存在，缺一不可：
+    //   file:、gopher: 等协议会被 agent 拉取时当成一个可利用的服务端请求面；
+    //   http: 会把 Bearer token（那台机器的只读监控凭据）明文摊在网络上。
+    // 断言要钉的是「只剩 https 合法」这个事实，而不是某一种写法——
+    // 早先的 `protocol !== 'http:' && protocol !== 'https:'` 白名单
+    // 允许 http 通过，正是这个缺陷的来源。
     const route = server.slice(server.indexOf("app.post('/api/modules/servers'"),
         server.indexOf("app.delete('/api/modules/servers/:id'"));
+    assert.ok(route.length > 200, '切片拿到的是整条路由，不是空壳');
     assert.match(route, /new URL\(url\.trim\(\)\)/, '先按 URL 解析');
-    assert.match(route, /parsed\.protocol\s*!==\s*'http:'\s*&&\s*parsed\.protocol\s*!==\s*'https:'/,
-        '协议白名单只放 http/https');
+    assert.match(route, /parsed\.protocol\s*!==\s*'https:'/,
+        '协议白名单只放 https');
+    // 负向断言要独立于断言 1 的写法：早先写成
+    // `protocol !== 'http:' &&` 依赖「http 紧跟在 && 后面」这个顺序，
+    // 变异把白名单写成 `!== 'https:' && !== 'http:'` 就整个漏过去了
+    // （实测绿过）。这里只问「http 出现在任何一种放行条件里」。
+    assert.doesNotMatch(route, /!==\s*'http:'/,
+        'http 不得出现在任何放行条件里（否则明文可过网）');
+    // 正面断言这一条才是最硬的：整条路由里不得有第二个 protocol 放行分支。
+    // ⚠️ 协议字符串带冒号（'https:'），写成 '[a-z]+' 匹配不到它——
+    // 而「匹配不到」在这里等于「恒绿」，正是这条断言要防的那种假通过。
+    const allowBranches = route.match(/parsed\.protocol\s*!==\s*'[a-z]+:'/g) || [];
+    assert.equal(allowBranches.length, 1,
+        `只应有一个协议放行条件，实际 ${allowBranches.length} 个：${allowBranches.join(' | ')}`);
     assert.match(route, /res\.status\(400\)/, '不合法时 400');
+    // http 要给的是可执行的迁移指引，不是「格式错误」——
+    // 用户看到后者会以为是自己写错了地址格式
+    assert.match(route, /parsed\.protocol\s*===\s*'http:'/,
+        'http 单独给一条说明为什么必须改 https');
+    assert.match(route, /--gen-cert/,
+        'http 的错误信息里含迁移步骤（生成证书）');
 });
 
 test('服务器写端点对 token 只加密、不落明文', () => {
