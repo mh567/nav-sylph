@@ -2,7 +2,86 @@
 
 核对日期：2026-10-04。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：后台自签开关布局 + 部署面板死指引（已提交 `09ac6be` + 审查修正 `ac7a8a3`，随 v1.6.9 发布）
+## 最新一轮：修「后台更新周期改完不生效」（v1.6.12）
+
+用户报「后台服务器监控的更新周期修改后不生效」。**先说结论：用户的改动其实一直是生效的**，服务端写入、落盘、缓存失效三段经实测全部正常；坏掉的是两处别的地方——所以这轮的诊断不是「保存没写进去」，而是「写进去了但界面不回显，且另一条路径会把它改回去」。
+
+### 浏览器实测的三层数字（不是读代码推断出来的）
+
+| 场景 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 改成 30s 后首页实际请求间隔 | 30s ✓ | 30s ✓ |
+| 重开管理面板，下拉框回显 | **15s ✗** | 30s ✓ |
+| 切回前台后的间隔 | **15s ✗** | 30.004s ✓ |
+| 改成 60s 完整往返 | — | 60.225s，回显 60 ✓ |
+
+测量方式：钩 `window.fetch` 记录 `/api/modules/metrics` 的请求时刻，读相邻请求的时间差。这是唯一能测到「真实间隔」的办法——源码里的常量值说明不了运行时行为。
+
+### 根因一：回显是假的（`public/app.js` 的 `loadModulesConfig`）
+
+归一化时只从响应里挑了 `enabledModules` / `widgets` / `servers` 三个字段，**`pollInterval` 被丢在门外**。模块编辑器渲染下拉框时读到 `undefined`，`pollIntervalOptions` 回落到 15——不管服务端存的是 10 秒还是 5 分钟，重开面板永远显示「每 15 秒」。
+
+首页轮询那条路径是对的（它走 `/api/modules/metrics` 响应里的 `pollInterval`），所以「数据是实时的、设置像是没生效」这两件事同时成立，并不矛盾。
+
+**这是本仓库既有的一类缺陷的镜像**：项目里记着大量「读了但没人写」的 bug（形如 `hasEnrollToken` 被服务端算出来却没人消费、`authFailed` 被丢掉、`title` 承诺了一个没人实现的快捷键）。这一条是反过来的——**服务端写了，前端没读**。
+
+### 根因二：切一次标签页就把周期打回 15 秒（`public/modules/server-monitor.js`）
+
+`visibilityHandler` 切回前台时用**硬编码的 `POLL_MS`（15000）**重排定时器，而不是当前生效的 `pollMs`。于是「切到后台再切回来」把用户设的周期悄悄改回 15 秒，无任何提示。
+
+`pollMs`（`server-monitor.js:278`）才是唯一真相来源：`poll()` 按服务端返回值更新它，`startPolling()` 也用它。改前 `visibilityHandler` 是**唯一**还在用常量的地方。
+
+这一条与仓库既有教训同源——同一个 `pollMs`，两条生命周期路径各读一个来源。
+
+### 审查抓到的真缺陷：我自己写的第一条守卫是假绿的
+
+发版审查（Standards 轴）报「新测试的 `vis` 切片起点锚错」。**复核后成立**：`mod.indexOf('visibilityHandler =')` 首次命中的是文件顶部那句 `let visibilityHandler = null;`（第 10 行），切片一路吃掉 `startPolling()`——而那里本来就有一处**正确的** `setInterval(poll, pollMs)`。实测把 handler 里那行整行删掉，测试仍全绿。
+
+讽刺之处：我在那条测试的注释里恰好写下了「断言范围必须落在 visibilityHandler 里，startPolling 里本来就有一处正常的 setInterval，扫全文件会误命中它」——**注释是对的，实现方式否证了它**。改法是锚到定义形态 `visibilityHandler = () => {`、终点锚到注册那一行，并把反向断言从只挡 `POLL_MS` 放宽到同时挡 `15000`（写死字面量是同一种漂移）。
+
+改完重跑变异验证，五个全部精确变红、无连带失败：
+
+| 变异 | 结果 |
+| --- | --- |
+| A 删掉 handler 里的 `setInterval` 整行 | ✅ 转红（**改前是假绿**） |
+| B 改回硬编码 `POLL_MS` | ✅ 转红 |
+| C 写死字面量 `15000` | ✅ 转红 |
+| D 删掉归一化里的 `pollInterval` 行 | ✅ 转红 |
+| E 下拉框改读硬编码 `15` | ✅ 转红 |
+
+### 我这轮自己搞出又修掉的两件事
+
+1. **第一条守卫本身是假绿的**（上面那条），审查报出来、我复核确认、修掉并重跑变异。
+2. **变异脚本自己没改到可执行那行**：B/C 两次「测试全绿」让我一度以为守卫收紧失败。`diff` 显示 `String.replace` 只换了**第一个** `pollMs`，而那个位置在**注释里**（注释原文引用了同一串），可执行那行没被碰到——正是本仓库记过的「`String.replace` 只换第一处，注释里那句话被改了」的坑。改用 `lastIndexOf` 后两个变异都正确变红。**「没红」先怀疑变异脚本，再怀疑守卫。**
+
+### 与 v1.6.7 的关系：同一个症状，两次不同的层面
+
+`git log` 显示 v1.6.7 的提交信息就是「修更新周期不生效」。那一轮修的是**服务端缓存不失效**（TTL 跟着周期算 + 缓存行按需清理）。本轮修的是**前端回显与标签页回落**。两者不冲突，也说明「不生效」这个词在不同时期指的不是同一件事——所以 CHANGELOG 里写的是本轮的具体层面，没有宣称「v1.6.7 没修好」。
+
+### 发布配套
+
+`public/app.js` 与 `public/modules/server-monitor.js` 都在 SW 的 `ASSETS` 清单里，SW 是 cache-first，所以必须同批升缓存名：`nav-v57 → nav-v58`。发版 pre-flight 的**第一个**命令就抓到了这点（先跑它，避免 `diff <tag>..HEAD` 对未提交内容返回空而误判为干净）。
+
+### 本轮已验证 / 仍未验证
+
+**已本地核实**：
+- 三层字节一致：磁盘、`curl` 回来的 HTTP 响应、浏览器实际加载的 bundle（每轮都做了 `unregister()` + `caches.delete()` + cache-busting query，本项目 SW 会活过任何普通刷新）
+- `node --test tests/*.test.js` → 382 pass / 0 fail
+- 五个变异逐一验证（见上表）
+- `node --check`（三个改动文件）、`git diff --check`
+
+**仍未验证**：
+- SW `nav-v58` 是否真的送达老用户——需要对着已部署的源做一次真实刷新。本项目实测下来 SW 是 stale-while-revalidate + 每轮 sw.js 字节不同（install 会 `addAll` 刷新同名缓存），所以**不能**断言「修复未送达」，只能说规则要求升、已升。
+- 真实标签页切换的 `visibilitychange` 语义：本轮 headless 里 `document.hidden` 是用 `Object.defineProperty` 模拟的。headless Chrome 无法真正切标签页，这一点环境上做不到。
+- agent 推送模式（`resolvePushTimeoutMs` 也吃 `config.pollInterval`）本轮未端到端跑——服务端那一侧本轮没动。
+
+### 下一步
+
+本轮无遗留待办。
+
+---
+
+## 上一轮：后台自签开关布局 + 部署面板死指引（已提交 `09ac6be` + 审查修正 `ac7a8a3`，随 v1.6.9 发布）
 
 用户报两处：① 自签开关「说明太详细、位置奇怪、是和之间有大量空白」；② 部署面板里写着「也可以点上面的「检测」立刻试一次」，实际找不到那个按钮。
 
@@ -87,7 +166,7 @@
 
 - 真机拇指触感（软键盘 / coarse pointer）——本环境无法伪造，该行非高频触摸面，风险低。
 
-## 最新一轮：升级后服务起不来——server-config.json 遮蔽配置目录（v1.6.10 未修住，v1.6.11 修好）
+## 上一轮：升级后服务起不来——server-config.json 遮蔽配置目录（v1.6.10 未修住，v1.6.11 修好）
 
 用户报：升级到最新版本后站点访问不了，systemd 起不来，`systemctl status` 只给出 `status=1/FAILURE`，没有原因。
 
@@ -133,7 +212,7 @@ v1.6.10 采取的是「保存时把配置写全」——用 `serverConfigDefault
 
 ## 当前基线
 
-当前基线：只用 `main` 一个分支（策略见 `AGENTS.md` 第 8 条），本地与 `origin/main` 一致，代码基线是 v1.6.11 发布提交（本轮）。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.6.11`。历史见各版本 CHANGELOG 条目与文末两节；`v1.6.2`–`v1.6.8` 在此前的会话中发布，本段当时未跟着走（停在 v1.6.1），已按 v1.6.9 一轮重写——写基线的义务归每一轮发布收尾，不是可欠的。
+当前基线：只用 `main` 一个分支（策略见 `AGENTS.md` 第 8 条），本地与 `origin/main` 一致，代码基线是 v1.6.12 发布提交（本轮）。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.6.12`。历史见各版本 CHANGELOG 条目与文末两节；`v1.6.2`–`v1.6.8` 在此前的会话中发布，本段当时未跟着走（停在 v1.6.1），已按 v1.6.9 一轮重写——写基线的义务归每一轮发布收尾，不是可欠的。
 
 > 基线只锚定**发布提交与版本号**，不写「最新提交是哪个」：把 tip 的 hash 写进文档，会被承载它的那一笔提交本身顶掉一位——上一版就写成了 `d9713f8`，而包含这行字的提交是 `9eafbb5`。锚定不变的发布提交就不会漂。
 
@@ -354,7 +433,7 @@ v1.6.10 采取的是「保存时把配置写全」——用 `serverConfigDefault
 
 **已修 C：验证过程中自己的测试是假绿的。** 上面第 B 条最初没被测出来，因为断言只检查「基础规则有 `display:flex`」和「`≤600px` 块里有 `display:none`」，两条都满足，但层叠结果是错的。另外加琥珀色断言时，它匹配到了我自己写的解释性注释里的 `#f59e0b` 字样——剥注释后才是正确判定。
 
-**已改 D：`--kb-inset` 的验证夹具漏字段。** 两次手写 fixture 都漏了 `searchEngines`，页面直接白屏「加载失败」（`app.js:599` 读 `config.searchEngines.find`），报错只出现在浏览器控制台。**对策：fixture 应从服务端默认配置派生，而不是手写。** 手写的那次还误把服务器配置写进了 `config.json`（书签数据文件），并一度用不完整的 `server-config.json` 覆盖默认配置导致 `paths` 丢失——端口改用环境变量 `PORT=` 传递，不要写配置文件。
+**已改 D：`--kb-inset` 的验证夹具漏字段。** 两次手写 fixture 都漏了 `searchEngines`，页面直接白屏「加载失败」（`app.js:618` 读 `config.searchEngines.find`），报错只出现在浏览器控制台。**对策：fixture 应从服务端默认配置派生，而不是手写。** 手写的那次还误把服务器配置写进了 `config.json`（书签数据文件），并一度用不完整的 `server-config.json` 覆盖默认配置导致 `paths` 丢失——端口改用环境变量 `PORT=` 传递，不要写配置文件。
 
 ### 验证记录
 
@@ -527,7 +606,7 @@ Standards 与 Spec 两轴各跑一个独立 sub-agent（基线 `382c89e`），�
 
 横屏滚到底后实测最后一个引擎「头条搜索」底边 **374 ≤ 390**，12 个全部可达（修复前 6 个不可达）。
 
-**软键盘适配（`visualViewport`）**。`vh` 与 `dvh` 都不跟随软键盘收缩——这是规范事实，不是本项目的疏漏，因此此前所有 `dvh` 写法都无法解决。新增 `bindKeyboardViewport()`（`app.js:381`）：监听 `visualViewport` 的 `resize` 与 `scroll`，用 `requestAnimationFrame` 合并同一帧内的重复事件，把被遮挡高度写进 CSS 变量 `--kb-inset`；再由各处 `calc()` 消费：
+**软键盘适配（`visualViewport`）**。`vh` 与 `dvh` 都不跟随软键盘收缩——这是规范事实，不是本项目的疏漏，因此此前所有 `dvh` 写法都无法解决。新增 `bindKeyboardViewport()`（`app.js:829`）：监听 `visualViewport` 的 `resize` 与 `scroll`，用 `requestAnimationFrame` 合并同一帧内的重复事件，把被遮挡高度写进 CSS 变量 `--kb-inset`；再由各处 `calc()` 消费：
 
 - `.ui-dialog` / `.fav-dialog` 的 `max-height` 减去该值
 - 两个 overlay 的 `padding-bottom` 加上该值（**与 `env(safe-area-inset-bottom)` 叠加**，否则键盘上方那条手势条又会压住按钮）
@@ -839,7 +918,7 @@ console 全程零消息。未点击「分享」按钮，创建接口限流额度
 
 **根因是两次串行的 bcrypt。** `openAdmin` 依次 `await` 了 `ensureAdminFavorites()`（`GET /api/favorites`）与 `loadPrivacyMode()`（`GET /api/config`），两者互不依赖，而服务端每个带密码的请求都要跑一次 `bcrypt.compare`。curl 实测单次约 55ms、不带密码约 1ms——**串行即两次 bcrypt 叠加**。渲染本身只占 0.6ms，不是瓶颈。
 
-**修法**：两个请求放进同一个 `Promise.all` 并发发出（`app.js:1370-1378`）。总耗时降到单次校验的量级。
+**修法**：两个请求放进同一个 `Promise.all` 并发发出（`app.js:2200-2206`）。总耗时降到单次校验的量级。
 
 ### 顺带查到、并已复核澄清的一件事（我自己先前的判断是错的）
 
@@ -1102,10 +1181,10 @@ node --check <每个改动的 .js>       # 全部 OK
 **已本地核实（不再是未验证项）**
 - **首屏多一次 `/api/session` 往返**：本地实测 1.4ms（5 次取样，去掉首次 JIT 后的
   0.9–1.4ms），与首屏本就有的 `/api/config`（0.9–2.1ms）同量级；且它挂在
-  `requestAnimationFrame` 内（`app.js:150`），不阻塞渲染。
+  `requestAnimationFrame` 内（`app.js:560`），不阻塞渲染。
 - **`Accept-CH` 不拖累首页**：实测只在会话相关响应出现——`/api/session` 有该头，
   `/api/config` 与首页静态资源均无。
-- **私密检索的首屏窗口**：已修（检索分支等 `sessionProbe`），`app.js:553/572/1063` 三处可查。
+- **私密检索的首屏窗口**：已修（检索分支等 `sessionProbe`），`app.js:1250/1251/1759` 三处可查（1224 处赋值）。
 
 **确实需要真机/真实环境（本地无法定论）**
 - **Firefox / Safari 的实际登录体验**：逻辑上已保证它们能拿 30 天（无 Client Hints 时
@@ -1282,10 +1361,10 @@ node --check <每个改动的 .js>       # 全部 OK
 
 **做了什么**
 
-- 批量条新增「隐私」按钮（`public/app.js:2724`），点开复用现有 `showUiDialog`，
+- 批量条新增「隐私」按钮（`public/app.js:4549`），点开复用现有 `showUiDialog`，
   单选「设为私密 / 设为公开」。混选时默认预选「设为私密」——批量收紧可见性比放宽安全；
   全部已私密才预选「设为公开」。
-- 新增 `privacySelectedFavorites()`（`public/app.js:3116`）。保存失败时按快照整体回滚
+- 新增 `privacySelectedFavorites()`（`public/app.js:4920`）。保存失败时按快照整体回滚
   （`Object.assign(f, previous[i])`），与同文件 `editFavorite` 的回滚方式一致。
 - 列表项复用首页既有的 `.fav-private-label` 显示「私密」，**不新建类名**。
 - 窄屏 order 写在 `public/admin.css` 的 `.modal` 作用域内（`admin.css:477`），
