@@ -778,6 +778,15 @@ do_update() {
     log_step "更新文件..."
 
     # 删除旧的程序文件（保留用户数据）
+    #
+    # ⚠️ server-config.json 是**用户文件**，不在删除清单里（上面的备份/恢复会处理它），
+    # 但它有个必须知道的副作用：Node 解析 require('./server-config') 的顺序是
+    # .js → .json → 目录，所以它一旦存在就**遮蔽整个 server-config/ 目录**。
+    # 因此 `rm -rf server-config` 删的只是程序目录，不会让这个遮蔽消失。
+    # 实测踩过的坑：一份只写了 {"security":{"selfSignedCert":false}} 的早期残片
+    # 遮蔽着目录，升级后重启即崩，报错是 path.join 收到 undefined
+    # （ERR_INVALID_ARG_TYPE），完全不提配置文件、不提遮蔽，排查绕了三层。
+    # server.js 的 assertConfigUsable() 现在会直接说人话，但根因仍是这个遮蔽。
     rm -rf public server-config
     rm -f server.js package.json package-lock.json sylph.sh version.json CHANGELOG.json
     rm -f .env.example server-config.example.json nav-sylph.service
