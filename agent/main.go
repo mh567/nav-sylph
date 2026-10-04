@@ -359,13 +359,18 @@ type metrics struct {
 	MemoryUsed    float64  `json:"memoryUsed"`
 	MemoryTotal   float64  `json:"memoryTotal"`
 	MemoryPercent float64  `json:"memoryPercent"`
-	Load1         float64  `json:"load1"`
-	Load5         float64  `json:"load5"`
-	Uptime        float64  `json:"uptime"`
-	Cores         int      `json:"cores"`
-	Hostname      string   `json:"hostname"`
-	Platform      string   `json:"platform"`
-	SampledAt     int64    `json:"sampledAt"`
+	// 磁盘占用：根文件系统的总量与已用量。
+	// DiskTotal <= 0 表示取不到（受限容器里 statfs 可能失败），
+	// 此时界面显示「—」，而不是编一个数字。
+	DiskUsed  float64 `json:"diskUsed"`
+	DiskTotal float64 `json:"diskTotal"`
+	Load1     float64 `json:"load1"`
+	Load5     float64 `json:"load5"`
+	Uptime    float64 `json:"uptime"`
+	Cores     int     `json:"cores"`
+	Hostname  string  `json:"hostname"`
+	Platform  string  `json:"platform"`
+	SampledAt int64   `json:"sampledAt"`
 }
 
 // collect 采一份完整指标。CPU 必须两次采样做差，所以这里会等 cpuSampleGap。
@@ -397,12 +402,17 @@ func collect() (*metrics, error) {
 
 	mem := readMemory()
 	load1, load5 := readLoadAvg()
+	// 磁盘读不到同样不是致命错误：与 CPU 一样留 0（= 界面显示「—」），
+	// 而不是编一个数字或让整台机器显示成离线。
+	diskUsed, diskTotal := readDiskUsage("/")
 
 	m := &metrics{
 		Version:     VERSION,
 		CPU:         cpu,
 		MemoryUsed:  mem.Used,
 		MemoryTotal: mem.Total,
+		DiskUsed:    diskUsed,
+		DiskTotal:   diskTotal,
 		Uptime:      sysUptime(),
 		Cores:       runtime.NumCPU(),
 		Hostname:    sysHostname(),

@@ -112,10 +112,20 @@ test('agent collect 的字段与后端校验逐字一致', (t) => {
         'cpu 是数字或 null');
     // 字段集合必须与服务端期望的**逐字一致**。多一个少一个都会被静默忽略，
     // 而界面上看不出少了东西。
+    //
+    // ⚠️ diskUsed/diskTotal 是本轮新增的（首页第三条指标改成存储占用）。
+    // 这条断言就是为这类变更准备的：它确实转红了，因为新字段没登记进来
+    // ——一个「加了字段但忘了同步契约」的守卫，能被自己抓到。
     assert.deepEqual(Object.keys(payload), [
         'version', 'cpu', 'memoryUsed', 'memoryTotal', 'memoryPercent',
+        'diskUsed', 'diskTotal',
         'load1', 'load5', 'uptime', 'cores', 'hostname', 'platform', 'sampledAt'
     ], '字段名与顺序与后端期望一致');
+
+    // 磁盘字段要是数字（0 表示「没报出来」，不是缺失）
+    for (const k of ['diskUsed', 'diskTotal']) {
+        assert.equal(typeof payload[k], 'number', `${k} 是数字`);
+    }
 });
 
 test('agent 的协议版本与服务端对得上', (t) => {
@@ -1128,6 +1138,117 @@ test('发布包只含 Linux 产物，不夹带本机 darwin 二进制', () => {
     const cpAt = rel.indexOf('cp -r agent');
     const findAt = rel.indexOf('! -name \'nav-agent-linux-*\'');
     assert.ok(cpAt > 0 && findAt > cpAt, '先拷入再剔除（反了等于什么都没剔）');
+});
+
+test('首页状态位只回答「能不能读到数据」，不再说「已就绪」', () => {
+    const code = stripComments(moduleSource);
+
+    // 用户原话：「主要体现是否在线就行了」。
+    // 「已就绪 / 等待 / 未部署」是**后台操作台**的措辞——那里要分派任务
+    // （该点部署还是去查网络）。首页是一眼扫过的地方，一台正常工作的
+    // 机器显示「已就绪」对「它活着吗」没有额外信息量。
+    const label = /function statusLabelOf\(entry\) \{[\s\S]*?\n    \}/.exec(code);
+    assert.ok(label, '找到 statusLabelOf');
+    assert.doesNotMatch(label[0], /已就绪|未部署|等待/,
+        '首页状态位不再出现后台那三个词');
+    assert.match(label[0], /case 'ready': return '在线'/, '正常就是「在线」');
+
+    // ⚠️ 但异常必须说出来：证书被换 / 端口被占，这两种塌缩成「离线」
+    // 会让用户以为机器挂了，而实际是安全问题或配置冲突。
+    const kind = /function statusKindOf\(entry\) \{[\s\S]*?\n    \}/.exec(code);
+    assert.ok(kind, '找到 statusKindOf');
+    assert.match(kind[0], /entry\.certMismatch\) return 'alert'/,
+        '证书异常单独成态');
+    assert.match(kind[0], /deployState === 'port_conflict'\) return 'alert'/,
+        '端口被占单独成态');
+
+    // 后台那张卡片**保留**完整三状态位——那里才是分派任务的地方。
+    // 断言这一点是为了防止「首页收敛」被误做成「两处一起简化」。
+    assert.match(appSource, /text: '已就绪',/,
+        '后台卡片仍用「已就绪」等完整措辞');
+    assert.match(appSource, /text: '未部署',/,
+        '后台仍区分「未部署」');
+});
+
+test('首页第三条指标是存储占用，不是负载', () => {
+    const code = stripComments(moduleSource);
+    const rows = /function metricRows\(m\) \{[\s\S]*?\n    \}/.exec(code);
+    assert.ok(rows, '找到 metricRows');
+
+    // 用户原话：「不在首页显示负载信息了不容易读懂，换成存储占用吧」。
+    // 负载对不熟悉的人没有直觉：「0.52 / 0.61」是高是低得先知道核数。
+    assert.match(rows[0], /metricRow\('存储'/, '第三条是「存储」');
+    assert.doesNotMatch(rows[0], /metricRow\('负载'/, '首页不再有「负载」那一行');
+    // 百分比条也要跟着换成存储占比
+    assert.match(rows[0], /m\.diskUsed \/ m\.diskTotal/, '进度条按存储占比');
+
+    // 但**详情页保留负载**：那里有 CPU 与核数做参照。
+    // 「首页不显示」不等于「这个指标废弃了」。
+    const panel = code.slice(code.indexOf('function renderPanelBody'));
+    assert.ok(panel.length > 400, '切出详情页');
+    assert.match(panel.slice(0, 2500), /add\('负载（1 \/ 5 分钟）'/,
+        '详情页仍显示负载');
+    assert.match(panel.slice(0, 2500), /add\('存储占用'/,
+        '详情页也列出存储占用');
+});
+
+test('详情页显示设备地址，且在指标之外（拉不到数据时也看得到）', () => {
+    const code = stripComments(moduleSource);
+    const panel = /function renderPanelBody\(body, entry, all\) \{[\s\S]*?if \(!entry\.metrics\)/.exec(code);
+    assert.ok(panel, '切出 renderPanelBody 到 metrics 判断之前');
+
+    // ⚠️ 位置是关键：必须在 `if (!entry.metrics)` **之前**。
+    // 放在之后意味着「这台机器连不上」时看不到地址——而那正是最需要
+    // 地址的时候（排障第一句问「它在哪台机器上」）。
+    assert.match(panel[0], /entry\.url/, '按 entry.url 渲染');
+    assert.match(panel[0], /module-panel-address/, '有专门的地址条');
+    assert.match(panel[0], /displayHost\(entry\.url\)/, '只显示主机与端口');
+
+    // 服务端一直在传 url（server.js 的 collect 里每条都有），前端此前
+    // 从没读过它——又一个「算了没人用」的字段。守卫钉住消费方存在。
+    const collect = /results\.push\(\{[\s\S]*?id: 'local'/.exec(stripComments(serverSource));
+    assert.ok(collect, '找到本机那条');
+    // 远端每条分支都要带 url：至少失败分支与成功分支
+    const remoteFails = /id: server\.id,\s*\n\s*name: server\.name,\s*\n\s*url: server\.url,[\s\S]{0,80}?online: false/.exec(stripComments(serverSource));
+    assert.ok(remoteFails, '拉取失败那条也带 url');
+
+    // 概览列表里两台机器可能都叫「服务器」，所以要带地址消歧
+    assert.match(code, /module-panel-list-host/,
+        '概览行里也显示地址');
+});
+
+test('磁盘数据两端都采集，且口径一致', () => {
+    // agent 侧
+    const go = fs.readFileSync(path.join(ROOT, 'agent', 'main.go'), 'utf8');
+    assert.match(go, /DiskUsed\s+float64 `json:"diskUsed"`/, 'agent 上报 diskUsed');
+    assert.match(go, /DiskTotal\s+float64 `json:"diskTotal"`/, 'agent 上报 diskTotal');
+    assert.match(go, /readDiskUsage\("\/"\)/, '采根文件系统');
+
+    const disk = fs.readFileSync(path.join(ROOT, 'agent', 'disk_other.go'), 'utf8');
+    assert.match(disk, /func readDiskUsage\(path string\)/, '实现存在');
+    assert.match(disk, /float64\(st\.Blocks\) \* blockSize/, '总量 = Blocks × Bsize');
+    // ⚠️ 口径必须与 lib/monitor.js 的本机实现一致，否则本机卡片与远端
+    // 卡片报两个不同的数，而用户无从判断该信哪个。
+    assert.match(disk, /st\.Bfree/, '用 Bfree（与本机实现同口径）');
+
+    // 本机侧
+    assert.match(monitorSource, /function readLocalDisk\(\)/, '本机也采磁盘');
+    assert.match(monitorSource, /fs\.statfsSync\('\/'\)/, '采根文件系统');
+    assert.match(monitorSource, /diskUsed: disk\.used,/, '本机指标带 diskUsed');
+    // fs 必须显式 require：它在 Node 里恰好是全局的，但那是实现细节，
+    // 不是规范保证；靠全局拿不到任何编译期提示。
+    assert.match(monitorSource, /^const fs = require\('fs'\);$/m, 'fs 显式引入');
+
+    // 推送载荷校验也要认这两个字段，否则推送模式一律显示「—」
+    const norm = /function normalizePushedMetrics\(raw\) \{[\s\S]*?\n\}/.exec(stripComments(serverSource));
+    assert.ok(norm, '找到 normalizePushedMetrics');
+    assert.match(norm[0], /diskUsed: nonNegative\(raw\.diskUsed, 0\)/, '校验 diskUsed');
+    assert.match(norm[0], /diskTotal: nonNegative\(raw\.diskTotal, 0\)/, '校验 diskTotal');
+
+    // CSS
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    assert.match(css, /\.module-panel-address-host\s*\{/, '地址条有样式');
+    assert.match(css, /\.module-panel-list-host\s*\{/, '概览里的地址有样式');
 });
 
 test('服务器列表的按钮高度：桌面 36px 起，窄屏必须抬回 44px', () => {

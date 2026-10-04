@@ -2710,6 +2710,10 @@ function normalizePushedMetrics(raw) {
         memoryUsed: nonNegative(raw.memoryUsed, 0),
         memoryTotal: nonNegative(raw.memoryTotal, 0),
         memoryPercent: clamp(raw.memoryPercent, 0, 1, null),
+        // 磁盘：0 表示「这台机器没报」（旧版 agent 或 statfs 失败），
+        // 界面据此显示「—」而不是「0 B / 0 B」。
+        diskUsed: nonNegative(raw.diskUsed, 0),
+        diskTotal: nonNegative(raw.diskTotal, 0),
         load1: nonNegative(raw.load1, 0),
         load5: nonNegative(raw.load5, 0),
         uptime: nonNegative(raw.uptime, 0),

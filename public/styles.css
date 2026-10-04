@@ -3032,6 +3032,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-panel-list-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
 .module-panel-list-row[data-online="0"] .module-panel-list-value { color: var(--text-muted); }
 .module-panel-list-name { flex: 0 0 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+/* 概览行里的地址。比名称更弱一等——它是消歧信息，不是主要内容。 */
+.module-panel-list-host { color: var(--text-muted); font-size: 10px; font-weight: 400; }
+/* 详情页顶部的地址条。放在指标之外，这样即使这台机器拉不到数据
+   也仍然能看到「它在哪」——排障时这是第一个要问的问题。 */
+.module-panel-address { display: flex; align-items: center; gap: 10px; padding-bottom: 13px; margin-bottom: 13px; border-bottom: 1px solid var(--border); }
+.module-panel-address-host { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
 .module-panel-list-value { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
 .module-widget-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
 .module-widget-title { flex: 1; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }

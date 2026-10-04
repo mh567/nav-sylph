@@ -69,52 +69,84 @@
         return row;
     }
 
-    /** 三条指标。 */
+    /** 只显示主机与端口，不必让用户每次都看见 https:// 前缀。 */
+    function displayHost(url) {
+        try {
+            const u = new URL(url);
+            return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+        } catch {
+            return url;
+        }
+    }
+
+    /** 字节数 → 人类可读（GB/TB）。取不到时返回 '—'。 */
+    function fmtBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+        let v = bytes, i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+    }
+
+    /**
+     * 三条指标。
+     *
+     * 第三条曾经是「负载（1 / 5 分钟）」——用户原话「不在首页显示负载信息了
+     * 不容易读懂，换成存储占用吧」。负载对不熟悉的人没有直觉：
+     * 「0.52 / 0.61」是高还是低？得知道有几核才知道。
+     * 存储占用是「用了 320 GB / 460 GB」，看一眼就知道急不急。
+     *
+     * 详情面板里**仍保留**负载——那里有 CPU 和核数做参照，能读懂的人
+     * 仍然看得到，只是不再占据首页那一行。
+     */
     function metricRows(m) {
+        const diskPercent = (Number.isFinite(m.diskTotal) && m.diskTotal > 0)
+            ? m.diskUsed / m.diskTotal
+            : null;
         return [
             metricRow('CPU', fmtPercent(m.cpu), m.cpu),
             metricRow('内存', fmtPercent(m.memoryPercent), m.memoryPercent),
-            metricRow('负载', `${(m.load1 || 0).toFixed(2)} / ${(m.load5 || 0).toFixed(2)}`,
-                m.cores > 0 ? m.load1 / m.cores : null)
+            metricRow('存储',
+                m.diskTotal > 0
+                    ? `${fmtBytes(m.diskUsed)} / ${fmtBytes(m.diskTotal)}`
+                    : '—',
+                diskPercent)
         ];
     }
 
     /**
-     * 一台机器在首页卡片上显示什么状态。
+     * 状态位只回答「这台机器现在能不能读到数据」。
      *
-     * 首页只做「传达状态」，操作留给后台。
+     * 曾经这里还区分「已就绪 / 等待 / 未部署」——用户原话是
+     * 「主要体现是否在线就行了」。那些是**后台操作台**需要的信息
+     * （该点部署、还是去查网络），而首页是一眼扫过的地方：
+     * 一台正常工作的机器显示「已就绪」，对「它活着吗」这个问题
+     * 没有任何额外信息量，只增加了一种要记的词。
      *
-     * ⚠️ 优先用服务端给的 deployState，别自己猜。
+     * 所以这里收敛成在线 / 离线 / 出问题三态。后台那张卡片仍然
+     * 保留完整的三状态位——那里才是分派任务的地方。
      *
-     * 回归记录（浏览器实测）：这个函数原先只根据
-     * 「有没有 metrics / 有没有 enrolled」推断，于是两台机器显示错了——
-     *   · 配了 deployState:'pending'（已签令牌、等 agent 注册）→ 显示「未部署」
-     *   · 配了 cert_mismatch（安全事件）→ 显示「离线」
-     * 而首页的采集结果里**根本没有** deployState 与 certMismatch 这两个字段
-     * （它们只在 /probe 的响应里），所以无论怎么推断都拿不到真相。
-     *
-     * 正确做法：采集时服务端就带上 deployState（它已经算过一次了，
-     * 探测过 TCP、问过 /health），前端直接用。
+     * 但**异常必须说出来**：证书被换、端口被别的程序占了，
+     * 这不是「离线」能覆盖的，用户不点进详情就会一直以为机器挂了。
      */
     function statusKindOf(entry) {
         if (!entry || entry.id === 'local') return 'ready';
-        // 服务端给的权威状态
-        if (entry.deployState) return entry.deployState;
+        // 安全事件与端口冲突：这两种要让用户看见，不能塌缩成「离线」
         if (entry.certMismatch) return 'alert';
-        // 有指标 = 真的通了。这是最可靠的信号，优先于任何状态字段。
+        if (entry.deployState === 'port_conflict') return 'alert';
+        // 能读到指标 = 真的通了。这是最可靠的信号，优先于任何状态字段
         if (entry.online && entry.metrics) return 'ready';
-        // 没指标但已注册 = 装了 agent 却拉不到数据，多半是网络或端口
+        // 已注册但拉不到：机器在，agent 或网络有问题
         if (entry.enrolled) return entry.online ? 'pending' : 'offline';
-        return 'not_deployed';
+        return entry.online ? 'ready' : 'not_deployed';
     }
 
-    /** 状态位的文案。与后台那张卡片的措辞保持一致，避免两边说法不同。 */
+    /** 状态位的文案。首页只回答「能不能读到数据」。 */
     function statusLabelOf(entry) {
         switch (statusKindOf(entry)) {
-            case 'ready': return '已就绪';
-            case 'pending': return '等待';
-            case 'not_deployed': return '未部署';
-            case 'alert': return '证书异常';
+            case 'ready': return '在线';
+            case 'alert': return '异常';
+            case 'pending': return '连不上';
             default: return '离线';
         }
     }
@@ -405,6 +437,38 @@
     function renderPanelBody(body, entry, all) {
         const nodes = [];
 
+        // 地址放在最前面，且**在指标之外**——即使这台机器拉不到数据
+        // 也要能看到它。用户在排障时第一句问的是「它到底在哪台机器上」，
+        // 而那个状态下没有 metrics、没有 detail，只有一句 error。
+        //
+        // 服务端一直在传 `url`（server.js 的 collect 里就有），前端此前
+        // 从没读过它——又一个「算了没人用」的字段。
+        if (entry.url) {
+            const addr = document.createElement('div');
+            addr.className = 'module-panel-address';
+            const host = document.createElement('span');
+            host.className = 'module-panel-address-host';
+            // 只显示主机与端口：https:// 前缀每一台都一样，占地方且不增信息
+            host.textContent = displayHost(entry.url);
+            const copy = document.createElement('button');
+            copy.type = 'button';
+            copy.className = 'btn btn-sm';
+            copy.textContent = '复制';
+            copy.title = `复制 ${entry.url}`;
+            copy.addEventListener('click', async () => {
+                try {
+                    await navigator.clipboard.writeText(entry.url);
+                    copy.textContent = '已复制';
+                    setTimeout(() => { copy.textContent = '复制'; }, 1500);
+                } catch {
+                    copy.textContent = '复制失败';
+                    setTimeout(() => { copy.textContent = '复制'; }, 1500);
+                }
+            });
+            addr.append(host, copy);
+            nodes.push(addr);
+        }
+
         if (!entry.metrics) {
             nodes.push(errorBox(entry.error || '未获取到数据'));
         } else {
@@ -424,6 +488,11 @@
                 detail.append(dt, dd);
             };
             add('内存', `${fmtBytes(m.memoryUsed)} / ${fmtBytes(m.memoryTotal)}`);
+            // 详情页保留负载：这里有 CPU 与核数做参照，能读懂的人仍然看得到。
+            // 首页那一行换成了存储占用，但不代表这个指标被废弃。
+            if (m.diskTotal > 0) {
+                add('存储占用', `${fmtBytes(m.diskUsed)} / ${fmtBytes(m.diskTotal)}`);
+            }
             add('CPU 核心', `${m.cores}`);
             add('负载（1 / 5 分钟）', `${(m.load1 || 0).toFixed(2)} / ${(m.load5 || 0).toFixed(2)}`);
             add('运行时长', fmtDuration(m.uptime));
@@ -453,7 +522,15 @@
                 row.dataset.online = s.online ? '1' : '0';
                 const name = document.createElement('span');
                 name.className = 'module-panel-list-name';
+                // 名称后面带上地址：概览里最常见的问题是「这一行是哪台机器」，
+                // 而两台机器可能都叫「服务器」。
                 name.textContent = s.name || s.id;
+                if (s.url && !s.isLocal) {
+                    const host = document.createElement('span');
+                    host.className = 'module-panel-list-host';
+                    host.textContent = displayHost(s.url);
+                    name.append(' · ', host);
+                }
                 const value = document.createElement('span');
                 value.className = 'module-panel-list-value';
                 value.textContent = s.online && s.metrics
