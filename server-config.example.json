@@ -10,7 +10,8 @@
     }
   },
   "security": {
-    "adminPasswordFile": ".admin-password.json"
+    "adminPasswordFile": ".admin-password.json",
+    "selfSignedCert": false
   },
   "paths": {
     "data": "data.json",
