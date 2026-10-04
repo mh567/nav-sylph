@@ -122,6 +122,34 @@ fi
 chmod 755 "$TMP/nav-agent"
 ok "已下载 $(du -h "$TMP/nav-agent" | cut -f1)"
 
+# ========== 停掉正在运行的旧 agent ==========
+
+# ⚠️ 必须在**写二进制之前**停，而且必须在 enroll **之前**停。
+#
+# 重复执行这条命令（升级、换 token、重新部署）时的真实时序是：
+#   1. 装新二进制          ← install 内部是「复制到临时文件再 rename」，
+#                            所以不会 ETXTBSY（内核禁止覆盖**执行中**的 inode，
+#                            而 rename 换的是目录项）
+#   2. enroll → 服务端**换掉** token，落盘新证书与新凭据
+#   3. 重启 systemd
+# 若第 3 步之前旧进程还在跑，它手里是**已作废的旧 token**，于是从
+# 「enroll 成功」到「systemctl restart」之间它一直在 401 —— 表现为
+# 首页那台机器突然掉线，几秒后又恢复。用户会以为部署把机器弄坏了。
+#
+# 先停就没有这个空窗；而且停掉之后旧进程不再持有旧 inode，
+# 覆盖二进制也少一层顾虑。
+if [ "$SKIP_SYSTEMD" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet nav-agent 2>/dev/null; then
+        log "停止正在运行的 agent（稍后会用新凭据重启）"
+        systemctl stop nav-agent || warn "停止失败，继续执行；若最后自检失败请手动 stop 后重试。"
+    fi
+elif pgrep -x nav-agent >/dev/null 2>&1; then
+    # 没有 systemd 时的手动运行场景（用户自己 nohup 起的）
+    log "停止手动运行的 agent 进程"
+    pkill -x nav-agent || warn "停止失败，继续执行。"
+    sleep 1
+fi
+
 install -m 0755 "$TMP/nav-agent" "$BIN_PATH"
 ok "已安装到 $BIN_PATH"
 

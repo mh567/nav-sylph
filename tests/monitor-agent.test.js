@@ -305,7 +305,18 @@ test('启动失败必须让脚本非零退出，不能静默成功', () => {
     assert.match(installSh, /systemctl is-active --quiet nav-agent/,
         'restart 之后还要确认进程真的活着');
     // 而失败分支必须 die（退出非零），不能只 warn
-    const failBranch = installSh.slice(installSh.indexOf('systemctl is-active'));
+    //
+    // ⚠️ 锚点不能是 `systemctl is-active` 这个子串：新增的「先停旧 agent」
+    // 那一段里也有 `systemctl is-active --quiet nav-agent`（判断是否在跑），
+    // 而它出现在这段之前——`indexOf` 会抢到那处，于是切出来的 800 字符
+    // 里根本没有失败分支，断言报的是「启动即退出时报错并退出」不成立，
+    // 而真实原因（锚点指错了地方）完全不在信息里。
+    // 用 `systemctl restart` 作锚点：它只出现在「装完 systemd 之后启动」那一步。
+    const failBranch = installSh.slice(installSh.indexOf('if systemctl restart nav-agent'));
+    assert.ok(failBranch.length > 400,
+        `切出启动后的分支（${failBranch.length}）`);
+    assert.match(failBranch.slice(0, 800), /systemctl is-active --quiet nav-agent/,
+        'restart 之后确实用 is-active 复验（锚点没指错）');
     assert.match(failBranch.slice(0, 800), /die "agent 启动后立刻退出/,
         '启动即退出时报错并退出');
     assert.doesNotMatch(failBranch.slice(0, 800), /warn "systemd 启动失败/,
@@ -1401,6 +1412,82 @@ test('服务端能读到 agent 的软件版本（升级提示的前提）', () =
     assert.ok(route.length > 800, '切出 probe 路由');
     assert.match(route, /agentVersion: health\.agentVersion \|\| null/,
         'probe 响应带出 agent 版本');
+});
+
+test('重复执行部署命令不会撞 ETXTBSY，且会先停掉旧 agent', () => {
+    // 用户问的：「已经装了 agent，再执行一遍部署命令会怎么样？」
+    //
+    // 两个独立的机制，缺一不可：
+    //
+    // ① **不会 ETXTBSY**。Linux 内核禁止覆盖**执行中**的 inode，而
+    //    install(1) 的内部实现是「复制到临时文件再 rename」——rename 换的是
+    //    目录项，不动那个已映射的 inode。所以 install -m 0755 覆盖一个正在
+    //    运行的 agent 是安全的（实测：macOS 上同样不报错）。
+    //
+    // ② **但换 token 会造成一段 401 空窗**。enroll 会让服务端换掉 token 并
+    //    作废旧的，而旧进程还在跑、手里是旧 token —— 从 enroll 成功到
+    //    systemctl restart 之间它一直 401。表现为「首页那台机器突然掉线，
+    //    几秒后恢复」，用户会以为部署把机器弄坏了。
+    //
+    // 所以脚本必须在**装二进制之前**就停掉它。
+    const stopAt = installSh.indexOf('systemctl stop nav-agent');
+    const installAt = installSh.indexOf('install -m 0755');
+    // 锚点用 ENROLL_ARGS[@] 而不是整条 if —— 后者的引号与空格在
+    // 改动中最容易变，而这里要定位的只是「调用注册的那一步」。
+    const enrollAt = installSh.indexOf('"${ENROLL_ARGS[@]}"');
+    assert.ok(stopAt > 0, '脚本会停掉正在运行的 agent');
+    assert.ok(installAt > 0, '找到安装那一步');
+    assert.ok(enrollAt > 0, '找到注册那一步');
+    assert.ok(stopAt < installAt,
+        '**先停再装**：否则旧进程一直占着，且第 ② 条的空窗无从避免');
+    assert.ok(stopAt < enrollAt, '且必须在 enroll 之前停（enroll 会作废旧 token）');
+
+    // 停止失败不能中断整条命令——否则一个僵死的 systemd 会让用户
+    // 连「升级」都做不了，而升级才是他更需要的操作。
+    assert.match(installSh, /systemctl stop nav-agent \|\| warn/,
+        '停止失败只警告不中断');
+    // 也要覆盖没有 systemd 的手动运行场景
+    assert.match(installSh, /pkill -x nav-agent/,
+        '手动运行的进程也会被停掉');
+});
+
+test('部署面板给出独立的升级命令，且路径与脚本一致', () => {
+    const code = stripComments(appSource);
+    const dialog = /showDeployDialog\(server\) \{[\s\S]*?\n        \}/.exec(code);
+    assert.ok(dialog, '找到 showDeployDialog');
+
+    // 升级命令必须在面板里，与部署命令**并列**
+    assert.match(dialog[0], /upgrade --server \$\{origin\}/, '面板给出升级命令');
+    // 自签时也要带 CA，否则升级握手失败
+    assert.match(dialog[0], /--server-ca/, '自签时升级命令也带 CA');
+
+    // ⚠️ 路径必须与 install.sh 的 BIN_PATH 逐字一致。
+    // 两处漂移时用户拿到的是一条跑不通的命令，而错误发生在目标机上，
+    // 排查成本很高。
+    const binPath = /^BIN_PATH="([^"]+)"/m.exec(installSh);
+    assert.ok(binPath, 'install.sh 里定义了 BIN_PATH');
+    assert.ok(dialog[0].includes(binPath[1]),
+        `升级命令的路径与 install.sh 的 BIN_PATH 一致（${binPath[1]}）`);
+
+    // 措辞要说清「升级不换 token」——用户在 sudo 之前需要知道这条
+    // 会不会动他的凭据。
+    assert.match(dialog[0], /不重新注册/,
+        '说明升级不重新注册');
+    assert.match(dialog[0], /systemctl restart nav-agent/,
+        '提醒升级后要重启服务');
+});
+
+test('enrollTokenIp 已彻底移除（含作废时的删除循环）', () => {
+    // 上一轮删掉了这个假防护的字段与声明，却漏了这个删除循环里的名字。
+    // delete 一个不存在的键是空操作，所以无害——但它让「已经彻底移除」
+    // 这件事在代码里看着不是真的，下一个人会以为还有残留要找。
+    const route = routeBody("app.post('/api/modules/enroll'");
+    assert.ok(route.length > 400, '切出 enroll 路由');
+    assert.doesNotMatch(route, /enrollTokenIp/,
+        '作废令牌的删除循环里也不该再有它');
+    // 而两个真键必须在（它们写在同一个 for 的数组字面量里）
+    assert.match(route, /for \(const k of \['enrollTokenHash', 'enrollTokenExpiresAt'\]\)/,
+        '作废时删掉这两个键');
 });
 
 test('服务器列表的按钮高度：桌面 36px 起，窄屏必须抬回 44px', () => {

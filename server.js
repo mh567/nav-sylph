@@ -2616,10 +2616,15 @@ app.post('/api/modules/enroll', enrollLimit, async (req, res) => {
             pushSecretHash: pushSecret ? hashPushSecret(pushSecret) : matched.pushSecretHash,
             deployState: 'ready'
         };
-        // 令牌用掉即作废：把三个键**删掉**，而不是赋 undefined。
+        // 令牌用掉即作废：把两个键**删掉**，而不是赋 undefined。
         // JSON.stringify 本来就会丢 undefined，所以「赋 undefined 再 delete」
-        // 是纯噪声；直接 delete 才读得出「这三个键已经作废」。
-        for (const k of ['enrollTokenHash', 'enrollTokenExpiresAt', 'enrollTokenIp']) {
+        // 是纯噪声；直接 delete 才读得出「这两个键已经作废」。
+        //
+        // ⚠️ 第三个 enrollTokenIp 是上一轮删掉的假防护（同一字段同一函数，
+        // 恒相等，NAT 下还不可比），字段与声明都清了，**这里漏了一处**。
+        // 无害——delete 一个不存在的键是空操作——但它会让「这个字段已经彻底
+        // 移除」这件事在代码里显得不是真的。
+        for (const k of ['enrollTokenHash', 'enrollTokenExpiresAt']) {
             delete servers[index][k];
         }
         config.servers = servers;

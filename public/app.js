@@ -3048,6 +3048,25 @@
                     const command = parts.join(' \\\n');
                     const mins = Math.max(1, Math.round((res.expiresAt - Date.now()) / 60000));
 
+                    // 升级命令：与部署命令**并列**，而不是替代它。
+                    //
+                    // 两者不是一回事，走的路径不同：
+                    //   部署 → 重新注册，服务端**换掉 token**、证书也重签
+                    //   升级 → 只替换二进制，凭据与证书都不动
+                    // 所以日常升级用下面这条；上面那条留给「首次安装」
+                    // 与「这台机器的凭据要重新配」的情况。
+                    //
+                    // ⚠️ 别把升级做成部署的别名：那会让用户每升级一次就换一次
+                    // token，凭据白白轮换，而旧进程在重启前一直 401。
+                    // ⚠️ 路径写死 /usr/local/bin/nav-agent：它必须与 agent/install.sh 里的
+                    // BIN_PATH 一致。改成从服务端读的话，多一次请求只为一个
+                    // 不会变的常量——而两处不一致时用户会拿到一条跑不通的命令。
+                    const upgradeCommand =
+                        `sudo /usr/local/bin/nav-agent upgrade --server ${origin}`
+                        + (this.serverIsSelfSigned === true
+                            ? ' \\\n  --server-ca /etc/ssl/certs/你的证书.crt'
+                            : '');
+
                     this.showCommandPanel(`部署到「${name}」`, [
                         {
                             title: '1. 复制并执行',
@@ -3056,7 +3075,20 @@
                             code: command
                         },
                         {
-                            title: '2. 回到这里刷新',
+                            title: '2. 已经装过了？只升级用这条',
+                            // ⚠️ 措辞里不要用 Markdown 强调：这个面板的 note 与
+                            // plain 都经过 esc()，`**…**` 会原样显示星号
+                            // （浏览器实测确认，同 richIntro 的那条约束）。
+                            note: '下面这条只替换 agent 程序本身，不重新注册：'
+                                + '凭据、证书都不动，token 不会变。'
+                                + '本服务出新版本后在目标机执行它即可。'
+                                + '（上一条部署命令也能升级，但会顺便换掉 token，'
+                                + '没必要。）'
+                                + '执行完若 agent 是 systemd 服务，还需 systemctl restart nav-agent',
+                            code: upgradeCommand
+                        },
+                        {
+                            title: '3. 回到这里刷新',
                             note: '目标机执行完后，这张卡片会自动变成「已就绪」，也能读到指标了',
                             // 没有可复制的命令，所以不放代码块——
                             // 放一个装注释的代码块只会让用户以为要复制它，
