@@ -1766,8 +1766,10 @@ test('部署面板第 3 步不给看不见的入口，且按模式分开说', ()
     // ⚠️ 两个分支各自都要点明本模式的真相。注意断言的是**客户端文案本身**，
     // 不是服务端 probe 的 hint（那句是「推送模式的机器不开放端口，所以…」，
     // 措辞不同）——写成断言另一层的字符串，守卫就会在代码正确时变红。
-    assert.match(dialog, /推送模式下目标机不开放端口，探测不到主机在不在线/,
-        'push 分支说明不开放端口、探测不到主机');
+    // ⚠️ 事实拆成两条独立断言，不钉「同段连续出现」：文案里这句话在
+    // 两个字符串字面量之间拼接（重写时拆段了），钉连续出现会让正确代码变红。
+    assert.match(dialog, /推送模式下目标机不开放端口/, 'push 分支说明不开放端口');
+    assert.match(dialog, /探测不到主机在不在线/, 'push 分支点明探测不到主机');
 
     // ② 「检测」这个词只能出现在 pull 分支里，且必须交代怎么走
     //    （面板是覆盖层，得先关掉才看得见按钮）
@@ -1794,6 +1796,31 @@ test('部署面板第 3 步不给看不见的入口，且按模式分开说', ()
     // 另一个模式——本项目在这个坑上栽过（守卫写对了、断言却打偏）。
     assert.doesNotMatch(pushBranch, /「检测」/, 'push 分支不得推荐那个不存在的按钮');
     assert.match(pushBranch, /推送模式下目标机不开放端口/, 'push 分支仍点明不开放端口');
+    // ⚠️ push 文案里引号里的字必须是屏幕上真出现的字：
+    //   「已就绪」＝后台管理卡状态位（app.js serverDeployBit ready 分支）；
+    //   「尚未收到推送」＝一直没上报（server.js push 采集空行分支）；
+    //   「已 N 分钟未收到推送」＝上报后断线（同文件超时分支）——
+    //   截断形（丢「推送」二字）或把两态压成一句都会造成「找不到那个字」。
+    assert.match(pushBranch, /「已就绪」/, '成功面引用后台卡的真实状态位');
+    assert.match(pushBranch, /「尚未收到推送」/, '首发失败引用真实字串');
+    assert.match(pushBranch, /「已 N 分钟未收到推送」/, '断线失败引用真实字串（不得截断成「未收到」）');
+    // push 也被面板遮着卡片：去哪看要先说清
+    assert.match(pushBranch, /关掉这个面板/, 'push 分支也交代先关面板（卡片在面板底下）');
+    // note 同样按模式分：push 没有自动翻牌，不能许诺它。
+    // ⚠️ 和 plain 一样，slice 必须先按 note 自己的三元 `?`/`:` 拆分支——
+    // 整段 slice 含两个分支，pull 的「自动变成已就绪」是合法文案，
+    // 直接 doesNotMatch(/自动/) 会红在正确代码上（同一个边界坑）。
+    assert.match(dialog, /note: mode === 'push'/, 'note 也按模式分支');
+    const noteSlice = dialog.slice(dialog.indexOf('note:'), dialog.indexOf('plain:'));
+    assert.ok(noteSlice.length > 80, `切出 note（${noteSlice.length}）`);
+    const nqAt = noteSlice.indexOf('?');
+    const ncAt = noteSlice.indexOf(':', nqAt + 1);
+    assert.ok(nqAt > 0 && ncAt > nqAt, 'note 三元的两个锚点都在');
+    const pushNote = noteSlice.slice(0, ncAt);
+    const pullNote = noteSlice.slice(ncAt);
+    assert.doesNotMatch(pushNote, /自动/, 'push 的 note 不得许诺自动翻牌');
+    assert.match(pushNote, /关掉这个面板重开一次/, 'push 的 note 指明怎么翻牌');
+    assert.match(pullNote, /自动变成「已就绪」/, 'pull 的 note 保留自动翻牌（60 秒轮询是真的）');
     assert.match(pullBranch, /「检测」/, 'pull 分支才提「检测」');
     assert.match(pullBranch, /关掉这个面板/, '并说清要先关掉面板才看得见按钮');
 
@@ -1816,7 +1843,7 @@ test('部署面板第 3 步不给看不见的入口，且按模式分开说', ()
     assert.match(list, /isPush \? '' : `/, 'push 模式不渲染「检测」按钮');
 });
 
-test('自签开关：开关靠右、说明不再是一大块、且没有嵌套 label', () => {
+test('自签开关成块靠左、说明贴行不横贯、无嵌套 label', () => {
     // 用户报：这个选项「说明太详细、位置奇怪、是和之间有大量空白」。
     // 根因是三条独立的声明叠在一起：
     // ① `.setting-row label` 是 `justify-content: space-between`（styles.css:994），

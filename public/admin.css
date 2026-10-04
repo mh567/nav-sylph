@@ -818,8 +818,8 @@
       真正要的是 `flex-start`：内容按自身宽度成块，靠左排。
    ⚠️ 必须在自己的选择器上重设 flex-direction：styles.css 的
    `max-width: 768px` 块里有一条 `.setting-row label { flex-direction: column }`，
-   窄屏下会把这一行拆成竖排。本文件后加载、同特异性，靠 `.self-signed-label`
-   这个类提一级 specificity（0,2,1 > 0,1,1），不必依赖加载顺序。 */
+   窄屏下会把这一行拆成竖排。本文件后加载、同特异性 —— 靠 `.self-signed-label`
+   这个类提一级 specificity（0,2,0 > 0,1,1），不必依赖加载顺序。 */
 .modal .self-signed-row { display: block; }
 .modal .self-signed-label {
     display: flex; align-items: center; justify-content: flex-start;

@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v57：发版审查修正——部署面板 push 文案引用屏幕上真实出现的字样
+// （「已就绪」「尚未收到推送」「已 N 分钟未收到推送」，两态不合并）、
+// note 也按模式分支（push 无自动翻牌）；自签说明再减一句；
+// renderLocalServerCard 头注释里「关掉无处恢复」的旧前提改写。
+// 改了 app.js、admin.css。同批升缓存名。
 // nav-v56：修「后台取消本机「显示」、首页照常挂着」——mountWidget 的过滤器
 // 曾给本机一个无条件放行（理由「关掉无处恢复」在后台本机卡片出现后已不成立）。
 // 改了 modules/server-monitor.js。同批升缓存名：老用户否则拿不到。
@@ -57,7 +62,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v56';
+const CACHE = 'nav-v57';
 const ASSETS = [
     '/',
     '/index.html',
