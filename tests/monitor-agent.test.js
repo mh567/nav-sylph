@@ -1041,25 +1041,131 @@ test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
     assert.ok(commitKey.length >= 2, '落盘与落点高亮也用同一套键');
 });
 
-test('服务器列表的触控目标不得低于 44px', () => {
-    // 回归记录：列表曾是一行一台、按钮挤在右侧，实测 26px——低于 44px 触摸下限。
+test('后台模块页：没有总的保存按钮，本机排第一且不可删', () => {
+    const code = stripComments(appSource);
+
+    // 用户原话：「不应该存在这个按钮」——曾有个「保存模块配置」，
+    // 与右上角的「保存」职责重叠、用户分不清哪个真的生效
+    // （实际两者写的都是同一份 .modules.json）。
+    assert.doesNotMatch(code, /saveModulesBtn|modulesSaveStatus/,
+        '模块页不再有总的保存按钮与它的状态位');
+
+    // 模块开关仍要即时落盘——删掉按钮之后，这条路径就是唯一的
+    const toggle = code.slice(code.indexOf("for (const box of host.querySelectorAll('[data-module-toggle]'))"));
+    assert.ok(toggle.length > 100, '切出开关绑定');
+    assert.match(toggle.slice(0, 600), /addEventListener\('change'/,
+        '模块开关仍走 change 即时保存，不是靠那个按钮');
+
+    // 本机卡片：永远第一、无部署/编辑/删除
+    const local = /renderLocalServerCard\(config\) \{[\s\S]*?\n        \}/.exec(code);
+    assert.ok(local, '找到 renderLocalServerCard');
+    assert.ok(!/deploy-server|edit-server|del-server/.test(local[0]),
+        '本机卡片没有部署/编辑/删除按钮');
+    assert.match(local[0], /data-server-id="local"/, '本机有独立的 id');
+    // 三个状态位：已安装 / 在线 / 直读
+    for (const [kind, text] of [['ready', '已安装'], ['online', '在线']]) {
+        assert.match(local[0], new RegExp(`data-kind="${kind}"[\\s\\S]{0,80}?${text}`),
+            `本机的「${text}」状态位`);
+    }
+    assert.match(local[0], /data-mode="local"/, '本机标注为直读');
+
+    // 本机永远排在远端之前
+    assert.match(code, /host\.innerHTML = this\.renderLocalServerCard\(config\)\s*\n\s*\+ servers\.map/,
+        '本机卡片先渲染，随后才是远端列表');
+
+    // ⚠️ 本机卡片缺按钮，所以事件绑定必须容错——
+    // 早先是无条件 `row.querySelector('.deploy-server').onclick = …`，
+    // 本机那一行会抛 TypeError 并中断后面所有行的绑定。
+    const bind = code.slice(code.indexOf('for (const row of host.querySelectorAll'));
+    assert.ok(bind.length > 500, '切出事件绑定循环');
+    for (const sel of ['.deploy-server', '.edit-server', '.del-server']) {
+        assert.match(bind.slice(0, 4000),
+            new RegExp(`const \\w+ = row\\.querySelector\\('${sel.replace('.', '\\.')}'\\);\\s*\\n\\s*if \\(\\w+\\)`),
+            `${sel} 的绑定带存在性判断（本机卡片没有它）`);
+    }
+});
+
+test('改更新周期会让采集缓存失效，否则「改完不生效」', () => {
+    // TTL 是跟着周期算出来的（周期 + 10s），但**已写下的缓存行不会因为
+    // TTL 变小而提前失效**。用户把周期从 5 分钟改成 10 秒，TTL 确实变成
+    // 20 秒，可那条缓存还能再活 5 分钟——前端按新周期重排了定时器，
+    // 拿到的仍是旧数据，于是看起来像设置完全没起作用。
+    const src = stripComments(serverSource);
+    assert.match(src, /function metricsInputsChanged\(current, incoming\)/, '有判断函数');
+    const fn = /function metricsInputsChanged\(current, incoming\) \{[\s\S]*?\n\}/.exec(src);
+    assert.ok(fn, '切出 metricsInputsChanged');
+    assert.match(fn[0], /incoming\.pollInterval/,
+        '周期参与判定（不能只比 servers——那是旧版仅有的条件）');
+    assert.match(fn[0], /resolvePollInterval\(incoming\.pollInterval\) !== resolvePollInterval\(current\.pollInterval\)/,
+        '比较的是**归一化后**的值，否则 15 与非法值回落 15 会被判成变了');
+
+    // 调用点必须在写盘之后
+    const route = routeBody("app.post('/api/modules/config'");
+    assert.ok(route.length > 300, '切出保存配置的路由');
+    assert.match(route, /metricsInputsChanged\(existing, normalized\)/, '路由里真的调了它');
+    const writeAt = route.indexOf('writeJSON');
+    const invAt = route.indexOf('invalidateMetricsCache()');
+    assert.ok(writeAt > 0 && invAt > writeAt, '先写盘再清缓存');
+});
+
+test('发布包只含 Linux 产物，不夹带本机 darwin 二进制', () => {
+    // 回归记录（实测 v1.6.5 与 v1.6.6 都中招）：build-agent.sh 会顺带编译一份
+    // darwin 二进制给开发机自测，注释里写着「不进发布包」——
+    // 而 `cp -r agent` 不感知 .gitignore、也不看注释，于是那份 6～7 MB
+    // 静静地躺在每个用户的下载包里。用户部署到的是 Linux 机器，
+    // 它是纯浪费。
+    //
+    // 修在 release.sh（真正决定打包的地方），不是 build-agent.sh：
+    // 后者是构建步骤，它删掉文件只会让本地自测不方便。
+    const rel = fs.readFileSync(path.join(ROOT, 'scripts', 'release.sh'), 'utf8');
+    assert.match(rel, /cp -r agent "\$DIST_DIR/,
+        'release.sh 会拷 agent 目录（所以必须在这里剔除）');
+    // 判据是「不是 linux- 开头」而不是匹配 darwin：
+    // 将来加 windows 版时同样不该进这个面向 Linux 的包。
+    assert.match(rel, /find "\$DIST_DIR\/\$\{RELEASE_NAME\}\/agent\/dist"[\s\S]{0,220}?! -name 'nav-agent-linux-\*'[\s\S]{0,80}?-delete/,
+        '打包后剔除非 Linux 产物');
+    // 剔除必须发生在拷贝之后
+    const cpAt = rel.indexOf('cp -r agent');
+    const findAt = rel.indexOf('! -name \'nav-agent-linux-*\'');
+    assert.ok(cpAt > 0 && findAt > cpAt, '先拷入再剔除（反了等于什么都没剔）');
+});
+
+test('服务器列表的按钮高度：桌面 36px 起，窄屏必须抬回 44px', () => {
+    // 回归记录：列表曾是一行一台、按钮挤在右侧，实测 26px——低于触摸下限。
     // 那个高度是为「三个按钮挤一行」刻意定的（本轮加的「检测连通性」变成四个），
     // 改成一台一张卡、横向 grid 排多台后，卡内竖排才有空间做达标的目标。
     //
-    // 守卫要钉的是**两半**：目标达标 + 不退回单行紧凑排布。
-    // 只查 min-height 的话，把容器改回一行一台照样能过——那正是当初的形态。
+    // 后来按用户要求把桌面端降到 36px（44px 在鼠标操作下占掉整行高度显得笨重，
+    // 一台机器约 180px）。**但触摸下限不能一起降**：≤700px 那个分支是
+    // 手机与小平板，那里的 36px 就是把目标打回事故值。
+    //
+    // 所以断言分两半：桌面 ≥36（守住「别退回 26」），窄屏 ≥44（守住触摸下限）。
     const css = fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8');
+    const stripComments = s => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
-    // 按钮与开关都要达标
     const btn = /\.modal \.server-item-actions \.btn\s*\{([^}]*)\}/.exec(css);
     assert.ok(btn, '找到 .server-item-actions .btn 规则');
     const h = Number(/min-height:\s*(\d+)px/.exec(btn[1])?.[1]);
-    assert.ok(h >= 44, `列表行按钮 min-height 应 ≥44px，实际 ${h}px`);
+    assert.ok(h >= 36, `桌面端按钮 min-height 应 ≥36px，实际 ${h}px`);
+    assert.ok(h < 44, `桌面端应低于触摸下限（否则降高度没意义），实际 ${h}px`);
 
     const show = /\.modal \.server-item-show\s*\{([^}]*)\}/.exec(css);
     assert.ok(show, '找到 .server-item-show 规则');
     const sh = Number(/min-height:\s*(\d+)px/.exec(show[1])?.[1]);
-    assert.ok(sh >= 44, `可见性开关 min-height 应 ≥44px，实际 ${sh}px`);
+    assert.ok(sh >= 36, `可见性开关桌面端 min-height 应 ≥36px，实际 ${sh}px`);
+
+    // 窄屏块必须把两者都抬回 44px。
+    // 用 mediaBlockOf 而不是手写 brace matching，也不要用固定窗口——
+    // 本文件里有多处 @media，取第一个匹配的块会读到不相干的规则。
+    const narrowBlock = mediaBlockOf(css, '@media (max-width: 700px)');
+    assert.ok(narrowBlock, '存在 max-width: 700px 块');
+    for (const sel of ['.modal .server-item-actions .btn', '.modal .server-item-show']) {
+        assert.ok(stripComments(narrowBlock).includes(sel),
+            `窄屏块里必须重新声明 ${sel}，否则降高度会波及触摸设备`);
+    }
+    assert.match(stripComments(narrowBlock),
+        /\.modal \.server-item-actions \.btn,\s*\.modal \.server-item-show \{ min-height: 44px; \}/,
+        '窄屏两者一起抬回 44px');
 
     // 容器是 grid：一台一张卡、横向排多台
     const list = /\.modal #serverList\s*\{([^}]*)\}/.exec(css);
@@ -1073,15 +1179,6 @@ test('服务器列表的触控目标不得低于 44px', () => {
     assert.match(card[1], /flex-direction:\s*column/, '卡内竖排');
     // 退回一行一台的旧形态：flex-direction 不再有 column
     assert.doesNotMatch(card[1], /flex-direction:\s*row/, '不得退回单行横排');
-
-    // 窄屏缩字号但**不降高度**——窄屏正是触摸设备，降高度只会把
-    // 已经达标的目标打回 26。正向要求：窄屏块里根本不出现按钮高度声明。
-    const narrow = mediaBlockOf(css, '@media (max-width: 700px)');
-    assert.ok(narrow, '存在 max-width: 700px 块');
-    assert.doesNotMatch(narrow, /server-item-actions\s+\.btn[^{]*\{[^}]*min-height/,
-        '窄屏块里不得下调按钮高度');
-    assert.doesNotMatch(narrow, /server-item-show[^{]*\{[^}]*min-height/,
-        '窄屏块里不得下调开关高度');
 });
 
 test('每台服务器可单独控制是否在首页显示', () => {

@@ -135,6 +135,19 @@ else
 fi
 cp -r agent "$DIST_DIR/${RELEASE_NAME}/"
 
+# ⚠️ 删掉本机（darwin）产物。用户部署 agent 到的是 Linux 机器，
+# build-agent.sh 顺带编译的那份 darwin 二进制是给开发机自测用的，
+# 6～7 MB 白占下载体积。
+#
+# 这里以前**只写在 build-agent.sh 的注释里**（「不进发布包」），
+# 而 `cp -r agent` 不感知 .gitignore、也不看注释——实测 v1.6.5 与 v1.6.6
+# 的发布包里都躺着 nav-agent-darwin-arm64。
+#
+# 判据用「不是 linux- 开头」而不是匹配 darwin：将来加 windows 版时
+# 同样不该进这个面向 Linux 的包。
+find "$DIST_DIR/${RELEASE_NAME}/agent/dist" -maxdepth 1 -type f \
+    ! -name 'nav-agent-linux-*' -print -delete 2>/dev/null || true
+
 # ⚠️ 二进制只进 tarball，不进 git：三个架构加起来十几 MB，且是构建产物。
 # 这一步之后要确认 dist/ 里确实有东西，否则上面那句「构建失败」会被无声跳过。
 for arch in amd64 arm64 armv7; do

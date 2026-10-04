@@ -790,18 +790,24 @@
 .modal .server-item-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* 可见性开关用原生 checkbox + 文字，而不是现有的 toggle-switch：
    那一套是给整行设置项的（占满一行），这里要和按钮并排。
-   44px 是触摸目标下限，卡内竖排后有空间，不必再压高度换密度。 */
-.modal .server-item-show { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; min-height: 44px; border: 1px solid var(--admin-edge); border-radius: 8px; background: var(--admin-row); cursor: pointer; user-select: none; }
+   36px 是刻意从 44px 降下来的：44px 是**触摸**目标下限，而这一屏在
+   桌面端占掉整行高度显得笨重（一台机器要占 ~180px）。
+   36px 仍远高于可点击的舒适区，也远高于当初实测的 26px 事故值。
+   窄屏另有分支，会把它抬回 44px —— 那里才是真正的触摸设备。 */
+.modal .server-item-show { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; min-height: 36px; border: 1px solid var(--admin-edge); border-radius: 8px; background: var(--admin-row); cursor: pointer; user-select: none; }
 .modal .server-item-show:hover { border-color: var(--accent); }
-.modal .server-item-show input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.modal .server-item-show input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .modal .server-item-show span { color: var(--text-muted); font-size: 12px; }
-.modal .server-item-actions .btn { min-height: 44px; padding: 0 12px; font-size: 12px; }
-/* 窄屏：一张卡已是最窄单元，缩字号但**不降高度**——
-   窄屏正是触摸设备，降高度只会把已经达标的目标打回 26px。 */
+.modal .server-item-actions .btn { min-height: 36px; padding: 0 11px; font-size: 12px; }
+/* 窄屏：一张卡已是最窄单元。高度**必须抬回 44px**——
+   窄屏正是触摸设备，降高度只会把目标打回不可用。
+   （这与「桌面降到 36px」不是同一个决定，别顺手把这里的 44 改成 36。） */
 @media (max-width: 700px) {
     .modal #serverList { grid-template-columns: 1fr; }
     .modal .server-item-token { font-size: 9px; padding: 0 4px; }
     .modal .server-item-mode { font-size: 9px; padding: 0 4px; }
+    .modal .server-item-actions .btn,
+    .modal .server-item-show { min-height: 44px; }
 }
 
 @media (min-width: 900px) {

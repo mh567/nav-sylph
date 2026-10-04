@@ -1298,6 +1298,27 @@ function normalizeModulesConfig(body) {
 }
 
 /**
+ * 判断这次写入是否改变了会影响采集缓存的输入。
+ *
+ * ⚠️ `pollInterval` 也在其中，而这是曾经漏掉的一项：TTL 是**跟着周期算出来的**
+ * （周期 + 10s），但缓存行**不会因为 TTL 变小而提前失效**。于是用户把周期
+ * 从 5 分钟改成 10 秒，TTL 确实算成了 20 秒，可那条已经写下的缓存行还能
+ * 再活 5 分钟——「改完不生效」的现象。
+ *
+ * 而改大的方向恰好相反：周期从 10 秒改成 5 分钟时，清缓存让用户立刻多付
+ * 一次全量采集，可下一次轮询本来也要采。这一侧清掉是划算的。
+ */
+function metricsInputsChanged(current, incoming) {
+    if (!current || typeof current !== 'object') return true;
+    if (incoming.pollInterval !== undefined
+        && resolvePollInterval(incoming.pollInterval) !== resolvePollInterval(current.pollInterval)) {
+        return true;
+    }
+    // servers 的比较在调用处做（要按 id 比，不能整体 JSON.stringify）
+    return false;
+}
+
+/**
  * 按 id 合并模块配置写入。
  * 请求体里缺席的数组一律保留而非清空——拖拽排序只提交 widgets，
  * 若整份覆盖，用户调整一次布局就会把服务器列表清空。
@@ -1837,6 +1858,12 @@ app.post('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
             const after = JSON.stringify(merged.servers || []);
             if (before !== after) invalidateMetricsCache();
         }
+        // ⚠️ 更新周期变了同样要清：TTL 是跟着周期算出来的，而**已写下的
+        // 缓存行不会因为 TTL 变小而提前失效**。用户把周期从 5 分钟改成
+        // 10 秒，TTL 确实变成 20 秒，可那条缓存还能再活 5 分钟——
+        // 表现为「改完不生效」。前端会按新周期重排定时器，但拿到的
+        // 还是旧数据，所以看起来像设置完全没起作用。
+        if (metricsInputsChanged(existing, normalized)) invalidateMetricsCache();
 
         res.json({ success: true });
     } catch (err) {

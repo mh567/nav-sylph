@@ -2579,9 +2579,11 @@
 
             host.innerHTML = `
                 ${rows || '<p class="fav-hint">暂无已注册模块。</p>'}
-                <button class="btn btn-primary" id="saveModulesBtn">保存模块配置</button>
-                <span class="config-save-status" id="modulesSaveStatus" role="status" aria-live="polite"></span>
                 <div class="section-title">监控目标</div>
+                <p class="fav-hint">每个方块是一台机器。改动即时生效；
+                    单台机器的配置在它的「编辑」里保存。</p>
+                <div id="serverList"></div>
+                <button class="btn" id="addServerBtn">添加服务器</button>
                 <div class="setting-row">
                     <label>
                         <span>更新周期</span>
@@ -2591,8 +2593,6 @@
                     </label>
                 </div>
                 <p class="fav-hint" id="pollIntervalHint"></p>
-                <div id="serverList"></div>
-                <button class="btn" id="addServerBtn">添加服务器</button>
             `;
             this.updatePollIntervalHint(config.pollInterval);
             $('#pollIntervalSelect').onchange = async (e) => {
@@ -2630,33 +2630,10 @@
                 });
             }
 
-            const status = $('#modulesSaveStatus');
-            $('#saveModulesBtn').onclick = async () => {
-                const enabled = $$('[data-module-toggle]')
-                    .filter(box => box.checked)
-                    .map(box => box.dataset.moduleToggle);
-                const saveBtn = $('#saveModulesBtn');
-                saveBtn.disabled = true;
-                try {
-                    await API.post('/api/modules/config', {
-                        enabledModules: enabled,
-                        widgets: config.widgets,
-                        servers: config.servers
-                    });
-                    config.enabledModules = enabled;
-                    status.textContent = '已保存';
-                    status.dataset.state = 'success';
-                    this.showToast('模块配置已保存');
-                    await this.renderModuleZone();
-                } catch (e) {
-                    console.error('Save modules config failed:', e);
-                    // 失败态也要显示出来：静默失败过一次（WebDAV 的 429）
-                    status.textContent = '保存失败，请重试';
-                    status.dataset.state = 'error';
-                } finally {
-                    saveBtn.disabled = false;
-                }
-            };
+            // 模块开关有自己的即时保存路径（在 toggle 的 change 处理器里），
+            // 所以这里**不需要**一个总的「保存模块配置」按钮。
+            // 曾有过一个，而它与右上角的「保存」职责重叠、用户分不清
+            // 哪个才是真的生效——实际两者写的都是同一份 .modules.json。
         }
 
         /**
@@ -2862,20 +2839,55 @@
         }
 
         /**
-         * 服务器列表。每台一张卡，卡上有**两个**状态位（在线 / 部署就绪）
-         * 与一个采集方式徽章。
+         * 本机那张卡片。永远排第一，不需要任何配置，也**不可删**——
+         * 它是这个模块唯一的零配置产物，关掉后模块区可能全空却找不到
+         * 入口开回来。所以它没有「部署」「编辑」「删除」，只有「是否在首页显示」。
+         *
+         * 三个状态位对本机恒为固定值：agent 天然在（不需要装）、
+         * 在线（它就是本服务本身）、同步方式是直读。
+         */
+        renderLocalServerCard(config) {
+            const key = 'server-monitor:local';
+            const item = (config.widgets || []).find(w => w.id === key);
+            const shown = item ? item.enabled !== false : true;
+            return `
+            <div class="server-item" data-server-id="local" data-local="1">
+                <div class="server-item-head">
+                    <span class="server-item-name">本机（${this.esc(location.hostname || '运行此服务的机器')}）</span>
+                </div>
+                <div class="server-item-badges">
+                    <span class="server-item-status" data-kind="ready"
+                          title="本服务直接读自己，不需要装任何东西">已安装</span>
+                    <span class="server-item-status" data-kind="online"
+                          title="它就是本服务本身，永远在线">在线</span>
+                    <span class="server-item-mode" data-mode="local"
+                          title="直接读本机系统计数器，不走网络">直读</span>
+                </div>
+                <div class="server-item-actions">
+                    <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
+                        <input type="checkbox" data-server-visible="${key}" ${shown ? 'checked' : ''}
+                               aria-label="在首页显示本机">
+                        <span>${shown ? '显示' : '隐藏'}</span>
+                    </label>
+                </div>
+            </div>`;
+        }
+
+        /**
+         * 服务器列表。本机一张 + 每台远端一张。
+         * 每张卡上有**三个**状态位（是否装了 agent / 是否在线 / 同步方式）、
+         * 一个「是否在首页显示」的复选框，以及该台机器的操作按钮。
          * 凭据不回显——已注册的回一个布尔，编辑时留空表示保持原值
          * （与 WebDAV 的「留空保持原密码」同一形状）。
          */
         renderServerList(host, config) {
             if (!host) return;
             const servers = config.servers || [];
-            if (!servers.length) {
-                host.innerHTML = '<p class="fav-hint">还没有配置远端服务器。'
-                    + '本机始终会被监控；要看别的机器，需要在目标机上部署 agent。</p>';
-                return;
-            }
-            host.innerHTML = servers.map(s => {
+            // 本机永远有卡片——它是这个模块唯一的零配置产物，也是用户
+            // 确认「这套东西活着」的第一眼。此前它只出现在首页卡片里，
+            // 后台列表从空开始，用户会以为「还没配任何东西」。
+            host.innerHTML = this.renderLocalServerCard(config)
+                + servers.map(s => {
                 const key = `server-monitor:${s.id}`;
                 const item = (config.widgets || []).find(w => w.id === key);
                 const shown = item ? item.enabled !== false : true;
@@ -2915,6 +2927,8 @@
 
             for (const row of host.querySelectorAll('.server-item')) {
                 const id = row.dataset.serverId;
+                // 本机卡片没有 deploy/probe/edit/delete 按钮，
+                // 所以下面每个 querySelector 都可能返回 null。
                 const server = servers.find(s => s.id === id);
                 const showBox = row.querySelector('[data-server-visible]');
                 if (showBox) {
@@ -2924,7 +2938,8 @@
                         await this.saveServerVisibility(showBox.dataset.serverVisible, shown, config);
                     };
                 }
-                row.querySelector('.deploy-server').onclick = () => this.showDeployDialog(server);
+                const deployBtn = row.querySelector('.deploy-server');
+                if (deployBtn) deployBtn.onclick = () => this.showDeployDialog(server);
 
                 // 探测：真去连一次，回答三个问题——主机在吗、agent 装了吗、
                 // 能读到指标吗。只对拉取模式的机器有意义：推送模式是目标机
@@ -2967,10 +2982,12 @@
                     };
                 }
 
-                row.querySelector('.edit-server').onclick = () => this.showServerDialog(server, async () => {
+                const editBtn = row.querySelector('.edit-server');
+                if (editBtn) editBtn.onclick = () => this.showServerDialog(server, async () => {
                     await this.renderModulesEditor();
                 });
-                row.querySelector('.del-server').onclick = async () => {
+                const delBtn = row.querySelector('.del-server');
+                if (delBtn) delBtn.onclick = async () => {
                     if (!await this.confirmAction(`确定删除「${server.name || server.url}」？`, '删除服务器', true)) return;
                     try {
                         const res = await fetch(`/api/modules/servers/${encodeURIComponent(id)}`, {

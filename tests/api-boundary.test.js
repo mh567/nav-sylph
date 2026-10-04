@@ -572,12 +572,28 @@ test('模块分区的说明文字紧贴它描述的那一行，不汇总在区�
     // `console.warn(...)` 之后换行的形式会误判成新方法，把切片截在 ~489 处。
     // 改用「下一处同缩进的 `}` 」——方法体结束就是它。
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    const start = appSource.indexOf('renderModulesEditorContent(');
-    assert.ok(start >= 0, 'renderModulesEditorContent 存在');
+    // ⚠️ `renderModulesEditorContent(` 会同时命中**调用处**与**定义处**，
+    // 而调用处后面紧跟的就是别的东西 —— 切片只有几百字符、四个标记全 -1，
+    // 失败信息却显示成「说明与开关不在同一行」，完全指不到真正的原因。
+    // 用带参数的定义形态定位：定义才有签名。
+    const defRe = /\n        renderModulesEditorContent\(host, config\) \{/;
+    const m = defRe.exec(appSource);
+    assert.ok(m, '找到 renderModulesEditorContent 的定义（含签名）');
+    const start = m.index;
     const rest = appSource.slice(start);
-    const end = rest.indexOf('\n        }\n', rest.indexOf('const status ='));
-    assert.ok(end > 0, 'renderModulesEditorContent 的方法体结束位置可定位');
-    const body = rest.slice(0, end);
+    // 方法体结束 = 下一个同缩进的方法定义。
+    //
+    // ⚠️ 也不能用局部变量名当锚点（如曾经的 `const status =`）：
+    // 「保存模块配置」按钮被删掉后变量消失，`indexOf` 返回 -1，
+    // `slice(0, -1)` 变成「除最后一个字符外的全部」——看起来有内容，
+    // 实际覆盖了后面整个文件。
+    const next = rest.slice(1).search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
+    const body = next > 0 ? rest.slice(0, next + 1) : rest;
+    assert.ok(body.length > 500, `切出方法体（${body.length}）`);
+    for (const marker of ['module-setting-label', 'module-setting-hint',
+        'module-setting-toggle', 'module-setting-state']) {
+        assert.ok(body.includes(marker), `切片内含 ${marker}`);
+    }
 
     // 每行：名称 + 可选说明 + 开关 + 状态文字，四者同在一条 setting-row 里
     assert.match(body, /module-setting-label[\s\S]*?module-setting-hint[\s\S]*?module-setting-toggle[\s\S]*?module-setting-state/,
