@@ -2,20 +2,36 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 /**
- * 服务器监控 agent 与远端采集的回归测试。
+ * 服务器监控的回归测试。
  *
- * 归属在这里而不是分散到别处：这两件事是一条链的两端——
- * agent/agent.js 负责「目标机上读到什么」，lib/monitor.js 负责「服务端怎么拉」，
- * 中间靠一份协议（version 字段 + 那几个字段名）绑定。
+ * 归属在这里而不是分散到别处：这是一条链的两端——agent/ 负责「目标机上读到什么」，
+ * server.js 负责「服务端怎么拉、怎么存」，中间靠一份协议
+ * （version 字段 + 那几个字段名）绑定。
+ *
+ * ⚠️ agent 现在是 **Go 静态二进制**（agent/main.go），不再是 Node 脚本。
+ * 所以对 agent 的断言分两类：
+ *   · 能真跑的（子命令、载荷形状、协议版本）—— 跑构建出来的本机二进制
+ *   · 只能读源码的（TLS 闸门、x509 用法）—— Go 源码形状
+ * install.sh 与 build-agent.sh 仍是 shell，按 shell 断言。
+ *
+ * 布局、缓存、推送载荷那部分与 agent 实现无关，留在本文件里——
+ * 它们守的是「首页与模块平台」，换个 agent 不该影响它们。
  */
 
 const ROOT = path.join(__dirname, '..');
-const agentSource = fs.readFileSync(path.join(ROOT, 'agent', 'agent.js'), 'utf8');
+const goSource = fs.readFileSync(path.join(ROOT, 'agent', 'main.go'), 'utf8');
+const installSh = fs.readFileSync(path.join(ROOT, 'agent', 'install.sh'), 'utf8');
+const agentReadme = fs.readFileSync(path.join(ROOT, 'agent', 'README.md'), 'utf8');
+const buildSh = fs.readFileSync(path.join(ROOT, 'scripts', 'build-agent.sh'), 'utf8');
 const monitorSource = fs.readFileSync(path.join(ROOT, 'lib', 'monitor.js'), 'utf8');
 const moduleSource = fs.readFileSync(path.join(ROOT, 'public', 'modules', 'server-monitor.js'), 'utf8');
 const serverSource = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
+const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+const stylesSource = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+const adminCss = fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8');
 
 function stripComments(src) {
     return src
@@ -23,116 +39,793 @@ function stripComments(src) {
         .replace(/(^|[^:'"\\])\/\/.*$/gm, '$1');
 }
 
-test('agent 的两条采集路径返回同一种形状', () => {
-    // /proc/stat 返回一个聚合对象，而 os.cpus() 返回按核的数组。
-    // 两边形状不一致时 collect() 里 `current.total - previousCpu.total`
-    // 变成「数组减数字」= NaN，totalDelta > 0 不成立，cpu 恒为 null——
-    // 而返回的 JSON 完全合法，看不出出错，只是永远没有 CPU 数据。
-    const code = stripComments(agentSource);
-    const readProc = /function readProcStat\(\)\s*\{[\s\S]*?return\s*\{([\s\S]*?)\};/.exec(code);
-    assert.ok(readProc, 'readProcStat 返回一个对象字面量');
+/** 构建出来的本机二进制。没构建过就返回 null——调用方自己决定跳过还是失败。 */
+function localAgentBinary() {
+    const file = path.join(
+        ROOT, 'agent', 'dist', `nav-agent-${process.platform}-${process.arch}`);
+    return fs.existsSync(file) ? file : null;
+}
 
-    const readOs = /function readOsCpuTotal\(\)\s*\{[\s\S]*?return\s*\{([\s\S]*?)\};/.exec(code);
-    assert.ok(readOs, '有 readOsCpuTotal 回落实现');
-
-    // 两者的字段名集合必须一致
-    const fields = src => (src.match(/[a-z]+\s*[:,}]/g) || [])
-        .map(s => s.replace(/[\s,:}]/g, '')).sort();
-    const procFields = fields(readProc[1]);
-    const osFields = fields(readOs[1]);
-    for (const key of ['user', 'nice', 'system', 'idle', 'iowait', 'total']) {
-        assert.ok(procFields.includes(key), `/proc 路径有 ${key}`);
-        assert.ok(osFields.includes(key), `os 回落路径有 ${key}`);
+/**
+ * 取出一条路由的源码（从声明到下一个顶层 app.* 声明为止）。
+ * ⚠️ 切片必须落在**代码**上，不能用注释行当锚点——
+ * code 是 stripComments 之后的源码，注释行 indexOf 返回 -1，
+ * 而 slice(start, -1) 会静默切出「从 -1 到末尾」的整段（本项目踩过两次）。
+ */
+function routeBody(marker, endMarker) {
+    const code = stripComments(serverSource);
+    const start = code.indexOf(marker);
+    if (start < 0) return '';
+    if (endMarker) {
+        const end = code.indexOf(endMarker, start + 10);
+        return end > start ? code.slice(start, end) : '';
     }
+    const next = code.indexOf('\napp.', start + 10);
+    return next > start ? code.slice(start, next) : code.slice(start);
+}
 
-    // 且都必须是对象而非数组
-    assert.doesNotMatch(code, /readOsCpuTotal[\s\S]*?return\s+os\.cpus\(\)/,
-        '回落实现不能直接返回 os.cpus() 的数组');
+/** 取出某个 @media 查询的正文（按括号配平，不靠正则）。 */
+function mediaBlockOf(css, query) {
+    const start = css.indexOf(query);
+    if (start === -1) return null;
+    const open = css.indexOf('{', start);
+    let depth = 0;
+    for (let i = open; i < css.length; i++) {
+        if (css[i] === '{') depth++;
+        else if (css[i] === '}') { depth--; if (depth === 0) return css.slice(open + 1, i); }
+    }
+    return null;
+}
+
+// ========== agent 二进制（能真跑的部分）==========
+
+test('agent 二进制可执行，自报版本与协议一致', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) {
+        t.skip('未构建 agent 二进制（跑 scripts/build-agent.sh）');
+        return;
+    }
+    const out = execFileSync(bin, ['version'], { encoding: 'utf8' });
+    assert.match(out, /nav-agent v1\b/, '自报版本');
+    assert.ok(out.includes(`${process.platform}/${process.arch}`), '自报平台');
 });
 
-test('agent 的 token 走环境变量优先，且鉴权失败不泄露任何提示', () => {
-    const code = stripComments(agentSource);
-    assert.match(code, /NAVSYLPH_TOKEN\s*\|\|\s*args\.token/,
-        '环境变量优先于命令行——命令行会出现在 ps 输出与 shell 历史里');
-    assert.match(code, /timingSafeEqual/, '定长比较，避免逐字符比较泄露前缀');
-    assert.match(code, /401[\s\S]*?unauthorized/, '未授权返回 401');
-    // 401 的响应体里不能带上任何关于 token 的提示
-    const unauthorized = code.slice(code.indexOf('unauthorized') - 200, code.indexOf('unauthorized') + 40);
-    assert.doesNotMatch(unauthorized, /token.{0,20}(长度|length|前缀|prefix|错误)/i,
-        '401 响应不得帮助攻击者缩小 token 的猜测空间');
+test('agent collect 的字段与后端校验逐字一致', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) {
+        t.skip('未构建 agent 二进制');
+        return;
+    }
+    const payload = JSON.parse(execFileSync(bin, ['collect'], { encoding: 'utf8' }));
+
+    // 后端 normalizePushedMetrics 的必填项。少一个或类型不对，
+    // 整条载荷会被拒——而表现是「这台机器离线」而不是明确的格式错误。
+    for (const k of ['memoryPercent', 'memoryTotal', 'cores', 'sampledAt']) {
+        assert.equal(typeof payload[k], 'number', `${k} 是数字`);
+    }
+    for (const k of ['hostname', 'platform']) {
+        assert.equal(typeof payload[k], 'string', `${k} 是字符串`);
+    }
+    // cpu 允许 null（拿不到累计时间时），但不能是别的类型。
+    // ⚠️ 它不能是 0 —— 0% 是一个「看起来正常」的假结论，而缺失是诚实的。
+    assert.ok(payload.cpu === null || typeof payload.cpu === 'number',
+        'cpu 是数字或 null');
+    // 字段集合必须与服务端期望的**逐字一致**。多一个少一个都会被静默忽略，
+    // 而界面上看不出少了东西。
+    assert.deepEqual(Object.keys(payload), [
+        'version', 'cpu', 'memoryUsed', 'memoryTotal', 'memoryPercent',
+        'load1', 'load5', 'uptime', 'cores', 'hostname', 'platform', 'sampledAt'
+    ], '字段名与顺序与后端期望一致');
 });
 
-test('agent 的 health 端点不需要鉴权，metrics 需要', () => {
-    const code = stripComments(agentSource);
-    const healthAt = code.indexOf("'/health'");
-    const metricsAt = code.indexOf("'/metrics'");
-    assert.ok(healthAt >= 0 && metricsAt > healthAt, '两个端点都在');
-    // health 分支在鉴权之前 return
-    const healthBranch = code.slice(healthAt, metricsAt);
-    assert.doesNotMatch(healthBranch, /tokenMatches/,
-        'health 段里没有鉴权调用');
-    assert.match(code.slice(metricsAt, metricsAt + 600), /tokenMatches/,
-        'metrics 段里有鉴权');
+test('agent 的协议版本与服务端对得上', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) {
+        t.skip('未构建 agent 二进制');
+        return;
+    }
+    const payload = JSON.parse(execFileSync(bin, ['collect'], { encoding: 'utf8' }));
+    const { AGENT_PROTOCOL_VERSION } = require(path.join(ROOT, 'lib', 'monitor'));
+    // 不一致时服务端会明确报错，而不是把不认识的字段当 0 读进去
+    //（那样会显示「CPU 0%」这种错误结论）
+    assert.equal(payload.version, AGENT_PROTOCOL_VERSION, '与服务端一致');
 });
 
-test('agent 在没有 /proc 的平台降级而不是崩溃', () => {
-    const code = stripComments(agentSource);
-    assert.match(code, /HAS_PROC\s*=\s*fs\.existsSync\('\/proc\/stat'\)/,
-        '先探测 /proc 是否存在');
-    assert.match(code, /readCpuTotal\s*=\s*HAS_PROC\s*\?\s*readProcStat\s*:\s*readOsCpuTotal/,
-        '按平台选采集实现');
-    // 顶层不能直接调 readProcStat（/proc 不存在时会在启动阶段抛错）
-    assert.doesNotMatch(code, /^let previousCpu = readProcStat\(\)/m,
-        '顶层采样必须走有回落的实现，不能在启动时因缺 /proc 而崩');
+test('agent health 在未注册时点名缺什么，而不是笼统失败', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) {
+        t.skip('未构建 agent 二进制');
+        return;
+    }
+    const r = spawnSync(bin, ['health'], { encoding: 'utf8' });
+    // 「为什么连不上」要拆得开：配置错、证书读不到、端口不通、token 不对，
+    // 处置完全不同。笼统的「失败」等于把排查工作推回给用户。
+    assert.notEqual(r.status, 0, '未注册时退出码非零');
+    assert.match(r.stdout + r.stderr, /config\.json|注册/,
+        '指名配置文件或注册步骤');
 });
 
-test('macOS 内存走 vm_stat，不用 os.freemem()', () => {
-    // os.freemem() 在 macOS 上返回的是「未被列为可用」的页，
-    // 而 macOS 把大部分内存拿去做文件缓存——实测 16GB 机器上
-    // totalmem - freemem 达 98.6%，显示成「内存 99%」，看着像要爆，
-    // 实际完全正常。那个数衡量的是缓存占用，不是应用占用。
+test('agent 的 help 列出的子命令都真实存在，未知命令被拒绝', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) {
+        t.skip('未构建 agent 二进制');
+        return;
+    }
+    const out = execFileSync(bin, ['help'], { encoding: 'utf8' });
+    for (const sub of ['enroll', 'serve', 'push', 'collect', 'health']) {
+        assert.ok(out.includes(sub), `help 提到 ${sub}`);
+    }
+    // 未知子命令必须拒绝，而不是当成默认动作跑起来
+    const bad = spawnSync(bin, ['no-such-command'], { encoding: 'utf8' });
+    assert.notEqual(bad.status, 0, '未知子命令非零退出');
+    assert.match(bad.stderr, /未知子命令/, '说清原因');
+});
+
+test('agent 是零依赖：go.mod 没有第三方 require', () => {
+    // 「零运行时依赖」是选 Go 的唯一理由。引了第三方库要么得 vendor、
+    // 要么得联网拉，而 agent 的意义就是拷过去就能跑。
+    const mod = fs.readFileSync(path.join(ROOT, 'agent', 'go.mod'), 'utf8');
+    const requires = mod.split('\n').filter(l => l.trim().startsWith('require'));
+    assert.equal(requires.length, 0, `不该有 require，实际：${requires.join(' / ')}`);
+});
+
+test('拉取模式缺 TLS 证书时拒绝启动，不监听明文', () => {
+    // 改之前的形状：agent 永远 http.ListenAndServe，token 明文过网。
+    // token 是那台机器唯一的鉴权凭据，拿到就能读它的 CPU、内存与主机名。
+    const code = stripComments(goSource);
+    // ⚠️ 这里有两个 `if certFile == "" || keyFile == ""`：
+    //   第一个（661 行）是「没给就去配置里补默认值」，
+    //   第二个（682 行）才是「补完仍然没有 → 拒绝启动」。
+    // 早先的断言用 `[\s\S]{0,1500}` 从第一个往后找 return，等于把第二个
+    // 当成第一个的证据——于是把第一个的条件改坏（变异）时测试照样绿。
+    // 现在锚定**拒绝那一处**：从 return 往回找最近的闸门。
+    const rejectAt = code.indexOf('return errors.New("缺少 TLS 证书")');
+    assert.ok(rejectAt > 0, '有「缺少 TLS 证书」的拒绝分支');
+    const gateAt = code.lastIndexOf('if certFile == "" || keyFile == ""', rejectAt);
+    assert.ok(gateAt > 0, '拒绝分支之前有证书闸门');
+    // 闸门与 return 之间不得夹着别的 if —— 那样它就不是「这个闸门在守」
+    const between = code.slice(gateAt, rejectAt);
+    assert.doesNotMatch(between, /\n\tif /,
+        '闸门与拒绝之间不该有另一个条件分支（否则守的不是这条路径）');
+    // 逃生门必须是显式的，不能成为默认
+    assert.match(code, /insecure := args\.has\("insecure-http"\)/,
+        '逃生门由「显式给了 --insecure-http」才开启');
+    // 且不得用 str 取——那会让缺省值把逃生门打开
+    assert.doesNotMatch(code, /insecure := args\.str\(/, '逃生门不得有缺省开启的路径');
+    assert.ok(goSource.includes('--insecure-http'), '逃生门在参数解析里');
+});
+
+test('agent 用 x509 原生签发证书，不调 openssl', () => {
+    // 这是选 Go 的主要原因之一：Node 内置 crypto 只有 X509Certificate
+    //（只能解析、不能签发），上一版被迫 execFileSync('openssl', …)。
+    const code = stripComments(goSource);
+    assert.match(code, /x509\.CreateCertificate\(/, '用 x509 签发');
+    assert.match(code, /func selfSign\(/, '有自签函数');
+    // ⚠️ 不得再有 openssl 调用——那个依赖本轮就该消失
+    // ⚠️ 必须先 stripComments：文件头与 usage 里都解释了「为什么不用 openssl」，
+    // 那些说明提到它是对的；对原文断言等于让注释里的词把断言撑成恒绿。
+    // ⚠️ usage 文本里会写「不需要 openssl」——那是给人看的说明，不是调用。
+    // 真正要禁的是把它当子进程执行，那正是上一版的妥协。
+    assert.doesNotMatch(code, /exec(File)?Sync\(\s*'openssl/, '不把 openssl 当子进程调用');
+    assert.doesNotMatch(code, /exec\.Command\(\s*'openssl/, '也不经 exec.Command 调 openssl');
+    assert.match(code, /Chmod\(keyPath, 0o600\)/, '显式再 chmod 一次');
+});
+
+test('SAN 里必须有 IP：现代 TLS 校验先看 SAN，CN 只是回退', () => {
+    // 缺了它，用 IP 连目标机会直接握手失败——而用户填的恰恰就是 IP。
+    const code = stripComments(goSource);
+    assert.match(code, /tmpl\.IPAddresses = \[\]net\.IP\{ip\}/, 'IP 形式的 SAN');
+    assert.match(code, /ParseIP\("127\.0\.0\.1"\)/, '含 127.0.0.1');
+});
+
+test('两条采集路径返回同一种形状，且拿不到时诚实降级', () => {
+    // /proc/stat 返回一个聚合对象而无 /proc 的回落路径若返回别的东西，
+    // collect() 里「一个形状减另一个形状」= NaN，totalDelta > 0 不成立，
+    // cpu 恒为 null——而返回的 JSON 完全合法，看不出出错，只是一直没有 CPU。
     //
-    // 这条最容易回归：`os.freemem()` 在所有平台都存在、都能跑，
-    // 只是 macOS 上语义不对，所以没有任何报错会提醒你。
-    const agentCode = stripComments(agentSource);
-    const monitorCode = stripComments(monitorSource);
+    // 现在的约定：两个平台的回落都返回 (cpuTimes, bool)，
+    // **拿不到就返回 false**，让 CPU 留成 null，而不是造一个假值。
+    for (const f of ['readcpu_darwin.go', 'readcpu_other.go']) {
+        const src = stripComments(fs.readFileSync(path.join(ROOT, 'agent', f), 'utf8'));
+        assert.match(src, /func osCpuTotal\(\) \(cpuTimes, bool\)/,
+            `${f} 的回落返回 (cpuTimes, bool)`);
+    }
+    const main = stripComments(goSource);
+    assert.match(main, /cur, ok := readCpuTotal\(\)/, '调用点接住 ok');
+    assert.match(main, /if ok \{[\s\S]{0,300}?previousCpu = cur/,
+        '只有拿到数据才更新基准值');
+    // ⚠️ CPU 读不到**不是致命错误**：其它指标还能报，
+    // 让整个采集失败会把一台完全正常的机器显示成「离线」
+    assert.doesNotMatch(main, /if !ok \{[\s\S]{0,80}?return nil, errors\.New\("读不到 CPU/,
+        'CPU 读不到时不得让整个采集失败');
+});
 
-    for (const [name, code, fn] of [
-        ['agent', agentCode, /function readDarwinMemory\(\)/],
-        ['服务端', monitorCode, /function readLocalMemory\(\)/]
+test('macOS 内存走 vm_stat，且解析的是词组标签', () => {
+    // 「总内存 − 空闲」在 macOS 上衡量的是「缓存占用」而不是「应用占用」——
+    // 实测 16GB 机器上显示成「内存 99%」，看着像要爆，实际完全正常。
+    // 这条最容易回归：它在所有平台都能跑，只是 macOS 上语义不对。
+    const code = stripComments(goSource);
+    assert.match(code, /func readDarwinMemory\(\)/, '有独立的 macOS 内存读取');
+    assert.match(code, /vm_stat/, '读 vm_stat');
+    assert.match(code, /Pages inactive/, '把 inactive（可回收缓存）计入可用');
+    assert.match(code, /Pages speculative/, '把 speculative 计入可用');
+    // ⚠️ 标签是**词组**（"Pages free:"），所以 Fields[1] 是 "free:" 而非数字。
+    // 按下标取第一段会 ParseFloat("free:") 失败、返回 0，
+    // 于是「可用内存 = 0」显示成「内存 100%」（实测踩过）。
+    assert.match(code, /fields\[len\(fields\)-1\]/,
+        '取最后一段作为数字，而不是按下标取 Fields[1]');
+    // 非 darwin 分支走 /proc/meminfo 的 MemAvailable
+    assert.match(code, /MemAvailable/, 'Linux 分支用 MemAvailable');
+});
+
+test('token 比较用定长比较，不泄露前缀', () => {
+    const code = stripComments(goSource);
+    assert.match(code, /subtle\.ConstantTimeCompare\(/, '定长比较');
+    assert.match(code, /"Bearer "/, 'Bearer 前缀');
+});
+
+test('systemd 的子命令与凭据按模式分支，push 不再装错', () => {
+    // 回归记录（本轮代码审查发现）：ExecStart 写死 `serve`，而 push 模式
+    // 不写 Bearer token —— 于是 agent 启动即退出，脚本却只 warn 一句、
+    // 返回 0，用户在后台看到「已就绪」，实际那台机器上没有任何进程。
+    // **静默失败比崩溃更坏**：崩了用户会来问，装上了用户不会。
+    //
+    // 这里逐条钉住 push 与 pull 各自的形状。
+    assert.match(installSh, /if \[ "\$MODE" = "push" \]; then\s*\n\s*SUBCMD="push"/,
+        'push 模式用 push 子命令');
+    assert.match(installSh, /SUBCMD="serve"/, '其余（pull）用 serve');
+    assert.match(installSh, /ExecStart=\$BIN_PATH \$SUBCMD/,
+        'ExecStart 用按模式算出的子命令，而不是写死 serve');
+    assert.doesNotMatch(installSh, /ExecStart=\$BIN_PATH serve\b/,
+        '不得再写死 serve');
+
+    // 凭据也要分支：push 用推送凭据 + server id，没有 Bearer token
+    assert.match(installSh, /NAV_AGENT_PUSH_SECRET=/, 'push 写推送凭据');
+    assert.match(installSh, /NAV_AGENT_SERVER_ID=/, 'push 写目标机 id');
+    assert.match(installSh, /NAV_AGENT_TOKEN=/, 'pull 写 Bearer token');
+});
+
+test('启动失败必须让脚本非零退出，不能静默成功', () => {
+    // 只看 `systemctl restart` 的返回值会漏掉「启动即退出」——
+    // systemd 对那种情况照样返回 0。所以要 sleep 后再 is-active。
+    assert.match(installSh, /systemctl is-active --quiet nav-agent/,
+        'restart 之后还要确认进程真的活着');
+    // 而失败分支必须 die（退出非零），不能只 warn
+    const failBranch = installSh.slice(installSh.indexOf('systemctl is-active'));
+    assert.match(failBranch.slice(0, 800), /die "agent 启动后立刻退出/,
+        '启动即退出时报错并退出');
+    assert.doesNotMatch(failBranch.slice(0, 800), /warn "systemd 启动失败/,
+        '不得只 warn —— 那正是这个 bug 藏了这么久的原因');
+
+    // 无 systemd / 跳过 systemd 的提示也要按模式给对应命令
+    assert.match(installSh, /请手动运行：\$BIN_PATH push --server/,
+        '无 systemd 时 push 给 push 命令');
+    assert.match(installSh, /请手动运行：\$BIN_PATH serve --host/,
+        '无 systemd 时 pull 给 serve 命令');
+});
+
+test('后台卡片有「在线」与「部署就绪」两个独立状态位', () => {
+    // 用户原话是「方块上除了在线状态，还要有 agent 部署状态」——
+    // 两个正交维度。实现曾把它们拼成一句话（「在线 · 未部署」），
+    // 而后台是操作台：扫过一列卡片时要能分出「哪几台连不上」（查网络）
+    // 与「哪几台没装」（去部署），两类待办的处置完全不同。
+    //
+    // 首页仍只保留合并后的那一个（用户拍板：首页一个就够）。
+const code = stripComments(appSource);
+    // ⚠️ 切片以「下一个缩进 8 的方法定义」为界。用 \n        } 当边界时，
+    // 函数体里任何一层缩进 8 的右花括号都会提前截断——加了注释就切不全，
+    // 而表现是「第一条断言无故失败」而不是「切错了」。
+    const methodBody = (name) => {
+        const start = code.indexOf(`\n        ${name}(`);
+        assert.ok(start > 0, `找到 ${name}`);
+        const rest = code.slice(start + 1);
+        const next = rest.search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
+        return next > 0 ? rest.slice(0, next) : rest;
+    };
+    const render = methodBody('renderServerStatusBits');
+    assert.ok(render.length > 100, `切出 renderServerStatusBits（${render.length}）`);
+    // 两个 span，一个给 online 一个给 deploy
+    assert.match(render, /serverOnlineState\(s, p\)/, '在线位独立判断');
+    assert.match(render, /serverDeployBit\(s, p\)/, '部署位独立判断');
+    assert.match(render, /class="server-item-status" data-kind="\$\{online\.kind\}"/,
+        '渲染出在线状态位');
+    assert.match(render, /class="server-item-status" data-kind="\$\{deploy\.kind\}"/,
+        '渲染出部署状态位');
+
+    // 「在线」这一位必须用 probe 的 reachable —— 服务端早就算好并返回了，
+    // 前端此前从不读它（server.js 的注释明写这两个是不同问题、不能混用）
+    const online = methodBody('serverOnlineState');
+    assert.ok(online.length > 80, '切出 serverOnlineState');
+    assert.match(online, /'reachable' in probe/,
+        '优先用探测返回的 reachable，而不是自己推断');
+    // 推送模式报 null（无端口可探），不能谎称在线或离线
+    assert.match(online, /probe\.reachable === null/,
+        '推送模式如实显示「在线未知」');
+
+    // 没探测过时说「未检测」，不能猜成「离线」
+    assert.match(online, /未检测/, '未探测时说「未检测」');
+
+    // ⚠️ 探测结果必须有落点，否则「在线」位永远显示「未检测」。
+    // 回归记录（浏览器实测发现）：renderServerStatusBits 调用时不传 probe，
+    // 而 reachable 只存在于 /probe 的响应里、不在配置里 —— 于是两个位
+    // 里的第一个恒为「未检测」，等于白做。
+    assert.match(render, /probe \|\| this\.lastProbe\?\.\[s\.id\]/,
+        '渲染时退回读缓存的探测结果');
+    // 探测与轮询都要写缓存
+    const probeCalls = code.match(/this\.lastProbe\[(id|s\.id)\] = res;/g) || [];
+    assert.ok(probeCalls.length >= 2,
+        `探测与轮询都写缓存（实际 ${probeCalls.length} 处）`);
+
+    // 三个部署状态各有措辞与配色
+    const bit = methodBody('serverDeployBit');
+    assert.ok(bit.length > 100, '切出 serverDeployBit');
+    for (const [state, text, kind] of [
+        ['ready', '已就绪', 'ready'],
+        ['pending', '等待部署', 'pending'],
+        ['not_deployed', '未部署', 'not_deployed'],
+        ['cert_mismatch', '证书异常', 'alert'],
+        ['port_conflict', '端口被占', 'alert']
     ]) {
-        assert.match(code, fn, `${name} 有独立的 macOS 内存读取`);
-        assert.match(code, /vm_stat/, `${name} 读 vm_stat`);
-        // available 必须把 inactive（可回收缓存）算进去
-        assert.match(code, /Pages inactive/, `${name} 把 inactive 计入可用`);
-        assert.match(code, /Pages speculative/, `${name} 把 speculative 计入可用`);
+        assert.match(bit, new RegExp(`case '${state}':[\\s\\S]{0,120}?kind: '${kind}'`),
+            `${state} → ${kind}`);
+    }
+    // 措辞只有一处：说明区与 toast 都取自它，否则两边说法会漂移
+    assert.match(code, /const bit = this\.serverDeployBit\(s\);[\s\S]{0,200}?server-item-state/,
+        '说明区复用 serverDeployBit 的措辞');
+    assert.doesNotMatch(code, /serverStateLabel|serverStateKind/,
+        '旧的两套状态文案已删除（零消费者，留着必然漂移）');
+});
+
+test('hasEnrollToken 有真实消费者：决定「复制命令」还是「部署」', () => {
+    // 该字段此前服务端算了、前端零引用，而它的注释声称「界面据此决定
+    // 显示复制命令还是重新生成令牌」——一个假承诺（那两个按钮不存在）。
+    // 用户拍板「有用就留着」，所以接上：它正是「令牌还能直接用」的判据。
+    assert.match(serverSource, /hasEnrollToken: Boolean\(enrollTokenHash\) && enrollTokenExpiresAt > Date\.now\(\)/,
+        '服务端算出它且已考虑过期');
+    const code = stripComments(appSource);
+    const fn = /renderDeployAction\(s\) \{[\s\S]*?\n        \}/.exec(code);
+    assert.ok(fn, '找到 renderDeployAction');
+    assert.match(fn[0], /if \(s\.hasEnrollToken\)/, '按它分两支');
+    assert.match(fn[0], /复制命令/, '令牌有效 → 直接给可复制的命令');
+    assert.match(fn[0], /部署/, '否则给「部署」（点开面板会重新签一枚）');
+    // 卡片必须真的调用它，否则又是一个有定义无调用的死函数
+    assert.match(code, /\$\{this\.renderDeployAction\(s\)\}/,
+        '卡片渲染时调用');
+});
+
+test('install.sh 只支持 Linux，且在 macOS 上给出可执行的替代路径', () => {
+    // 发布包里是 Linux 的静态二进制。没有这道检查时，在 macOS 上跑
+    // install.sh 会一路通过所有检查，然后下载一个跑不起来的 Linux ELF、
+    // 写 systemd、systemctl 失败 —— 用户看到一连串莫名错误，
+    // 而根因（平台不对）在第一秒就该说。
+    assert.match(installSh, /case "\$\(uname -s\)" in\s*\n\s*Linux\) ;;/,
+        '按 uname -s 拦下非 Linux');
+    assert.ok(installSh.includes('只支持 Linux'),
+        '说清为什么装不了');
+    // 给出替代路径而不是只说「不支持」——本项目自己在 macOS 上开发，
+    // 开发者需要知道该怎么做
+    assert.ok(installSh.includes('build-agent.sh'),
+        '给出本机自测的替代命令');
+
+    // ⚠️ 平台检查必须**早于** root 检查：在 macOS 上用户首先该知道的是
+    // 「装不了」，而不是「请用 sudo」——后者会让人以为加上 sudo 就能装。
+    const platformAt = installSh.indexOf('uname -s');
+    const rootAt = installSh.indexOf('id -u');
+    assert.ok(platformAt > 0 && rootAt > 0, '两处检查都可定位');
+    assert.ok(platformAt < rootAt,
+        '平台检查在 root 检查之前（macOS 上不该先让人加 sudo）');
+});
+
+test('install.sh 按架构下载对应二进制，且 404 不会静默写下去', () => {
+    // 架构探测错了，用户拿到的是跑不了的二进制，而错误在目标机上、看不到后台。
+    assert.match(installSh, /x86_64\|amd64\)\s+echo "amd64"/, 'x86_64 映射');
+    assert.match(installSh, /aarch64\|arm64\)\s+echo "arm64"/, 'aarch64 映射');
+    assert.match(installSh, /armv7l\|armv7\|armhf\)\s+echo "armv7"/, 'armv7 映射');
+    assert.match(installSh, /nav-agent-linux-\$\{ARCH\}/, 'URL 含架构');
+    // ⚠️ curl 必须带 -f：少了它 404 的 HTML 会被当二进制写下去，
+    // 用户看到的错误是「不是可执行文件」而不是「404」
+    assert.match(installSh, /curl -fsSL/, 'curl 带 -f');
+    assert.match(installSh, /install -m 0755/, '装到 /usr/local/bin');
+});
+
+test('install.sh 凭据写 env 文件而不是 systemd unit', () => {
+    // unit 会被 systemctl cat / show / status 打印出来，也常被用户贴进 issue。
+    assert.match(installSh, /EnvironmentFile=-\/etc\/nav-agent\/env/, 'unit 用 EnvironmentFile');
+    assert.match(installSh, /ENVFILE=\/etc\/nav-agent\/env/, 'env 路径固定');
+    assert.match(installSh, /chmod 600 "\$ENVFILE"/, 'env 权限 0600');
+    // ⚠️ 凭据不得出现在 unit 正文里
+    const unitBlock = /cat > "\$UNIT" <<EOF[\s\S]*?\nEOF/.exec(installSh);
+    assert.ok(unitBlock, '找到写 unit 的那段');
+    assert.doesNotMatch(unitBlock[0], /TOKEN=/, 'unit 正文里不出现 token');
+    // 缺 systemd 时降级而不是崩（容器、精简系统里没有）
+    assert.match(installSh, /command -v systemctl/, '检查 systemd 是否存在');
+});
+
+test('install.sh 没有需要用户自己填的占位符', () => {
+    // 改之前是 6 步手工复制 + `<你的 token>` 占位符，用户得先去别处取 token。
+    // 一键部署的判据：命令复制过去就能跑。
+    assert.doesNotMatch(installSh, /<你的 token>|<TOKEN>|TOKEN_PLACEHOLDER/,
+        '没有占位符');
+    assert.match(installSh, /--enroll/, '令牌由参数传入');
+});
+
+test('构建脚本覆盖三个架构，armv7 用的是正确的 GOARCH/GOARM 组合', () => {
+    // armv7 覆盖老树莓派与部分路由器——「轻量到能在 NAS 上跑」是本项目的初衷。
+    // ⚠️ 而 armv7 的正确写法是 GOARCH=arm + GOARM=7：
+    // **没有** GOARCH=armv7 这个值，写了会报 unsupported GOOS/GOARCH pair（实测踩过）。
+    assert.match(buildSh, /LINUX_ARCHES=\(amd64 arm64 armv7\)/, '三个架构');
+    assert.match(buildSh, /build linux arm "nav-agent-linux-armv7" 7/,
+        'armv7 用 GOARCH=arm + GOARM=7');
+    assert.match(buildSh, /CGO_ENABLED=0/, '静态链接，否则「拷过去就能跑」不成立');
+    assert.match(buildSh, /grep -q "ELF"/, '自检产物是 ELF');
+});
+
+test('agent 二进制不进 git，但发布时会构建并校验', () => {
+    // 三个架构加起来十几 MB，且是构建产物
+    const ignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+    assert.match(ignore, /^dist\//m, 'dist/ 被 gitignore');
+    const release = fs.readFileSync(path.join(ROOT, 'scripts', 'release.sh'), 'utf8');
+    assert.match(release, /build-agent\.sh/, '发布时调构建脚本');
+    // ⚠️ 构建失败必须让发布失败，而不是打个没有 agent 的包——
+    // 那时用户照着命令执行，拿到的错误在目标机上、看不到后台
+    assert.match(release, /agent 二进制缺失/, '发布前确认产物存在');
+});
+
+// ========== TCP 三态探测（核心）==========
+
+test('探测区分 refused 与 timeout——这是「在线但未部署」得以成立的前提', () => {
+    // 改之前只有「在线 / 离线」两个结果，而用户真正要回答的是三个不同的
+    // 问题：主机在吗、agent 装了吗、能不能读到指标。三者塌缩成一个
+    // 「离线」时，用户无法判断该点部署、该查网络、还是该重装。
+    //
+    // TCP 层面这两个是**确定可分**的：ECONNREFUSED 说明主机回了 RST，
+    // 它活着，只是没人监听；超时才是路不通。实测可行，无需 root、无需依赖。
+    const code = stripComments(monitorSource);
+
+    // refused 必须由 ECONNREFUSED 触发，且紧挨着它（不能隔着别的分支）
+    const refusedAt = code.indexOf("done('refused'");
+    assert.ok(refusedAt > 0, 'refused 是一等状态而不是被合并掉的');
+    const before = code.slice(Math.max(0, refusedAt - 260), refusedAt);
+    assert.match(before, /ECONNREFUSED/,
+        'refused 由 ECONNREFUSED 触发（主机回了 RST，说明它活着）');
+
+    // 三态齐全，且 refused 不得被写成 timeout 的别名
+    assert.ok(code.includes("'open'"), 'open：有服务在监听');
+    assert.ok(code.includes("'refused'"), 'refused：主机在线但没人监听');
+    assert.ok(code.includes("'timeout'"), 'timeout：路不通');
+    // 描述文字也要分开——用户看到的是这句话
+    const refusedDesc = /done\('refused',\s*'([^']*)'/.exec(code)?.[1] || '';
+    const timeoutDesc = /done\('timeout',\s*'([^']*)'/.exec(code)?.[1] || '';
+    assert.ok(refusedDesc, 'refused 有自己的描述文案');
+    assert.ok(timeoutDesc, 'timeout 有自己的描述文案');
+    assert.notEqual(refusedDesc, timeoutDesc,
+        '两者的描述文案不得相同——那句话是用户看到的唯一区分');
+    // ⚠️ refused 的文案必须点出「主机在线」，否则用户仍会以为机器挂了
+    assert.match(refusedDesc, /在线/, 'refused 的文案要点明主机在线');
+});
+
+test('探测轮询比的是「本次 vs 上次」，不是「本次 vs 陈旧快照」', () => {
+    // 回归记录（本轮代码审查发现，浏览器实测可复现）：早先写的是
+    //   if (res.deployState && res.deployState !== s.deployState) changed = true;
+    // 而 s 来自 schedulePendingProbe 启动时捕获的 config.servers —— 那个快照
+    // 每一轮读的都是同一个值。于是只要结果非空就恒真，**每 60 秒必弹一次
+    // 「有机器的状态变了」，哪怕什么都没变**。
+    //
+    // 同一个陈旧快照还导致第二个 bug：pending 列表只在启动时 filter 一次，
+    // 已注册的机器永远进不了下一轮 —— 刚部署完的那台要等用户重开面板
+    // 才被重新筛。
+    const code = stripComments(appSource);
+    const fn = /schedulePendingProbe\(config\) \{[\s\S]*?\n        \}/.exec(code);
+    assert.ok(fn, '找到 schedulePendingProbe');
+    const body = fn[0];
+
+    assert.match(body, /const lastSeen = new Map\(\)/,
+        '用可变 Map 记录上次状态，而不是闭包里的陈旧快照');
+    assert.match(body, /lastSeen\.set\(s\.id, s\.deployState \|\| null\)/,
+        '启动时记下每台的初始状态');
+    assert.match(body, /const before = lastSeen\.get\(s\.id\)/,
+        '比对的是 Map 里的「上次」');
+    assert.match(body, /if \(now !== before\)/,
+        '只有真的变了才标 changed');
+    // ⚠️ 变异验证：改回比 s.deployState（陈旧快照）必须让本条红
+    assert.doesNotMatch(body, /res\.deployState !== s\.deployState/,
+        '不得与闭包里的陈旧快照比对');
+    // 「变了吗」必须同时更新 Map，否则下一轮的 before 仍是同一个旧值
+    assert.match(body, /lastSeen\.set\(s\.id, now\)/,
+        '判定为变化时同步更新 Map');
+    // pending 列表靠重绘重建 —— 这是刚部署完那台能「毕业」的唯一路径
+    assert.match(body, /await this\.renderModulesEditor\(\)/,
+        '状态变化后重绘 → 重建 pending 列表');
+    // 只探未就绪的，且面板一关就停（零额外服务端状态）
+    assert.match(body, /if \(s\.mode === 'push'\) return false;/,
+        'push 模式无端口可探，跳过');
+    assert.match(body, /return !s\.enrolled;/, '已注册的跳过');
+    assert.match(body, /this\.clearPendingProbe\(\);/, '面板关掉即停');
+    assert.match(code, /closeAdmin[\s\S]{0,1500}?this\.clearPendingProbe\(\)/,
+        'closeAdmin 里清理定时器（否则它跑到页面卸载）');
+    // ⚠️ 窗口给足：body 里 setInterval 与 60000 之间隔着整个回调体
+    // （含注释与 pending 循环），200 字符切不到底 —— 而窗口太窄又正是
+    // 本项目反复踩的坑（切出半个函数，断言恒绿）。
+    assert.match(body, /setInterval\([\s\S]*?60000/, '每 60 秒一次');
+});
+
+test('未注册且证书是自签时如实报告，而不是抛异常杀掉进程', async (t) => {
+    // 回归记录（本轮代码审查发现，实测可复现）：fetchPeerCert 在 TOFU 流程
+    // 被删除时漏改了这个调用点，于是「agent 在跑但注册没成功」
+    // （pending 态、certPem 为空、证书是自签）会走到那一行并抛
+    // ReferenceError —— 它不在任何 try 包装里，**直接杀掉整个进程**，
+    // 首页所有机器一起消失，而 /api/modules/metrics 返回 500。
+    //
+    // 所以这条**真起一个自签 HTTPS 服务**，而不是断言源码形状：
+    // 形状断言看不见「这个标识符根本不存在」。
+    const https = require('https');
+    const os = require('os');
+    const path = require('path');
+
+    // 复用 agent 构建出来的本机二进制的自签证书做不成（那是 pem 原文，
+    // 缺私钥），所以现生成一对。x509 签发在测试里不方便，用 openssl。
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nav-tls-'));
+    const certFile = path.join(tmp, 'cert.pem');
+    const keyFile = path.join(tmp, 'key.pem');
+    const { execFileSync } = require('child_process');
+    try {
+        execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            '-keyout', keyFile, '-out', certFile, '-days', '1',
+            '-subj', '/CN=test', '-addext', 'subjectAltName=IP:127.0.0.1',
+        ], { stdio: 'ignore' });
+    } catch {
+        t.skip('本机没有 openssl，生成不了自签证书');
+        return;
     }
 
-    // 实际使用处必须走这个函数，而不是又回到 os.freemem()
-    assert.match(agentCode, /const mem = readMemory\(\)/, 'agent 的 collect 走 readMemory');
-    assert.match(monitorCode, /const mem = readLocalMemory\(\)/, '服务端走 readLocalMemory');
+    const server = https.createServer({
+        cert: fs.readFileSync(certFile),
+        key: fs.readFileSync(keyFile)
+    }, (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ version: 1, cpu: 0.1, memoryPercent: 0.5 }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
 
-    // 非 darwin 分支仍然可以用 os.freemem()，但要被平台判断包住
-    assert.match(monitorCode, /if \(process\.platform !== 'darwin'\)[\s\S]*?os\.freemem\(\)/,
-        'os.freemem() 只在非 macOS 分支使用');
+    try {
+        const { fetchRemoteMetrics } = require(path.join(ROOT, 'lib', 'monitor'));
+
+        // 场景 A：未注册（certPem 空）——修复前这里抛 ReferenceError
+        const a = await fetchRemoteMetrics({
+            url: `https://127.0.0.1:${port}`, token: 'x', certPem: undefined
+        });
+        assert.equal(a.ok, false, '未配对时拉不到指标');
+        assert.notEqual(a.ok, undefined, '返回的是结果而不是异常');
+        assert.equal(a.notEnrolled, true,
+            '如实报告「这台机器还没注册」，而不是伪造一个指纹');
+        // ⚠️ 关键：那个标识符必须已经不存在了，否则这条会重新崩
+        const monitor = require(path.join(ROOT, 'lib', 'monitor'));
+        assert.equal(monitor.fetchPeerCert, undefined,
+            'fetchPeerCert 已删除；残留调用点就是本条要防的那个 bug');
+
+        // 场景 B：配对过且证书匹配 → 应该成功（ca 传对了）
+        const b = await fetchRemoteMetrics({
+            url: `https://127.0.0.1:${port}`, token: 'x',
+            certPem: fs.readFileSync(certFile, 'utf8')
+        });
+        assert.equal(b.ok, true, '传对了证书就应拉得到指标');
+        assert.equal(b.metrics.memoryPercent, 0.5);
+    } finally {
+        server.close();
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+test('探测结论写回配置，不靠每次渲染重新推断', () => {
+    // 回归记录（浏览器实测）：保存一台机器后自动探测，界面 toast 说「正在检测」，
+    // 但 deployState 在 .modules.json 里仍是 undefined——卡片于是显示「未检测」，
+    // 用户点完检测看到的还是「未检测」。
+    //
+    // 根因：probe 端点只 res.json 返回状态，从不落盘。而 deployState 恰恰
+    // 是「这个 agent 装好没有」的答案，不该每帧重新猜。
+    const probe = routeBody("app.post('/api/modules/servers/:id/probe'");
+    assert.ok(probe.length > 1500, '拿到 probe 路由');
+
+    // 落盘辅助：只在真的变了时写（否则 mtime 一直跳，
+    // 而这个文件在备份与版本管理里是被当配置看的）
+    assert.match(probe, /if \(server\.deployState === state\) return;/,
+        '状态没变时不写盘');
+    assert.match(probe, /deployState: state, stateProbedAt: Date\.now\(\)/,
+        '落盘 deployState 与探测时间');
+    assert.match(probe, /async function persistState|const persistState = async/,
+        '有专门的落盘函数');
+    // 写盘失败不该让探测失败——结论已经在响应里了
+    assert.match(probe, /写回部署状态失败/,
+        '写盘失败被捕获并记日志');
+
+    // ⚠️ 每条分支都要走 reply（既回响应又落盘）。
+    // 逐条断言 reply 的调用数 ≥ 分支数，否则漏掉一条分支就静默不落盘了——
+    // 而漏掉的那条正是用户最关心的「未部署」。
+    const replies = (probe.match(/reply\(\{/g) || []).length;
+    assert.ok(replies >= 6,
+        `每条分支都经 reply 落盘，实际 ${replies} 处`);
+    assert.doesNotMatch(probe, /res\.json\(\{[\s\S]{0,80}?deployState/,
+        '不得有绕过 reply 直接 res.json 的分支（那类不会落盘）');
 });
 
-test('agent 的 macOS 内存读取失败时退回而不是崩', () => {
-    // 容器、精简系统上 vm_stat 可能读不到。整��� agent 起不来
-    // 比内存数字粗一点严重得多。
-    const code = stripComments(agentSource);
-    assert.match(code, /try\s*\{[\s\S]*?readDarwinMemory\(\)[\s\S]*?\}\s*catch/,
-        'vm_stat 读取有 try/catch');
-    assert.match(code, /catch[\s\S]*?os\.freemem\(\)/, 'catch 分支退回 os 模块');
+test('open 只说明「有人应答 TCP」，必须再确认是 agent', () => {
+    // 回归记录（端到端实测，本机办公网/VPN 环境）：连接一个完全不可达的
+    // 公网地址（198.51.100.1:4195，同地址 curl 报 HTTP 000）时，
+    // net.Socket 仍然触发 'connect' —— 中间有透明代理接管了 TCP，
+    // 而且它**保持连接**，不会握手后立刻断开。
+    //
+    // 所以「connect 就当 agent 在跑」会把一台根本够不着的机器报成
+    // 「未部署」，用户点部署后依然失败。
+    //
+    // 试过「connect 后等 250ms 看对端关不关」，**实测无效**（代理保持连接），
+    // 只让每次探测多花 250ms，已删。
+    //
+    // 真正挡住它的是第二道防线：TCP 连上之后必须去问「你自报家门是不是 agent」。
+    const probe = routeBody("app.post('/api/modules/servers/:id/probe'");
+    assert.ok(probe.length > 1200, '拿到 probe 路由');
+
+    // 顺序：先 probeTcp，再 probeAgentHealth，最后才拉指标。
+    // 少了第二步就会把「代理应答」误报成「agent 在跑」。
+    const tcpAt = probe.indexOf('await probeTcp(');
+    const healthAt = probe.indexOf('await probeAgentHealth(');
+    const metricsAt = probe.indexOf('await fetchRemoteMetrics(');
+    assert.ok(tcpAt > 0, '先做 TCP 探测');
+    assert.ok(healthAt > tcpAt, 'TCP 通之后再确认那确实是 agent');
+    assert.ok(metricsAt > healthAt, '确认是 agent 之后才拉指标');
+
+    // ⚠️ 断言范围要卡准：refused 分支**本来就应该**在 health 检查之前早退
+    // （没人应答 TCP 时问 /health 只会白等一个超时），而那里也写着
+    // not_deployed。所以「not_deployed 不得出现在 health 之前」是错的断言——
+    // 我自己写过一次，被自己的实现证伪。
+    //
+    // 真正要守的是：**tcp.state === 'open' 之后不得直接返回**。
+    // 即 open 那一支必须继续往下走到 probeAgentHealth。
+    const openBranch = probe.slice(tcpAt, healthAt);
+    assert.match(openBranch, /tcp.state === 'refused'/,
+        'refused 分支在 health 检查之前早退（没人应答时不必再问）');
+    // ⚠️ 这里要用 **调用点** 而不是函数名：
+    // probeAgentHealth 在本文件里有定义处与调用处两个 'await probeAgentHealth('，
+    // indexOf 命中的是更早的定义，于是 slice 从定义之后开始——
+    // 而 `if (!health.ok)` 在调用处，正好落在切片起点之前，断言就红了
+    // （实测踩过一次）。所以锚点取 `const health = await probeAgentHealth(`。
+    const callAt = probe.indexOf('const health = await probeAgentHealth(');
+    assert.ok(callAt > tcpAt, '调用点在 TCP 探测之后（healthAt 是定义处，callAt 才是调用处）');
+    assert.match(probe.slice(callAt),
+        /const health = await probeAgentHealth\([\s\S]{0,200}?if \(!health\.ok\)/,
+        'health 调用的结果立刻被检查——TCP 通但答不出形状就落到 port_conflict');
+    // open 分支之后的那段（health 与 metrics 之间）才是 port_conflict 的落点
+    const healthToMetrics = probe.slice(healthAt, metricsAt);
+    assert.doesNotMatch(openBranch, /deployState: 'ready'/,
+        'TCP 通之后不得直接判就绪——必须先确认对面是 agent');
+    // 答不出 agent 形状的，落到 port_conflict（那个端口上确实没有我们的 agent）
+    assert.match(probe.slice(healthAt, metricsAt), /deployState: 'port_conflict'/,
+        'TCP 通但答不出 /health 形状 → port_conflict');
 });
 
-test('页大小用 sysctl 取，不是当成文件路径读', () => {
-    // 一度写成 fs.readFileSync('/sysctl -n hw.pagesize')——
-    // 那不是路径，会抛 ENOENT，在非 macOS 上还可能被当成合法路径。
-    const agentCode = stripComments(agentSource);
-    assert.doesNotMatch(agentCode, /readFileSync\(\s*['"]\/sysctl/,
-        '不得把 sysctl 命令当文件路径读');
-    assert.match(agentCode, /execSync\(\s*'sysctl -n hw\.pagesize'/, '用 execSync 调 sysctl');
+test('端口上有服务时要确认那确实是 agent', () => {
+    // 只做 TCP 探测会漏掉一种情况：别的程序占着 4195，
+    // 用户看到「有东西在监听」却始终读不到指标。
+    const code = stripComments(monitorSource);
+    assert.match(code, /function probeAgentHealth/, '有健康探测');
+    assert.match(code, /payload\.status === 'ok'/, '校验响应形状');
+    assert.match(code, /rejectUnauthorized: false/, '探测时不校验证书');
+    // ⚠️ 不校验证书是这个探测成立的前提：此刻证书还没被信任，
+    // 正在被信任的正是「这个端口是我们的 agent」这件事本身
+    assert.match(serverSource, /port_conflict/, '端口冲突单独成一态');
+});
+
+test('健康探测比对协议版本，而不是把不认识的字段当 0', () => {
+    const code = stripComments(monitorSource);
+    assert.match(code, /payload\.version === AGENT_PROTOCOL_VERSION/, '比对版本');
+    assert.ok(code.includes('协议版本'), '版本不符时给明确错误');
+});
+
+test('push 模式不探测端口——它一个端口都不开', () => {
+    // 探测 TCP 在推送机器上永远得到「连不上」，而那不是故障。
+    // 推送的在线判定靠「多久没收到上报」。
+    const probe = routeBody("app.post('/api/modules/servers/:id/probe'");
+    assert.ok(probe.length > 1200, `拿到 probe 路由（${probe.length}）`);
+
+    // ⚠️ 用「push 分支起点 → TCP 探测起点」这一段做区间断言，
+    // 而不是找某个固定宽度的窗口——窗口宽度是实现细节，改一句文案就红。
+    const pushAt = probe.indexOf('if (isPush) {');
+    const tcpAt = probe.indexOf('await probeTcp(');
+    assert.ok(pushAt > 0, 'push 模式有独立分支');
+    assert.ok(tcpAt > pushAt, 'TCP 探测在 push 分支之后');
+    const pushBranch = probe.slice(pushAt, tcpAt);
+    // 该分支里不得出现 TCP 探测：push 机器没有端口可探
+    assert.doesNotMatch(pushBranch, /probeTcp\(/, 'push 分支不走 TCP 探测');
+    // 且它自己给出了答案（两条：未注册 / 已注册）
+    assert.match(pushBranch, /deployState: 'not_deployed'/, '未注册时给出 not_deployed');
+    assert.match(pushBranch, /deployState: 'ready'/, '已注册时给出 ready');
+    assert.match(pushBranch, /不开放端口|没有端口可探测|探测不到主机是否在线/,
+        '说清为什么探不到');
+});
+
+
+test('注册限流桶会被定时清理，否则是只增不减的 Map', () => {
+    // 回归记录（本轮代码审查自查发现）：enrollLimitMap 曾是仓库里**唯一**
+    // 没被登记进 60 秒清理定时器的限流 Map。
+    //
+    // 为什么这是真的问题：POST /api/modules/enroll 匿名可达（agent 注册时
+    // 还没有任何长期凭据），而这个桶按来源 IP 计数 —— 不清理就随 IP 数量
+    // 无限增长。推送桶有同样的形状，server.js 里明写了「不清就会无限增长」，
+    // 新桶漏掉属于同一个缺陷。
+    const code = stripComments(serverSource);
+    assert.match(code, /sweepRateLimitStore\(enrollLimitMap, now, ENROLL_LIMIT_WINDOW\)/,
+        '注册桶登记在清理定时器里');
+
+    // 前向不变量：仓库里每个限流 Map 都该被清理。列出来是为了
+    // 下次新增桶时能一眼看出「少了一个」。
+    //
+    // ⚠️ 捕获 Map 名要用 `(\w*Map)` 而不是 `(\w+Map)`：后者在
+    // 「pasteRateLimitMap」上会贪婪到把 Map 吃掉、只捕获到 pasteRateLimit，
+    // 于是报出一条「它没被清理」的假问题（实测踩过）。
+    const maps = [...code.matchAll(/const (\w*Map) = new Map\(\)/g)].map(m => m[1]);
+    assert.ok(maps.length >= 4, `解析出 ${maps.length} 个限流 Map：${maps.join(', ')}`);
+    const swept = [...code.matchAll(/sweepRateLimitStore\((\w+),/g)].map(m => m[1]);
+    for (const name of new Set(maps)) {
+        assert.ok(swept.includes(name),
+            `限流 Map ${name} 没有登记进清理定时器`);
+    }
+});
+
+test('注册成功即作废令牌，重放必须失败', () => {
+    // 这是令牌能当凭据用的前提。若重放能成功，它就退化成一个长期凭据，
+    // 15 分钟 TTL 形同虚设。
+    const enroll = routeBody("app.post('/api/modules/enroll'");
+    assert.ok(enroll.length > 800, `拿到 enroll 路由（${enroll.length}）`);
+    // 变异验证：把两个键的删除循环改成空的（`for (const k of [])`）后本条必须红
+    assert.match(enroll, /for \(const k of \['enrollTokenHash'/,
+        '成功后逐个删除令牌的键');
+    // ⚠️ 只有两个键了：第三个（enrollTokenIp）曾是一句假防护——
+    // 签发时存 hostOf(server.url)、注册时比 hostOf(matched.url)，
+    // 同一个字段的同一个函数，两边恒相等，分支永不执行。
+    // 服务端看到的是目标机的**出口** IP（NAT 之后），与后台填的地址不可比，
+    // 所以这道防护做不到，已连同注释与 README 里的声明一起删掉。
+    for (const k of ['enrollTokenHash', 'enrollTokenExpiresAt']) {
+        assert.ok(enroll.includes(`delete servers[index][`) && enroll.includes(k),
+            `成功后删除 ${k}`);
+    }
+    assert.doesNotMatch(enroll, /enrollTokenIp\s*!==/,
+        '不得保留那个恒不成立的 IP 比对');
+    assert.ok(!/enrollTokenIp:\s*hostOf\(/.test(stripComments(serverSource)),
+        '签发时也不再存期望来源 IP');
+    // 作废必须发生在写盘之前
+    const delAt = enroll.indexOf('delete servers[index]');
+    const writeAt = enroll.indexOf('writeJSON');
+    assert.ok(delAt > 0 && writeAt > delAt, '先作废再写盘');
+});
+
+
+test('二进制与安装脚本可被下载，且 404 必须是 shell 注释', () => {
+    assert.match(serverSource, /app\.get\('\/agent\/nav-agent-linux-:arch'/, '二进制路由');
+    assert.match(serverSource, /app\.get\('\/agent\/install\.sh'/, '安装脚本路由');
+    // ⚠️ 这两段文本会被 install.sh 用 `bash -s` 执行。回 HTML 错误页会变成
+    // 一堆莫名其妙的语法错误，而用户在目标机上。
+    const binRoute = routeBody("app.get('/agent/nav-agent-linux-:arch'", "app.get('/agent/install.sh'");
+    assert.ok(binRoute.length > 200, `拿到二进制路由（${binRoute.length}）`);
+    assert.match(binRoute, /res\.status\(404\)\.send\(\s*['"]#/, '404 回 shell 注释');
+    // 架构白名单：少了它，../ 之类能读出仓库里的其它文件
+    assert.match(binRoute, /AGENT_ARCHES\.has\(arch\)/, '架构白名单');
+    // 不给长缓存：URL 不变而内容随版本变
+    assert.match(binRoute, /Cache-Control', 'no-cache'/, '不给长缓存');
+
+    // ⚠️ 分发二进制必须用真正的 fs 模块，不是 fs.promises。
+    // 回归记录（端到端实测）：server.js 顶部是 `require('fs').promises`，
+    // 而 fs/promises **没有** createReadStream —— 路由里的
+    // `fs.createReadStream(file)` 抛 TypeError，被 catch 转成 404，
+    // 于是「二进制下载失败」与「架构不支持」在响应上完全一样，
+    // 两者都只是一段 shell 注释，只有 109 vs 32 字节的差别。
+    assert.equal(typeof require('fs').promises.createReadStream, 'undefined',
+        '前提核对：fs/promises 确实没有 createReadStream');
+    assert.match(binRoute, /fsSync\.createReadStream\(/,
+        '二进制路由用 fsSync（真正的 fs）做流式分发');
+    assert.doesNotMatch(binRoute, /[^S]fs\.createReadStream\(/,
+        '不得用 fs（=fs/promises）做流式分发——它没有这个 API');
+    // 二进制有 6–7MB，一次性 readFile 进内存也不是好选择
+    assert.doesNotMatch(binRoute, /fs\.readFile\(file\)[\s\S]{0,200}res\.send/,
+        '不得把整个二进制读进内存再发送');
 });
 
 test('服务端拉取远端失败时返回原因而不是抛错', () => {
@@ -159,21 +852,6 @@ test('服务端拉取远端失败时返回原因而不是抛错', () => {
     // 主体（catch 之前）也不该有裸抛
     const body = fn.slice(0, catchStart);
     assert.doesNotMatch(body, /throw new Error/, '函数体在 try 内不得抛错');
-});
-
-test('agent 与服务端的协议版本必须能对上', () => {
-    // 版本不一致时报错，而不是把不认识的字段当 0 读进去——
-    // 那会显示「CPU 0%」，是一个错误的结论而不是一个可见的失败。
-    const agentVersion = /const VERSION\s*=\s*(\d+)/.exec(agentSource);
-    const serverVersion = /AGENT_PROTOCOL_VERSION\s*=\s*(\d+)/.exec(monitorSource);
-    assert.ok(agentVersion, 'agent 有 VERSION');
-    assert.ok(serverVersion, '服务端有 AGENT_PROTOCOL_VERSION');
-    assert.equal(agentVersion[1], serverVersion[1],
-        '两侧协议版本必须一致——改一侧就要改另一侧');
-
-    const code = stripComments(monitorSource);
-    assert.match(code, /payload\.version\s*!==\s*AGENT_PROTOCOL_VERSION/,
-        '版本不符时明确报错');
 });
 
 test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
@@ -247,19 +925,6 @@ test('服务器列表的触控目标不得低于 44px', () => {
         '窄屏块里不得下调开关高度');
 });
 
-/** 取出某个 @media 查询的正文（取第一个同查询块）。 */
-function mediaBlockOf(css, query) {
-    const start = css.indexOf(query);
-    if (start === -1) return null;
-    const open = css.indexOf('{', start);
-    let depth = 0;
-    for (let i = open; i < css.length; i++) {
-        if (css[i] === '{') depth++;
-        else if (css[i] === '}') { depth--; if (depth === 0) return css.slice(open + 1, i); }
-    }
-    return null;
-}
-
 test('每台服务器可单独控制是否在首页显示', () => {
     const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
     const modCode = stripComments(moduleSource);
@@ -292,13 +957,6 @@ test('模块不写 hidden 属性，显隐交给平台', () => {
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     assert.match(css, /\.module-zone\.is-editing \.module-drag-handle\s*\{[^}]*display:\s*block/,
         '平台侧有对应的显示规则');
-});
-
-test('agent 随发布包分发', () => {
-    // 不打进包的话，多服务器功能对下载者等于不存在。
-    const release = fs.readFileSync(path.join(ROOT, 'scripts', 'release.sh'), 'utf8');
-    assert.match(release, /cp -r agent/, 'release.sh 复制 agent/ 目录');
-    assert.ok(fs.existsSync(path.join(ROOT, 'agent', 'agent.js')), 'agent 文件在仓库里');
 });
 
 test('监控端点返回全部服务器，且本机无需配置', () => {
@@ -421,113 +1079,6 @@ test('前端按服务端回的周期重排自己的定时器', () => {
         '周期变化时重排表——否则会一直用旧周期直到下次进页面');
     // 页面不可见时暂停这条不能被改掉
     assert.match(mod, /document\.hidden/, '不可见时停表');
-});
-
-test('agent 的 health 端点不泄露主机名', () => {
-    // /health 不需要鉴权（方便「agent 起来了吗」这类探测），
-    // 所以返回主机名等于给每个能扫到该端口的人一份免费的资产清单。
-    // 主机名只该出现在需要鉴权的 /metrics 里。
-    const code = stripComments(agentSource);
-    const health = code.slice(code.indexOf("req.url === '/health'"),
-        code.indexOf("req.url !== '/metrics'"));
-    assert.ok(health.length > 100, '切出 health 分支');
-    assert.doesNotMatch(health, /hostname:\s*os\.hostname\(\)/,
-        'health 默认不得返回主机名');
-    // 确实想要时可以显式打开
-    assert.match(health, /if \(args\.exposeHostname\)/, '主机名改为显式开关');
-    assert.match(code, /'--expose-hostname'/, '有对应的命令行参数');
-
-    // /metrics 仍然返回主机名（那里要鉴权）
-    const metrics = code.slice(code.indexOf('async function collect('));
-    assert.match(metrics, /hostname:\s*os\.hostname\(\)/, 'metrics 里保留主机名');
-});
-
-test('README 与 agent 源码的变量名一致，且不泄露凭据后果', () => {
-    // 我在文档里把 NAVSYLPH_TOKEN 一度手写成 NAVSYP_TOKEN ——
-    // 用户照着设了一个 agent 根本不读的环境变量，鉴权必然失败。
-    // 变量名是这类文档最容易被改坏又最难被发现的东西，要有守卫。
-    const agentCode = agentSource;
-    const readme = fs.readFileSync(path.join(ROOT, 'agent', 'README.md'), 'utf8');
-    const realName = /process\.env\.([A-Z_]+)/.exec(agentCode)?.[1];
-    assert.equal(realName, 'NAVSYLPH_TOKEN', '源码里的变量名');
-    assert.doesNotMatch(readme, /NAVSYP_TOKEN/, '文档里不得出现拼错的变量名');
-    assert.ok(readme.includes(realName), '文档引用了正确的变量名');
-
-    // token 的后果与轮换流程必须写在文档里
-    assert.match(readme, /## 安全[\s\S]*token 泄露意味着什么/, '写了泄露意味着什么');
-    assert.match(readme, /## 安全[\s\S]*泄露后怎么办/, '写了泄露后怎么办');
-});
-
-test('添加/编辑服务器时说明 token 的后果', () => {
-    // 写在 agent/README.md 里还不够：那是给读文档的人看的，
-    // 而大多数人是从「添加服务器」这个对话框进来的。
-    const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-    const fn = appSource.slice(appSource.indexOf('async showServerDialog(server, onDone)'));
-    assert.ok(fn.length > 400, '切出 showServerDialog');
-    assert.match(fn, /message:\s*'token 等同于/, '对话框里有 token 后果说明');
-    assert.match(fn, /每台用不同的值/, '提醒不要多台复用同一个 token');
-    assert.match(fn, /泄露后在下方「编辑」里填新值/, '给出轮换入口');
-});
-
-test('agent 脚本可被下载，供部署命令直接 curl', () => {
-    // agent/ 在仓库根而非 public/ 下（不进 SW 预缓存），所以必须有一条
-    // 专门路由提供它，否则部署命令第一步就 404。
-    const code = stripComments(serverSource);
-    assert.match(code, /app\.get\('\/agent\/agent\.js'/, '有下载路由');
-    assert.match(code, /agent',\s*'agent\.js'/, '从 agent/ 目录读');
-    // URL 不变而内容会随版本变，不能给长缓存
-    assert.match(code, /Cache-Control', 'no-cache'/, '按需获取，不给长缓存');
-    // 404 时返回注释而不是 HTML 错误页——写进 shell 脚本里的东西
-    // 必须是可读的诊断信息
-    assert.match(code, /status\(404\)\.send\('\/\/ agent\.js not found/, '404 返回可读注释');
-});
-
-test('部署命令在后台生成，且不泄露明文 token', () => {
-    const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-    const appCode = stripComments(app);
-
-    assert.match(appCode, /showDeployDialog\(server\)/, '有部署命令对话框');
-    assert.match(appCode, /deploy-server/, '服务器列表里有部署按钮');
-
-    // 关键：读接口只回 hasToken，命令里只能是占位符。
-    // 断言不能写成 /占位符|hasToken/ —— 变异把占位符换成 server.token 之后，
-    // `hasToken ?` 还在（只是条件变了），交替匹配照样命中，护栏形同虚设。
-    // 这里只认占位符本身，并额外断言没有从 server 对象直取 token。
-    const deployFn = appCode.slice(appCode.indexOf('showDeployDialog(server)'),
-        appCode.indexOf('showCommandPanel('));
-    assert.match(deployFn, /'<你的 token>'/, '命令里用占位符');
-    assert.doesNotMatch(deployFn, /server\.token/, '不得从 server 对象直取 token');
-    assert.doesNotMatch(appCode, /showDeployDialog[\s\S]*?decrypt\(/,
-        '部署命令不得去解密 token');
-
-    // 命令要覆盖完整流程：下载 → 生成证书 → 试跑 → 核对指纹 → 开机自启 → 防火墙
-    //
-    // ⚠️ 「curl /metrics 自检」这一步是被**替换**掉的，不是被删掉的：目标机现在
-    // 起 HTTPS，自签证书会让 `curl https://...` 直接报证书错误，用户以为是故障。
-    // 它的位置被「在后台核对证书指纹」接替——那一步同时验证了连通性与身份。
-    const fn = appCode.slice(appCode.indexOf('showDeployDialog(server)'));
-    for (const step of ['curl -fsSL', 'NAVSYLPH_TOKEN=', '--gen-cert', 'systemd', 'firewall']) {
-        assert.ok(fn.includes(step), `部署命令包含「${step}」这一步`);
-    }
-    // 证书生成与启动都必须带 --tls-cert/--tls-key，否则照抄命令起不来
-    // （agent 没有证书会拒绝启动，见「拉取模式强制 TLS」那条）
-    assert.match(fn, /--tls-cert/, '启动命令带证书路径');
-    assert.match(fn, /--tls-key/, '启动命令带私钥路径');
-    // 指纹核对这一步必须在，且要说清它替代了 curl 自检
-    assert.match(fn, /检测连通性/, '部署面板提示回后台核对证书指纹');
-    assert.doesNotMatch(fn, /curl\s+-H\s+"Authorization[^\n]*\/metrics/,
-        '不再用裸 curl 自检（自签证书会让它失败）；改由后台探测端点完成');
-    // 端口从用户填的地址里取，而不是写死
-    assert.match(appCode, /new URL\(url\)\.port \|\| '4195'/, '端口取自填写的地址');
-
-    // 仓库里也要有一份完整说明，供离线查阅
-    const readme = path.join(ROOT, 'agent', 'README.md');
-    assert.ok(fs.existsSync(readme), 'agent/README.md 存在');
-    const text = fs.readFileSync(readme, 'utf8');
-    for (const section of ['## 快速开始', '## 参数', '## 排错', '## 安全']) {
-        assert.ok(text.includes(section), `README 含「${section}」`);
-    }
-    assert.match(text, /--host 0\.0\.0\.0/, 'README 说明必须显式监听 0.0.0.0');
 });
 
 test('部署面板的层级高于管理面板，否则点开却看不见', () => {
@@ -659,8 +1210,6 @@ test('让位的卡片有短过渡，拖拽中的那张不参与', () => {
     assert.doesNotMatch(dragging[1], /margin-top/, '拖拽中的卡片不参与纵向过渡');
 });
 
-// ========== 推送模式 ==========
-
 test('采集方式默认拉取，非法值一律回落而不是被静默接受', () => {
     // 回归风险：把 mode 写成「非 push 即 push」会让一个拼错的字段把机器
     // 静默切成推送——那台机器立刻掉线，而用户不知道自己改了什么。
@@ -668,67 +1217,6 @@ test('采集方式默认拉取，非法值一律回落而不是被静默接受',
     assert.ok(fn, '找到 normalizeServer');
     assert.match(fn[0], /raw\.mode\s*===\s*'push'\s*\?\s*'push'\s*:\s*'pull'/,
         '只有字面量 push 才算推送，其它一律 pull');
-});
-
-test('推送模式默认不监听任何端口', () => {
-    // 这是推送最大的安全收益：内网机器上一个端口都不用开。
-    // 若 agent 在 --push 下仍默认 listen，用户以为没开端口，
-    // 实际却把一个只靠 token 保护的 HTTPS 服务挂在了局域网里。
-    const code = stripComments(agentSource);
-    assert.match(code, /const SERVE_HTTP\s*=\s*!PUSH_MODE\s*\|\|\s*args\.serveAlongsidePush/,
-        '是否监听由「是否推送模式」与「是否显式要求」共同决定');
-    // 监听块与创建 server 已经被拆开（requestHandler 提取成具名变量，
-    // 好让 https.createServer 与 http.createServer 共用它），
-    // 所以这里钉住的是「创建与 listen 都在 SERVE_HTTP 之内」这个事实。
-    const serveBlock = code.slice(code.indexOf('if (SERVE_HTTP) {'));
-    assert.ok(serveBlock.length > 200, '拿到的是监听块而不是空壳');
-    assert.match(serveBlock, /createServer\(/,
-        'server 在 SERVE_HTTP 块内创建');
-    assert.match(serveBlock, /server\.listen\(/,
-        'listen 也在同一块内');
-    // 负向断言：推送启动之后不得再出现 listen。
-    // 锚点用 `startPushing();` 这个**调用点**而不是 `if (PUSH_MODE) {`——
-    // 后者在文件里出现两次（参数校验处、启动处），indexOf 会命中前面那个，
-    // 而它后面还隔着整个采集实现与监听块，断言于是红在正确代码上。
-    const pushCall = code.indexOf('startPushing();');
-    assert.ok(pushCall > 0, '推送启动调用存在于源码中');
-    const startupTail = code.slice(pushCall);
-    assert.ok(startupTail.length > 50, '切片拿到的是启动尾部而不是空壳');
-    assert.doesNotMatch(startupTail, /\.listen\(/,
-        '推送启动之后没有 listen');
-});
-
-test('推送凭据与拉取 token 是两个独立的环境变量，不互相顶替', () => {
-    // 顶替的后果：把推送凭据填进 NAVSYLPH_TOKEN 会让推送 401，
-    // 而错误信息只说「凭据无效」，用户查不到是自己填错了变量名。
-    const code = stripComments(agentSource);
-    assert.match(code, /NAVSYLPH_PUSH_SECRET/, '推送凭据有自己的环境变量');
-    assert.match(code, /NAVSYLPH_SERVER_ID/, 'server id 有自己的环境变量');
-    assert.doesNotMatch(code, /PUSH_SECRET\s*=\s*process\.env\.NAVSYLPH_TOKEN/,
-        '推送凭据不从拉取 token 的变量里取');
-});
-
-test('推送周期与服务端的白名单一致，且非法值回落', () => {
-    // 两侧必须逐项一致：agent 若能推送得比服务端限流桶更密，
-    // 正常配置就会自己把自己限掉（表现是间歇性 429）。
-    const agentIntervals = /const PUSH_INTERVALS\s*=\s*\[([\d,\s]+)\]/.exec(agentSource);
-    const serverIntervals = /const POLL_INTERVALS\s*=\s*\[([\d,\s]+)\]/.exec(serverSource);
-    assert.ok(agentIntervals, 'agent 声明了推送周期白名单');
-    assert.ok(serverIntervals, '服务端声明了周期白名单');
-    const normalize = s => s.split(',').map(x => Number(x.trim())).filter(Number.isFinite).sort((a, b) => a - b);
-    assert.deepEqual(normalize(agentIntervals[1]), normalize(serverIntervals[1]),
-        'agent 与服务端的周期白名单逐项一致');
-    assert.match(stripComments(agentSource), /PUSH_INTERVALS\.includes\(value\)\s*\?\s*value\s*:\s*15/,
-        '非法周期回落默认值，而不是照单全收');
-});
-
-test('推送失败时退避，且退避有上限', () => {
-    // 无脑按原周期重试会持续消耗服务端的限流桶——而那个桶是全局的
-    // （按 IP 计数），一台机器的重试风暴会影响其它所有 agent。
-    const code = stripComments(agentSource);
-    assert.match(code, /PUSH_BACKOFF_MAX_MS/, '退避有上限');
-    assert.match(code, /backoff\s*=\s*Math\.min\(PUSH_BACKOFF_MAX_MS,/, '退避被夹在上限内');
-    assert.match(code, /backoff\s*\*\s*2/, '失败时指数增长');
 });
 
 test('推送载荷先校验形状再写库，越界值不得原样落盘', () => {
@@ -894,27 +1382,6 @@ test('推送凭据的哈希与 agent token 一样只进不出', () => {
         '按 id 合并时补回既有的凭据哈希');
 });
 
-test('agent 推送的 URL 只接受 http/https', () => {
-    // 服务端在写服务器时校验了协议白名单，agent 侧推送目标同理——
-    // 否则 `--push file:///…` 经 fetch 会变成一个可被利用的请求面，
-    // 而 --push 是用户从命令行传的输入。
-    //
-    // 回归记录：这条测试原本叫这个名字却**没有任何协议断言**，而 agent
-    // 确实不校验——测试名把没实现的约束写成了已实现。
-    const code = stripComments(agentSource);
-    assert.match(code, /new URL\(args\.push\)\.protocol/,
-        '解析 --push 的协议');
-    assert.match(code, /pushProtocol\s*!==\s*'http:'\s*&&\s*pushProtocol\s*!==\s*'https:'/,
-        '只放行 http 与 https');
-    assert.match(code, /必须以 http:\/\/ 或 https:\/\/ 开头/,
-        '拒绝时给出可读的原因');
-
-    assert.match(code, /api\/modules\/agent-push/, '推送到服务端声明的端点');
-    // serverId 必须随请求带上：服务端按凭据找机器后要核对，
-    // 不一致返回 409 而不是默默把数据写到别的机器名下。
-    assert.match(code, /serverId:\s*SERVER_ID/, '请求带 serverId 供服务端核对');
-});
-
 test('离线分支不带 metrics，而推送断线分支带着', () => {
     // 渲染侧现在按「有没有 metrics」决定是否走错误框（推送断线要保留上次数值），
     // 而不再按 online——这要求服务端保持一条约定：**离线就不带 metrics**。
@@ -953,60 +1420,46 @@ test('离线分支不带 metrics，而推送断线分支带着', () => {
         '推送断线分支**必须**带着上次的 metrics，否则「保留上次数值」失效');
 });
 
-test('连通性探测的每个分支都带 hint', () => {
-    // 前端把提示拼进 toast：`res.hint || ''`。所以**任何**一条没有 hint 的
-    // 分支，用户看到的就是「够不着这台机器。」后面什么都没有。
+test('probe 的每个分支都带 hint 与下一步', () => {
+    // 前端把提示拼进 toast：`res.hint || ''`。所以**任何**一条没有 hint 的分支，
+    // 用户看到的就是「够不着这台机器。」后面什么都没有。
     //
-    // 回归记录：没配 token 的那条早退原本只回 {reachable,status,error}，
-    // 而「没配 token / token 解不开」恰恰是最常见的误判场景——
-    // 真实原因是凭据问题，「够不够得着」根本还没验证，两者的下一步完全不同。
+    // 改版把 probe 从「发一次 /metrics」换成「TCP 三态 + 按需拉指标」，
+    // 分支换了，所以这条断言要按新分支重新枚举——
+    // 旧的「token 解不开早退」那条已不存在，拿旧断言保它绿是没有意义的。
     const code = stripComments(serverSource);
     const start = code.indexOf("app.post('/api/modules/servers/:id/probe'");
     assert.ok(start > 0, '探测端点存在');
     const end = code.indexOf('\napp.', start);
     const route = code.slice(start, end > 0 ? end : code.length);
+    assert.ok(route.length > 800, `切出 probe 路由（${route.length}）`);
 
-    // 早退分支（凭据问题）：必须**就地**带 hint。
-    // 不能用 `if (error) {[\s\S]*?hint:` 这种跨函数的惰性匹配——
-    // 它会一路找到后面正常分支里的 hint，于是把早退分支的 hint 删掉也照样匹配上，
-    // 断言恒绿。所以切片要止于「下一个 return」或下一个分支起点。
-    const earlyAt = route.indexOf('if (error) {');
-    assert.ok(earlyAt > 0, '找到 token 解不开的早退分支');
-    const earlyEnd = route.indexOf('const result = await fetchRemoteMetrics', earlyAt);
-    assert.ok(earlyEnd > earlyAt, '早退分支的结束位置可定位');
-    const earlyBranch = route.slice(earlyAt, earlyEnd);
-    assert.match(earlyBranch, /hint:\s*'/,
-        'token 解不开的早退分支必须带 hint —— 前端拼的是 `res.hint || \'\'`，没有就什么都不显示');
-    assert.match(earlyBranch, /status:\s*'no_token'/,
-        '并标明这是「没能试连」而非「够不着」');
-
-    // 正常分支
-    assert.match(route.slice(earlyEnd), /hint:/, '试连后的分支必须带 hint');
-
-    // 401 算可达——这是整个判定的关键，路是通的、只是 token 不对
-    assert.match(route, /reachable:\s*result\.ok\s*\|\|\s*result\.authFailed === true/,
-        '401 算可达：路是通的');
-
-    // 不写缓存：探测是用户主动发起的，不该污染聚合采集的缓存
-    assert.doesNotMatch(route, /writeCacheRow|module_cache/,
-        '探测不得写采集缓存');
-});
-
-test('编辑推送机器不会自动领取新凭据（旧凭据应继续有效）', () => {
-    // 回归表现（审查发现）：编辑对话框保存后无条件打开部署面板，而部署面板
-    // 会调 push-secret 领取新凭据——领取即作废旧凭据。于是「改个机器名」这种
-    // 无害操作会让正在运行的 agent 从此每次上报都 401，而界面上看不出关联。
+    // 每条 reply() 都要带 hint。逐条数而不是只数一次——
+    // 只数一次的话，新增分支忘了带 hint 照样绿。
     //
-    // 只有**新建**时该自动引导（用户下一步必然是领凭据）；编辑时若要换凭据，
-    // 点列表行的「部署」按钮，那是有意领取、用户知道后果。
-    const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
-    const start = appCode.indexOf('async showServerDialog(');
-    const end = appCode.indexOf('\n        renderAdminPanel(', start);
-    assert.ok(start > 0 && end > start, '切出 showServerDialog');
-    const fn = appCode.slice(start, end);
-    assert.match(fn, /!isEdit\s*&&\s*mode === 'push'/,
-        '自动打开部署面板的判断必须带 !isEdit');
-    assert.match(fn, /showDeployDialog\(/, '新建推送机器时给出部署引导');
+    // ⚠️ 这里数的是 reply( 而不是 res.json(：probe 的响应现在经 reply()
+    // 走（既回响应又把 deployState 落盘），直接 res.json 的分支不会落盘。
+    // 见「探测结论写回配置」那条。
+    const branches = route.match(/reply\(\{/g) || [];
+    const hints = route.match(/hint:/g) || [];
+    assert.ok(branches.length >= 6,
+        `probe 至少有 6 条返回分支，实际 ${branches.length}`);
+    assert.ok(hints.length >= branches.length,
+        `每条分支都要带 hint：返回 ${branches.length} 条、hint ${hints.length} 个`);
+
+    // 三种 TCP 结果各自的下一步措辞必须不同：
+    // 「连不上」与「连得上但没装 agent」的处置完全不同，
+    // 用同一句话等于把排查工作推回给用户。
+    assert.match(route, /deployState: 'not_deployed'[\s\S]{0,400}?端口没人监听/,
+        'refused 的分支说清「主机在线但没装 agent」');
+    assert.match(route, /deployState: 'offline'[\s\S]{0,300}?检查地址/,
+        'timeout 的分支指向网络排查');
+    // 已就绪也要有 hint —— 用户点了检测，「正常」同样是一句交代
+    assert.match(route, /deployState: 'ready'[\s\S]{0,900}?一切正常|一切正常/,
+        '就绪的分支给出确认');
+    // 端口冲突是独立状态，且说清该换端口而不是重试
+    assert.match(route, /port_conflict[\s\S]{0,400}?端口/,
+        '端口冲突说清是端口的问题');
 });
 
 test('写服务器的路由真的把 mode 落盘了', () => {
@@ -1020,10 +1473,15 @@ test('写服务器的路由真的把 mode 落盘了', () => {
     assert.ok(start > 0, '写服务器的路由存在');
     const end = code.indexOf('\napp.', start);
     const route = code.slice(start, end > 0 ? end : code.length);
-    assert.match(route, /\{\s*id,\s*name,\s*url,\s*token,\s*mode\s*\}/,
-        '请求体解构出 mode');
-    assert.match(route, /mode:\s*mode\s*===\s*'push'\s*\?\s*'push'\s*:\s*'pull'/,
+    // ⚠️ 解构列表变了：新增 reachable（用户对「能否直接连到它」的回答），
+    // 而 url 不再是唯一形态（裸 IP 会被归一化）——
+    // 但 reachable 必须在这里解构出来，否则落盘时拿不到，永远是 true。
+    assert.match(route, /const \{ id, name, url, token, mode, reachable \} = req\.body/,
+        '请求体解构出 mode 与 reachable');
+    assert.match(route, /mode: mode === 'push' \? 'push' : 'pull'/,
         '写盘时裁决 mode，且与 normalizeServer 同一套规则');
+    assert.match(route, /reachable: reachable === false \? false : true/,
+        '写盘时落 reachable——否则界面永远显示「能连」，push 选不上去');
 });
 
 test('编辑一台机器不会抹掉已领取的推送凭据', () => {
@@ -1075,42 +1533,6 @@ test('推送端点用到的中间件与常量都在路由之上定义', () => {
     assert.ok(mapAt < sweepAt, 'pushLimitMap 必须在定时器之前声明');
 });
 
-// ========== 传输加密：pull 模式强制 HTTPS ==========
-
-test('拉取模式缺 TLS 证书时拒绝启动，不监听明文', () => {
-    // 修之前的形状：agent 永远 http.createServer，token 明文过网。
-    // token 是那台机器的只读监控凭据，拿到就能读 CPU、内存、主机名——
-    // 所以这里钉的是「没有证书就没有监听」，而不是「有证书就走 https」。
-    const code = stripComments(agentSource);
-    const gate = /if\s*\(\s*!hasCert\s*&&\s*!args\.insecureHttp\s*\)[\s\S]*?process\.exit\(1\)/.exec(code);
-    assert.ok(gate, '缺证书且未显式 --insecure-http 时退出');
-    assert.match(code, /const hasCert\s*=\s*Boolean\(args\.tlsCert\s*&&\s*args\.tlsKey\)/,
-        '两个路径都给了才算有证书（只给一个必须失败）');
-    // 逃生门必须是显式的，不能成为默认
-    assert.match(code, /insecureHttp:\s*false/, '--insecure-http 默认关闭');
-});
-
-test('agent 有证书时起 HTTPS，且证书在启动时校验可读', () => {
-    const code = stripComments(agentSource);
-    assert.match(code, /https\.createServer\(\{[\s\S]*?cert:\s*fs\.readFileSync\(args\.tlsCert\)/,
-        '带证书时用 https.createServer');
-    assert.match(code, /key:\s*fs\.readFileSync\(args\.tlsKey\)/, '同时读私钥');
-    // 证书路径写了却读不到，要指名文件而不是抛一段无关 ENOENT
-    assert.match(code, /--tls-cert['"]\s*,\s*args\.tlsCert[\s\S]*?--tls-key['"]\s*,\s*args\.tlsKey[\s\S]*?fs\.accessSync/,
-        '启动前校验证书与私钥可读');
-});
-
-test('证书生成只经参数传入，不拼 shell 字符串', () => {
-    // 主机名来自 os.hostname()，而主机名可以含分号。拼进 shell 字符串
-    // 等于给一台叫 "x; rm -rf ~" 的机器开了执行的口子。
-    const code = stripComments(agentSource);
-    assert.match(code, /execFileSync\(\s*'openssl'/, '用 execFileSync 传参数');
-    assert.doesNotMatch(code, /exec\(\s*`openssl[^`]*\$\{/,
-        '不得把变量拼进 shell 命令字符串');
-    assert.match(code, /'-subj',\s*`\/CN=\$\{subjectName\}`/,
-        '主机名作为独立参数传入');
-});
-
 test('拉取时拒 http，且证书类错误不塌缩成「机器离线」', async () => {
     const { fetchRemoteMetrics } = require(path.join(ROOT, 'lib', 'monitor'));
 
@@ -1129,94 +1551,66 @@ test('拉取时拒 http，且证书类错误不塌缩成「机器离线」', asy
 });
 
 test('服务端 require 的每个 monitor 导出都真实存在', () => {
-    // 回归记录：函数改名 fetchPeerFingerprint → fetchPeerCert 时漏改导出，
-    // require 得到的 fetchPeerCert 是 undefined，配对端点真实运行时永远 502。
-    // 而当时 334 条测试全绿——它们断言的是**源码形状**（服务端调用了
-    // fetchPeerCert），不是「这个导出真的存在」。形状对了、值为 undefined，
-    // 源码形状断言无从发现。所以这条直接取实际导出并逐个断言是函数。
+    // 回归记录（两次）：函数改名 fetchPeerFingerprint → fetchPeerCert 时漏改导出，
+    // require 得到的名字是 undefined，端点真实运行时必然 502。而当时全部测试
+    // 都是绿的——它们断言的是**源码形状**（服务端调用了它），不是
+    // 「这个导出真的存在」。形状对了、值为 undefined，形状断言无从发现。
     //
-    // 同时钉住「服务端 import 的名字 ⊆ 模块导出的名字」这个不变量，
-    // 让同类改名漏改在编译期之外的第一道检查就被抓住。
+    // 所以这条直接取实际导出并逐个断言是函数。名字**从服务端 import 里取**，
+    // 不在测试里硬编码一份清单——硬编码的那份迟早与实现漂移，
+    // 而漂移的表现是「测试报一个 undefined 的名字」，看不出真正原因。
     const monitor = require(path.join(ROOT, 'lib', 'monitor'));
-    for (const name of ['readLocalMetrics', 'fetchRemoteMetrics', 'fetchPeerCert']) {
-        assert.equal(typeof monitor[name], 'function', `${name} 是可调用的导出`);
-    }
-    // 反向：服务端 import 的每个名字都必须有导出
-    const imported = serverSource.match(/const \{([^}]+)\} = require\('\.\/lib\/monitor'\)/);
-    assert.ok(imported, '服务端确实从 lib/monitor import');
-    for (const raw of imported[1].split(',')) {
-        const name = raw.trim();
-        if (!name) continue;
-        assert.notEqual(monitor[name], undefined,
-            `服务端 import 的 ${name} 在 lib/monitor 里没有导出`);
-    }
-});
-
-test('改名后不留悬空引用：配对端点不引用已不存在的变量', () => {
-    // 回归记录：fetchPeerFingerprint 改名成 fetchPeerCert 后，配对端点的
-    // 响应里还写着 `fingerprint: actual` —— 那个变量早已不存在，于是
-    // 真实运行时抛 ReferenceError 回 500。而 node --check 不查标识符是否
-    // 定义，源码形状断言也只核对「调用了 fetchPeerCert」。
+    // ⚠️ 这里踩过三次坑，逐个说清：
+    //   1. import 是**多行**的（四个名字各占一行），单行的 [^}]+ 在换行
+    //      风格一变时就落空；
+    //   2. 用 [\s\S]*? 往前找 `const {` 而不加「最近的」这个限定，会一路
+    //      找到文件最开头的另一个 `const {`，把几十行无关代码当成 import 名单；
+    //   3. 即使用 [\s\S]*? 懒惰匹配，它也会越过这个 require，去匹配后面
+    //      另一个 `} = ...(` 形状（本项目里就有 `} = consumeRateLimit(...)`）。
     //
-    // 不用「枚举路由里所有裸标识符」那种写法：白名单要么漏一个（假红）、
-    // 要么宽到永远绿（假绿），实测两条路都走不通。改成直接钉住这个缺陷的
-    // 形状——响应里那个字段必须来自实际存在的变量。
-    const code = stripComments(serverSource);
-    const start = code.indexOf("app.post('/api/modules/servers/:id/trust-cert'");
-    assert.ok(start > 0, '配对路由存在');
-    // 边界用「下一个路由声明」并断言它真的找到了。⚠️ 锚点必须是**代码**：
-    // code 是 stripComments 之后的源码，注释行去 indexOf 会返回 -1，
-    // 而 slice(start, -1) 会静默切出「从 -1 到末尾」的整段，把后面几十个
-    // 函数的标识符全算进来（实测踩过）。
-    const nextRoute = code.indexOf("\napp.post('/api/modules/agent-push'", start);
-    assert.ok(nextRoute > start, '找到路由的下边界');
-    const body = code.slice(start, nextRoute);
-    assert.ok(body.length > 200 && body.length < 4000,
-        `切片是单条路由的长度（${body.length}），不是空壳也不是整个文件`);
-
-    assert.match(body, /res\.json\(\{ success: true, fingerprint: peer\.fingerprint \}\)/,
-        '成功响应里的指纹来自实际存在的 peer');
-    // 负向：`actual` 这类改名前的局部变量不得再出现
-    assert.doesNotMatch(body, /:\s*actual\b/,
-        '不引用改名后已不存在的变量 actual');
-});
-
-test('lib/monitor 本轮新增的导出都被 server.js 用到', () => {
-    // fetchPeerFingerprint 改名后既没导出也没被调用，注释还写着
-    // 「探测端点与 fetchRemoteMetrics 用它」—— 两个调用点都改用了
-    // fetchPeerCert。注释与事实相反会误导下一个改动。
-    const code = stripComments(monitorSource);
-    assert.doesNotMatch(code, /function fetchPeerFingerprint/,
-        '只指纹的包装函数已无消费者，应删除');
-    // 只钉**本轮新增**的那个导出。AGENT_PROTOCOL_VERSION 是既有的死导出
-    // （server.js 里零引用），把它算进来会让这条断言红在一个与本次改动
-    // 无关的既有问题上——那属于待办，不属于这次的红。
-    assert.match(code, /fetchPeerCert/,
-        'fetchPeerCert 已导出');
-    assert.ok(serverSource.includes('fetchPeerCert'),
-        'server.js 确实消费 fetchPeerCert');
-    // 反向：服务端 import 的名字必须在导出里（改名漏改导出正是本轮真发生的 bug）
-    const imported = serverSource.match(/const \{([^}]+)\} = require\('\.\/lib\/monitor'\)/);
-    assert.ok(imported, '服务端确实从 lib/monitor import');
-    const monitor = require(path.join(ROOT, 'lib', 'monitor'));
-    for (const raw of imported[1].split(',')) {
-        const name = raw.trim();
-        if (!name) continue;
-        assert.notEqual(monitor[name], undefined,
-            `服务端 import 的 ${name} 在 lib/monitor 里没有导出`);
+    // 可靠的做法：**以 `require('./lib/monitor')` 为唯一锚点，往回取到最近的
+    // `const {`**，这样无论 import 写成几行、中间有什么，都不会越界。
+    const REQ = "require('./lib/monitor')";
+    const reqAt = serverSource.indexOf(REQ);
+    assert.ok(reqAt > 0, '服务端确实从 lib/monitor import');
+    const openAt = serverSource.lastIndexOf('const {', reqAt);
+    assert.ok(openAt > 0, '找到 import 的 const {');
+    const closeAt = serverSource.lastIndexOf('}', reqAt);
+    assert.ok(closeAt > openAt,
+        'import 名单的右括号在 const { 之后（排除匹配到别处的情况）');
+    const names = serverSource.slice(openAt + 7, closeAt)
+        .split(',').map(s => s.trim()).filter(Boolean);
+    assert.ok(names.length >= 2, `解析出 ${names.length} 个 import 名字`);
+    for (const name of names) {
+        assert.match(name, /^[A-Za-z_$][\w$]*$/, `${name} 是合法标识符`);
+        assert.equal(typeof monitor[name], 'function',
+            `服务端 import 的 ${name} 在 lib/monitor 里是可调用的导出`);
     }
 });
 
-test('两种证书结果分开：未配对 vs 已配对但证书变了', () => {
-    // 这两种情况都表现为「拉不到数据」，但一个是「还没做这一步」，
+test('两种证书结果分开：未注册 vs 已配对但证书变了', () => {
+    // 这两种情况都表现为「拉不到数据」，但一个是「还没注册」，
     // 另一个是安全事件。塌缩成同一句话会让用户照着错误方向排查。
+    //
+    // ⚠️ 这里的分支名换过一次：早先是 needTrust（人工核对指纹），
+    // 那条 TOFU 流程已随一次性令牌注册删除，改为 notEnrolled。
+    // 形状断言对改名是敏感的 —— 所以同时钉住「不再有 needTrust」，
+    // 否则它悄悄回来也没人发现。
     const code = stripComments(monitorSource);
-    assert.match(code, /if\s*\(server\.certPem\)\s*\{[\s\S]*?certMismatch:\s*true/,
-        '已配对却仍报证书错 → certMismatch');
-    assert.match(code, /needTrust:\s*true/, '未配对 → needTrust');
+    // ⚠️ 括号要写进正则（`if (server.certPem)`）：少写就匹配不上，
+    // 而表现是「这条断言一直红」而不是「匹配到了别的东西」。
+    assert.match(code, /if \(server\.certPem\) \{[\s\S]*?certMismatch: true/,
+        '已配对却仍报证书错 → certMismatch（安全事件）');
+    assert.match(code, /notEnrolled: true/,
+        '未配对 → notEnrolled（如实报告，不伪造指纹）');
+    assert.doesNotMatch(code, /needTrust/,
+        '旧的人工核对字段已随 TOFU 流程删除，不该回来');
     // 证书错误码要单列，否则会落进 ECONNREFUSED 分支显示成机器离线
-    assert.match(code, /SELF_SIGNED_CODES\s*=\s*new Set\(\[([\s\S]*?)DEPTH_ZERO_SELF_SIGNED_CERT/,
+    assert.match(code, /SELF_SIGNED_CODES = new Set\(\[[\s\S]*?DEPTH_ZERO_SELF_SIGNED_CERT/,
         '自签证书错误码被显式枚举');
+    // ⚠️ 被删掉的函数不得还有调用点——那正是崩进程的 bug（本轮审查发现）
+    assert.doesNotMatch(code, /fetchPeerCert/,
+        'fetchPeerCert 已删除，不得有残留调用点');
 });
 
 test('拉取用 https.request 并透传 ca，才能验自签证书', () => {
@@ -1229,13 +1623,6 @@ test('拉取用 https.request 并透传 ca，才能验自签证书', () => {
     assert.doesNotMatch(code, /checkServerIdentity/,
         '不依赖 checkServerIdentity（实测在自签证书场景下不会被调用）');
 });
-
-test('SNI 不给 IP，否则触发 DEP0123 弃用警告', () => {
-    const code = stripComments(monitorSource);
-    assert.match(code, /servername:\s*net\.isIP\(parsed\.hostname\)\s*\?\s*undefined\s*:\s*parsed\.hostname/,
-        '按是否为 IP 决定要不要设 servername');
-});
-
 test('两条写路径都补回已配对的证书，改个名字不会抹掉它', () => {
     // 症状隐蔽：配对好好的机器，用户改了个名字，采集又报「证书未受信任」，
     // 而界面上看不出这两件事有关联。
@@ -1254,60 +1641,6 @@ test('两条写路径都补回已配对的证书，改个名字不会抹掉它',
         '编辑单台机器时补回 certPem');
     assert.match(route, /entry\.certFingerprint\s*=\s*servers\[index\]\.certFingerprint/,
         '并补回 certFingerprint');
-});
-
-test('确认证书前重抓一次比对，不一致就不写', () => {
-    // 用户点「确认」到服务端落盘之间有个时间差。服务端自己再抓一次，
-    // 对不上就拒——否则那段时间里换掉的证书会被当成「用户认可的」。
-    const code = stripComments(serverSource);
-    const route = code.slice(code.indexOf("app.post('/api/modules/servers/:id/trust-cert'"),
-        code.indexOf('\napp.', code.indexOf("app.post('/api/modules/servers/:id/trust-cert'") + 10));
-    assert.ok(route.length > 200, '切片拿到整条配对路由');
-    assert.match(route, /fetchPeerCert/, '落盘前重新抓一次证书');
-    assert.match(route, /409/, '不一致时 409');
-    // 409 分支必须真的不写
-    const mismatch = route.slice(route.indexOf('409'));
-    const writeAt = route.indexOf('await writeJSON');
-    assert.ok(writeAt > mismatch.indexOf('409'), '写盘发生在 409 之后，即不一致时已返回');
-});
-
-test('读接口不回显证书 PEM，只给配对状态', () => {
-    // PEM 有 1KB+ 且前端用不到；前端只需要知道「配对过没有」，
-    // 否则用户会被反复要求确认同一张证书。
-    const code = stripComments(serverSource);
-    const read = code.slice(code.indexOf("app.get('/api/modules/config'"),
-        code.indexOf("app.post('/api/modules/config'"));
-    assert.match(read, /\{\s*token,\s*pushSecretHash,\s*certPem,\s*\.\.\.rest\s*\}/,
-        '解构时摘掉 certPem');
-    assert.match(read, /hasCert:\s*Boolean\(certPem\)/, '只回布尔状态');
-});
-
-test('前端：探测遇到待确认证书时弹指纹核对，确认后才落盘', () => {
-    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
-    const probe = app.slice(app.indexOf('.probe-server'));
-    assert.ok(probe.length > 200, '切片拿到探测按钮的处理逻辑');
-    assert.match(probe, /need_trust/, '识别 need_trust 分支');
-    assert.match(probe, /trust-cert/, '确认后调配对端点');
-    assert.match(probe, /fingerprint:\s*res\.fingerprint/, '把指纹带上去');
-    // 确认框必须默认不勾选：默认勾选等于把「核对」这个动作架空
-    assert.match(probe, /checked:\s*false/, '确认框默认未勾选');
-    // 未勾选就点确认必须有提示。实测发现静默 return 的后果：对话框一关，
-    // 徽章不变、没有任何文字，「没勾」与「点了取消」表现完全一样，
-    // 用户会以为证书已经配好了。
-    //
-    // ⚠️ 不能写成 `if (...) {[\s\S]*?showToast(` —— 那个 `[\s\S]*?` 没有上界，
-    // 会越过 if 块去匹配后面别的分支里的 showToast，删掉提示照样绿（实测踩过）。
-    // 这里显式切出 if 块本身，再在块内找 showToast。
-    const noTrustAt = probe.indexOf('if (!ok || !ok.choices.trust)');
-    assert.ok(noTrustAt > 0, '找到未勾选的处理分支');
-    const blockEnd = probe.indexOf('}', probe.indexOf('return;', noTrustAt));
-    assert.ok(blockEnd > noTrustAt, '找到该分支的结束');
-    const trustBlock = probe.slice(noTrustAt, blockEnd);
-    assert.ok(trustBlock.length < 600, `分支长度合理（${trustBlock.length}）`);
-    assert.match(trustBlock, /showToast\(/,
-        '未勾选时给出提示，而不是静默返回');
-    assert.match(trustBlock, /if\s*\(ok\)/,
-        '只有「点了确认但没勾选」才提示；真取消时不该打扰用户');
 });
 
 test('renderServerList 里不引用它没有的参数', () => {
@@ -1341,38 +1674,4 @@ test('renderServerList 里不引用它没有的参数', () => {
     for (const p of params) {
         assert.ok(body.includes(p), `参数 ${p} 有被使用`);
     }
-});
-
-test('指纹核对框里必须显示完整指纹，不能截断', () => {
-    // 回归记录（浏览器实测发现）：确认框的文案写着「请逐字核对」，
-    // 而勾选项只显示前 4 段加省略号，**完整指纹从未进入 DOM**——
-    // 用户被要求执行一个界面上根本做不到的核对。实测：
-    //   optLabel = "我已核对，指纹一致（AD:24:26:71…）"
-    //   fullFingerprintInDOM = "未找到完整指纹"
-    // 源码形状断言看不出这个：它只关心「有没有 fingerprint 字段」。
-    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
-    const branch = app.slice(app.indexOf("res.status === 'need_trust'"),
-        app.indexOf("res.status === 'need_trust'") + 2000);
-    assert.ok(branch.length > 200, '切片拿到 need_trust 分支');
-
-    // message 里必须插入完整的 res.fingerprint
-    assert.match(branch, /message:[\s\S]*\$\{res\.fingerprint\}/,
-        '完整指纹进 message（用户要逐字核对的就是它）');
-    // 勾选项不再重复截断的前缀
-    assert.doesNotMatch(branch, /split\('\:'\)\.slice\(0,\s*\d+\)/,
-        '不要把指纹截断成前缀——那样界面上无法核对');
-    // 文案要求「逐字核对」，就必须真的给得出完整串
-    assert.match(branch, /逐字核对/, '文案仍要求逐字核对');
-});
-
-test('前端：http 地址在对话框里就被拒，并给出迁移步骤', () => {
-    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
-    const validate = app.slice(app.indexOf('async showServerDialog(server, onDone)'));
-    // 用字面量而不是正则断言这条：/^http:\/\// 的斜杠转义在正则字面量里
-    // 极易写错（写成 /\/^http:\\\/\\\// 直接是语法错误，整个文件加载失败），
-    // 而这里要断言的事实就是「源码里就是这几个字符」。
-    assert.ok(validate.includes('/^http:\\/\\//i.test(url)'), 'http 单独判');
-    assert.ok(validate.includes('/^https:\\/\\//i.test(url)'), '只接受 https');
-    // http 的拒绝必须带迁移步骤，否则用户以为是自己地址写错了
-    assert.ok(validate.includes('--tls-cert'), '错误信息含迁移步骤');
 });

@@ -23,11 +23,12 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `lib/session-sqlite.js` | 会话的 SQLite 存储后端（实现 SessionStore 的 6 方法接口） |
 | `lib/db.js` | SQLite 连接、PRAGMA 与 `user_version` 迁移；驱动只在此文件出现 |
 | `lib/geo/` | ip2region 离线 IP 归属库（仅 IPv4）与其只读解析器 |
-| `lib/monitor.js` | 监控采集：本机读 `os`，远端读 agent |
-| `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码与 agent token 共用 |
-| `agent/agent.js` | 部署在**被监控目标机**上的只读采集脚本，单文件无依赖 |
+| `lib/monitor.js` | 监控采集：本机读 `os`，远端读 agent（`node:https` + 证书 PEM 作 `ca`），`probeTcp` 三态探测 |
+| `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码、agent token、推送凭据共用 |
+| `agent/` | 部署在**被监控目标机**上的只读采集程序。**Go 静态二进制，零第三方依赖**（`go.mod` 无 `require`）：`main.go`（协议、HTTPS、注册、推送）+ 平台桩（`mem_darwin.go` / `mem_other.go` / `readcpu_darwin.go` / `readcpu_other.go`）、`install.sh`（一键 `curl \| bash`）、`README.md` |
+| `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
 | `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（当前 `server-monitor.js`） |
-| `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本 |
+| `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
 | `tests/` | 备份隐私、移动收藏、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
 服务使用 Node.js、Express 和原生浏览器代码。`package.json` 的 `start` 命令运行 `server.js`，`dev` 命令使用 nodemon。测试目前通过 `node --test tests/*.test.js` 运行。
@@ -72,52 +73,76 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 采集有两个方向，各自适用不同网络：
 
 ```
-【拉取（默认）】目标机 agent ──HTTPS /metrics（服务来连）──▶ 本服务 ──▶ module_cache ──▶ 首页卡片
-                  读 /proc/stat、/proc/meminfo                    └─ 本机读 os，永远排第一
-                  Bearer token 鉴权，目标机要开端口
-                  自签证书 + 指纹配对（见下）
+【注册】       后台「部署」→ 签一次性令牌 → 一条命令贴到目标机
+                目标机 agent ──POST /api/modules/enroll（带令牌）──▶ 本服务
+                agent 自签证书，本服务存 PEM + 回长期 token（见下）
 
-【推送】        目标机 agent ──HTTP POST（机器去报）──▶ agent_metrics 表 ──▶ 首页卡片
-                  不监听任何端口                    └─ 离线判定靠「多久没收到」
+【拉取（默认）】目标机 agent ──HTTPS /metrics（服务来连）──▶ 本服务 ──▶ module_cache ──▶ 首页卡片
+                  读 /proc/stat、/proc/meminfo                     └─ 本机读 os，永远排第一
+                  Bearer token 鉴权，目标机要开端口
+                  自签证书以 PEM 作 ca 信任（见下）
+
+【推送】        目标机 agent ──HTTPS POST（机器去报）──▶ agent_metrics 表 ──▶ 首页卡片
+                  不监听任何端口                   └─ 离线判定靠「多久没收到」
                   推送凭据鉴权，与 agent token 是两回事
 ```
 
 **两种模式并存**，每台机器在 `.modules.json` 的 `servers[].mode` 里选 `'pull'`（默认）或 `'push'`。同一个请求里可以同时有本机、拉取机、推送机。
 
-### 拉取模式的传输：强制 HTTPS + 指纹配对（TOFU）
+### 拉取模式的传输：强制 HTTPS + 一次性令牌注册
 
 **为什么强制。** 拉取模式下 Bearer token 是**唯一的**鉴权凭据，而它能读到那台机器的 CPU、内存与主机名。走明文 HTTP 等于把这个凭据公开在网络上——任何能嗅探或旁路监听的人都能拿到。所以三层都硬切，没有「默认明文」这个选项：
 
 - **agent**：缺 `--tls-cert/--tls-key` 时**拒绝启动**（不是降级到明文）。错误信息印在目标机终端，用户当场看得见；否则它只会表现为后台里一台离线的机器。逃生门是显式的 `--insecure-http`，默认关闭。
-- **服务端写入**：`POST /api/modules/servers` 只接受 `https:`。`http:` 单独给一条带迁移步骤的错误（`--gen-cert` → 带证书重启 → 改地址），不是笼统的「格式错误」。
+- **服务端写入**：`POST /api/modules/servers` 只接受 `https:`，且**接受裸 IP**（自动补 `https://` 与默认端口 4195）——「只填 IP 就行」是这个设计的核心诉求，不能只在前端成立。`http:` 单独给一条带迁移步骤的错误，不是笼统的「格式错误」。
 - **服务端采集**：`fetchRemoteMetrics()` 入口即拒 `http:`，不发请求。
 
 **这条与主服务自己的 TLS 无关。** 握手发生在「本服务 → 目标机」之间；给主服务套的 nginx/certbot 只保护主服务自己。目标机 4195 端口的 TLS 必须由目标机自己承担。
 
-**自签证书的信任：TOFU 配对。** agent 用 `node agent.js --gen-cert <目录>` 生成自签证书（**Node 内置 crypto 只有 `X509Certificate`（解析），没有签发 API**，所以必须调 `openssl` CLI——这是「agent 零依赖」与「自签证书」之间唯一的调和方式；用 `execFileSync` 传参而非拼 shell 字符串，否则一个含分号的主机名就成了一条命令）。生成时把证书的 SHA-256 指纹**印在目标机终端上**。
+**自签证书的信任：一次性令牌自动注册（不是人工核对指纹）。** agent 在 `enroll` 阶段用 Go 的 `crypto/x509` 生成自签证书（**能原生签发**——这正是选 Go 的原因之一，Node 内置 crypto 只有 `X509Certificate` 只能解析，所以上一版被迫调 openssl CLI），把证书交给本服务；本服务存下 PEM 并回一枚长期 token。
 
-用户随后在后台点「检测连通性」：服务端抓一次目标机的证书，把指纹摆出来，用户核对一致后确认。这条路成立的前提是**用户有一条独立于本服务的核对途径**——就是目标机终端上那一串。
+注册用的凭据是一枚**一次性部署令牌**：后台生成（明文只在响应里出现一次，落盘只有 `sha256` 哈希）、15 分钟过期、用过即从配置里删除、重复签发即作废旧令牌。
+
+**为什么不用人工核对指纹。** 上一版要求用户 SSH 上去生成证书、把终端打印的指纹抄回后台逐字核对——七步以上，且第一步就需要用户已经能上目标机。令牌的语义是「持有即信任」，用户只做一次复制粘贴。
+
+⚠️ **这里刻意没有「绑定来源 IP」那道防护**（代码里曾有过一版，已删）：部署令牌在**目标机**上使用，而服务端看到的是它的**出口 IP**（NAT 之后），与用户在后台填的地址没有可比性。拿它做判定就是把「局域网地址」推出后台，和本文「不按私网地址自动切换」一节拒绝的推断同一类错误。真实防护是上面那三条。
 
 **必须存证书 PEM 而不是指纹。** Node 的 `https.request` 只支持把某张证书作为可信锚点传进 `ca`，没有「按指纹信任」的接口。实测（Node 22）：自签证书会先被 OpenSSL 链校验拦下（`DEPTH_ZERO_SELF_SIGNED_CERT`），`checkServerIdentity` 在这种情况下**根本不会被调用**——所以「自定义一个指纹比对函数」这条路在 Node 上走不通，只能存 PEM 交给 `ca`。这也是 `fetchRemoteMetrics` 用 `node:https` 而不是内置 `fetch` 的原因（内置 fetch 不接受 dispatcher 选项）。
 
-**四种结果必须分开，不能塌缩成「机器离线」：**
+**三种结果必须分开，不能塌缩成「机器离线」：**
 
 | 情况 | 返回 | 含义 |
 | --- | --- | --- |
 | `http:` 地址 | `insecure` | 明文已停用，需改 https |
-| 未配对过 | `needTrust` + 指纹 | 「还没做这一步」，把指纹交给用户核对 |
-| 配对过但证书变了 | `certMismatch` | **安全事件**：证书被更换，可能是中间人 |
+| 还没注册（`certPem` 为空） | `notEnrolled` | 「还没注册」，如实报告，不伪造指纹 |
+| 注册过但证书变了 | `certMismatch` | **安全事件**：证书被更换，可能是中间人 |
 | 连不上 | 无标志 | 真的网络问题 |
 
-`certMismatch` 与 `needTrust` 都表现为「拉不到数据」，但一个是「还没做这一步」、一个是「有人动了证书」，塌缩成同一句话会让用户照错误方向排查。同理，证书错误码（`DEPTH_ZERO_SELF_SIGNED_CERT` 等）必须**单列**——落进 `ECONNREFUSED` 分支会把一个安全问题显示成「无法连接（地址不通或服务未启动）」。
+`certMismatch` 与 `notEnrolled` 都表现为「拉不到数据」，但一个是「还没注册」、一个是「有人动了证书」，塌缩成同一句话会让用户照错误方向排查。同理，证书错误码（`DEPTH_ZERO_SELF_SIGNED_CERT` 等）必须**单列**——落进 `ECONNREFUSED` 分支会把一个安全问题显示成「无法连接（地址不通或服务未启动）」。
 
-**证书要走两条写路径的保留分支。** `certPem` / `certFingerprint` 只由「确认指纹」那一步写入，归一化不接收；而 `POST /api/modules/servers`（编辑单台）与 `mergeModulesConfig`（拖拽排序提交整个列表）都整体替换 entry，漏掉保留就会「改个名字就抹掉配对」，采集重新报「证书未受信任」而界面上看不出这两件事有关联。
+**证书要走两条写路径的保留分支。** `certPem` / `certFingerprint` / `enrolledAt` / `deployState` 只由服务端写入，归一化不接收；而 `POST /api/modules/servers`（编辑单台）与 `mergeModulesConfig`（拖拽排序提交整个列表）都整体替换 entry，漏掉保留就会「改个名字就抹掉注册」，采集重新报「证书未受信任」而界面上看不出这两件事有关联。
 
 ### 模式的判定：显式字段 + 探测按钮，不猜 IP 段
 
-**不按私网地址自动切换。** 本项目单人自用、tarball 部署，**服务器完全可能就架在家里**（NAS、小主机）——那时 `192.168.1.10` 完全可达、拉取正常工作，自动切推送反而把好端端的配置搞坏，用户还得多知道一步才能切回来。而且 `100.64.x`（Tailscale CGNAT）和 `127.0.0.1`（隧道映射到本机）都落在「私网前缀」这个判断的盲区里。
+**不按私网地址自动切换。** 本项目单人自用、tarball 部署，**服务器完全可能就架在家里**（NAS、小主机）——那时 `192.168.1.10` 完全可达、拉取正常工作，自动切推送反而把好端端的配置搞坏。而且 `100.64.x`（Tailscale CGNAT）和 `127.0.0.1`（隧道映射到本机）都落在「私网前缀」这个判断的盲区里。
 
-判定靠后台的「检测连通性」按钮：**真去连一次**，拿到任何 HTTP 响应（含 401）即视为可达——401 恰好证明路是通的，只是 token 不对。探测失败只提示可改推送，**不自动改用户配置**。
+后台添加机器时问的是「**本服务能否直接连到这台机器**」，而不是「局域网 / 公网」。后者要用户自己推导四种组合里的哪一格；前者就是决定性事实本身。回答映射为 `servers[].reachable`，进而定 `mode`（能连 → `pull`，不能 → `push`）。
+
+**探测用 TCP 三态，而不是 ping。**
+
+| 三态 | 含义 | 界面 |
+| --- | --- | --- |
+| `refused` | 主机回了 RST——**它活着**，只是没人监听 4195 | 在线 · 未部署 |
+| `timeout` | 路不通 | 离线 |
+| `open` | 有服务在监听 | 接着问 `/health` |
+
+`refused` 与 `timeout` 分开是这次改版的核心：**上一版两者都显示「离线」，用户无法判断「是没装 agent」还是「够不着」**，而这两种情况的下一步完全不同。
+
+`open` 之后**必须再问一次 `/health`**（`probeAgentHealth`）：端口上有东西 ≠ 那是我们的 agent。别的程序占了 4195 会被判成 `port_conflict`。
+
+⚠️ **`open` 只说明「有人应答 TCP」。** 实测（macOS 办公网/VPN 环境）：连一个完全不可达的公网地址也会触发 `connect` 事件，且对端**保持连接**不主动断开——中间有透明代理接管了 TCP。所以「connect 后等一会儿看对端关不关」这个加固**实测无效**（试过，已删）。挡住它的是第二道防线 `probeAgentHealth`：代理接得下 TCP 却答不出 `/health` 的形状。代价是在有透明代理的网络里，「未部署」的判定会不准。
+
+**后台卡片有两个状态位，首页只有一个。** 「在线」（`reachable`）与「agent 就绪」（`deployState`）是两个正交问题，分开才看得出该先查网络还是先部署。首页是「一眼扫过」的场景，合并成一个就够（用户拍板）。
 
 ### 推送的鉴权：独立凭据，替代 requireAdmin
 
@@ -165,23 +190,28 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 ### agent 侧
 
-- **推送模式默认不监听任何端口**（`SERVE_HTTP = !PUSH_MODE || args.serveAlongsidePush`）。这是推送最大的安全收益：内网机器上一个端口都不用开。要同时保留拉取能力时显式加 `--port`。
-- **推送凭据与拉取 token 是分开的**环境变量（`NAVSYLPH_PUSH_SECRET` / `NAVSYLPH_SERVER_ID` vs `NAVSYLPH_TOKEN`），互不顶替——顶替的表现是推送一直 401，而错误信息只说「凭据无效」。
+agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），**零第三方依赖**（`go.mod` 无 `require`），三个 Linux 架构由 `scripts/build-agent.sh` 交叉编译（amd64 / arm64 / armv7）。
+
+**为什么不是 Node 或 shell**：Node 内置 `crypto` 只能解析证书不能签发（上一版被迫调 openssl CLI）；纯 shell 做不了带鉴权的 HTTPS 服务（`openssl s_server` 无鉴权）。Go 两个都能，且交叉编译后目标机什么都不用装——这才是「NAS / 路由器 / 精简容器上能用」的前提。
+
+- **正式支持的平台只有 Linux**。darwin 产物仅供开发机自测：`sysctl kern.cp_time` 在现代 macOS 已被移除，没有 cgo 就拿不到累计 CPU 时间，于是 CPU 一栏恒为 `null`（诚实降级，不编造值）。`agent/install.sh` 在非 Linux 上**第一步就拦下**并给出本机自测命令——少了它会一路通过检查、下载跑不起来的 ELF、写 systemd、systemctl 失败。
+- **子命令**：`enroll`（注册，生成自签证书并换回长期凭据）、`serve`（拉取，起 HTTPS）、`push`（推送，只做出站连接）、`collect`（打印指标，调试用）、`health`（自检）。凭据从环境变量读更安全（命令行会出现在 `ps` 输出里），但**为了重启后仍能鉴权必须落盘**：写在 `/etc/nav-agent/config.json` 与 `/etc/nav-agent/env`，两份都是 0600 root，**不写进 systemd unit**——unit 会被 `systemctl cat` / `show` / `status` 打印出来，也常被用户贴进 issue。
+- **推送模式默认不监听任何端口**（`SERVE_HTTP = !PUSH_MODE || args.serveAlongsidePush`）。这是推送最大的安全收益：内网机器上一个端口都不用开。
+- **推送凭据与拉取 token 是分开的**环境变量（`NAV_AGENT_PUSH_SECRET` / `NAV_AGENT_SERVER_ID` vs `NAV_AGENT_TOKEN`），互不顶替——顶替的表现是推送一直 401，而错误信息只说「凭据无效」。
 - **失败时指数退避，上限 5 分钟**。无脑按原周期重试会持续消耗服务端的限流桶，而那个桶按 IP 计数，一台机器的重试风暴会影响其它所有 agent。
 - **推送周期与服务端白名单逐项一致**（10/15/30/60/300），非法值回落 15。两侧不一致时，正常配置就会自己把自己限掉（间歇性 429）。
-- **协议版本不变**（`VERSION = 1`）。两种模式上报的指标载荷字段完全一样，推送是与拉取并存的另一条通道，不构成协议版本变更。
-- 拉取模式下的既有行为除传输层外全部保持：单文件无依赖、token 从环境变量读不落盘、默认只监听 `127.0.0.1`、`/health` 不需鉴权且不泄露主机名、CPU 两次采样做差、macOS 内存用 `vm_stat` 而非 `os.freemem()`、无 `/proc` 平台降级。**传输层是唯一的例外**：由纯 HTTP 改为强制 HTTPS（见「拉取模式的传输」一节），且**协议版本仍是 `VERSION = 1`** —— 指标载荷字段一个没动，TLS 是通道层的事，不构成协议变更。
+- **协议版本不变**（`VERSION = 1`）。两种模式上报的指标载荷字段完全一样，推送是与拉取并存的另一条通道，不构成协议变更。
+- **`install.sh` 的子命令必须按模式分支**（push → `push`，其余 → `serve`）。写死 `serve` 时 push 模式会因缺 Bearer token 启动即退出，而脚本只 warn 一句、**返回 0**——用户在后台看到「已就绪」，实际那台机器上没有任何进程。**静默失败比崩溃更坏**：崩了用户会来问，装上了用户不会。所以 `systemctl restart` 之后还要 sleep + `is-active`，失败一律 `die`。
 
-### 拉取模式（默认，既有行为）
+### 拉取模式（默认）
 
-- **agent 单文件无依赖**，`node agent.js` 即可运行，token 从环境变量 `NAVSYLPH_TOKEN` 读、**不落盘**（命令行参数会出现在 `ps` 与 shell 历史里）。默认只监听 `127.0.0.1`，跨机访问需显式 `--host 0.0.0.0`。`/health` 不需鉴权，`/metrics` 需要。
-- **CPU 必须两次采样做差**。`os.cpus()` 与 `/proc/stat` 给的都是累计值，单次读没有百分比。
-- **两条采集路径必须返回同一种形状**（一个聚合对象，不是按核的数组）。形状不一致时 `current.total - previousCpu.total` 变成「数组减数字」= `NaN`，CPU 恒为 `null`，而返回的 JSON 完全合法——看不出出错，只是永远没有 CPU 数据。
-- **macOS 的内存不能用 `os.freemem()`。** 它返回的是「未被列为可用」的页，而 macOS 把大部分内存拿去做文件缓存——实测 16GB 机器上 `totalmem - freemem` 达 98.6%，显示成「内存 99%」，看着像要爆，实际完全正常。那个数衡量的是缓存占用，不是应用占用。正确口径是 `vm_stat` 的 `free + inactive + speculative + purgeable`（页数 × 页大小），`inactive` 是可回收的缓存，算作可用才是用户视角。服务端与 agent 两处都实现了同一口径。
-- **页大小用 `execSync('sysctl -n hw.pagesize')` 取**，不是 `readFileSync('/sysctl -n hw.pagesize')`——后者不是路径会抛 `ENOENT`。
-- **没有 `/proc` 的平台降级到 `os` 模块**，而不是启动即崩。agent 可能被拿去做 macOS/BSD 的自测；`vm_stat` 读不到时（容器、精简系统）也退回 `os`，数值口径粗一些但不至于不可用。
-- **协议版本两侧必须对齐**（`agent` 的 `VERSION` 与服务端的 `AGENT_PROTOCOL_VERSION`）。不一致时报错，**不把不认识的字段当 0 读进去**——那会显示「CPU 0%」，是一个错误的结论而不是一个可见的失败。
+- **默认只监听 `127.0.0.1`**，跨机访问需显式 `--host 0.0.0.0`。`/health` 不需鉴权，`/metrics` 需要。
+- **CPU 必须两次采样做差**。`/proc/stat` 给的是累计值，单次读没有百分比。
+- **两条采集路径必须返回同一种形状**（`cpuTimes` 聚合结构）。形状不一致时 `current.Total - previous.Total` 变成 NaN，CPU 恒为 `null`，而返回的 JSON 完全合法——看不出出错，只是永远没有 CPU 数据。拿不到时**返回 `(零值, false)`** 让 CPU 留 null，而不是造一个假值。
+- **macOS 的内存不能用「总内存 − 空闲」**。那个差值在 macOS 上衡量的是缓存占用而不是应用占用——实测 16GB 机器上显示成「内存 99%」。正确口径是 `vm_stat` 的 `free + inactive + speculative + purgeable`。⚠️ `vm_stat` 的标签是**词组**（`Pages free:`），按空白切分后 `Fields[1]` 是 `free:` 而非数字——取错下标会让 `ParseFloat` 失败返回 0，于是「可用内存 = 0」显示成「内存 100%」。必须匹配整行再取**最后一段**。
+- **协议版本两侧必须对齐**（agent 的 `VERSION` 与服务端的 `AGENT_PROTOCOL_VERSION`）。不一致时报错，**不把不认识的字段当 0 读进去**。
 - **一台离线不影响其它台。** `fetchRemoteMetrics()` 失败返回 `{ok:false, error}` 而不抛错；401 单独标记 `authFailed`，界面据此区分「凭据错」与「机器挂」。目标机**并发**拉取——串行会让 N 台耗时累加到超出前端轮询周期。
+- ⚠️ **改了 certPem 相关的分支要同时改调用点。** 上一版删掉 `fetchPeerCert` 时漏改了这一处调用，于是「agent 在跑但没注册成功」会走到它并抛 `ReferenceError`——**不在任何 try 包装里，直接杀掉整个进程**，首页所有机器一起消失，而 `/api/modules/metrics` 返回 500。形状断言看不见「这个标识符根本不存在」，必须有**真起一个自签 HTTPS 服务**的用例兜住。
 
 ### 两种模式共有的部分
 
@@ -193,7 +223,11 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 - **采集缓存的失效跟着配置走。** `module_cache` 缓存的是「上次采到了什么」，而采集的目标由配置决定。加/改/删服务器时调用 `invalidateMetricsCache()` 让它失效——否则「新加的机器不出现、删掉的还在」，要等满 TTL 才自愈。`POST /api/modules/config` 也用于拖拽排序与开关模块，那两种改动不影响采集目标，所以那里加了前后比较、只在 `servers` 真的变了才清；无条件清会让「加机器立刻可见」退化成「任何保存都重采」，TTL 就失去了意义。**推送写入也清缓存**——推送是采集的输入之一，输入变了就得失效。
 - **`agent/` 随发布包分发**（`scripts/release.sh` 里的 `cp -r agent`）。不打进包的话，多服务器功能对下载者等于不存在。
 - **`.modules.json` 纳入 WebDAV 备份。** 备份产出三个文件：`nav-sylph-config-{ts}.json`、`nav-sylph-bookmarks-{ts}.html`、`nav-sylph-modules-{ts}.json`，按时间戳归为同一组。模块配置参与「有无变化」判定——只改监控目标却判成 noChanges，远端会留一份旧布局。token 在备份里**仍是密文**（密钥派生自管理员密码哈希），换机器后用同一密码即可解开；**`.admin-password.json` 始终不进备份**——把密码哈希交出去等于把账号交出去。推送凭据的哈希同样在备份里，它本身不可逆，但备份与密码仍不该放在一起。清理旧备份时三个文件一并删除，否则 modules 文件会成为孤儿：清理按分组算，孤儿既不被计入也不会被清走。
-- **部署命令在后台生成，不在 `sylph.sh`。** `sylph.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。命令在「模块 → 监控目标 → 部署」里按当前配置生成：拉取模式下 token 是占位符（服务端不把明文发到浏览器），推送模式下**先调接口领取凭据再渲染面板**（明文只出现这一次，不领就没法给出可复制的命令）。另有一份 `agent/README.md` 供离线查阅。脚本本体由 `GET /agent/agent.js` 按需提供——它放在仓库根而非 `public/` 下，**不进 Service Worker 预缓存**（预缓存一个从不加载的文件只会在每次更新时多下载一次）。
+- **一键部署命令在后台生成，不在 `sylph.sh`。** `sylph.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。上一版是六步手工说明（下载、手动改配置、自检、systemd、防火墙…），现在合并成**一条可复制命令**——每一个由系统能自己生成的步骤（协议前缀、端口、令牌、证书指纹）都不该让用户填。
+- **命令里的凭据是占位符，明文不进页面 DOM。** 令牌明文只在「签发」那一次响应里出现一次；为了让命令可复制而不泄露，页面上的令牌位是 `<占位符>`，由 `agent/install.sh` 在目标机上自己填进 0600 的配置。
+- **二进制按架构分发**（`GET /agent/nav-agent-linux-<arch>`，白名单 amd64/arm64/armv7），路径穿越有防护。**失败必须分因**：文件缺失与架构不在白名单是两种原因，塌缩成一个 404 会让用户以为是网络问题。分发用 `fs.createReadStream`（从 `require('fs')` 拿，不是 `require('fs').promises`——后者没有流式 API），多 MB 产物不要 `readFile` 再 `send`。**不进 Service Worker 预缓存**（预缓存一个从不加载的文件只会在每次更新时多下载一次），并且 `Cache-Control: no-cache`——URL 稳定而内容随版本变，否则照旧命令执行的用户拿到的是旧版。404 的响应体必须是 **shell 注释**而不是 HTML 错误页，因为它会被 `bash -s` 执行。
+- **`hasEnrollToken` 是「能不能直接复制命令」的判据**（令牌已签发且未过期 vs 没有/已过期），卡片据此在「复制命令」与「部署」之间切换。这个字段曾长期算了却没人读，而它的注释声称驱动着两个并不存在的按钮——一个假承诺。
+- 另有一份 `agent/README.md` 供离线查阅。
 - **更新周期可配，白名单在服务端裁决。** 取值 10 / 15 / 30 / 60 / 300 秒，存在 `.modules.json` 的 `pollInterval`。10 秒是下限（再短会撞管理端限流 30 次/分钟），5 分钟是上限（再长与默认 TTL 相同、失去意义）。非法值回落默认。
 - **缓存 TTL 跟着周期走。** 取 `周期 + 10s`，夹在 20s–300s 之间。固定 5 分钟 TTL 会让「把周期改成 10 秒」变成一句空话——前端每 10 秒问一次、服务端 5 分钟内都回同一份缓存。`+10s` 的余量是为了让两次轮询错开 TTL 边界，否则永远拿不到新值。服务端把当前周期回给前端，前端据此重排自己的定时器，改完不必刷新页面。
 - **页面切到后台时轮询暂停**，回到前台立即刷新一次。

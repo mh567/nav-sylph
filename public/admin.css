@@ -641,6 +641,13 @@
 .command-step:last-child { margin-bottom: 0; }
 .command-step h4 { margin-bottom: 3px; color: var(--text); font-size: 12px; font-weight: 600; }
 .command-note { margin-bottom: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+/* 纯说明段（没有可复制的命令）。刻意不带边框底色——
+   它不是命令块，染成命令块的样子会让人以为要复制它。 */
+.command-plain {
+    margin: 0; padding: 10px 12px;
+    border: 1px dashed var(--admin-edge); border-radius: 8px;
+    color: var(--text-secondary); font-size: 11.5px; line-height: 1.6;
+}
 .command-row { display: flex; align-items: flex-start; gap: 8px; }
 .command-code { flex: 1 1 auto; min-width: 0; margin: 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--admin-edge); border-radius: 8px; background: var(--admin-field-canvas); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.6; white-space: pre; -webkit-overflow-scrolling: touch; }
 .command-copy { flex: 0 0 auto; min-width: 52px; }
@@ -718,18 +725,68 @@
    （谁主动、要不要开端口），两者都要留着——排查离线时缺一个就得靠猜。 */
 .modal .server-item-mode { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; padding: 1px 6px; border: 1px solid var(--admin-edge); border-radius: 4px; }
 .modal .server-item-mode[data-mode="push"] { color: var(--accent); border-color: var(--accent); }
-/* 证书配对状态。第三个徽章，回答的是「传输加密走到哪一步了」——
-   前两个（模式/token）都可能是对的，但没配对证书就仍然连不上，
-   而界面上看不出「缺的是这个」。
-   色值沿用 .btn-danger 那一套（浅色 #a44c46 / 深色 #e9a69d），
-   不新造变量：这个文件里已有 --accent 就是这么用的。 */
-.modal .server-item-cert { flex: 0 0 auto; color: #a44c46; font-size: 10px; padding: 1px 6px; border: 1px solid currentColor; border-radius: 4px; }
-.modal .server-item-cert.is-ok { color: var(--accent); }
-:root[data-theme="dark"] .modal .server-item-cert,
-:root[data-theme="dark"] .modal .server-item-cert:not(.is-ok) { color: #e9a69d; }
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .modal .server-item-cert { color: #e9a69d; }
+
+/* 状态位：回答「这台机器现在怎么样」，是本次改版的核心。
+   ⚠️ 只用四档配色，色相一多，五种状态就没人分得清了：
+     ready        已就绪    → 主题色（正常）
+     pending      等待部署  → 琥珀（唯一一个会自己变的，圆点会呼吸）
+     not_deployed 未部署    → 中性偏弱（还没装是正常起步，不是错误）
+     alert        证书异常  → 警示红（安全事件，必须最刺眼）
+   offline 与 not_deployed 都是中性，但 offline 用次一级灰度区分——整个改版的
+   核心论点就是「够不着」与「没装」不是一回事。 */
+.modal .server-item-status {
+    display: inline-flex; align-items: center; gap: 5px;
+    flex: 0 0 auto; padding: 1px 7px 1px 6px;
+    border: 1px solid currentColor; border-radius: 999px;
+    font-size: 10px; font-weight: 600; white-space: nowrap;
 }
+.modal .server-item-status[data-kind="ready"] { color: var(--accent); }
+.modal .server-item-status[data-kind="online"] { color: var(--accent); }
+.modal .server-item-status[data-kind="pending"] { color: #a2762c; }
+.modal .server-item-status[data-kind="not_deployed"] { color: var(--text-muted); }
+/* offline 与 not_deployed 都是中性，但 offline 重一档：
+   整个改版的核心论点就是「够不着」与「没装」不是一回事。 */
+.modal .server-item-status[data-kind="offline"] { color: var(--text-secondary); }
+.modal .server-item-status[data-kind="alert"] { color: var(--admin-error); }
+/* unknown = 「没探测过」。刻意比 not_deployed 还弱：
+   「不知道」不该看起来像「查过了，没装」。 */
+.modal .server-item-status[data-kind="unknown"] { color: var(--text-muted); opacity: .75; }
+.modal .server-item-status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; flex: 0 0 auto;
+}
+/* 「等待部署」是唯一一个状态会自己变——对面正在执行命令。
+   动效告诉用户「在等」而不是「卡住了」。 */
+@keyframes navDeployPulse { 0%, 100% { opacity: 1; } 50% { opacity: .32; } }
+.modal .server-item-status[data-kind="pending"] .dot {
+    animation: navDeployPulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .modal .server-item-status[data-kind="pending"] .dot { animation: none; }
+}
+/* 深色下要提亮，否则这些色在近黑背景上几乎看不见 */
+:root[data-theme="dark"] .modal .server-item-status[data-kind="pending"] { color: #e0bd7a; }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .modal .server-item-status[data-kind="pending"] { color: #e0bd7a; }
+}
+
+/* 状态说明区。已就绪时不渲染 —— 那台机器正常，没有需要解释的事。 */
+.modal .server-item-state {
+    margin: 9px 0 0; padding: 9px 11px;
+    border: 1px solid var(--admin-edge); border-radius: 9px;
+    background: var(--admin-row);
+}
+.modal .server-item-state .lead {
+    color: var(--text); font-size: 12px; font-weight: 600;
+}
+.modal .server-item-state .sub {
+    margin-top: 2px; color: var(--text-muted); font-size: 11px;
+    overflow-wrap: anywhere;
+}
+.modal .server-item-state[data-kind="alert"] {
+    border-color: color-mix(in srgb, var(--admin-error) 40%, transparent);
+}
+.modal .server-item-state[data-kind="alert"] .lead { color: var(--admin-error); }
 .modal .server-item-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* 可见性开关用原生 checkbox + 文字，而不是现有的 toggle-switch：
    那一套是给整行设置项的（占满一行），这里要和按钮并排。

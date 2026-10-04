@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v49：监控接入重构——Go 静态二进制 agent、一键安装命令、
+// 后台卡片拆成「在线」+「部署就绪」两个状态位。改了 app.js、admin.css、
+// styles.css、modules/server-monitor.js。
+// ⚠️ 改了 public/ 下的文件必须同批升缓存名，否则老用户继续吃旧 bundle、
+// 本次修复对他们完全不生效，而本地测试是绿的、看不出这个问题。
 // nav-v48：拉取模式强制 HTTPS（agent 内置 TLS + 指纹配对 TOFU），
 // 改了 app.js、admin.css、sw.js。改了 public/ 下的文件必须同批升缓存名，
 // 否则老用户继续吃旧 bundle、本次修复对他们完全不生效，而本地测试是绿的。
@@ -15,14 +20,14 @@
 // nav-v45：agent /health 不再泄露主机名 + 后台说明 token 后果。
 // nav-v44：后台恢复选项与备份列表加入「模块」。
 // nav-v43：.app 建立包含块，修模块区在 .app 有居中留白时错位。
-// nav-v42：每台服务器可单独控制首页显示 + 布局键改绑服务器 id。
+// nav-v42：每台服务器可单独控制首页显示 + 布局键重绑服务器 id。
 // nav-v41：拖拽加基准补偿 + 让位过渡（修「切换生硬、跳动过大」）。
 // nav-v40：拖拽真正移动 DOM（修「拖了不换位」）。
 // nav-v39：模块卡片按实测高度堆叠（修重叠）+ 后台监控目标列表压紧，改了 app.js、admin.css、styles.css。
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v48';
+const CACHE = 'nav-v49';
 const ASSETS = [
     '/',
     '/index.html',

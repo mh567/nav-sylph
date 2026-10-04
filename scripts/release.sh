@@ -113,9 +113,36 @@ cp -r public "$DIST_DIR/${RELEASE_NAME}/"
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/server-config"
 cp server-config/*.js "$DIST_DIR/${RELEASE_NAME}/server-config/"
 cp -r lib "$DIST_DIR/${RELEASE_NAME}/"
+
 # agent/ 要随包分发：用户需要在目标机上部署它才能监控多台服务器。
 # 不打进去的话，多服务器功能对下载者等于不存在。
+#
+# ⚠️ 里面必须有**已构建的二进制**：一键部署命令是
+#    `curl … /agent/install.sh | bash`，脚本再去 curl 对应架构的二进制。
+# 少了 dist/，用户照着命令执行会拿到一段「本安装未构建 agent 二进制」的注释，
+# 而错误信息在目标机上，不在后台——很难排查。所以先构建，打包前就知道有没有构建成功。
+log_step "构建 agent 二进制..."
+if command -v go >/dev/null 2>&1; then
+    bash "$SCRIPT_DIR/build-agent.sh" || {
+        log_error "agent 构建失败。请先安装 Go 1.22+ 再发布。"
+        exit 1
+    }
+else
+    log_error "找不到 go，无法构建 agent 二进制。"
+    log_error "一键部署依赖它。请安装 Go 1.22+ 后重试（或临时发布不含 agent 的版本，"
+    log_error "但那样多服务器监控对下载者等于不存在）。"
+    exit 1
+fi
 cp -r agent "$DIST_DIR/${RELEASE_NAME}/"
+
+# ⚠️ 二进制只进 tarball，不进 git：三个架构加起来十几 MB，且是构建产物。
+# 这一步之后要确认 dist/ 里确实有东西，否则上面那句「构建失败」会被无声跳过。
+for arch in amd64 arm64 armv7; do
+    if [ ! -s "agent/dist/nav-agent-linux-${arch}" ]; then
+        log_error "agent 二进制缺失：nav-agent-linux-${arch}"
+        exit 1
+    fi
+done
 
 # 创建空目录
 mkdir -p "$DIST_DIR/${RELEASE_NAME}/logs"

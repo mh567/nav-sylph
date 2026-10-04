@@ -206,6 +206,10 @@ setInterval(() => {
     sweepRateLimitStore(loginFailMap, now, LOGIN_FAIL_WINDOW);
     // 推送桶同样要清：它按来源 IP 计数，匿名可达且无会话，不清就会无限增长
     sweepRateLimitStore(pushLimitMap, now, PUSH_LIMIT_WINDOW);
+    // 注册桶同理：POST /api/modules/enroll 匿名可达（agent 注册时尚无任何
+    // 长期凭据），也按 IP 计数。漏掉它就等于给了一个「只增不减、无人回收」
+    // 的 Map —— 本仓库每个限流 Map 都登记在这个定时器里，不是可选项。
+    sweepRateLimitStore(enrollLimitMap, now, ENROLL_LIMIT_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
     // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
@@ -237,7 +241,9 @@ const {
 } = require('./lib/session');
 const { openDatabase } = require('./lib/db');
 const { createSqliteBackend } = require('./lib/session-sqlite');
-const { readLocalMetrics, fetchRemoteMetrics, fetchPeerCert } = require('./lib/monitor');
+const {
+    readLocalMetrics, fetchRemoteMetrics, probeTcp, probeAgentHealth
+} = require('./lib/monitor');
 
 // 推送凭据的随机数与哈希需要 Node 的 crypto。
 // **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
@@ -267,9 +273,48 @@ function hashPushSecret(secret) {
     return nodeCrypto.createHash('sha256').update(secret, 'utf8').digest('hex');
 }
 
+// ========== 部署令牌 ==========
+//
+// 一键部署的核心：后台生成一枚一次性令牌，命令里带着它，目标机的 agent
+// 用它完成注册（把自己生成的证书交上来、换回长期凭据）。
+//
+// 为什么需要它：上一版要求用户手工生成证书、把终端上打印的指纹抄回后台核对、
+// 自己发明一个 token —— 七步以上，且第一步就需要用户已经能 SSH 上目标机。
+// 令牌把「信任」这一步从**人工比对**换成**持有即信任**，用户只做一次复制粘贴。
+//
+// 威胁模型要说清：令牌是「谁拿到它谁就能注册」。所以
+//   · 只有已登录的管理员能签发（端点挂 requireAdmin）
+//   · 15 分钟过期、一次性用掉（用过即从配置里删掉）
+//   · 重复签发即作废旧令牌
+//   · 注册端点有自己的限流桶
+//
+// ⚠️ 这里**没有**「绑定来源 IP」那道防护，尽管早先写过一版。原因是它做不到：
+// 部署令牌在目标机上使用，而服务端看到的是它的出口 IP（NAT 之后），
+// 与用户在后台填的地址没有可比性。详见 enroll 端点里那段注释。
+// 真实防护就是上面这几条 —— 换成「谁拿到它谁就能注册」，别粉饰。
+const ENROLL_TOKEN_BYTES = 32;
+/** 令牌有效期。过了就重新签发——用户不会在 15 分钟外还在粘贴旧命令。 */
+const ENROLL_TOKEN_TTL_MS = 15 * 60 * 1000;
+
+function generateEnrollToken() {
+    return nodeCrypto.randomBytes(ENROLL_TOKEN_BYTES).toString('base64url');
+}
+
+function hashEnrollToken(token) {
+    return nodeCrypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function enrollTokenMatches(provided, storedHash) {
+    if (typeof provided !== 'string' || !provided || !storedHash) return false;
+    const a = Buffer.from(hashEnrollToken(provided), 'hex');
+    const b = Buffer.from(storedHash, 'hex');
+    if (a.length !== b.length) return false;
+    return nodeCrypto.timingSafeEqual(a, b);
+}
+
 /**
  * 定长比较，避免逐字符比较的时间差泄露哈希前缀。
- * 长度不同直接拒绝——与 agent/agent.js 的 tokenMatches 同一处理。
+ * 长度不同直接拒绝——与 agent 的 tokenMatches 同一处理。
  */
 function pushSecretMatches(provided, storedHash) {
     if (typeof provided !== 'string' || !provided || !storedHash) return false;
@@ -337,21 +382,66 @@ app.use(express.static(path.join(config.rootDir, 'public'), {
     extensions: ['html', 'htm']
 }));
 
-// agent 脚本本体。放在仓库根的 agent/ 而非 public/ 下——它不在首页的
-// 静态资源清单里，不该进 Service Worker 的预缓存（预缓存一个从不加载的
-// 文件只会在每次更新时多下载一次）。这里按需提供，部署命令直接 curl 它。
-app.get('/agent/agent.js', async (req, res) => {
+/**
+ * agent 二进制分发（安装脚本按架构 curl 它）。
+ *
+ * 放在仓库根的 agent/dist/ 而非 public/ 下——它不在首页的静态资源清单里，
+ * 不该进 Service Worker 的预缓存（预缓存一个只在装 agent 时才下载的文件，
+ * 只会在每次更新时让所有人多下一次）。
+ *
+ * ⚠️ 二进制不进 git（是构建产物，三个架构加起来十几 MB）。开发机上没构建过
+ * 时回一条**shell 注释**而不是 HTML 错误页：这段文本会被 install.sh 用
+ * `bash -s` 执行，回 HTML 会变成一堆莫名其妙的语法错误。
+ */
+const AGENT_ARCHES = new Set(['amd64', 'arm64', 'armv7']);
+app.get('/agent/nav-agent-linux-:arch', async (req, res) => {
+    const arch = req.params.arch;
+    if (!AGENT_ARCHES.has(arch)) {
+        // 架构白名单：少了它，../ 之类能读出仓库里的其它文件
+        res.status(404).send(`// 不支持的架构：${arch}\n`);
+        return;
+    }
     try {
-        const file = path.join(config.rootDir, 'agent', 'agent.js');
+        const file = path.join(config.rootDir, 'agent', 'dist', `nav-agent-linux-${arch}`);
+        const stat = await fs.stat(file);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Length', stat.size);
+        // 二进制随版本变但 URL 不变，不给长缓存——否则用户照着旧命令
+        // curl 到的是过期产物，而它装上之后不会自己更新。
+        res.setHeader('Cache-Control', 'no-cache');
+        // ⚠️ 分发 agent 二进制时**必须**用 fsSync（真正的 fs 模块），不能用 fs。
+        // `require('fs').promises` 没有 createReadStream —— 实测会抛
+        // `fs.createReadStream is not a function`，而 catch 把它转成了 404，
+        // 于是「二进制下载失败」与「架构不支持」在响应上长得一模一样。
+        // 二进制有 6–7MB，也不能用 readFile 一次性读进内存。
+        const stream = fsSync.createReadStream(file);
+        stream.on('error', () => {
+            if (!res.headersSent) res.status(500).send('// 二进制读取失败');
+            else res.destroy();
+        });
+        stream.pipe(res);
+    } catch (err) {
+        console.error(`提供 agent 二进制失败（${arch}）:`, err.message);
+        // shell 注释而非 HTML：这段文本会被 install.sh 当脚本读
+        res.status(404).send(
+            '# 本安装未构建 agent 二进制。\n' +
+            '# 服务端需要跑一次 scripts/build-agent.sh 后重新发布。\n'
+        );
+    }
+});
+
+/** 一键安装脚本本身。同样按需提供，不进预缓存。 */
+app.get('/agent/install.sh', async (req, res) => {
+    try {
+        const file = path.join(config.rootDir, 'agent', 'install.sh');
         const source = await fs.readFile(file, 'utf8');
-        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-        // 脚本内容会随版本变，但 URL 不变——不给长缓存，
-        // 否则用户照着旧命令 curl 到的是过期的 agent。
+        res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache');
         res.send(source);
     } catch (err) {
-        console.error('提供 agent 脚本失败:', err);
-        res.status(404).send('// agent.js not found in this installation');
+        console.error('提供 install.sh 失败:', err);
+        // 同样必须是 shell 注释——这段文本会被 bash -s 执行
+        res.status(404).send('# install.sh not found in this installation\n');
     }
 });
 
@@ -1149,10 +1239,15 @@ function normalizeServer(raw) {
     if (!id || !url) return null;
     // mode 决定采集方向：pull = 本服务去拉（默认），push = 目标机主动上报。
     // 只接受两个已知值，其它一律回落 'pull'——一个拼错的字段不该把机器
-    // 静默切成推送。pushSecretHash **不**在这里：它只由服务端在"领取凭据"
-    // 那一步写入，永不出现在前端提交的请求体里（与 token 同理）。
+    // 静默切成推送。
     const mode = raw.mode === 'push' ? 'push' : 'pull';
-    return { id, name: asTrimmedString(raw.name, 60) || url, url, mode };
+    // reachable 是用户对「本服务能否直接连到这台机器」的回答。
+    // 它不是自动推导的：服务器自己就架在家里时（NAS、小主机），
+    // 按 IP 段猜私网会判错，而 100.64.x 与 127.0.0.1 都在那个判断的盲区里。
+    const reachable = raw.reachable === false ? false : true;
+    // deployState 只由服务端写入（探测端点），归一化不接收——
+    // 否则一次拖拽保存就能把状态改成「已就绪」。
+    return { id, name: asTrimmedString(raw.name, 60) || url, url, mode, reachable };
 }
 
 function normalizeStringList(value) {
@@ -1232,11 +1327,16 @@ function mergeModulesConfig(existing, incoming) {
                 ...server,
                 token: previous.token,
                 pushSecretHash: previous.pushSecretHash,
-                // 证书同理：只由「确认指纹」写入，归一化不接收。
+                // 证书同理：只由「注册」写入，归一化不接收。
                 // 拖拽排序会走这条路径（提交整个 servers 列表），
                 // 不补回就会把配对好的证书抹掉。
                 certPem: previous.certPem,
-                certFingerprint: previous.certFingerprint
+                certFingerprint: previous.certFingerprint,
+                enrolledAt: previous.enrolledAt,
+                // 探测得出的部署状态同理：它是对外部世界的观测结果，
+                // 不能被一次前端保存覆盖成「已就绪」。
+                deployState: previous.deployState,
+                stateProbedAt: previous.stateProbedAt
             };
         });
     } else {
@@ -1676,23 +1776,32 @@ app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
         res.json({
             ...config,
             // 证书 PEM 不回给前端：它不是秘密，但有 1KB+ 且前端用不到。
-            // 前端只需要知道「配对过没有」，据此显示状态而不是让用户
-            // 反复重新确认同一张证书。
-            servers: (config.servers || []).map(
-                ({ token, pushSecretHash, certPem, ...rest }) => ({
-                    ...rest,
-                    // 两个凭据都只出状态不回明文：把信封原样回给前端等于
-                    // 把密文也交出去——虽然解不开，但没必要让浏览器拿到
-                    // 本不该有的数据。hasToken/hasPushSecret 让界面能显示
-                    // 「已配置」，而空白提交仍表示保持原值。
-                    hasToken: isEnvelope(token),
-                    hasPushSecret: Boolean(pushSecretHash),
-                    hasCert: Boolean(certPem),
-                    // 指纹本身回显：它是公开标识（印在目标机终端上），
-                    // 用户据此核对「我确认的是哪一张」
-                    certFingerprint: rest.certFingerprint || null
-                })
-            )
+            // 前端只需要知道「注册过没有」，据此显示状态而不是让用户
+            // 反复重新部署同一台机器。
+            //
+            // 部署令牌的三件套（哈希 / 过期时间 / 期望 IP）也一并摘掉——
+            // 令牌哈希落到浏览器毫无用处，而过期时间会让人以为
+            // 「还有个令牌在生效」。
+            servers: (config.servers || []).map(({
+                token, pushSecretHash, certPem,
+                enrollTokenHash, enrollTokenExpiresAt, enrollTokenIp,
+                ...rest
+            }) => ({
+                ...rest,
+                // 凭据只出状态不回明文：把信封原样回给前端等于
+                // 把密文也交出去——虽然解不开，但没必要让浏览器拿到
+                // 本不该有的数据。hasToken/hasPushSecret 让界面能显示
+                // 「已配置」，而空白提交仍表示保持原值。
+                hasToken: isEnvelope(token),
+                hasPushSecret: Boolean(pushSecretHash),
+                // enrolled = 有没有注册过。这是卡片上「未部署 / 已就绪」
+                // 那条线的依据，由 probeTcp 的三态进一步细化。
+                enrolled: Boolean(certPem || rest.enrolledAt),
+                // 令牌是否已签发（不含明文）：界面据此决定显示
+                // 「复制命令」还是「重新生成令牌」
+                hasEnrollToken: Boolean(enrollTokenHash) && enrollTokenExpiresAt > Date.now(),
+                certFingerprint: rest.certFingerprint || null
+            }))
         });
     } catch {
         // 文件缺失时回落到默认值，而不是 500——配置丢了不该让模块整体不可用
@@ -1857,13 +1966,22 @@ async function collectAllServers(passwordHash) {
 
     // 目标机：并发
     const remote = await Promise.all(servers.map(async server => {
+        // deployState 是**已持久化**的观测结果（上次探测算出来的）。
+        // 它带进采集结果，是为了让首页卡片不必自己推断——实测显示错过
+        // （配了 pending 却显示「未部署」、配了 cert_mismatch 却显示「离线」）。
+        const persistedState = server.deployState
+            || (server.certPem || server.enrolledAt ? 'pending' : 'not_deployed');
         // 推送模式：不去连它，改为读它上次上报的值
         if (server.mode === 'push') {
             return buildPushResult(server, pushTimeoutMs, now);
         }
         const { token, error } = resolveServerToken(server, passwordHash);
         if (error) {
-            return { id: server.id, name: server.name, url: server.url, online: false, error };
+            return {
+                id: server.id, name: server.name, url: server.url,
+                online: false, error, deployState: persistedState,
+                enrolled: Boolean(server.certPem || server.enrolledAt)
+            };
         }
         const result = await fetchRemoteMetrics({ url: server.url, token, certPem: server.certPem });
         if (!result.ok) {
@@ -1873,16 +1991,27 @@ async function collectAllServers(passwordHash) {
                 url: server.url,
                 online: false,
                 error: result.error,
+                // enrolled 让界面区分「压根没部署」与「部署了但拉不到」——
+                // 两者的下一步完全不同：装一个东西 vs 查网络/证书。
+                enrolled: Boolean(server.certPem || server.enrolledAt),
                 // authFailed 透传给界面：凭据被拒与机器挂掉需要不同的处置
                 // （前者去重填 token，后者去查机器），只给一行文本会逼用户自己猜
                 authFailed: result.authFailed === true,
-                // 证书相关的两种结果要分开呈现：needTrust 是「还没做配对这一
-                // 步」，certMismatch 是「配对过了但证书变了」。后者是安全事件，
-                // 不该和前者共用一句话。
-                needTrust: result.needTrust === true,
+                // 证书与已注册的不一致 = 安全事件（有人换了证书或中间人），
+                // 不该和「拉不到」共用一句话。
                 certMismatch: result.certMismatch === true,
                 // 明文传输已停用 —— 界面据此给迁移引导，而不是只显示「离线」
-                insecure: result.insecure === true
+                insecure: result.insecure === true,
+                // 本次拉取的结果**覆盖**持久状态：拉到了就是就绪，
+                // 证书变了就是证书异常（比上次探测的结论更实时）。
+                // ⚠️ 但**不覆盖 cert_mismatch**：那是安全事件（证书被换了），
+                // 一次拉取失败不代表它恢复了——冲掉它等于让用户以为
+                // 重新点一次检测就能洗掉一次可能的中间人。
+                deployState: result.ok ? 'ready'
+                    : (result.certMismatch ? 'cert_mismatch'
+                        : (result.insecure ? 'offline'
+                            : (server.deployState === 'cert_mismatch' ? 'cert_mismatch'
+                                : (Boolean(server.certPem || server.enrolledAt) ? 'pending' : 'not_deployed'))))
             };
         }
         return {
@@ -1891,8 +2020,11 @@ async function collectAllServers(passwordHash) {
             url: server.url,
             isLocal: false,
             online: true,
+            enrolled: true,
             metrics: result.metrics,
-            latencyMs: result.latencyMs
+            latencyMs: result.latencyMs,
+            // 真的拉到指标了 —— 这是最硬的证据，直接盖过任何持久状态
+            deployState: 'ready'
         };
     }));
     results.push(...remote);
@@ -1937,28 +2069,50 @@ app.get('/api/modules/metrics', rateLimit, requireAdmin, async (req, res) => {
  */
 app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
     try {
-        const { id, name, url, token, mode } = req.body || {};
+        const { id, name, url, token, mode, reachable } = req.body || {};
         if (typeof url !== 'string' || !url.trim()) {
             return res.status(400).json({ error: '请填写服务器地址' });
         }
+
         // 只允许 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。
-        // 这不只是"写个地址"的问题——file:、gopher: 经 agent 拉取时会变成
+        // 这不只是「写个地址」的问题——file:、gopher: 经 agent 拉取时会变成
         // 一个可被利用的服务端请求面，而 http: 会把凭据摊在网络上。
+        //
+        // 裸 IP 也接受（「只填 IP 就行」是这个改版的核心诉求）：
+        // 没有协议头时 `new URL('192.168.1.10')` 会把 `192.168.1.10` 当成
+        // **协议名**解析并抛错，用户看到的是「格式不正确」——而他填的完全正确，
+        // 只是不知道要写 https://。所以这里补上协议与默认端口再校验。
+        let rawUrl = url.trim();
+        if (/^https?:\/\//i.test(rawUrl)) {
+            if (/^http:\/\//i.test(rawUrl)) {
+                return res.status(400).json({
+                    error: '监控目标必须使用 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。'
+                        + '目标机上的 agent 自己起 HTTPS，请把地址改成 https://'
+                });
+            }
+        } else if (!rawUrl.includes('://')) {
+            rawUrl = `https://${rawUrl}`;
+        } else {
+            return res.status(400).json({ error: '只支持 https，agent 自己起的就是 HTTPS' });
+        }
+
         let parsed;
         try {
-            parsed = new URL(url.trim());
+            parsed = new URL(rawUrl);
         } catch {
-            return res.status(400).json({ error: '地址格式不正确（需以 https:// 开头）' });
-        }
-        if (parsed.protocol !== 'https:') {
             return res.status(400).json({
-                error: parsed.protocol === 'http:'
-                    ? '监控目标必须使用 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。'
-                      + '请在目标机上运行「node agent.js --gen-cert /etc/nav-agent」生成证书，'
-                      + '带 --tls-cert/--tls-key 重启 agent，然后把地址改成 https://'
-                    : '地址必须以 https:// 开头'
+                error: '地址格式不正确。填 IP 或域名即可，例如 192.168.1.10'
             });
         }
+        if (parsed.protocol !== 'https:') {
+            return res.status(400).json({ error: '只支持 https，agent 自己起的就是 HTTPS' });
+        }
+        if (!parsed.hostname) {
+            return res.status(400).json({ error: '地址缺少主机名' });
+        }
+        // 没写端口就补默认的：agent 听 4195，而 URL 不带端口时请求会打到 443
+        if (!parsed.port) parsed.port = '4195';
+        const normalizedUrl = parsed.toString().replace(/\/$/, '');
 
         let config = defaultModulesConfig;
         try {
@@ -1972,24 +2126,33 @@ app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
 
         const entry = {
             id: serverId,
-            name: (typeof name === 'string' && name.trim()) || url.trim(),
-            url: url.trim(),
+            name: (typeof name === 'string' && name.trim()) || parsed.hostname,
+            // 存**归一化后**的地址（补了 https 与 4195）。
+            // 若原样存下用户填的裸 IP，后续每一次 new URL(server.url) 都会失败，
+            // 而错误会出现在采集路径上——离「保存时格式不对」十万八千里。
+            url: normalizedUrl,
             // 只有字面量 'push' 才算推送，其它（含缺席）一律拉取——
             // 与 normalizeServer 同一裁决，免得两条写路径给出不同答案。
-            mode: mode === 'push' ? 'push' : 'pull'
+            mode: mode === 'push' ? 'push' : 'pull',
+            // 用户对「本服务能否直接连到它」的回答。与 mode 分开存，
+            // 因为它同时决定了采集方式与界面上的那一句提示。
+            reachable: reachable === false ? false : true
         };
         if (index >= 0) {
             // 编辑：token 空 = 保持原值，不回显所以用户无法「重新看到」它。
             // pushSecretHash 同理，且**必须**在这里补回：它只由「领取凭据」
             // 那一步写入，而本函数整体替换 entry —— 漏掉的后果是用户改个名字
             // 就把刚领的推送凭据抹了，agent 从此 401，界面上却看不出原因。
-            entry.token = servers[index].token;
+entry.token = servers[index].token;
             entry.pushSecretHash = servers[index].pushSecretHash;
-            // 证书**也必须**补回：它由「确认指纹」那一步写入，而这个函数
-            // 整体替换 entry。漏掉的后果是用户改个名字就抹掉配对，
-            // 于是采集重新报「证书未受信任」——而界面上看不出这两件事有关。
+            // 证书与部署状态**必须**补回：它们由「注册」与「探测」写入，
+            // 而本函数整体替换 entry。漏掉的后果是用户改个名字就抹掉配对，
+            // 采集重新报「证书未受信任」——而界面上看不出这两件事有关联。
             entry.certPem = servers[index].certPem;
             entry.certFingerprint = servers[index].certFingerprint;
+            entry.enrolledAt = servers[index].enrolledAt;
+            entry.deployState = servers[index].deployState;
+            entry.stateProbedAt = servers[index].stateProbedAt;
         }
 
         const passwordHash = await getPasswordHash();
@@ -2071,97 +2234,25 @@ app.post('/api/modules/servers/:id/push-secret', rateLimit, requireAdmin, async 
 });
 
 /**
- * 连通性探测：真去拉一次目标机，告诉用户「这台机器够不够得着」。
+ * 探测一台机器的「在线状态」与「agent 部署状态」。
  *
- * **401 算可达**——401 恰好证明路是通的，只是 token 不对。这是整个判定的关键：
- * 按 IP 段猜私网是不可靠的（服务器本身可能就架在家里），只有真连一次才算数。
+ * 这是本次改版的核心端点。上一版只有「在线 / 离线」两个结果，而用户真正要回答的
+ * 是三个不同的问题：**这台机器在吗、agent 装了吗、能不能读到指标**。
+ * 三者塌缩成一个「离线」时，用户无法判断该点部署、该查网络、还是该换 token。
+ *
+ * 判定按顺序：
+ *   1. TCP 连接 → refused / timeout / open 三态。
+ *      refused 的意义：主机回了 RST，它**活着**，只是没人监听 → 未部署。
+ *   2. 若 open，问 /health 确认那确实是我们的 agent（而不是别的程序占了端口）。
+ *   3. 若已注册，再真拉一次 /metrics 拿到实时指标。
  *
  * 不写 module_cache：探测是用户主动发起的，不该污染聚合采集的缓存。
+ * 但 **deployState 要写回 .modules.json**：它是「这个 agent 装好没有」这个
+ * 问题的答案，而答案不该每次渲染都重新推断——实测浏览器里保存后
+ * deployState 仍是 undefined，卡片退回「未检测」，
+ * 用户点完检测看到的还是「未检测」。
  */
 app.post('/api/modules/servers/:id/probe', rateLimit, requireAdmin, async (req, res) => {
-    try {
-        let config;
-        try {
-            config = await readJSON(MODULES_FILE);
-        } catch {
-            return res.status(404).json({ error: '未找到该服务器' });
-        }
-        const servers = Array.isArray(config.servers) ? config.servers : [];
-        const server = servers.find(s => s.id === req.params.id);
-        if (!server) {
-            return res.status(404).json({ error: '未找到该服务器' });
-        }
-
-        const passwordHash = await getPasswordHash();
-        const { token, error } = resolveServerToken(server, passwordHash);
-        if (error) {
-            // 这条早退**必须**也带 hint：它是「探测了但连都没试」的情形，
-            // 而「没配 token / token 解不开」恰恰是最常见的误判场景。
-            // 只回 error 不回 hint 时前端拼出的是「够不着这台机器。」后面什么都没有，
-            // 而真实原因是凭据问题、够不够得着根本还没验证——两者的下一步完全不同。
-            return res.json({
-                reachable: false,
-                status: 'no_token',
-                error,
-                hint: '还没能试连：先在「编辑」里填 token，或确认这台机器是否改用「推送」'
-            });
-        }
-        const result = await fetchRemoteMetrics({ url: server.url, token, certPem: server.certPem });
-
-        // TOFU：证书还没配对过时，把对方出示的证书指纹交给界面显示，
-        // 由用户核对后确认（agent 生成证书时把同一串指纹印在目标机终端上，
-        // 所以用户有一条**独立于本服务**的核对途径——这正是 TOFU 的前提）。
-        // 指纹在这里取不到就当 null：拿不到指纹不该覆盖掉真正的网络错误。
-        if (result.needTrust) {
-            return res.json({
-                reachable: false,
-                status: 'need_trust',
-                error: result.error,
-                fingerprint: result.fingerprint || null,
-                hint: result.fingerprint
-                    ? '核对这串指纹与目标机上「node agent.js --gen-cert」打印的一致后，确认信任'
-                    : '证书未受信任，但这次没能取到它的指纹（网络可能同时也不通）。请先确认目标机能连上，再重试。'
-            });
-        }
-
-        res.json({
-            // 任何 HTTP 响应（含 401）都说明网络这条路是通的
-            reachable: result.ok || result.authFailed === true,
-            status: result.ok ? 'ok'
-                : (result.authFailed ? 'unauthorized'
-                    : (result.certMismatch ? 'cert_mismatch' : 'error')),
-            error: result.ok ? null : result.error,
-            // 每条分支都要给出下一步。这是这个端点该有的形状：用户点了
-            // 「检测连通性」，任何一种结果都必须告诉他接着做什么。
-            hint: result.ok
-                ? '连接正常，可以用「拉取」'
-                : (result.authFailed
-                    ? '路是通的，只是 token 不匹配——改「拉取」前先重填 token'
-                    : (result.certMismatch
-                        ? '这台机器的证书与已确认的不一致。如果你在目标机上重新生成过证书，请重新确认指纹；否则可能有中间人。'
-                        : (result.insecure
-                            ? '明文传输已停用：在目标机上生成证书并带 --tls-cert/--tls-key 重启，然后把地址改成 https://'
-                            : '够不着这台机器：如果它在局域网内，改用「推送」')))
-        });
-    } catch (err) {
-        console.error('探测服务器失败:', err);
-        res.status(500).json({ error: '探测失败: ' + err.message });
-    }
-});
-
-/**
- * 确认某台机器的自签证书（TOFU 配对的第二步）。
- *
- * **为什么存证书 PEM 而不是指纹**：Node 的 `https.request` 只支持把某张证书
- * 作为可信锚点传进 `ca`，没有「按指纹信任」的接口。实测（Node 22）：自签证书
- * 会先被 OpenSSL 链校验拦下（DEPTH_ZERO_SELF_SIGNED_CERT），
- * `checkServerIdentity` 在这种情况下**根本不会被调用**——所以「自定义一个
- * 指纹比对函数」这条路在 Node 上走不通，只能存 PEM。
- *
- * 请求体带用户核对过的指纹，服务端重新抓一次目标机的证书比对：不一致就拒。
- * 这一步防的是「用户点确认」和「服务端抓取」之间的时间差里证书被换掉。
- */
-app.post('/api/modules/servers/:id/trust-cert', rateLimit, requireAdmin, async (req, res) => {
     try {
         let config;
         try {
@@ -2176,46 +2267,358 @@ app.post('/api/modules/servers/:id/trust-cert', rateLimit, requireAdmin, async (
         }
         const server = servers[index];
 
-        const expected = typeof req.body?.fingerprint === 'string' ? req.body.fingerprint.trim() : '';
-        if (!expected) {
-            return res.status(400).json({ error: '缺少指纹' });
-        }
+        // 把探测结论写回配置。只在真的变了时写盘——
+        // 每次探测都写会让 .modules.json 的 mtime 一直跳，
+        // 而它在备份与版本管理里是被当配置看的。
+        const persistState = async state => {
+            if (server.deployState === state) return;
+            servers[index] = { ...server, deployState: state, stateProbedAt: Date.now() };
+            config.servers = servers;
+            try {
+                await writeJSON(MODULES_FILE, config);
+            } catch (err) {
+                // 写不进去不该让探测失败——结论已经在响应里返回给界面了
+                console.error('写回部署状态失败:', err.message);
+            }
+        };
+        // 包一层：每条分支既回响应又落盘，避免漏掉某一条
+        const reply = async (payload) => {
+            if (payload.deployState) await persistState(payload.deployState);
+            return res.json(payload);
+        };
 
-        // 一次握手拿指纹和 PEM，避免两次连接之间证书被换掉
-        let peer;
-        try {
-            peer = await fetchPeerCert(new URL(server.url));
-        } catch {
-            peer = { fingerprint: null, pem: null };
-        }
-        if (!peer.fingerprint) {
-            return res.status(502).json({ error: '取不到目标机的证书，请先确认这台机器能连上' });
-        }
-        // 大小写与分隔符都可能被用户改动，只比字面量会误拒
-        const norm = s => String(s || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-        if (norm(peer.fingerprint) !== norm(expected)) {
-            // 不写任何一边：抓到的证书与用户核对的不一致，说明中间人或时序问题
-            return res.status(409).json({
-                error: '证书与指纹不一致，未保存',
-                fingerprint: peer.fingerprint
+        const enrolled = Boolean(server.certPem || server.enrolledAt);
+        const isPush = server.mode === 'push';
+
+        // push 模式没有端口可探测——agent 一个端口都不开。
+        // 所以它只能靠「有没有注册过」判断部署状态，
+        // 「主机在不在线」也退化成「多久没上报」。
+        if (isPush) {
+            if (!enrolled) {
+                return reply({
+                    deployState: 'not_deployed',
+                    reachable: null,
+                    error: null,
+                    hint: '推送模式的机器不开放端口，所以探测不到主机是否在线。'
+                        + '部署之后本服务会通过「多久没收到上报」来判断它是否在线。'
+                });
+            }
+            return reply({
+                deployState: 'ready',
+                reachable: null,
+                error: null,
+                hint: '已注册。推送模式下是否在线由上报时间决定，'
+                    + '超过轮询周期两倍加 30 秒仍无上报会显示为「已 N 分钟未收到」。'
             });
         }
-        if (!peer.pem) {
-            return res.status(502).json({ error: '取不到证书内容，未保存' });
+
+        let target;
+        try {
+            target = new URL(server.url);
+        } catch {
+            return reply({
+                deployState: 'offline',
+                reachable: false,
+                error: '地址格式不正确',
+                hint: '请在「编辑」里把地址改成 https://开头'
+            });
         }
 
-        servers[index] = { ...server, certPem: peer.pem, certFingerprint: peer.fingerprint };
-        config.servers = servers;
-        await writeJSON(MODULES_FILE, config);
-        // 配对后下一次采集就能通了，缓存里那份「证书未受信任」是过期状态
-        invalidateMetricsCache();
+        // 第 1 步：TCP 三态
+        const tcp = await probeTcp(target.hostname, Number(target.port) || 443, 3000);
 
-        res.json({ success: true, fingerprint: peer.fingerprint });
+        if (tcp.state === 'timeout' || tcp.state === 'error') {
+            return reply({
+                deployState: 'offline',
+                reachable: false,
+                error: tcp.detail,
+                hint: '连不上这台机器。检查地址、端口与网络；'
+                    + '如果它在局域网而本服务在公网，请把「能被本服务直接连到」改成「不能」。'
+            });
+        }
+
+        if (tcp.state === 'refused') {
+            // 主机活着，只是没人监听——这是「该点部署」的信号，不是「离线」
+            return reply({
+                deployState: 'not_deployed',
+                reachable: true,
+                error: null,
+                hint: '主机在线，但目标机上还没有 agent（端口没人监听）。'
+                    + '点「部署」把命令复制到目标机上执行即可。'
+            });
+        }
+
+        // 第 2 步：确认监听者确实是 agent
+        const health = await probeAgentHealth(server.url);
+        if (!health.ok) {
+            return reply({
+                deployState: 'port_conflict',
+                reachable: true,
+                error: `端口上有服务，但不是 agent：${health.reason}`,
+                hint: '目标机的该端口被别的程序占用了。'
+                    + '改一下 agent 的端口，或先停掉占用它的程序。'
+            });
+        }
+
+        // 第 3 步：已注册才拉指标；没注册说明是「装了但没连回本服务」
+        if (!enrolled) {
+            return reply({
+                deployState: 'pending',
+                reachable: true,
+                error: null,
+                agentHostname: health.hostname || null,
+                hint: '目标机上已经有 agent 在跑，但它还没向本服务注册。'
+                    + '请在目标机上重新跑一次部署命令（令牌需要重新生成）。'
+            });
+        }
+
+        const passwordHash = await getPasswordHash();
+        const { token, error: tokenError } = resolveServerToken(server, passwordHash);
+        if (tokenError) {
+            return reply({
+                deployState: 'ready',
+                reachable: true,
+                error: tokenError,
+                hint: 'agent 在跑且已注册，但本服务读不出它的 token。'
+                    + '通常是管理员密码改过导致密文解不开——请重新部署一次。'
+            });
+        }
+
+        const result = await fetchRemoteMetrics({ url: server.url, token, certPem: server.certPem });
+
+        // ⚠️ deployState 与 reachable 回答的是两个不同的问题，**不能混用**：
+        //   deployState = agent 装好并注册了吗
+        //   reachable   = 此刻这台机器通吗（拉不到指标就是不通）
+        // 实测踩过：TLS 握手失败时返回 `deployState:'ready'` + `reachable:false`，
+        // 界面拿到自相矛盾的一对，卡片不知道该显示「已就绪」还是「离线」。
+        // 所以拉不到指标时退回 'pending'——它准确表达「装好了但还没通」，
+        // 而 hint 会给出具体原因（证书不匹配 / token 不对 / 网络不通）。
+        const online = result.ok || result.authFailed === true;
+        let state;
+        if (result.ok) state = 'ready';
+        else if (result.certMismatch) state = 'cert_mismatch';
+        else if (result.insecure) state = 'offline';
+        else state = 'pending';
+
+        return reply({
+            deployState: state,
+            reachable: online,
+            error: result.ok ? null : result.error,
+            authFailed: result.authFailed === true,
+            certMismatch: result.certMismatch === true,
+            insecure: result.insecure === true,
+            // 每条分支都要给出下一步——用户点了探测，任何结果都得告诉他接着做什么。
+            // ⚠️ 英文 TLS 错误串（"Hostname/IP does not match..."）对用户无意义，
+            // 换成「证书与地址不匹配」并说清怎么办。
+            hint: result.ok
+                ? '一切正常，可以监控这台机器'
+                : (result.authFailed
+                    ? '路是通的，只是 token 不匹配——重新部署一次即可'
+                    : (result.certMismatch
+                        ? '这台机器的证书与注册时不一致。如果你重新装过 agent，重新部署即可；'
+                            + '否则可能是中间人，先查网络'
+                        : (result.insecure
+                            ? '明文传输已停用：请改用 https 地址'
+                            : (/does not match certificate|Hostname\/IP does not match/i.test(result.error || '')
+                                ? '证书与这台机器的地址不匹配（多半是重新生成证书时换过 IP 或主机名）。'
+                                    + '重新部署一次即可'
+                                : '路是通的，但拉取指标失败：' + result.error))))
+        });
     } catch (err) {
-        console.error('确认证书失败:', err);
-        res.status(500).json({ error: '确认失败: ' + err.message });
+        console.error('探测服务器失败:', err);
+        res.status(500).json({ error: '探测失败: ' + err.message });
     }
 });
+app.post('/api/modules/servers/:id/enroll-token', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+        const index = servers.findIndex(s => s.id === req.params.id);
+        if (index < 0) {
+            return res.status(404).json({ error: '未找到该服务器' });
+        }
+        const server = servers[index];
+
+        const token = generateEnrollToken();
+        servers[index] = {
+            ...server,
+            // 明文只在响应里出现，磁盘上只有哈希 + 过期时间。
+            // ⚠️ 刻意不存「期望来源 IP」：那是目标机的地址，而服务端看到的
+            // 是它的出口 IP（NAT 之后），两者不可比。详见 enroll 端点里那段注释。
+            enrollTokenHash: hashEnrollToken(token),
+            enrollTokenExpiresAt: Date.now() + ENROLL_TOKEN_TTL_MS
+        };
+        config.servers = servers;
+        await writeJSON(MODULES_FILE, config);
+
+        res.json({
+            token,
+            serverId: req.params.id,
+            expiresAt: servers[index].enrollTokenExpiresAt,
+            // 只回凭据与 id，不回显任何已有凭据——这个响应会进浏览器 DOM
+            mode: server.mode === 'push' ? 'push' : 'pull'
+        });
+    } catch (err) {
+        console.error('签发部署令牌失败:', err);
+        res.status(500).json({ error: '签发失败: ' + err.message });
+    }
+});
+
+/** 从服务器地址里取出主机名部分（用于绑定令牌）。解析失败就原样返回。 */
+function hostOf(url) {
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return typeof url === 'string' ? url : '';
+    }
+}
+
+/**
+ * agent 注册（enroll）。
+ *
+ * ⚠️ **匿名可达**：agent 在目标机上，注册时还没有任何长期凭据——它的鉴权
+ * 就是这次调用里带来的那枚一次性令牌。所以它**不能**挂 requireAdmin，
+ * 也不能只验 IP：拿到的正是「持有令牌即可注册」这个语义。
+ *
+ * 防护是令牌本身的三条约束（见 ENROLL_TOKEN_TTL_MS 处的说明）：一次性、
+ * 15 分钟过期、重复签发即作废旧令牌。以及独立的限流桶——
+ * 复用 publicReadLimit 会让匿名首页流量消耗注册配额，
+ * 复用 rateLimit（30/min）会把正常的一键部署也限掉。
+ *
+ * 成功后立刻作废令牌：同一个令牌重放必须失败。
+ */
+const ENROLL_LIMIT_WINDOW = 60000;
+const ENROLL_LIMIT_MAX = 30;
+const enrollLimitMap = new Map();
+
+function enrollLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const now = Date.now();
+    const rec = enrollLimitMap.get(ip);
+    if (!rec || now > rec.resetAt) {
+        enrollLimitMap.set(ip, { count: 1, resetAt: now + ENROLL_LIMIT_WINDOW });
+        return next();
+    }
+    rec.count += 1;
+    if (rec.count > ENROLL_LIMIT_MAX) {
+        res.status(429).json({ error: '注册过于频繁，请稍后再试' });
+        return;
+    }
+    next();
+}
+
+app.post('/api/modules/enroll', enrollLimit, async (req, res) => {
+    try {
+        const body = req.body || {};
+        const token = typeof body.token === 'string' ? body.token.trim() : '';
+        if (!token) {
+            return res.status(400).json({ error: '缺少令牌' });
+        }
+        const certPem = typeof body.certPem === 'string' ? body.certPem : '';
+        if (!certPem || !certPem.includes('BEGIN CERTIFICATE')) {
+            return res.status(400).json({ error: '缺少证书' });
+        }
+
+        let config;
+        try {
+            config = await readJSON(MODULES_FILE);
+        } catch {
+            config = defaultModulesConfig;
+        }
+        const servers = Array.isArray(config.servers) ? config.servers : [];
+
+        // 按令牌哈希反查机器。哈希定长比较，20 台的开销可忽略。
+        const matched = servers.find(s => s.enrollTokenHash && enrollTokenMatches(token, s.enrollTokenHash));
+        if (!matched) {
+            console.warn(`[enroll] 令牌无效或已使用，来源 ${resolveClientIp(req)}`);
+            return res.status(401).json({ error: '部署令牌无效或已被使用' });
+        }
+
+        const now = Date.now();
+        if (typeof matched.enrollTokenExpiresAt === 'number' && now > matched.enrollTokenExpiresAt) {
+            console.warn(`[enroll] 令牌已过期，server ${matched.id}`);
+            return res.status(401).json({ error: '部署令牌已过期，请在后台重新生成' });
+        }
+        // ⚠️ 这里**刻意没有**「绑定来源 IP」这道防护。
+        //
+        // 早先写过一版，把令牌绑到 hostOf(server.url)，注册时比对
+        // hostOf(matched.url) —— 同一个字段的同一个函数，两边恒相等，
+        // 分支永不执行。于是「绑定 IP」成了一句只存在于注释和 README 里的
+        // 假防护（本轮代码审查发现）。
+        //
+        // 真正实现不了的原因：部署令牌是在**目标机**上用的，而这里看到的是
+        // 请求的来源地址。公网服务看到的是目标机的出口 IP（NAT 之后），
+        // 与用户在后台填的地址没有可比性 —— 拿它做判定就是把「局域网地址」
+        // 推出后台，和 architecture.md 里明确拒绝的「按 IP 段猜可达性」同一类错误。
+        //
+        // 真实的防护是这三条：一次性（用过即作废）、15 分钟 TTL、
+        // 以及匿名端点自己的限流桶。要更强的保证，应该走后台主动轮询
+        // 校验证书，而不是在注册时猜来源地址。
+
+        // 指纹由 agent 自己算好上报——它就是 certPem 的 SHA-256。
+        // 服务端不再去抓对端证书：那样需要先连一次，而注册的目的正是建立连接。
+        const fingerprint = typeof body.fingerprint === 'string' && body.fingerprint
+            ? body.fingerprint
+            : fingerprintOfPem(certPem);
+
+        const mode = body.mode === 'push' ? 'push' : 'pull';
+        const index = servers.findIndex(s => s.id === matched.id);
+
+        // pull 模式发一枚长期 token（agent 之后靠它调 /metrics）；
+        // push 模式发推送凭据。两者的明文都**只**在这一次响应里出现。
+        const longToken = mode === 'pull' ? generatePushSecret() : null;
+        const pushSecret = mode === 'push' ? generatePushSecret() : null;
+
+        servers[index] = {
+            ...matched,
+            mode,
+            certPem,
+            certFingerprint: fingerprint,
+            enrolledAt: now,
+            token: longToken ? encrypt(longToken, await getPasswordHash(), 'modules') : matched.token,
+            pushSecretHash: pushSecret ? hashPushSecret(pushSecret) : matched.pushSecretHash,
+            deployState: 'ready'
+        };
+        // 令牌用掉即作废：把三个键**删掉**，而不是赋 undefined。
+        // JSON.stringify 本来就会丢 undefined，所以「赋 undefined 再 delete」
+        // 是纯噪声；直接 delete 才读得出「这三个键已经作废」。
+        for (const k of ['enrollTokenHash', 'enrollTokenExpiresAt', 'enrollTokenIp']) {
+            delete servers[index][k];
+        }
+        config.servers = servers;
+        await writeJSON(MODULES_FILE, config);
+        invalidateMetricsCache();
+
+        res.json({
+            serverId: matched.id,
+            mode,
+            token: longToken,
+            pushSecret
+        });
+    } catch (err) {
+        console.error('agent 注册失败:', err);
+        res.status(500).json({ error: '注册失败: ' + err.message });
+    }
+});
+
+/** 证书 PEM 的 SHA-256 指纹（冒号分隔的大写十六进制）。 */
+function fingerprintOfPem(pemText) {
+    try {
+        const der = Buffer.from(
+            pemText.replace(/-----(BEGIN|END) CERTIFICATE-----/g, '').replace(/\s+/g, ''),
+            'base64'
+        );
+        return nodeCrypto.createHash('sha256').update(der).digest('hex')
+            .toUpperCase().match(/.{2}/g).join(':');
+    } catch {
+        return '';
+    }
+}
 
 // ========== 推送接收 ==========
 //

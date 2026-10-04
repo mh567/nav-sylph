@@ -2986,7 +2986,46 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 离线卡片：保留形状但压低存在感，让「哪台挂了」一眼可见，
    而不是和在线卡片长得一样、只能靠读数字才发现 */
 .module-card[data-online="0"] { opacity: .62; border-style: dashed; }
-.module-card[data-online="0"] .module-widget-title::after { content: ' · 离线'; color: var(--text-muted); font-weight: 400; }
+/* 「离线」不再由 title::after 追加 —— 卡片头现在有一个真正的状态位，
+   两处都写会显示成「名字 · 离线离线」。状态位承担全部文案。 */
+.module-card-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    flex: 0 0 auto; padding: 0 6px;
+    border: 1px solid currentColor; border-radius: 999px;
+    font-size: 9px; font-weight: 600; letter-spacing: .02em;
+    white-space: nowrap;
+}
+.module-card-status[data-kind="ready"] { color: var(--accent); }
+.module-card-status[data-kind="pending"] { color: #a2762c; }
+.module-card-status[data-kind="not_deployed"] { color: var(--text-muted); }
+.module-card-status[data-kind="offline"] { color: var(--text-secondary); }
+/* ⚠️ kind 用的是服务端给的状态名（cert_mismatch），不是配色档名（alert）。
+   两者混用过一次：CSS 只写了 [data-kind="alert"]，而模块发的是
+   cert_mismatch，于是**安全事件从未被染成警示色**——浏览器实测读到的是
+   var(--text-secondary) 的普通灰，看起来只是一次普通离线。
+   这里两种都写上，让「配色档」与「状态名」任一变化都不会漏掉警示色。 */
+.module-card-status[data-kind="cert_mismatch"],
+.module-card-status[data-kind="alert"] { color: #a44c46; }
+/* 卡片只有 132–220px 宽，标题要能被省略号截断。
+   ⚠️ text-overflow: ellipsis 只在 white-space: nowrap 下生效——
+   缺了它，长名字（「老式 http 配置」）会折成两行，把卡片撑高且
+   参差不齐（浏览器实测：height 33 = 两行，而相邻卡片是 16.5 = 一行）。
+   min-width:0 也要有：flex 子项默认 min-width:auto，不加的话
+   省略号永远不触发（内容把卡片撑宽）。 */
+.module-widget-title {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 深色下警示色要提亮，否则 #a44c46 在近黑背景上几乎看不见。
+   ⚠️ cert_mismatch 与 alert 都要写——只写 alert 时，深色下的安全事件
+   落回默认色（浏览器实测读到 rgb(48,43,39)，比背景还暗）。 */
+:root[data-theme="dark"] .module-card-status[data-kind="cert_mismatch"],
+:root[data-theme="dark"] .module-card-status[data-kind="alert"] { color: #e9a69d; }
+:root[data-theme="dark"] .module-card-status[data-kind="pending"] { color: #e0bd7a; }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .module-card-status[data-kind="cert_mismatch"],
+    :root:not([data-theme="light"]) .module-card-status[data-kind="alert"] { color: #e9a69d; }
+    :root:not([data-theme="light"]) .module-card-status[data-kind="pending"] { color: #e0bd7a; }
+}
 .module-card-hint { margin-top: 2px; color: var(--text-muted); font-size: 10px; text-align: right; }
 .module-panel-list { margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--border); }
 .module-panel-list-title { margin-bottom: 8px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }

@@ -154,26 +154,49 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         server.indexOf('// ========== Paste API =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
-    // 9 条 = 8 条既有 + trust-cert（确认自签证书，TOFU 配对的第二步）。
+    // 10 条 = 8 条既有 + trust-cert（已删）+ enroll（agent 注册）。
     // 数量必须逐条跟上：少一条是漏枚举，多一条可能是有人新加了路由却
     // 没走到下面的守卫循环——那正是本条断言存在的意义。
-    assert.equal(moduleRoutes.length, 9, `模块端点应恰好 9 条，实际 ${moduleRoutes.length}`);
+    assert.equal(moduleRoutes.length, 10, `模块端点应恰好 10 条，实际 ${moduleRoutes.length}`);
 
-    // 唯一的例外是推送端点：它**故意**不带 requireAdmin——
-    // agent 在内网、是裸 HTTP，拿不到浏览器会话，它的鉴权是推送凭据。
-    // 这条例外必须具名写出来，否则「把推送端点也加上 requireAdmin」
-    // （那会让推送彻底不可用）会显得像是在收紧守卫。
-    const PUSH_ROUTE = "app.post('/api/modules/agent-push'";
+    // 有**两个**端点是故意不带 requireAdmin 的，理由不同但都必须具名写出，
+    // 否则「给它们加上 requireAdmin」会显得像是在收紧守卫：
+    //
+    //  · agent-push：agent 主动上报，鉴权是推送凭据
+    //  · enroll：agent 注册时还没有任何长期凭据，它的鉴权就是那枚一次性令牌。
+    //    这条更要紧——它比推送更早发生，且令牌 15 分钟就过期，
+    //    挂上 requireAdmin 会让「一键部署」彻底不可用。
+    // 中间件名写成字符串而不是正则：要从正则的 source 里反推名字
+    // （slice(1, -2)）那种做法在带字符类时会出错，而出错的表现是
+    // 断言报一个看不懂的「找不到匹配」——看不出真正原因。
+    const NO_ADMIN_ROUTES = {
+        "app.post('/api/modules/agent-push'": {
+            middleware: 'pushLimit',
+            why: 'agent 没有浏览器会话，鉴权是推送凭据'
+        },
+        "app.post('/api/modules/enroll'": {
+            middleware: 'enrollLimit',
+            why: 'agent 注册时尚无任何凭据，鉴权是一次性部署令牌'
+        }
+    };
+    const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     for (const route of moduleRoutes) {
-        if (route === PUSH_ROUTE) {
-            assert.match(routes, /app\.post\('\/api\/modules\/agent-push',\s*pushLimit,/,
-                '推送端点只用独立限流桶，不挂 requireAdmin（agent 没有浏览器会话）');
-            assert.doesNotMatch(routes, /app\.post\('\/api\/modules\/agent-push',[^)]*requireAdmin/,
-                '推送端点一旦挂上 requireAdmin，agent 就再也推不上来了');
+        const exempt = NO_ADMIN_ROUTES[route];
+        if (exempt) {
+            assert.match(routes, new RegExp(
+                escapeRe(route) + ',\\s*' + exempt.middleware + '\\b'),
+                `${route} 用自己的限流桶 ${exempt.middleware}，不挂 requireAdmin（${exempt.why}）`);
+            assert.doesNotMatch(routes, new RegExp(
+                escapeRe(route) + '[^)]*requireAdmin'),
+                `${route} 一旦挂上 requireAdmin，这条链路就废了（${exempt.why}）`);
             continue;
         }
-        assert.match(routes, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ', rateLimit, requireAdmin,'),
+        assert.match(routes, new RegExp(escapeRe(route) + ', rateLimit, requireAdmin,'),
             `${route} 必须走 rateLimit + requireAdmin`);
+    }
+    // 豁免名单里的路由必须真的存在，否则删掉端点后这条会静默通过
+    for (const route of Object.keys(NO_ADMIN_ROUTES)) {
+        assert.ok(moduleRoutes.includes(route), `豁免的 ${route} 确实存在`);
     }
 });
 
@@ -270,39 +293,54 @@ test('保存模块配置不会抹掉已存的 token', () => {
     assert.equal(afterDelete.servers[0].token.data, 'b', '留下的那条 token 仍在');
 });
 
-test('服务器地址只接受 https', () => {
+test('服务器地址只接受 https（裸 IP 自动补协议与端口）', () => {
     // 两层防护同时存在，缺一不可：
     //   file:、gopher: 等协议会被 agent 拉取时当成一个可利用的服务端请求面；
     //   http: 会把 Bearer token（那台机器的只读监控凭据）明文摊在网络上。
-    // 断言要钉的是「只剩 https 合法」这个事实，而不是某一种写法——
-    // 早先的 `protocol !== 'http:' && protocol !== 'https:'` 白名单
-    // 允许 http 通过，正是这个缺陷的来源。
+    //
+    // 而**裸 IP 必须接受**：「只填 IP 就行」是这个改版的核心诉求，
+    // 不能只在前端成立（回归记录：前端补了 https://，服务端仍拒裸 IP，
+    // 于是任何直接调 API 的路径都过不了）。
     const route = server.slice(server.indexOf("app.post('/api/modules/servers'"),
         server.indexOf("app.delete('/api/modules/servers/:id'"));
     assert.ok(route.length > 200, '切片拿到的是整条路由，不是空壳');
-    assert.match(route, /new URL\(url\.trim\(\)\)/, '先按 URL 解析');
-    assert.match(route, /parsed\.protocol\s*!==\s*'https:'/,
-        '协议白名单只放 https');
-    // 负向断言要独立于断言 1 的写法：早先写成
-    // `protocol !== 'http:' &&` 依赖「http 紧跟在 && 后面」这个顺序，
-    // 变异把白名单写成 `!== 'https:' && !== 'http:'` 就整个漏过去了
-    // （实测绿过）。这里只问「http 出现在任何一种放行条件里」。
-    assert.doesNotMatch(route, /!==\s*'http:'/,
-        'http 不得出现在任何放行条件里（否则明文可过网）');
-    // 正面断言这一条才是最硬的：整条路由里不得有第二个 protocol 放行分支。
-    // ⚠️ 协议字符串带冒号（'https:'），写成 '[a-z]+' 匹配不到它——
-    // 而「匹配不到」在这里等于「恒绿」，正是这条断言要防的那种假通过。
-    const allowBranches = route.match(/parsed\.protocol\s*!==\s*'[a-z]+:'/g) || [];
+
+    // 补协议 → 再解析 → 校验协议。顺序不能反：
+    // new URL('192.168.1.10') 会把 '192.168.1.10' 当成**协议名**并抛错，
+    // 所以必须先补上 https:// 才能解析成功。
+    //
+    // 用字面量而不是正则断言这几条：`https://${rawUrl}` 里的斜杠与 $ 在
+    // 正则字面量中转义极易写错，而写错的表现是**整个测试文件加载失败**、
+    // 所有用例一起消失（实测踩过两次）。
+    assert.ok(route.includes('rawUrl = `https://${rawUrl}`'), '裸地址补 https://');
+    assert.match(route, /new URL\(rawUrl\)/, '补完再按 URL 解析');
+    assert.match(route, /parsed\.protocol !== 'https:'/, '协议白名单只放 https');
+
+    // http:// 单独判，且理由要说清是凭据问题而非「格式错」
+    // 用字面量而不是正则：/^http:\/\// 的斜杠转义在正则字面量里极易写错，
+    // 而写错的表现是整个测试文件加载失败、所有用例一起消失（实测踩过）。
+    assert.ok(route.includes("/^http:\\/\\//i.test(rawUrl)"), 'http 单独判');
+    assert.match(route, /明文传输等于把它公开/, '说清为什么必须 https');
+    // ⚠️ 正向计数：整条路由里不得有第二个「放行 http」的分支。
+    // 只写 doesNotMatch 会被「换个写法」绕过（实测踩过）。
+    //
+    // ⚠️⚠️ `[a-z]+` 匹配不到 `'https:'` —— 协议字符串带冒号。这类字符类
+    // 写错的表现是**匹配数为 0**，而「0 个分支」看上去像「代码里没有这行」，
+    // 很容易被误读成断言过期而不是断言写错。（本项目已犯过一次，
+    // 本轮又犯了一次。）
+    const allowBranches = route.match(/parsed\.protocol !== '[a-z]+:'/g) || [];
     assert.equal(allowBranches.length, 1,
         `只应有一个协议放行条件，实际 ${allowBranches.length} 个：${allowBranches.join(' | ')}`);
+
     assert.match(route, /res\.status\(400\)/, '不合法时 400');
-    // http 要给的是可执行的迁移指引，不是「格式错误」——
-    // 用户看到后者会以为是自己写错了地址格式
-    assert.match(route, /parsed\.protocol\s*===\s*'http:'/,
-        'http 单独给一条说明为什么必须改 https');
-    assert.match(route, /--gen-cert/,
-        'http 的错误信息里含迁移步骤（生成证书）');
+    // 默认端口：不补的话请求会打到 443，而 agent 听 4195
+    assert.match(route, /parsed\.port = '4195'/, '没写端口就补 4195');
+    // 落盘必须是归一化后的地址
+    assert.match(route, /url: normalizedUrl/, '落盘归一化后的地址');
+    // 迁移指引不得指向已删除的 --gen-cert（证书现在由 Go agent 自签）
+    assert.doesNotMatch(route, /--gen-cert/, '不再指向已删除的 --gen-cert');
 });
+
 
 test('服务器写端点对 token 只加密、不落明文', () => {
     const route = server.slice(server.indexOf("app.post('/api/modules/servers'"),

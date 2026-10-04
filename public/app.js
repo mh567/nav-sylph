@@ -2385,6 +2385,9 @@
             this.configDirty = false;
             this.configSnapshot = null;
             this.updateConfigStatus();
+            // 面板关了，未就绪机器的探测轮询也该停：用户看不到结果，
+            // 继续探只是白花限流配额，而定时器留着会一直跑到页面卸载。
+            this.clearPendingProbe();
             $('#modal').hidden = true;
             if (this.adminReturnFocus?.isConnected) this.adminReturnFocus.focus();
             return true;
@@ -2463,6 +2466,80 @@
             await this.ensureModulesLoaded();
             this.renderModulesEditorContent(host, config);
             this.modulesEditorRendered = true;
+            // 未就绪的机器要持续探测：用户把部署命令粘到目标机上执行完，
+            // 那一刻本服务什么都不知道——不主动探，界面就永远停在「未部署」，
+            // 用户会以为命令没生效又去重跑一遍。
+            //
+            // 只探「未就绪」的那些，且只在面板打开时探：面板一关就停，
+            // 不引入任何服务端后台状态。
+            this.schedulePendingProbe(config);
+        }
+
+        /**
+         * 每 60 秒探一次还没就绪的机器，直到它们都就绪或面板被关掉。
+         *
+         * 已就绪的机器不探：它们的状态由首页那个轮询周期管着（默认 15s），
+         * 这里再探一遍只是浪费。而「未就绪」恰恰是变化最频繁的阶段——
+         * 用户正在目标机上执行命令。
+         */
+        schedulePendingProbe(config) {
+            this.clearPendingProbe();
+            // ⚠️ 用一个**可变**的 Map 记录「上次见到的状态」，而不是闭包里
+            // 捕获 config.servers。早先直接比 s.deployState，而 s 是启动时的
+            // 陈旧快照 —— 于是 `res.deployState !== s.deployState` 只要结果
+            // 非空就恒真，每 60 秒必弹一次「有机器的状态变了」，哪怕什么都没变
+            //（浏览器实测发现）。同样地，已注册的机器也永远进不了下一轮
+            // 的 pending 列表，只能靠重开面板才被重新筛。
+            const lastSeen = new Map();
+            const pending = (config.servers || []).filter(s => {
+                if (s.mode === 'push') return false; // 推送模式无端口可探
+                lastSeen.set(s.id, s.deployState || null);
+                return !s.enrolled;
+            });
+            if (!pending.length) return;
+
+            const timer = setInterval(async () => {
+                // 面板关了就不必再探：用户看不到结果，探了只是白花限流配额
+                if (!$('#modulesEditor') || this.adminTab !== 'modules') {
+                    this.clearPendingProbe();
+                    return;
+                }
+                let changed = false;
+                for (const s of pending) {
+                    try {
+                        const res = await API.post(`/api/modules/servers/${encodeURIComponent(s.id)}/probe`);
+                        // 同上：写缓存，让卡片重绘时「在线」位有数据可读
+                        if (!this.lastProbe) this.lastProbe = {};
+                        this.lastProbe[s.id] = res;
+                        const now = res.deployState || null;
+                        const before = lastSeen.get(s.id) ?? null;
+                        if (now !== before) {
+                            lastSeen.set(s.id, now);
+                            changed = true;
+                        }
+                    } catch (e) {
+                        // 单台失败不影响其它机器，也不该弹 toast 打扰用户——
+                        // 这是后台的静默轮询，不是用户发起的操作
+                        console.debug('probe failed:', e);
+                    }
+                }
+                if (changed) {
+                    // 重绘会重新调 schedulePendingProbe，从而用**最新**的
+                    // 配置重建 pending 列表 —— 这也是「刚部署完的那台机器
+                    // 能从 pending 里毕业」的唯一路径。
+                    await this.renderModulesEditor();
+                    this.showToast('有机器的状态变了', 'success');
+                }
+            }, 60000);
+
+            this.pendingProbeTimer = timer;
+        }
+
+        clearPendingProbe() {
+            if (this.pendingProbeTimer) {
+                clearInterval(this.pendingProbeTimer);
+                this.pendingProbeTimer = null;
+            }
         }
 
         /** 确保已知模块的定义都已注册。注册表非空则直接返回。 */
@@ -2648,8 +2725,147 @@
         }
 
         /**
-         * 服务器列表。token 不回显——已配置的显示「已配置」，
-         * 编辑时留空表示保持原值（与 WebDAV 的「留空保持原密码」同一形状）。
+         * 一台机器当前处于哪个部署状态。
+         *
+         * 上一版只有「在线 / 离线」两个结果，而用户真正要回答的是三个不同的
+         * 问题：**这台机器在吗、agent 装了吗、能不能读到指标**。三者塌缩成
+         * 一个「离线」时，用户无法判断该点部署、该查网络、还是该重装。
+         *
+         * pull 模式下这三问由 TCP 三态探测分别回答；push 模式没有端口可探测，
+         * 只能靠「注册过没有」判断部署状态。
+         */
+        serverDeployState(s) {
+            // 已注册但证书变了 —— 安全事件，优先于一切其它状态：
+            // 这台机器此刻报上来的东西不该被当成可信数据。
+            if (s.certMismatch) return 'cert_mismatch';
+            if (s.deployState) return s.deployState;
+            // 还没探测过：给一个诚实的初值，而不是谎称「离线」
+            if (!s.enrolled) return 'unchecked';
+            return 'ready';
+        }
+
+        /**
+         * 状态位下方那块说明区。已就绪时不渲染任何东西——
+         * 那台机器正常，没有需要解释的事。
+         */
+        renderServerStateBody(s) {
+            const state = this.serverDeployState(s);
+            if (state === 'ready' || state === 'unchecked') return '';
+            // 措辞统一取自 serverDeployBit —— 状态位与说明区说同一句话，
+            // 两处各写一份文案必然漂移（然后用户看到卡片说「未部署」
+            // 而展开说「等待部署」）。
+            const bit = this.serverDeployBit(s);
+            const text = s.error ? this.esc(s.error) : this.esc(bit.title);
+            return `
+                <div class="server-item-state" data-kind="${bit.kind}">
+                    <div class="lead">${this.esc(bit.text)}</div>
+                    <div class="sub">${text}</div>
+                </div>`;
+        }
+
+        /** 地址只显示主机与端口，不必让用户每次都看见 https:// 前缀。 */
+        displayUrlOf(s) {
+            try {
+                const u = new URL(s.url);
+                return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+            } catch {
+                return s.url || '';
+            }
+        }
+
+        /**
+         * 后台卡片的两个状态位：**在线**与**部署就绪**。
+         *
+         * 刻意分成两个，因为它们回答的是两个正交的问题：
+         *   · 在线吗       —— 主机的网络层能不能到达（TCP 三态探测）
+         *   · agent 就绪吗 —— 那台机器上装了没、注册了没
+         * 合成一句话（「在线 · 未部署」）在单台机器上看着够用，但用户扫过
+         * 一列卡片时，「有哪几台连不上」和「有哪几台没装」是两类不同的
+         * 待办 —— 分开才看得出该先做哪一类。
+         *
+         * 首页卡片只保留合并后的那一个（用户拍板：首页一个就够，
+         * 后台至少两个）。差别在这里：后台是操作台，要能分派任务。
+         *
+         * @param {object} s 一台机器
+         * @param {object} [probe] 最近一次探测结果（没有就退回配置里的持久状态）
+         */
+        renderServerStatusBits(s, probe) {
+            // probe 缺省时退回「上一次探测结果」的缓存。
+            // ⚠️ 早先这里不传，于是「在线」位永远是「未检测」——而服务端
+            // 早就把 reachable 算好并返回了（浏览器实测发现）。
+            // 用 lastProbe 缓存而不是重新探测：渲染不该有网络副作用，
+            // 而且每次渲染都探一次会把管理端限流桶打满。
+            const p = probe || this.lastProbe?.[s.id];
+            const online = this.serverOnlineState(s, p);
+            const deploy = this.serverDeployBit(s, p);
+            return `
+                <span class="server-item-status" data-kind="${online.kind}"
+                      title="${this.esc(online.title)}">${this.esc(online.text)}</span>
+                <span class="server-item-status" data-kind="${deploy.kind}"
+                      title="${this.esc(deploy.title)}">${this.esc(deploy.text)}</span>`;
+        }
+
+        /**
+         * 「在线」这一位。推送模式报 null —— 它一个端口都不开，
+         * 主机在不在线只能由「多久没收到上报」回答，不是探测能知道的。
+         */
+        serverOnlineState(s, probe) {
+            if (probe && 'reachable' in probe) {
+                if (probe.reachable === null) {
+                    return { kind: 'unknown', text: '在线未知', title: '推送模式不开放端口，探测不到主机是否在线' };
+                }
+                return probe.reachable
+                    ? { kind: 'online', text: '在线', title: '能连到这台机器' }
+                    : { kind: 'offline', text: '离线', title: '连不上：探测超时或主机拒绝了' };
+            }
+            // 没探测过时不要瞎猜。说「未检测」是诚实的初值，不是「离线」。
+            return { kind: 'unknown', text: '未检测', title: '还没探测过，点「检测」试一次' };
+        }
+
+        /** 「部署就绪」这一位。 */
+        serverDeployBit(s, probe) {
+            const state = (probe && probe.deployState) || this.serverDeployState(s);
+            switch (state) {
+                case 'ready':
+                    return { kind: 'ready', text: '已就绪', title: 'agent 已注册，正在上报指标' };
+                case 'pending':
+                    return { kind: 'pending', text: '等待部署', title: '目标机上有 agent，但还没向本服务注册' };
+                case 'not_deployed':
+                    return { kind: 'not_deployed', text: '未部署', title: '目标机上还没有 agent' };
+                case 'cert_mismatch':
+                    return { kind: 'alert', text: '证书异常', title: '证书与注册时不一致，可能被换了' };
+                case 'port_conflict':
+                    return { kind: 'alert', text: '端口被占', title: '该端口上有别的服务，不是 agent' };
+                default:
+                    return { kind: 'unknown', text: '未检测', title: '点「检测」确认部署状态' };
+            }
+        }
+
+        /**
+         * 部署操作按钮。这是 `hasEnrollToken` 唯一的消费者。
+         *
+         * 该字段此前算了但没人用（服务端注释声称它「决定显示复制命令还是
+         * 重新生成令牌」，而那两个按钮都不存在）——一个假承诺。
+         *
+         * 语义按用户拍板「有用就留着」接上：
+         *   · 令牌已签发且未过期 → 直接给「复制命令」（用户可以直接粘）
+         *   · 没有 / 已过期     → 给「部署」（点开面板会重新签一枚）
+         * 所以这个字段不是冗余，它是「能不能直接复制」的判据。
+         */
+        renderDeployAction(s) {
+            if (s.hasEnrollToken) {
+                return `<button class="btn btn-sm deploy-server"
+                    title="令牌还有效，直接复制部署命令">复制命令</button>`;
+            }
+            return `<button class="btn btn-sm deploy-server"
+                title="生成一条部署命令，在目标机上执行">部署</button>`;
+        }
+
+        /**
+         * 服务器列表。每台一张卡，卡上有**两个**状态位（在线 / 部署就绪）
+         * 与一个采集方式徽章。
+         * 凭据不回显——已注册的回一个布尔，编辑时留空表示保持原值
+         * （与 WebDAV 的「留空保持原密码」同一形状）。
          */
         renderServerList(host, config) {
             if (!host) return;
@@ -2672,23 +2888,16 @@
                 <div class="server-item" data-server-id="${this.esc(s.id)}">
                     <div class="server-item-head">
                         <span class="server-item-name">${this.esc(s.name || s.url)}</span>
-                        <span class="server-item-url">${this.esc(s.url)}</span>
+                        <span class="server-item-url">${this.esc(this.displayUrlOf(s))}</span>
                     </div>
                     <div class="server-item-badges">
+                        ${this.renderServerStatusBits(s)}
                         <span class="server-item-mode" data-mode="${isPush ? 'push' : 'pull'}"
                               title="${isPush
                                 ? '推送：目标机主动送上来，不开放端口'
                                 : '拉取：本服务去连这台机器'}">${isPush ? '推送' : '拉取'}</span>
-                        <span class="server-item-token">${isPush
-                            ? (s.hasPushSecret ? '已领取推送凭据' : '未领取推送凭据')
-                            : (s.hasToken ? '已配置 token' : '无 token')}</span>
-                        ${isPush ? '' : `<span class="server-item-cert${s.hasCert ? ' is-ok' : ''}"
-                            title="${s.hasCert
-                                ? '证书已确认信任'
-                                : '证书尚未确认：点「检测连通性」核对指纹'}">${s.hasCert
-                                ? '证书已确认'
-                                : '待确认证书'}</span>`}
                     </div>
+                    ${this.renderServerStateBody(s)}
                     <div class="server-item-actions">
                         <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
                             <input type="checkbox" data-server-visible="${this.esc(key)}" ${shown ? 'checked' : ''}
@@ -2696,8 +2905,8 @@
                             <span>${shown ? '显示' : '隐藏'}</span>
                         </label>
                         ${isPush ? '' : `<button class="btn btn-sm probe-server"
-                            title="真去连一次这台机器，判断本服务够不够得着">检测连通性</button>`}
-                        <button class="btn btn-sm deploy-server">部署</button>
+                            title="真去连一次：主机在不在线、agent 装没装">检测</button>`}
+                        ${this.renderDeployAction(s)}
                         <button class="btn btn-sm edit-server">编辑</button>
                         <button class="btn btn-sm btn-danger del-server">删除</button>
                     </div>
@@ -2717,8 +2926,9 @@
                 }
                 row.querySelector('.deploy-server').onclick = () => this.showDeployDialog(server);
 
-                // 连通性探测：真去连一次。只对拉取模式的机器有意义——
-                // 推送模式是目标机来找我们，"够不够得着"是反过来的问题。
+                // 探测：真去连一次，回答三个问题——主机在吗、agent 装了吗、
+                // 能读到指标吗。只对拉取模式的机器有意义：推送模式是目标机
+                // 来找我们，「够不够得着」是反过来的问题。
                 const probeBtn = row.querySelector('.probe-server');
                 if (probeBtn) {
                     probeBtn.onclick = async () => {
@@ -2727,60 +2937,26 @@
                         probeBtn.textContent = '检测中…';
                         try {
                             const res = await API.post(`/api/modules/servers/${encodeURIComponent(id)}/probe`);
-
-                            // TOFU：目标机用的是自签证书，服务端第一次见到它时
-                            // 无从判断真假——把对方出示的指纹摆出来，由用户核对。
-                            // 这一步之所以成立，是因为 agent 生成证书时把**同一串**
-                            // 指纹印在目标机终端上，用户有一条独立于本服务的核对途径。
-                            if (res.status === 'need_trust' && res.fingerprint) {
-                                this.showToast(`${server.name || server.url}：待确认证书指纹`, 'error');
-                                const ok = await this.showUiDialog({
-                                    title: '确认这台机器的证书',
-                                    // **完整指纹必须印在这里**，不能只给前几段加省略号：
-                                    // 文案让用户「逐字核对」，而只显示 4 段时用户根本
-                                    // 无法执行这一步——那是一条兑现不了的承诺。
-                                    // message 的 CSS 是 white-space:pre-line，所以 \n 生效。
-                                    message: '目标机用的是自签证书，下面是它出示的 SHA-256 指纹：\n\n'
-                                        + `${res.fingerprint}\n\n`
-                                        + '请与目标机上「node agent.js --gen-cert」打印的那一串逐字核对。\n'
-                                        + '一致才是同一台机器；不一致就别确认。',
-                                    options: [{
-                                        name: 'trust', kind: 'checkbox', value: true,
-                                        label: '我已与目标机终端上的指纹逐字核对，一致',
-                                        checked: false
-                                    }],
-                                    confirmText: '确认信任并保存',
-                                    cancelText: '不确认'
-                                });
-                                if (!ok || !ok.choices.trust) {
-                                    // 勾选框是**默认关闭**的，而对话框一关就没了。
-                                    // 静默 return 会让「没勾」与「点了取消」表现完全
-                                    // 一样：徽章不变、没有任何文字，用户只会以为
-                                    // 证书已经配好了。实测就是这个现象。
-                                    if (ok) {
-                                        this.showToast('需要先勾选「已逐字核对」才能确认——'
-                                            + '证书没核对过就确认，等于没验证对面是谁', 'error');
-                                    }
-                                    return;
-                                }
-                                await API.post(`/api/modules/servers/${encodeURIComponent(id)}/trust-cert`, {
-                                    fingerprint: res.fingerprint
-                                });
-                                this.showToast('证书已确认，正在重新采集…', 'success');
-                                // 重绘走与「编辑」「删除」同一入口（见下方两处）。
-                                // 早先这里写的是 `await onDone()` —— 那是
-                                // showServerDialog 的参数名，本方法
-                                // renderServerList(host, config) 根本没有它，
-                                // 于是配对成功后抛 ReferenceError，被 catch
-                                // 吞成「检测失败，请重试」：**服务端已存好证书，
-                                // 界面却显示失败且不刷新徽章**。
-                                await this.renderModulesEditor();
-                                return;
+                            // 记进缓存：渲染时的「在线」位要读它（服务端算好的
+                            // reachable 不会凭空出现在配置里）
+                            if (!this.lastProbe) this.lastProbe = {};
+                            this.lastProbe[id] = res;
+                            const name = server.name || server.url;
+                            // 每种结果都给出下一步——服务端已经在 hint 里写好了，
+                            // 这里只负责把它显示出来，并按情况提示下一步动作。
+                            // 措辞取自 serverDeployBit，与卡片状态位、说明区同源。
+                            const ok = res.deployState === 'ready';
+                            const bit = this.serverDeployBit(res);
+                            this.showToast(`${name}：${bit.text}。${res.hint || ''}`,
+                                ok ? 'success' : 'error');
+                            // 「主机在线但没装 agent」是最值得主动引导的一种：
+                            // 用户点检测多半就是想确认能不能用，而答案是「能连，
+                            // 但要装个东西」——直接告诉他去哪装。
+                            if (res.deployState === 'not_deployed') {
+                                await this.notice('这台机器还缺 agent', res.hint || '');
                             }
-
-                            const label = res.reachable ? '连接正常' : '够不着';
-                            this.showToast(`${server.name || server.url}：${label}。${res.hint || ''}`,
-                                res.reachable ? 'success' : 'error');
+                            // 刷新卡片，让状态位与说明区立刻反映这次探测的结果
+                            await this.renderModulesEditor();
                         } catch (e) {
                             console.error('Probe server failed:', e);
                             this.showToast('检测失败，请重试', 'error');
@@ -2816,169 +2992,87 @@
         }
 
         /**
-         * agent 部署命令。
+         * 一键部署面板：签一枚一次性令牌，把「复制粘贴一行命令」给用户。
          *
          * 为什么放在这里而不是 sylph.sh：sylph.sh 管的是**主服务**的安装与升级，
          * 而 agent 部署在**别的机器**上，混进去会让两个角色互相干扰。
          * 后台「模块 → 监控目标」是用户配置这些机器的地方，命令就该在这里。
          *
-         * 命令里的 token 由服务端**下发**：前端拿不到明文（读接口只回 hasToken），
-         * 所以这里显示的是占位符，需要用户从自己的密码管理器或
-         * 「编辑」对话框里取——这是刻意的，避免明文 token 出现在页面 DOM 里。
+         * 上一版是六个代码块手工复制，还带 `<你的 token>` 占位符——
+         * 用户得先去别处取一个自己发明的 token、再手工配 systemd。
+         * 现在三处需要用户填的值（token、端口、证书指纹）全部归零：
+         * 端口由后台按当前访问地址自动带上，证书由 agent 自己签发，
+         * 令牌是一次性的、用完即废。
          */
         showDeployDialog(server) {
-            const url = server.url || '';
-            const port = (() => {
-                try { return new URL(url).port || '4195'; } catch { return '4195'; }
-            })();
-            const origin = location.origin;
-            const token = server.hasToken ? '<你的 token>' : '<先在「编辑」里填 token>';
+            const name = server.name || server.url || '这台机器';
+            // 一键部署：先换一枚一次性部署令牌，再把命令拼出来。
+            // 令牌明文只在这一次响应里出现，服务端只存哈希——
+            // 所以面板必须立刻让用户复制走。
+            this.showToast('正在生成部署命令…');
+            API.post(`/api/modules/servers/${encodeURIComponent(server.id)}/enroll-token`)
+                .then(res => {
+                    const origin = location.origin;
+                    const mode = res.mode === 'push' ? 'push' : 'pull';
+                    const command = [
+                        `curl -fsSL ${origin}/agent/install.sh | sudo bash -s -- \\`,
+                        `  --server ${origin} \\`,
+                        `  --enroll ${res.token}${mode === 'push' ? ' \\\n  --mode push' : ''}`
+                    ].join('\n');
+                    const mins = Math.max(1, Math.round((res.expiresAt - Date.now()) / 60000));
 
-            // 推送模式：目标机在局域网、够不着本服务。步骤完全不同——
-            // 没有监听端口、没有防火墙，核心是领一枚推送凭据。
-            if (server.mode === 'push') {
-                const serverId = server.id || '<服务器 id>';
-                this.showPushDeploySteps({ origin, serverId, name: server.name || url });
-                return;
-            }
-
-            const steps = [
-                {
-                    title: '1. 下载 agent 到目标机',
-                    note: '在目标机上执行（需可访问本服务的地址）',
-                    code: `mkdir -p /opt/nav-agent && cd /opt/nav-agent\ncurl -fsSL ${origin}/agent/agent.js -o agent.js`
-                },
-                {
-                    title: '2. 生成 TLS 证书',
-                    note: 'token 是那台机器的只读监控凭据，明文传输等于公开，所以 agent 没有证书就不肯启动。'
-                        + '这一步会打印证书指纹，**第 4 步要核对它**——先把它抄下来',
-                    code: `sudo node agent.js --gen-cert /opt/nav-agent`
-                },
-                {
-                    title: '3. 先手工跑一次确认能通',
-                    note: '目标机需要 Node 18+；看到「监听 https://…」和证书指纹就说明正常',
-                    code: `NAVSYLPH_TOKEN=${token} node agent.js \\\n  --tls-cert /opt/nav-agent/cert.pem \\\n  --tls-key /opt/nav-agent/key.pem \\\n  --host 0.0.0.0 --port ${port}`
-                },
-                {
-                    title: '4. 在后台点「检测连通性」，核对证书指纹',
-                    note: '回到这台服务器的后台，点这台机器那一行的「检测连通性」。'
-                        + '它会弹出 agent 刚才打印的那串指纹，**逐字核对一致后再确认**——'
-                        + '不一致就别确认。确认后本服务才会信任这张自签证书',
-                    code: '# 无需命令：点「检测连通性」→ 核对指纹 → 勾选确认'
-                },
-                {
-                    title: '5. 配成开机自启（systemd）',
-                    note: '需 root；写入 unit 并立即启动',
-                    code: [
-                        'sudo tee /etc/systemd/system/nav-agent.service >/dev/null <<EOF',
-                        '[Unit]',
-                        'Description=Nav Sylph 监控 agent',
-                        'After=network.target',
-                        '',
-                        '[Service]',
-                        'Environment=NAVSYLPH_TOKEN=<TOKEN>',
-                        'ExecStart=/usr/bin/node /opt/nav-agent/agent.js --tls-cert /opt/nav-agent/cert.pem --tls-key /opt/nav-agent/key.pem --host 0.0.0.0 --port ' + port,
-                        'Restart=always',
-                        'RestartSec=5',
-                        '',
-                        '[Install]',
-                        'WantedBy=multi-user.target',
-                        'EOF',
-                        '',
-                        'sudo systemctl daemon-reload',
-                        'sudo systemctl enable --now nav-agent'
-                    ].join('\n')
-                },
-                {
-                    title: '6. 放行防火墙（仅在启用了防火墙时）',
-                    note: 'firewalld 与 ufw 二选一',
-                    code: `# firewalld\nsudo firewall-cmd --permanent --add-port=${port}/tcp\nsudo firewall-cmd --reload\n\n# 或 ufw\nsudo ufw allow ${port}/tcp`
-                }
-            ];
-
-            // 一次只开一个面板。原来先弹 showUiDialog 说明再弹命令面板，
-            // 两次点击才看得到内容——命令才是这里的主产物。
-            this.showCommandPanel(`在目标机上部署 agent — ${server.name || server.url}`, steps, {
-                intro: '下面六步在「目标机终端」执行，不是在这台服务器上。'
-                    + '命令里的 token 是占位符——服务端不会把明文 token 发到浏览器，'
-                    + '请从你自己的密码管理器取。'
-                    + '第 4 步要回到本后台核对证书指纹，那是唯一能确认「对面确实是那台机器」的地方。'
-            });
+                    this.showCommandPanel(`部署到「${name}」`, [
+                        {
+                            title: '1. 复制并执行',
+                            note: '在目标机的终端执行（需要 sudo）。这一行会装好 agent、'
+                                + '生成证书、注册到本服务并配置开机自启',
+                            code: command
+                        },
+                        {
+                            title: '2. 回到这里刷新',
+                            note: '目标机执行完后，这张卡片会自动变成「已就绪」，也能读到指标了',
+                            // 没有可复制的命令，所以不放代码块——
+                            // 放一个装注释的代码块只会让用户以为要复制它，
+                            // 而复制到终端里什么也不会发生。
+                            plain: '无需命令 —— 本页面每 60 秒自动探测一次，'
+                                + '状态变了会自动刷新。也可以点上面的「检测」立刻试一次。'
+                        }
+                    ], {
+                        // ⚠️ 不要用 Markdown 强调：intro 经过 esc() 转义后是纯文本，
+                        // `**目标机**` 会原样显示星号（浏览器实测确认）。
+                        // 要强调就用 <strong>——它是这面板里唯一允许的 HTML。
+                        intro: `在<strong>目标机</strong>上执行，不是在这台服务器上。\n`
+                            + `这枚令牌 ${mins} 分钟内有效、只能用一次，执行完就作废——`
+                            + `所以它只出现在这条命令里，不会被写进目标机的任何持久配置。`
+                    });
+                })
+                .catch(e => {
+                    console.error('Issue enroll token failed:', e);
+                    this.showToast('生成部署命令失败，请重试', 'error');
+                });
         }
+
 
         /**
-         * 推送模式的部署步骤。
+         * 可复制的命令面板。
          *
-         * 与拉取模式的差别不只是命令不同，而是**安全模型不同**：拉取要在
-         * 目标机上开一个监听端口并放行防火墙，推送一个端口都不开。
+         * 每一步有两种形态：
+         *   { title, note, code }  —— 有命令，带「复制」按钮
+         *   { title, note, plain } —— 只是说明，**不给复制按钮**
          *
-         * 凭据必须先领才能给出可复制的命令——服务端只存哈希，明文只出现
-         * 这一次。所以这里先调接口，拿到凭据再渲染面板；用户复制走之后
-         * 重新打开这个面板会拿到一枚新的（旧的随即失效）。
+         * 第二种是必要的：早先把「无需命令」也塞进一个装注释的代码块，
+         * 于是用户看到两个一模一样的「复制」按钮，复制到终端里什么也不会发生
+         * （浏览器实测发现）。
+         *
+         * ⚠️ title / note / code 一律走 esc()，它们是纯文本；
+         * intro 例外，由 richIntro() 做白名单净化（只放行 <strong>）。
+         * 早先在 intro 里用 Markdown 的 `**目标机**`，转义后星号原样显示。
          */
-        async showPushDeploySteps({ origin, serverId, name }) {
-            this.showToast('正在领取推送凭据…');
-            let secret;
-            try {
-                const res = await API.post(`/api/modules/servers/${encodeURIComponent(serverId)}/push-secret`);
-                secret = res.secret;
-            } catch (e) {
-                console.error('Issue push secret failed:', e);
-                this.showToast('领取推送凭据失败，请重试', 'error');
-                return;
-            }
-            if (!secret) {
-                this.showToast('未取得推送凭据，请重试', 'error');
-                return;
-            }
-
-            const steps = [
-                {
-                    title: '1. 下载 agent 到目标机',
-                    note: '在目标机上执行（需能访问本服务的地址）',
-                    code: `mkdir -p /opt/nav-agent && cd /opt/nav-agent\ncurl -fsSL ${origin}/agent/agent.js -o agent.js`
-                },
-                {
-                    title: '2. 先手工跑一次确认能推上去',
-                    note: '推送模式不监听任何端口，所以没有放行防火墙这一步',
-                    code: `NAVSYLPH_PUSH_SECRET=${secret} NAVSYLPH_SERVER_ID=${serverId} \\\n  node agent.js --push ${origin}`
-                },
-                {
-                    title: '3. 配成开机自启（systemd）',
-                    note: '需 root；凭据写在 unit 里，权限按 600 收紧',
-                    code: [
-                        'sudo tee /etc/systemd/system/nav-agent.service >/dev/null <<EOF',
-                        '[Unit]',
-                        'Description=Nav Sylph 监控 agent（推送模式）',
-                        'After=network.target',
-                        '',
-                        '[Service]',
-                        `Environment=NAVSYLPH_PUSH_SECRET=${secret}`,
-                        `Environment=NAVSYLPH_SERVER_ID=${serverId}`,
-                        `ExecStart=/usr/bin/node /opt/nav-agent/agent.js --push ${origin}`,
-                        'Restart=always',
-                        'RestartSec=5',
-                        '',
-                        '[Install]',
-                        'WantedBy=multi-user.target',
-                        'EOF',
-                        '',
-                        'sudo chmod 600 /etc/systemd/system/nav-agent.service',
-                        'sudo systemctl daemon-reload',
-                        'sudo systemctl enable --now nav-agent'
-                    ].join('\n')
-                }
-            ];
-
-            this.showCommandPanel(`在目标机上部署 agent（推送）— ${name}`, steps, {
-                intro: '下面三步在「目标机终端」执行。'
-                    + '这台机器不需要开放任何端口——agent 只做出站连接。'
-                    + '推送凭据只显示这一次，服务端只留哈希；'
-                    + '重新打开本面板会换一枚新的，旧的随即失效。'
-            });
+        richIntro(text) {
+            return this.esc(text).replace(/&lt;strong&gt;/g, '<strong>')
+                .replace(/&lt;\/strong&gt;/g, '</strong>');
         }
 
-        /** 可复制的命令面板。每段命令一个「复制」按钮。 */
         showCommandPanel(title, steps, { intro = '' } = {}) {
             document.querySelectorAll('.command-panel-overlay').forEach(o => o.remove());
             const overlay = html(`
@@ -2989,15 +3083,17 @@
                             <button type="button" class="command-panel-close" aria-label="关闭">×</button>
                         </div>
                         <div class="command-panel-body">
-                            ${intro ? `<p class="command-intro">${this.esc(intro)}</p>` : ''}
+                            ${intro ? `<p class="command-intro">${this.richIntro(intro)}</p>` : ''}
                             ${steps.map(s => `
                                 <section class="command-step">
                                     <h4>${this.esc(s.title)}</h4>
                                     ${s.note ? `<p class="command-note">${this.esc(s.note)}</p>` : ''}
-                                    <div class="command-row">
-                                        <pre class="command-code">${this.esc(s.code)}</pre>
-                                        <button type="button" class="btn btn-sm command-copy">复制</button>
-                                    </div>
+                                    ${s.plain
+                                        ? `<p class="command-plain">${this.esc(s.plain)}</p>`
+                                        : `<div class="command-row">
+                                            <pre class="command-code">${this.esc(s.code)}</pre>
+                                            <button type="button" class="btn btn-sm command-copy">复制</button>
+                                          </div>`}
                                 </section>
                             `).join('')}
                         </div>
@@ -3037,88 +3133,146 @@
 
         /**
          * 添加 / 编辑一台服务器。
+         *
+         * 字段从「名称 + 地址（带协议和端口）+ token + 采集方式」收敛成
+         * 「名称 + 地址（只填 IP）+ 一个连通性问题」——这是本次改版的核心：
+         * 上一版要用户自己拼协议、自己发明 token、自己在「拉取/推送」两个
+         * 技术词之间选，而这三个值本服务全都知道。
+         *
+         * token 与证书都不再由用户填：它们由「部署」流程里的注册步骤带回。
+         * 编辑时留空表示保持原值（与 WebDAV 的「留空保持原密码」同一形状）。
+         *
          * 单独一个端点而不是走 /api/modules/config——token 必须由服务端加密，
          * 前端提交的明文不能经那条路径落盘。
          */
         async showServerDialog(server, onDone) {
             const isEdit = !!server;
-            // 默认拉取。已有配置里没有 mode 字段的（升级前写的）也当拉取——
-            // 那是它们一直在跑的方式，静默改成推送会让够得着的机器掉线。
-            const currentMode = (server && server.mode === 'push') ? 'push' : 'pull';
+            // 用户答的是「本服务能否直接连到它」，而不是「局域网/公网」。
+            // 后者描述的是机器的位置，前者才是决定能不能 pull 的那个事实；
+            // 而「局域网/公网」组合起来有四格，用户要自己推导哪一格。
+            const currentReachable = server ? server.reachable !== false : true;
             const result = await this.showUiDialog({
                 title: isEdit ? '编辑服务器' : '添加服务器',
-                // 说明 token 的后果：它是那台机器的只读监控凭据，泄露即泄露。
-                // 不写在这里，用户只能从 agent/README.md 里知道——而大多数人不会去读。
-                message: 'token 等同于那台机器的实时只读监控凭据：拿到它就能读到'
-                    + 'CPU、内存与主机名。请每台用不同的值，不要复用；'
-                    + '泄露后在下方「编辑」里填新值即可让旧的立即失效。',
+                message: isEdit
+                    ? '改了地址或连通方向后，需要重新部署一次才能生效。'
+                    : '保存后会自动检测这台机器的状态。token 与证书会在你部署时自动配置，不用在这里填。',
                 fields: [
                     { label: '名称', type: 'text', value: server ? server.name : '', placeholder: '例如：家用 NAS' },
-                    { label: '地址', type: 'text', value: server ? server.url : '', placeholder: 'https://192.168.1.10:4195' },
                     {
-                        label: isEdit && server.hasToken ? 'token（留空保持原值）' : 'token',
-                        type: 'password',
-                        value: '',
-                        placeholder: '与 agent 的 NAVSYLPH_TOKEN 一致'
+                        label: '地址',
+                        type: 'text',
+                        value: server ? this.displayUrlOf(server) : '',
+                        placeholder: '192.168.1.10'
                     }
                 ],
                 options: [
                     {
-                        name: 'mode', kind: 'radio', value: 'pull',
-                        label: '拉取：本服务去连这台机器',
-                        checked: currentMode !== 'push',
-                        hint: '默认。适合两台机器网络能互相到达（同一局域网，或公网可达）'
+                        name: 'reachable', kind: 'radio', value: 'yes',
+                        label: '能：同一局域网，或公网可达',
+                        checked: currentReachable,
+                        hint: '本服务会主动去连这台机器采集数据（拉取方式）'
                     },
                     {
-                        name: 'mode', kind: 'radio', value: 'push',
-                        label: '推送：目标机主动送上来',
-                        checked: currentMode === 'push',
-                        hint: '适合目标机在家里局域网、够不着本服务。'
-                            + '这种情况下 agent 不需要开放任何端口'
+                        name: 'reachable', kind: 'radio', value: 'no',
+                        label: '不能：它在家里的内网，本服务在公网',
+                        checked: !currentReachable,
+                        hint: '目标机主动把数据送上来（推送方式），它不需要开放任何端口'
                     }
                 ],
                 validate: (values) => {
-                    if (!values[1] || !values[1].trim()) return '请填写服务器地址';
-                    const url = values[1].trim();
-                    // 只收 https：token 是那台机器的只读监控凭据，明文传输等于公开。
-                    // 与服务端那条校验同一裁决，免得用户填完了才被拒。
-                    if (/^http:\/\//i.test(url)) {
-                        return '必须用 https：token 是那台机器的只读监控凭据，明文传输等于把它公开。'
-                            + '请在目标机上生成证书并带 --tls-cert/--tls-key 启动。';
+                    const raw = (values[1] || '').trim();
+                    if (!raw) return '请填写服务器地址';
+                    // 只填 IP 也接受：补上 https:// 与默认端口再校验。
+                    // ⚠️ 但 http:// 一律拒——token 是那台机器的只读监控凭据，
+                    // 明文传输等于把它公开。与服务端那条校验同一裁决，
+                    // 免得用户填完了才被拒。
+                    if (/^http:\/\//i.test(raw)) {
+                        return '必须用 https：token 是那台机器的只读监控凭据，'
+                            + '明文传输等于把它公开。目标机上的 agent 自己起 HTTPS。';
                     }
-                    if (!/^https:\/\//i.test(url)) return '地址必须以 https:// 开头';
+                    const normalized = /^https:\/\//i.test(raw) ? raw : `https://${raw}`;
+                    let parsed;
+                    try {
+                        parsed = new URL(normalized);
+                    } catch {
+                        return '地址格式不正确。填 IP 或域名即可，例如 192.168.1.10';
+                    }
+                    if (!parsed.hostname) return '地址缺少主机名';
+                    // 反过来要拦：用户填了 http://host 但漏了冒号，或写了别的协议
+                    if (!/^https:\/\//i.test(raw) && raw.includes('://')) {
+                        return '只支持 https，agent 自己起的就是 HTTPS';
+                    }
                     return null;
                 }
             });
             if (!result) return;
 
-            const [name, url, token] = result.values;
-            const mode = result.choices.mode === 'push' ? 'push' : 'pull';
+            const name = (result.values[0] || '').trim();
+            const rawAddr = (result.values[1] || '').trim();
+            // 补全成完整 URL：默认 https、默认端口 4195。
+            // 用户只填 IP 也能存——这是「只填 IP 就行」那个诉求的关键。
+            let url;
+            if (/^https:\/\//i.test(rawAddr)) {
+                url = rawAddr;
+                // 没写端口就补上默认的，否则后台会连 443 而 agent 听在 4195
+                try {
+                    const u = new URL(url);
+                    if (!u.port) u.port = '4195';
+                    url = u.toString().replace(/\/$/, '');
+                } catch { /* 交给服务端去拒 */ }
+            } else {
+                const withScheme = `https://${rawAddr}`;
+                try {
+                    const u = new URL(withScheme);
+                    if (!u.port) u.port = '4195';
+                    url = u.toString().replace(/\/$/, '');
+                } catch {
+                    url = withScheme;
+                }
+            }
+            const reachable = result.choices.reachable !== 'no';
+            const mode = reachable ? 'pull' : 'push';
+
             try {
                 const saved = await API.post('/api/modules/servers', {
                     id: server ? server.id : undefined,
-                    name: name.trim(),
-                    url: url.trim(),
+                    name,
+                    url,
                     mode,
-                    // 空值不提交：服务端据此保持原有密文
-                    token: token && token.trim() ? token.trim() : undefined
+                    reachable
                 });
-                this.showToast(isEdit ? '服务器已更新' : '服务器已添加');
-                // **仅新建时**自动打开部署面板：用户下一步必然是去领推送凭据。
-                //
-                // 编辑时**不能**这么做——部署面板会调 push-secret 领取新凭据，
-                // 而领取即作废旧凭据。于是「改个名字」这种无害操作会让正在运行的
-                // agent 从此每次上报都 401，而界面上看不出这两件事有关联。
-                // 编辑推送机器时若确实要换凭据，点列表行的「部署」按钮即可，
-                // 那是有意领取、用户知道后果。
-                if (!isEdit && mode === 'push' && saved && saved.id) {
-                    this.showDeployDialog({ id: saved.id, name: name.trim(), url: url.trim(), mode: 'push' });
-                }
+                this.showToast(isEdit ? '服务器已更新' : '服务器已添加，正在检测…');
                 await onDone();
+
+                // 保存后立刻探一次，用户不用再点「检测」才知道结果。
+                // 编辑时**不**自动打开部署面板：那条命令会签发一枚新令牌，
+                // 而「改个名字」这种无害操作不该产生一枚用户看不见的令牌。
+                if (saved && saved.id) {
+                    const fresh = await this.findServerById(saved.id);
+                    if (fresh) {
+                        const res = await API.post(`/api/modules/servers/${encodeURIComponent(saved.id)}/probe`);
+                        if (res.deployState === 'not_deployed') {
+                            await this.notice('这台机器还缺 agent',
+                                (res.hint || '') + '\n\n点这行右侧的「部署」，把命令复制到目标机上执行就行。');
+                            // 新建且还没部署时直接给命令——用户的下一步几乎必然是它
+                            if (!isEdit) {
+                                this.showDeployDialog({ ...fresh, id: saved.id, name, url });
+                            }
+                        }
+                        await onDone();
+                    }
+                }
             } catch (e) {
                 console.error('Save server failed:', e);
                 this.showToast('保存失败，请重试', 'error');
             }
+        }
+
+        /** 从已加载的模块配置里找一台机器。找不到返回 null 而不是抛错。 */
+        async findServerById(id) {
+            if (!this.modulesConfig) await this.loadModulesConfig();
+            const list = (this.modulesConfig && this.modulesConfig.servers) || [];
+            return list.find(s => s.id === id) || null;
         }
 
         renderAdminPanel() {

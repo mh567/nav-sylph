@@ -79,6 +79,46 @@
         ];
     }
 
+    /**
+     * 一台机器在首页卡片上显示什么状态。
+     *
+     * 首页只做「传达状态」，操作留给后台。
+     *
+     * ⚠️ 优先用服务端给的 deployState，别自己猜。
+     *
+     * 回归记录（浏览器实测）：这个函数原先只根据
+     * 「有没有 metrics / 有没有 enrolled」推断，于是两台机器显示错了——
+     *   · 配了 deployState:'pending'（已签令牌、等 agent 注册）→ 显示「未部署」
+     *   · 配了 cert_mismatch（安全事件）→ 显示「离线」
+     * 而首页的采集结果里**根本没有** deployState 与 certMismatch 这两个字段
+     * （它们只在 /probe 的响应里），所以无论怎么推断都拿不到真相。
+     *
+     * 正确做法：采集时服务端就带上 deployState（它已经算过一次了，
+     * 探测过 TCP、问过 /health），前端直接用。
+     */
+    function statusKindOf(entry) {
+        if (!entry || entry.id === 'local') return 'ready';
+        // 服务端给的权威状态
+        if (entry.deployState) return entry.deployState;
+        if (entry.certMismatch) return 'alert';
+        // 有指标 = 真的通了。这是最可靠的信号，优先于任何状态字段。
+        if (entry.online && entry.metrics) return 'ready';
+        // 没指标但已注册 = 装了 agent 却拉不到数据，多半是网络或端口
+        if (entry.enrolled) return entry.online ? 'pending' : 'offline';
+        return 'not_deployed';
+    }
+
+    /** 状态位的文案。与后台那张卡片的措辞保持一致，避免两边说法不同。 */
+    function statusLabelOf(entry) {
+        switch (statusKindOf(entry)) {
+            case 'ready': return '已就绪';
+            case 'pending': return '等待';
+            case 'not_deployed': return '未部署';
+            case 'alert': return '证书异常';
+            default: return '离线';
+        }
+    }
+
     function errorBox(message) {
         const box = document.createElement('div');
         box.className = 'module-widget-error';
@@ -174,6 +214,15 @@
                 if (!card) continue;
                 card.label.textContent = entry.name || entry.id;
                 card.card.dataset.online = entry.online ? '1' : '0';
+                // 状态位每次刷新都要跟着更新：它是从「有没有指标 / 有没有注册」
+                // 推出来的，机器从「未部署」变成「已就绪」时全靠这一步体现。
+                // 只在挂载时设一次是不够的——那正是上一版的问题：
+                // 部署完成后首页仍然显示旧状态，用户以为没生效。
+                const kind = statusKindOf(entry);
+                if (card.status.dataset.kind !== kind) {
+                    card.status.dataset.kind = kind;
+                    card.status.textContent = statusLabelOf(entry);
+                }
                 renderCardBody(card.body, entry);
             }
 
@@ -258,7 +307,18 @@
         expand.setAttribute('aria-label', `查看${entry.name || entry.id}的监控详情`);
         expand.textContent = '详情';
 
-        head.append(label, handle, expand);
+        // 部署状态位。首页卡片只有 132–220px 宽，放不下按钮，
+        // 所以这里只传达状态、操作留在后台——五张卡片并排时多一个按钮
+        // 会让整屏的视觉密度明显上升。
+        const status = document.createElement('span');
+        status.className = 'module-card-status';
+        status.dataset.kind = statusKindOf(entry);
+        status.textContent = statusLabelOf(entry);
+        status.title = entry.id === 'local'
+            ? '本机，直接读取'
+            : (entry.enrolled ? '已注册，正在上报指标' : '还没在目标机上部署 agent');
+
+        head.append(label, status, handle, expand);
 
         const body = document.createElement('div');
         body.className = 'module-widget-body';
@@ -269,7 +329,8 @@
             openPanel(entry.id);
         });
 
-        cards.set(entry.id, { card, body, label });
+        // status 也要存进 Map：刷新时要更新它，而那时拿不到 DOM 引用
+        cards.set(entry.id, { card, body, label, status });
         renderCardBody(body, entry);
         return card;
     }
