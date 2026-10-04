@@ -87,51 +87,53 @@
 
 - 真机拇指触感（软键盘 / coarse pointer）——本环境无法伪造，该行非高频触摸面，风险低。
 
-## 最新一轮：升级后服务起不来——server-config.json 遮蔽配置目录（随 v1.6.10 发布）
+## 最新一轮：升级后服务起不来——server-config.json 遮蔽配置目录（v1.6.10 未修住，v1.6.11 修好）
 
 用户报：升级到最新版本后站点访问不了，systemd 起不来，`systemctl status` 只给出 `status=1/FAILURE`，没有原因。
 
 ### 定位过程（三层，每层都要自己实测，不能靠推断）
 
 1. **1.6.9 没有服务端改动**：`git show --stat ac7a8a3` 只动了 `public/` 与文档，`server.js`/`lib/` 一行未改。所以不是新代码坏了。
-2. **`systemctl status` 不是真相**：它只有 systemd 的视角。Node 的真实报错在 `logs/server.log`——单元由 `sylph.sh enable` 生成，带 `StandardError=append:…/logs/server.log`。日志给出 `ERR_INVALID_ARG_TYPE: The "path" argument must be of type string`，指向 `server.js:219` 的 `path.join(config.rootDir, 'config.json')`。
-3. **`config.rootDir` 为什么是 undefined**：`server-config/index.js:166` 是**无条件**赋值（`configData.rootDir = ROOT_DIR`，`ROOT_DIR = path.join(__dirname,'..')`，永不 undefined）。这在逻辑上排除了「字段缺失」，把矛头指向「加载到的不是这个文件」。`require.resolve('./server-config')` 直接告出答案是 `/root/nav-sylph/server-config.json`。
+2. **`systemctl status` 不是真相**：它只有 systemd 的视角。Node 的真实报错在 `logs/server.log`——单元由 `sylph.sh enable` 生成，带 `StandardError=append:…/logs/server.log`。日志给出 `ERR_INVALID_ARG_TYPE: The "path" argument must be of type string`，指向 `path.join(config.rootDir, 'config.json')`。
+3. **`config.rootDir` 为什么是 undefined**：`server-config/index.js` 里 `configData.rootDir = ROOT_DIR` 是**无条件**赋值。这在逻辑上排除了「字段缺失」，把矛头指向「加载到的不是这个文件」。`require.resolve('./server-config')` 直接告出答案是 `<安装目录>/server-config.json`。
 
 ### 根因（Node 的解析顺序，不是本项目的选择）
 
 `require('./server-config')` 的补全顺序是 `.js` → `.json` → `.node` → **目录**。所以安装目录根下的 `server-config.json` **遮蔽整个 `server-config/` 目录**，`index.js` 一行都不执行，defaults 也不再被合并。该用户文件内容是 `{"security":{"selfSignedCert":false}}`——只有 `security` 一段，于是 `rootDir`/`server`/`paths` 全部消失。
 
-**这不是外部残留，是应用自己写出来的**：`POST /api/server-flags`（server.js 的后台自签证书开关）首次保存时 `existing` 初始为 `{}`，只补 `security`，写出的文件恰好就是这个形状。**每个用户在后台拨一次自签开关，就把自己锁死在下次重启崩溃。** 本轮修复已实测复现并堵住：保存时补齐 defaults 的每个段（只补缺失的，不覆盖已改设置）。
+**这不是外部残留，是应用自己写出来的**：`POST /api/server-flags`（后台自签证书开关）首次保存时 `existing` 初始为 `{}`，只补 `security`，写出的文件恰好就是这个形状。**每个用户在后台拨一次自签开关，就把自己锁死在下次重启崩溃。**
 
-### 本轮修的三件事
+### v1.6.10 的修法是错的（重要教训）
+
+v1.6.10 采取的是「保存时把配置写全」——用 `serverConfigDefaults` 补齐 defaults 的每一段。它写出的文件确实是完整的五段，**但补不出 `rootDir`：它根本不在 `defaults.js` 里**，而是 `index.js` 用 `__dirname` 推导后单独赋值的一个字段。
+
+于是 v1.6.10 发布后用户照做（升级 → 拨开关 → 重启），同一个故障原样复发。**我当时只验证了「写出的文件里有 server/security/paths/app/webdav」，就据此宣布修好——没有验证最关键的那一步：用写出的文件重启。** `rootDir` 恰恰是唯一会崩的字段，而它不在我检查的清单里。这是本轮最该记住的：验证要跑完用户的完整路径（拨开关 → **重启**），不能停在中间产物看起来正确。
+
+### v1.6.11 的正解：让遮蔽不发生
 
 | 位置 | 改动 |
 | --- | --- |
-| `server.js` `/api/server-flags` | 写盘前用 `serverConfigDefaults` 补齐每一段。基准取自 `require('./server-config/defaults')`——**不是**内存里的 `config`，后者在遮蔽状态下本身就是残片，拿它当基准会把残片固化 |
-| `server.js` `assertConfigUsable()` | `require` 之后立即校验，缺段时报出文件名、遮蔽原因、两条可直接粘贴的修复命令 |
+| `server.js` | `require('./server-config/index.js')` —— **显式带 index.js**。Node 的补全顺序不再有机会让同名 json 抢走加载权。用户那份 json 仍由 `index.js` 的 `loadFromConfigFile()` 读出并覆盖到 defaults 之上，这才是它本来的设计语义 |
+| `server.js` `/api/server-flags` | 撤销「写全配置」，改回只写用户改动的那一段（与显式路径配套：写全既无必要，还会把 `defaultPassword` 之类的默认值落到磁盘） |
+| `server.js` `assertConfigUsable()` | 保留为兜底：`require` 之后校验，缺段或缺 `validate` 时报出文件名、遮蔽原因、两条修复命令。判据是 `rootDir` 为字符串**且** `validate` 是函数——只看 `rootDir` 的话，手写一个带 `rootDir` 的 json 能绕过并炸成 `config.validate is not a function` |
 | `sylph.sh` | 更新删除清单处注明 `server-config.json` 是用户文件、不在删除清单内，且 `rm -rf server-config` 不会消除遮蔽 |
 
-### 两条容易重犯的错误（已写进代码注释）
+### 三条容易重犯的错误（都已写进代码注释）
 
-1. **第一版修复写在了 `server-config/index.js` 里——那是死代码。** json 遮蔽时该文件根本不执行（实测：删掉 json 才看到模块顶层的 log 打印）。守卫必须放在**能看到实际加载结果**的位置，即 `server.js` 的 require 之后。
-2. **判据不能只看 `rootDir`。** 用户手写一份带 `"rootDir": "..."` 的 json 就能绕过，然后在更下游炸成 `config.validate is not a function`。现在判据是 `typeof rootDir === 'string' && typeof validate === 'function'`——`validate` 只有 `index.js` 会挂，用户 json 给不出来。
+1. **修复曾写在 `server-config/index.js` 里——那是死代码。** json 遮蔽时该文件根本不执行（实测：删掉 json 才看到模块顶层的 log 打印）。守卫必须放在**能看到实际加载结果**的位置，即 `server.js` 的 require 之后。
+2. **「把配置写全」这条路走不通**（见上）。
+3. **测试假绿**：断言「`assertConfigUsable` 被调用了」曾用 `indexOf('assertConfigUsable(config);')`，命中的是**注释里同一串字符**；把真正的调用点注释掉，全部测试照样绿。现在改成剥掉注释后再判断，并配一条真实启动的端到端。
 
-### 自己踩的两个测试坑（都已修，且都写进注释）
+### 测试与验证
 
-- **一条测试自己是假绿的**：断言「`assertConfigUsable` 被调用了」用的是 `indexOf('assertConfigUsable(config);')`，结果**匹配到了注释里的同一串字符**；把真正的调用点注释掉，6 条测试照样全绿。已改成**真实启动进程**的端到端断言——注释改不掉、函数删不掉。
-- **`fs.cpSync` 带 filter 在 macOS 上不可靠**：实测只对源根调用一次（返回不跳过后就不再递归），表现为「报告成功、目录为空」，最后报 `Cannot find module '…/server.js'`，一度让我以为是别的问题。改用 `tar` 拷贝。
-- 顺带：`PORT=0` 会被 `config.validate()` 判为无效端口（必须在 1–65535），服务在打印横幅前就退出——测试里传 `0` 会得到一片空白 stdout。
-
-### 验证
-
-- 全量 `node --test tests/*.test.js`：**379 pass / 0 fail**（新增 `tests/config-shadowing.test.js` 9 条，含 3 条真实启动的端到端）。
-- 变异 13 道全部变红（逐条破坏守卫与补齐逻辑），`server.js` 还原后复跑全绿。
-- 实测三态：无 `server-config.json` 正常启动；残片配置报人话且**不再**出现 `ERR_INVALID_ARG_TYPE`；手写 `rootDir` 也被拦下。
-- 未在本环境验证：用户那台服务器的 systemd 侧（`systemctl restart` 后是否稳定运行需他自己确认一次）。
+- `tests/config-shadowing.test.js` 11 条，含 4 条**真实启动进程**的端到端：残片存在时必须照常起来**且残片里的设置必须生效**（只断言「能起来」不够——「忽略该文件」也能通过）；拨开关写出的文件只含用户改动的那一段；**用写出的文件重启**（用户报告的原始路径）。
+- 全量 `node --test tests/*.test.js` 结果见下方「验证记录」。
+- 变异逐条破坏（require 改回隐式、守卫摘除、判据放宽、文案改动、写盘路径放宽、白名单扩大），每条都必须变红。
+- 本轮踩到的两个工具坑，都已写进注释：`fs.cpSync` 带 filter 在 macOS 上只对源根调用一次（「报告成功、目录为空」→ `Cannot find module`），改用 `tar`；泄漏的子进程会继承 stdout 管道，让外层 `out=$(node --test …)` 永远等不到关闭（实测卡 20 分钟），测试改为登记子进程并在退出前统一杀掉、脚本改用文件重定向 + `timeout`。
 
 ## 当前基线
 
-当前基线：只用 `main` 一个分支（策略见 `AGENTS.md` 第 8 条），本地与 `origin/main` 一致，代码基线是 v1.6.10 发布提交（本轮）。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.6.10`。历史见各版本 CHANGELOG 条目与文末两节；`v1.6.2`–`v1.6.8` 在此前的会话中发布，本段当时未跟着走（停在 v1.6.1），已按 v1.6.9 一轮重写——写基线的义务归每一轮发布收尾，不是可欠的。
+当前基线：只用 `main` 一个分支（策略见 `AGENTS.md` 第 8 条），本地与 `origin/main` 一致，代码基线是 v1.6.11 发布提交（本轮）。`package.json` / `version.json` / `CHANGELOG.json` 三处版本均为 `1.6.11`。历史见各版本 CHANGELOG 条目与文末两节；`v1.6.2`–`v1.6.8` 在此前的会话中发布，本段当时未跟着走（停在 v1.6.1），已按 v1.6.9 一轮重写——写基线的义务归每一轮发布收尾，不是可欠的。
 
 > 基线只锚定**发布提交与版本号**，不写「最新提交是哪个」：把 tip 的 hash 写进文档，会被承载它的那一笔提交本身顶掉一位——上一版就写成了 `d9713f8`，而包含这行字的提交是 `9eafbb5`。锚定不变的发布提交就不会漂。
 

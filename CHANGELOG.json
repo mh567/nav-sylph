@@ -1,6 +1,26 @@
 {
   "versions": [
     {
+      "version": "1.6.11",
+      "date": "2026-10-04",
+      "summary": "真正修好 v1.6.10 未生效的启动崩溃：配置文件遮蔽配置目录",
+      "highlights": [
+        "在后台拨自签证书开关后重启，不再导致服务起不来（v1.6.10 没修住）",
+        "根因是配置文件遮蔽了配置目录——改为显式路径加载，让遮蔽不发生",
+        "配置文件里的设置仍然照常生效，不再有半死不活的中间状态"
+      ],
+      "changes": {
+        "fix": [
+          "v1.6.10 的修法（把配置写全）补不出 rootDir——它不在 defaults.js 里，是 server-config/index.js 用 __dirname 推导后单独赋值的。于是遮蔽依然发生、服务依然起不来。改为在 server.js 用显式路径 require('./server-config/index.js')：Node 的补全顺序是 .js → .json → .node → 目录，显式写法让用户那份 json 永远抢不走加载权",
+          "配置文件改回只写用户改动的那一段（与显式路径配套）：写全既无必要，还会把 defaultPassword 之类的默认值落到磁盘上"
+        ],
+        "improve": [
+          "兜底守卫现在连 validate 一并检查：手写一份带 rootDir 的 json 曾能绕过，然后在更下游炸成 config.validate is not a function",
+          "测试改为真实启动进程：残片存在时服务必须照常起来、且残片里的设置必须仍然生效（v1.6.10 的守卫测试只断言了失败路径，测不出这个方向）"
+        ]
+      }
+    },
+    {
       "version": "1.6.10",
       "date": "2026-10-04",
       "summary": "修后台自签开关导致的服务无法启动：那份配置文件会遮蔽配置目录，且写出的内容不完整",
@@ -13,7 +33,8 @@
         "fix": [
           "后台保存自签证书开关时写出的是残缺的 server-config.json（只有 security 一段），而这个文件名会遮蔽 server-config/ 目录（Node 解析 .js → .json → 目录），于是配置目录不再执行、defaults 不再合并，rootDir 消失，重启即崩。用户升级后遇到的正是这个形状的文件，且它由该端点写出",
           "现在保存时会补齐 defaults 的每一个段再落盘（只补缺失的，不覆盖已改过的设置），遮蔽状态下也拿得到完整配置",
-          "配置加载后立即校验，缺段时报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 ERR_INVALID_ARG_TYPE"
+          "配置加载后立即校验，缺段时报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 ERR_INVALID_ARG_TYPE",
+          "⚠️ 本条实际未生效：那次只把配置写全，而 rootDir 不在 defaults.js 里、补不出来，同一故障在重启后复发。真正修好是在 v1.6.11（改用显式路径 require，让遮蔽根本不发生）"
         ],
         "improve": [
           "错误里逐个列出缺失的配置段；手写 rootDir 的 json 也会被拦下，避免退化成更难懂的 config.validate is not a function",

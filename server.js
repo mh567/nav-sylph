@@ -6,7 +6,18 @@ const path = require('path');
 const http = require('http');
 const bcrypt = require('bcrypt');
 
-const config = require('./server-config');
+// ⚠️ 必须写成 './server-config/index.js'（显式带 index.js），不能写 './server-config'。
+//
+// Node 解析 `require('./server-config')` 的顺序是 `.js` → `.json` → `.node` → **目录**，
+// 所以安装目录根下的 server-config.json（用户配置，由后台自签开关写出）会**遮蔽**
+// server-config/ 目录：index.js 一行都不执行，defaults 不被合并，rootDir 也不会被
+// 赋值（它不在 defaults.js 里，是 index.js 单独加的），于是服务启动即崩。
+//
+// 写成显式路径后，加载的永远是目录模块，用户那份 json 仍由 index.js 的
+// loadFromConfigFile() 读出并覆盖到 defaults 之上——这才是它本来的设计语义。
+// 1.6.10 曾试图用「写全配置」绕开遮蔽，但 rootDir 不在 defaults 里、补不出来，
+// 于是同一个故障复发；让遮蔽不发生才是正解。
+const config = require('./server-config/index.js');
 
 // 判定「这份配置不是被遮蔽后的残片」所需的段。
 //
@@ -18,13 +29,8 @@ const config = require('./server-config');
 // 顺序按最早被使用排：rootDir 在文件顶部就被 path.join 用到，其后是 paths。
 const REQUIRED_CONFIG_SECTIONS = ['rootDir', 'server', 'paths', 'security'];
 
-// defaults 的独立引用，供 /api/server-flags 写出**完整**配置时当基准。
-//
-// 为什么必须直接 require 而不能用上面的 `config`：json 遮蔽目录时 `config`
-// 本身就是那份残片（没有 app/webdav，且 server/paths 可能也缺），拿它当基准
-// 会把残片固化到磁盘，越写越坏。而 './server-config/defaults' 是另一条解析路径
-// （显式带子路径），不受同名遮蔽影响——实测确认它始终返回完整的 5 个段。
-const serverConfigDefaults = require('./server-config/defaults');
+// defaults 兜底用的段清单见下方 REQUIRED_CONFIG_SECTIONS；此处不再单独 require defaults
+// （1.6.10 曾用它补齐配置，那条路已废弃——rootDir 不在 defaults 里，补不出来）。
 
 // ⚠️ 为什么校验必须在这里，而不能放进 server-config/index.js：
 //
@@ -929,36 +935,22 @@ app.post('/api/server-flags', rateLimit, requireAdmin, async (req, res) => {
         }
 
         const file = path.join(config.rootDir, 'server-config.json');
-        // ⚠️ 写出去的必须是**完整**配置，不是只有改动的那一段。
-        //
-        // 这个文件名会遮蔽 server-config/ 目录（Node 解析 .js → .json → 目录），
-        // 所以它一旦存在，server-config/index.js 就不执行，defaults 也不再被合并——
-        // 此刻磁盘上这个文件就是全部配置。只写 {"security":{...}} 的话，
-        // rootDir/server/paths 会凭空消失，下次重启第一个 path.join(config.rootDir, …)
-        // 就收到 undefined，服务起不来（实测即本轮故障：用户那份残片形状与此完全一致，
-        // 且它正是这个端点写出来的）。
-        //
-        // 基准取自 server-config/defaults.js 而不是内存里的 config：
-        // 后者在遮蔽状态下本身就是残片，拿它当基准会把残片固化下来。
-        // require('./server-config/defaults') 走的是另一条解析路径，不受遮蔽影响。
+        // 只写用户改动的那一段即可：这个文件在 require 侧已不再遮蔽 server-config/ 目录
+        // （见文件顶部对 './server-config/index.js' 显式路径的说明），
+        // index.js 会把它合并到 defaults 之上，缺的段由默认值补齐。
+        // 不要试图把整份配置写进来——defaults 里没有 rootDir（它由 index.js 单独赋值），
+        // 写全也补不出它，反而把 defaultPassword 之类的默认值落到磁盘上。
         let existing = {};
         try {
             existing = JSON.parse(await fs.readFile(file, 'utf8'));
         } catch {
             // 文件不存在是正常路径：第一次通过网页改设置
         }
+        // 文件内容若是数组/null/标量，先归位再写，否则会写出形状不对的 JSON。
         if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
             existing = {};
         }
-
-        // 补齐 defaults 里的每一个段，保证遮蔽状态下也拿得到完整配置。
-        for (const [key, value] of Object.entries(serverConfigDefaults)) {
-            if (existing[key] === undefined) {
-                existing[key] = structuredClone(value);
-            }
-        }
-
-        if (!existing.security || typeof existing.security !== 'object') {
+        if (!existing.security || typeof existing.security !== 'object' || Array.isArray(existing.security)) {
             existing.security = {};
         }
         Object.assign(existing.security, updates);

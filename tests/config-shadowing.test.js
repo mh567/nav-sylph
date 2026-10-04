@@ -1,118 +1,200 @@
 const test = require('node:test');
+const { after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
 const SERVER_JS = path.join(ROOT, 'server.js');
-const DEFAULTS_JS = path.join(ROOT, 'server-config', 'defaults.js');
+
+// 所有被启动的服务进程都登记在这里，退出前一律杀掉。
+//
+// ⚠️ 不这么做会挂死外层脚本：泄漏的子进程继承了本进程的 stdout 管道，
+// 于是 `out=$(node --test …)` 这种命令替换永远等不到管道关闭——实测卡了 20 分钟。
+// 各测试自己的 t.after 是正常路径，这里是任何异常路径的兜底。
+const spawned = new Set();
+function killAll() {
+    for (const proc of spawned) {
+        try { proc.kill('SIGKILL'); } catch { /* 已退出 */ }
+    }
+    spawned.clear();
+}
+after(killAll);
+process.on('exit', killAll);
 
 // ========== 实测故障：server-config.json 遮蔽 server-config/ 目录 ==========
 //
-// 一份只写了 {"security":{"selfSignedCert":false}} 的残片放在安装目录根下。
-// Node 解析 require('./server-config') 的顺序是 .js → .json → 目录，于是它胜出，
-// server-config/index.js 一行都不执行；config 因此少了 rootDir，
-// 第一个用到它的 path.join(config.rootDir, 'config.json') 收到 undefined，
-// 抛出 ERR_INVALID_ARG_TYPE —— 指向 path.join，不提配置文件，也不提同名遮蔽。
+// 安装目录根下的 server-config.json 会**遮蔽** server-config/ 目录
+// （Node 解析 .js → .json → .node → 目录）。而那份文件是后台「自签证书」开关
+// 自己写出来的（首次保存时 existing 为 {}，只补 security），于是：
+//   · index.js 一行都不执行，defaults 不被合并
+//   · rootDir 也不会被赋值（它不在 defaults.js 里，是 index.js 单独加的）
+//   · 服务启动即崩，报 ERR_INVALID_ARG_TYPE，指向 path.join
 //
-// 而那份残片不是外部残留：POST /api/server-flags 写出来的就是它
-// （首次改设置时 existing 初始为 {}，只补 security）。见本文件末尾的回归测试。
+// 1.6.10 试过「把配置写全」来绕开，但 rootDir 补不出来，同一故障复发。
+// 正解是 server.js 用显式路径 require('./server-config/index.js')，让遮蔽不发生。
+// 下面第一条测试就是这条修复的行为证明：残片存在时服务必须照常起来，
+// 且那份残片必须仍被读取并应用（不能被无声忽略）。
 
-/**
- * 把项目拷进临时目录并按指定形状放置 server-config.json，然后真实启动 server.js。
- *
- * 刻意走**真实进程**而不是匹配源码：早先那条「断言 assertConfigUsable 被调用了」
- * 的测试是假绿的——它用 indexOf 找 'assertConfigUsable(config);'，结果匹配到了
- * 注释里的同一串字符，把调用点注释掉它照样全绿。真实启动不存在这个问题。
- *
- * 拷贝用 tar 而不是 fs.cpSync：实测在 macOS 上 fs.cpSync 带 filter 时只会对源根
- * 调用一次（返回不跳过后就不再递归），结果是「报告成功、目录为空」，
- * 表现为 Cannot find module '…/server.js'。tar 的行为在两个平台都可预期。
- */
-function bootWith(userConfig) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-shadow-'));
-    // 走临时文件而不是管道：spawnSync 传 Buffer 给另一个 spawnSync 的 stdin
-    // 在两处 encoding 不一致时会静默拿到空输入（实测报「拷贝项目失败」且 stderr 为空）。
+/** 拷项目进临时目录（tar，见下方说明），可选预置一份 server-config.json。 */
+function stage(userConfig) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-cfg-'));
+    // 拷贝用 tar 而不是 fs.cpSync：实测 macOS 上 cpSync 带 filter 只对源根调用一次
+    // （返回不跳过后就不再递归），结果是「报告成功、目录为空」，
+    // 表现为 Cannot find module '…/server.js'，极难辨认。
     const tarball = path.join(dir, 'project.tar');
     const copy = spawnSync('tar', [
         '--exclude=./node_modules', '--exclude=./.git', '--exclude=./logs',
-        // 运行时私有文件与真实配置：不能带进测试环境，也不能覆盖我们要摆的形状
+        // 运行时私有文件与真实配置：不能带进测试环境，也不能覆盖预置的形状
         '--exclude=./.admin-password.json', '--exclude=./.modules.json',
         '--exclude=./config.json', '--exclude=./favorites.json',
         '--exclude=./server-config.json',
         '--exclude=*.db', '--exclude=*.db-wal', '--exclude=*.db-shm',
         '-cf', tarball, '-C', ROOT, '.'
     ], { encoding: 'utf8' });
-    if (copy.status !== 0) {
-        throw new Error('拷贝项目失败: ' + copy.stderr);
-    }
+    if (copy.status !== 0) throw new Error('拷贝项目失败: ' + copy.stderr);
     const extract = spawnSync('tar', ['-xf', tarball, '-C', dir], { encoding: 'utf8' });
     fs.rmSync(tarball, { force: true });
-    if (extract.status !== 0) {
-        throw new Error('解包失败: ' + extract.stderr);
-    }
+    if (extract.status !== 0) throw new Error('解包失败: ' + extract.stderr);
     fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'));
 
-    if (userConfig !== null) {
+    if (userConfig !== undefined && userConfig !== null) {
         fs.writeFileSync(path.join(dir, 'server-config.json'), JSON.stringify(userConfig, null, 2));
     }
-
-    const res = spawnSync(process.execPath, ['server.js'], {
-        cwd: dir,
-        encoding: 'utf8',
-        timeout: 20000,
-        // 端口必须落在 1–65535：传 0 会被 config.validate() 判为无效端口
-        // （server.js 末尾会调它），服务在打印横幅前就退出。
-        env: { ...process.env, PORT: '47311', HOST: '127.0.0.1' }
-    });
-    return { dir, stdout: res.stdout || '', stderr: res.stderr || '', status: res.status };
+    return dir;
 }
 
-test('残片配置下服务启动即报人话：点名文件、说清遮蔽、给出修复命令', (t) => {
-    // 用户机器上实测拿到的就是这个形状——它由 /api/server-flags 写出。
-    const { dir, stderr, status } = bootWith({ security: { selfSignedCert: false } });
+function freePort() {
+    return new Promise((resolve, reject) => {
+        const srv = net.createServer();
+        srv.on('error', reject);
+        srv.listen(0, '127.0.0.1', () => {
+            const { port } = srv.address();
+            srv.close(() => resolve(port));
+        });
+    });
+}
+
+/**
+ * 真启动一个服务进程并等它就绪。
+ *
+ * 用 spawn 而非 spawnSync：spawnSync 会阻塞到进程退出，没法在运行期间发 HTTP。
+ * 就绪判据是 stdout 出现横幅——这同时是「残片没有让它崩」的观测点。
+ */
+async function startServer(dir) {
+    const port = await freePort();
+    const proc = spawn(process.execPath, ['server.js'], {
+        cwd: dir,
+        env: { ...process.env, PORT: String(port), HOST: '127.0.0.1' },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    spawned.add(proc);
+    let output = '';
+    proc.stdout.on('data', (d) => { output += d; });
+    proc.stderr.on('data', (d) => { output += d; });
+
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+        if (proc.exitCode !== null) {
+            throw new Error(`服务提前退出（code=${proc.exitCode}）：\n${output}`);
+        }
+        if (output.includes('Nav Sylph Server')) {
+            return { proc, port, base: `http://127.0.0.1:${port}`, get output() { return output; } };
+        }
+        await new Promise((r) => setTimeout(r, 60));
+    }
+    proc.kill('SIGKILL');
+    throw new Error(`服务 15s 内未就绪：\n${output}`);
+}
+
+function stopServer(srv) {
+    if (srv && srv.proc && srv.proc.exitCode === null) {
+        srv.proc.kill('SIGKILL');
+        spawned.delete(srv.proc);
+    }
+}
+
+/** 拨自签开关。默认管理密码见 server-config/defaults.js 的 defaultPassword。 */
+async function saveSelfSigned(srv) {
+    return fetch(`${srv.base}/api/server-flags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Password': 'admin123' },
+        body: JSON.stringify({ selfSignedCert: true })
+    });
+}
+
+// ========== 核心：残片存在时服务必须照常起来，且残片必须被应用 ==========
+
+test('残片 server-config.json 不再让服务起不来，且其中设置确实生效', async (t) => {
+    // 用户那份的形状：只有 security 一段，由后台开关写出。
+    const dir = stage({ security: { selfSignedCert: true } });
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-    assert.notEqual(status, 0, '残片配置必须让服务起不来（否则守卫没拦住）');
-    assert.match(stderr, /服务配置加载失败/, '必须是自有错误文案');
-    assert.match(stderr, /server-config\.json/, '必须点名那个配置文件');
-    // 精确匹配那句解释，而不是裸测 /遮蔽/：源码注释里「遮蔽」出现多次
-    // （本文件开头就警告过这个坑），裸词断言会匹配到注释而恒绿。
-    assert.match(stderr, /遮蔽了 server-config\/ 目录/, '必须说清是同名遮蔽目录');
-    assert.match(stderr, /server-config\.example\.json/, '必须指向正确的模板');
-    assert.match(stderr, /assertConfigUsable/, '栈里应能看到守卫自己，便于定位');
-    // 关键回归：不能再退回到那个指不到真因的类型错误。
-    assert.doesNotMatch(stderr, /ERR_INVALID_ARG_TYPE/,
-        '不能抛 path.join 的类型错误——那正是本轮要消灭的失败模式');
-    assert.doesNotMatch(stderr, /at Object\.join/, '不应再崩在 path.join 上');
+    const srv = await startServer(dir);              // 起不来会在这里抛错
+    t.after(() => stopServer(srv));
+
+    // 不但要能起，还要证明那份 json 真被读了——否则「忽略它」也能通过上面这步。
+    const res = await fetch(`${srv.base}/api/server-flags`);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.selfSignedCert, true,
+        '残片里的 selfSignedCert 必须被应用（说明 index.js 合并了该文件，而不是忽略它）');
 });
 
-test('手写 rootDir 也拦得住——否则会退化成 config.validate is not a function', (t) => {
-    // 只查 rootDir 的话这份 json 会通过守卫，然后在更下游炸成更难懂的错误。
-    const { dir, stderr, status } = bootWith({ rootDir: '/opt/nav-sylph' });
+test('手写 rootDir 的 json 不再拦住服务，且 rootDir 以真实安装目录为准', async (t) => {
+    // 带 rootDir 的 json 曾绕过守卫、然后在更下游炸成 config.validate is not a function。
+    const dir = stage({ rootDir: '/nonexistent-should-be-overridden', security: { selfSignedCert: true } });
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-    assert.notEqual(status, 0);
-    assert.match(stderr, /服务配置加载失败/, '必须拦在守卫上');
-    assert.doesNotMatch(stderr, /validate is not a function/,
-        '不能放行到下游才炸');
+    const srv = await startServer(dir);
+    t.after(() => stopServer(srv));
+
+    // index.js 在合并之后无条件用 __dirname 推导的 ROOT_DIR 覆盖 rootDir，
+    // 所以数据文件必须落在真实安装目录，而不是 json 里写的那个假路径。
+    assert.ok(fs.existsSync(path.join(dir, 'config.json')), 'config.json 必须落在真实安装目录');
+    assert.equal(fs.existsSync('/nonexistent-should-be-overridden'), false,
+        '绝不能采用 json 里手写的 rootDir');
 });
 
-test('没有 server-config.json 时正常启动（守卫不得误伤）', (t) => {
-    const { dir, stdout, status } = bootWith(null);
+test('没有 server-config.json 时正常启动（守卫不得误伤）', async (t) => {
+    const dir = stage(null);
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const srv = await startServer(dir);
+    t.after(() => stopServer(srv));
+    assert.ok(fs.existsSync(path.join(dir, 'config.json')), '应正常初始化数据文件');
+});
+
+// ========== 用户报告的完整往返：拨开关 → 重启 ==========
+
+test('拨自签开关后重启不再崩溃（用户报告的原始路径）', async (t) => {
+    const dir = stage(null);
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-    assert.match(stdout, /Nav Sylph Server/, '默认路径必须照常起来');
-    assert.doesNotMatch(stdout, /服务配置加载失败/, '守卫不该在正常路径上触发');
+    const first = await startServer(dir);
+    const res = await saveSelfSigned(first);         // 拨开关：写 server-config.json
+    assert.equal(res.status, 200, '保存开关应成功');
+    stopServer(first);
+
+    // 写出的文件应只含用户改动的那一段，不该把 defaults 整份落到磁盘。
+    const written = JSON.parse(fs.readFileSync(path.join(dir, 'server-config.json'), 'utf8'));
+    assert.deepEqual(Object.keys(written), ['security'],
+        '只写用户改动的那一段——写全也补不出 rootDir，反而会落下 defaultPassword 等默认值');
+    assert.equal(written.security.selfSignedCert, true);
+    assert.doesNotMatch(JSON.stringify(written), /defaultPassword/,
+        '不得把管理密码默认值写进这个文件');
+
+    // 关键一步：用这份文件重启。这正是用户手动重启后崩掉的场景。
+    const second = await startServer(dir);
+    t.after(() => stopServer(second));
+    const flags = await (await fetch(`${second.base}/api/server-flags`)).json();
+    assert.equal(flags.selfSignedCert, true, '重启后开关设置必须仍然生效');
 });
 
-// ========== 缺失的段被逐个列出 ==========
-//
-// 端到端跑得慢且不适合逐条枚举键名，这一层用抽取的真函数覆盖。
-// 抽取而非源文本匹配：JSDoc 与 require 处的长注释都提到过这个函数名。
+// ========== 兜底守卫（require 若被改回隐式形式，上面几条会先逮住） ==========
 
 function loadGuard(userFileExists) {
     const src = fs.readFileSync(SERVER_JS, 'utf8');
@@ -123,16 +205,10 @@ function loadGuard(userFileExists) {
 
     const fnStart = src.indexOf('function assertConfigUsable(');
     assert.ok(fnStart > -1, 'server.js 必须定义 assertConfigUsable');
-    // 按缩进配对花括号，而不是找 '\n}\n'：函数体里一旦出现顶格 }（比如模板
-    // 字符串里换行），后者会截断到错误的位置。实测那种注入会让 4 条测试红。
     const fnEnd = findFunctionEnd(src, fnStart);
     assert.ok(fnEnd > fnStart, 'assertConfigUsable 必须有可定位的结尾');
 
-    const snippet = [
-        src.slice(constStart, constEnd),
-        src.slice(fnStart, fnEnd)
-    ].join('\n');
-
+    const snippet = [src.slice(constStart, constEnd), src.slice(fnStart, fnEnd)].join('\n');
     const sandbox = {
         path: require('node:path'),
         __dirname: ROOT,
@@ -143,7 +219,8 @@ function loadGuard(userFileExists) {
     return sandbox.__guard;
 }
 
-// 从 'function xxx(' 处开始，按大括号配对找结尾，跳过字符串/模板/注释里的花括号。
+// 从函数名处按花括号配对找结尾，跳过字符串/模板/注释里的花括号。
+// 不用 '\n}\n'：函数体里一旦出现顶格 }（模板字符串换行）就会截断到错位置。
 function findFunctionEnd(src, start) {
     let depth = 0;
     let seen = false;
@@ -158,115 +235,117 @@ function findFunctionEnd(src, start) {
     return -1;
 }
 
-test('缺失的段被逐个列出，便于判断残片缺了什么', () => {
+test('守卫仍是有效兜底：拿到残片时逐个列出缺失的段', () => {
     const guard = loadGuard(true);
     assert.throws(
-        () => guard({ server: { port: 4000 } }),
+        () => guard({ security: {} }),
         (err) => {
-            // 只看「缺少 …」这一段，别拿整条消息匹配——后面的指引里必然出现
-            // server-config.json（文件名含 server），会误判。
+            assert.match(err.message, /服务配置加载失败/, '必须是自有错误文案');
+            assert.match(err.message, /遮蔽了 server-config\/ 目录/, '必须说清遮蔽');
+            // 只看「缺少 …」那段：后面的指引里必然出现 server-config.json（含 server），
+            // 拿整条消息匹配会误判。
             const listed = /（缺少 ([^）]*)）/.exec(err.message);
-            assert.ok(listed, '消息里应有一段列出缺失的键');
+            assert.ok(listed, '应有一段列出缺失的键');
             const missing = listed[1].split(',').map((s) => s.trim()).sort();
-            assert.deepEqual(missing, ['paths', 'rootDir', 'security'],
-                '应恰好列出这三个，且不含已存在的 server');
+            // 段本身缺着时不再追加 validate()——对用户是噪音，那条只在段都齐了
+            // 却仍缺 validate（手写 rootDir 的形状）时才有信息量，见下一条。
+            assert.deepEqual(missing, ['paths', 'rootDir', 'server'],
+                '应恰好列出缺失的段');
             return true;
         }
     );
 });
 
-test('完整配置一律放行——校验不能误伤正常运行', () => {
+test('段都齐但缺 validate 时，明确点出 validate()', () => {
+    // 手写一份带 rootDir/server/paths/security 的 json 就是这个形状：
+    // 单看段名「齐了」，但没有 index.js 挂上的 validate，放过去会炸在更下游。
     const guard = loadGuard(true);
-    const real = require(path.join(ROOT, 'server-config'));
-    assert.equal(typeof real.rootDir, 'string', '真实配置必须有 rootDir');
-    assert.equal(typeof real.validate, 'function', '真实配置必须有 validate');
-    assert.doesNotThrow(() => guard(real), '真实配置必须原样通过');
+    assert.throws(
+        () => guard({ rootDir: '/x', server: {}, paths: {}, security: {} }),
+        (err) => {
+            const listed = /（缺少 ([^）]*)）/.exec(err.message);
+            assert.ok(listed, '应有一段列出缺失的键');
+            assert.deepEqual(listed[1].split(',').map((s) => s.trim()), ['validate()'],
+                '段齐时唯一缺的就是 validate()');
+            return true;
+        }
+    );
 });
 
-// ========== 遮蔽顺序是 Node 的行为，不是我们的选择 ==========
-//
-// 守卫与「写出完整配置」的修复都依赖「json 优先于目录」。若哪天这个前提不成立，
-// 两者会静默失效——所以把这个前提本身也钉住。
+test('守卫不误伤完整配置', () => {
+    const guard = loadGuard(true);
+    // 这里必须用显式路径 require，否则在遮蔽场景下会读到 json。
+    const real = require(path.join(ROOT, 'server-config', 'index.js'));
+    assert.equal(typeof real.rootDir, 'string');
+    assert.equal(typeof real.validate, 'function');
+    assert.doesNotThrow(() => guard(real));
+});
 
-test('实测 Node 解析：server-config.json 确实优先于 server-config/ 目录', (t) => {
+// ========== 钉住修复本身：require 必须是显式路径 ==========
+
+test('server.js 用显式 index.js 加载配置（修复的落点）', () => {
+    // 这条是「提示」而非实质守卫：实质证明是上面那几条真实启动的测试
+    // ——require 一旦改回隐式形式，残片会让服务崩掉，它们立即变红。
+    // 保留它是为了让失败信息直接点出原因。
+    const src = fs.readFileSync(SERVER_JS, 'utf8');
+    const call = /const config = require\('\.\/server-config[^']*'\)/.exec(src);
+    assert.ok(call, '必须能定位配置的 require');
+    assert.equal(call[0], "const config = require('./server-config/index.js')",
+        '必须显式带 index.js——写成 ./server-config 会让同名 json 遮蔽目录');
+});
+
+test('守卫真的被调用——剥掉注释后仍能找到那行', () => {
+    // 改成显式路径后守卫已是兜底：把它注释掉，服务照常起来，真实启动的测试
+    // 一条都不会红。所以要单独钉住「它确实被调用」。
+    //
+    // 必须在**剥掉注释**后判断：早先那版用 src.indexOf('assertConfigUsable(config);')
+    // 直接找，命中的是注释里同一串字符，把真正的调用点注释掉仍全绿（假绿）。
+    const src = stripComments(fs.readFileSync(SERVER_JS, 'utf8'));
+
+    const requireAt = src.indexOf("require('./server-config/index.js')");
+    const callAt = src.search(/^[ \t]*assertConfigUsable\(config\);[ \t]*$/m);
+    assert.ok(requireAt > -1, '必须能定位配置的 require');
+    assert.ok(callAt > -1, 'assertConfigUsable(config) 必须作为真代码存在（注释不算）');
+    assert.ok(callAt > requireAt, '调用必须在 require 之后——否则传进去的是 undefined');
+});
+
+// 去掉块注释与整行注释。只删**整行**的 //，避免把字符串里的
+// "http://…" 一起吃掉（那会让断言对源码里的 URL 产生误判）。
+function stripComments(src) {
+    return src
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+test('前提：Node 解析确实让 server-config.json 优先于同名目录', (t) => {
+    // 显式路径这条修复的正确性建立在这个前提上；前提变了这段注释就该重写。
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-probe-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
     fs.mkdirSync(path.join(dir, 'server-config'));
-    fs.writeFileSync(
-        path.join(dir, 'server-config', 'index.js'),
-        'module.exports = { rootDir: "/from-index", validate: () => {} };\n'
-    );
+    fs.writeFileSync(path.join(dir, 'server-config', 'index.js'),
+        'module.exports = { rootDir: "/from-index", validate: () => {} };\n');
     const jsonPath = path.join(dir, 'server-config.json');
     fs.writeFileSync(jsonPath, '{"security":{"selfSignedCert":false}}');
 
-    // macOS 上 tmpdir 是 /var/…（符号链接到 /private/var/…），require.resolve
-    // 返回 realpath，两边都归一化再比，否则这条断言在 mac 上恒假。
-    const resolved = fs.realpathSync(require.resolve(path.join(dir, 'server-config')));
-    assert.equal(resolved, fs.realpathSync(jsonPath), 'json 必须胜出，否则守卫的前提不成立');
+    // macOS 的 tmpdir 是 /var/…（符号链接到 /private/var/…），require.resolve 返回
+    // realpath，两边都归一化再比，否则这条断言在 mac 上恒假。
+    const implicit = fs.realpathSync(require.resolve(path.join(dir, 'server-config')));
+    assert.equal(implicit, fs.realpathSync(jsonPath),
+        '隐式 require 会被 json 抢走——这正是必须写显式路径的原因');
 
-    const loaded = require(resolved);
-    assert.equal(loaded.rootDir, undefined, '残片给不出 rootDir，这正是守卫的判据');
-    assert.deepEqual(Object.keys(loaded), ['security']);
+    // 显式路径不受影响，这是修复的支点。
+    const explicit = fs.realpathSync(require.resolve(path.join(dir, 'server-config', 'index.js')));
+    assert.equal(explicit, fs.realpathSync(path.join(dir, 'server-config', 'index.js')));
+    assert.equal(typeof require(explicit).rootDir, 'string');
 });
-
-test('require("./server-config/defaults") 不受同名遮蔽影响', (t) => {
-    // /api/server-flags 靠这个引用当基准，把完整配置写回磁盘。
-    // 若它也被遮蔽，写出去的仍是残片——整个修复就垮了。
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'defaults-probe-'));
-    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-
-    fs.mkdirSync(path.join(dir, 'server-config'));
-    fs.cpSync(DEFAULTS_JS, path.join(dir, 'server-config', 'defaults.js'));
-    fs.writeFileSync(path.join(dir, 'server-config.json'), '{"security":{}}');
-
-    const defaults = require(path.join(dir, 'server-config', 'defaults.js'));
-    assert.deepEqual(
-        Object.keys(defaults).sort(),
-        ['app', 'paths', 'security', 'server', 'webdav'],
-        '带显式子路径的 require 必须拿到完整的 defaults'
-    );
-});
-
-// ========== 真正的根因：应用自己会写出遮蔽文件 ==========
-//
-// 上面三条守卫是「症状看得见」。这一节修的是「症状不再发生」：
-// POST /api/server-flags 首次改设置时 existing 初始为 {}，只补 security，
-// 于是它写出的文件恰好就是那份让服务起不来的残片。
-
-test('写出的是完整配置——不再只写改动的那一段', () => {
-    const src = fs.readFileSync(SERVER_JS, 'utf8');
-    const routeStart = src.indexOf("app.post('/api/server-flags'");
-    assert.ok(routeStart > -1, '必须能定位 /api/server-flags 路由');
-    const routeEnd = src.indexOf('\n});', routeStart);
-    assert.ok(routeEnd > routeStart, '路由必须有可定位的结尾');
-    const route = src.slice(routeStart, routeEnd);
-
-    // 基准必须来自 defaults，而不是内存里的 config（后者在遮蔽状态下就是残片）。
-    assert.match(route, /serverConfigDefaults/, '补齐段时必须以 defaults 为基准');
-    assert.match(route, /for \(const \[key, value\] of Object\.entries\(serverConfigDefaults\)\)/,
-        '必须遍历 defaults 的每个段补齐，而不是只处理 security');
-
-    // 补齐的条件是「该段缺失」，不能是「无条件覆盖」——否则会把用户已改的端口冲掉。
-    assert.match(route, /if \(existing\[key\] === undefined\)/,
-        '只在缺段时补默认值，不得覆盖用户已有的设置');
-
-    // 写盘前必须确保 existing 是普通对象。
-    assert.match(route, /Array\.isArray\(existing\)/,
-        'existing 若是数组或 null，必须先归位，否则 Object.entries 会写出怪东西');
-});
-
-// ========== 白名单仍然有效 ==========
-//
-// 补齐 defaults 之后，写出的文件里会包含 defaultPassword 等敏感默认值。
-// 它们来自 defaults.js、本就是公开可读的，但**绝不能**因此放开白名单。
 
 test('可写白名单仍只有 selfSignedCert', () => {
     const src = fs.readFileSync(SERVER_JS, 'utf8');
     const m = /WRITABLE_SERVER_FLAGS = new Set\(\[([^\]]*)\]\)/.exec(src);
     assert.ok(m, '必须能读到白名单定义');
     const flags = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-    assert.deepEqual(flags, ['selfSignedCert'], '白名单不得因为补齐逻辑而扩大');
+    assert.deepEqual(flags, ['selfSignedCert'], '白名单不得被扩大');
     for (const forbidden of ['defaultPassword', 'adminPasswordFile']) {
         assert.doesNotMatch(src, new RegExp(`WRITABLE_SERVER_FLAGS[^\\n]*${forbidden}`),
             `${forbidden} 绝不能变成网页可写`);
