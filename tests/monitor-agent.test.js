@@ -86,7 +86,11 @@ test('agent 二进制可执行，自报版本与协议一致', (t) => {
         return;
     }
     const out = execFileSync(bin, ['version'], { encoding: 'utf8' });
-    assert.match(out, /nav-agent v1\b/, '自报版本');
+    // ⚠️ 这里原先断言 /nav-agent v1\b/，那是**协议**版本被当成了整个版本号
+    // （老格式把两者印在一起）。软件版本与协议版本拆开之后，
+    // 这一行必须同时点到两个：软件版本由构建期注入，协议版本恒为 1。
+    assert.match(out, /^nav-agent (dev|\d+(\.\d+)*)\s*（协议 v1，/,
+        '自报软件版本与协议版本');
     assert.ok(out.includes(`${process.platform}/${process.arch}`), '自报平台');
 });
 
@@ -1249,6 +1253,154 @@ test('磁盘数据两端都采集，且口径一致', () => {
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     assert.match(css, /\.module-panel-address-host\s*\{/, '地址条有样式');
     assert.match(css, /\.module-panel-list-host\s*\{/, '概览里的地址有样式');
+});
+
+test('软件版本与协议版本是两件事，且软件版本由构建期注入', () => {
+    // ⚠️ 这两个混用会让「升级了 agent」变成「协议不一致」，
+    // 而指标字段一个都没变——服务端会报一个用户无法理解的错误。
+    assert.match(goSource, /const VERSION = 1/, '协议版本恒为 1');
+    assert.match(goSource, /var buildVersion = "dev"/, '软件版本独立、可注入');
+    // 缺省回落 dev：让「从源码直接 go build 的产物」能被识别出来，
+    // 而不是伪装成某个正式版本。
+    assert.match(goSource, /func agentVersion\(\) string \{[\s\S]{0,200}?return "dev"/,
+        '未注入时回落 dev');
+
+    // build-agent.sh 必须真的从 version.json 读，而不是硬编码
+    assert.match(buildSh, /version\.json/, '构建时读 version.json');
+    assert.match(buildSh, /main\.buildVersion=/, '通过 -X 注入');
+    // ⚠️ 少了这条注入，产物会自报 dev，后台永远提示「有新版」——
+    // 而用户升了三次都是同一个 dev。
+});
+
+test('agent 能自升级，且三道校验都在替换之前', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) { t.skip('未构建 agent 二进制'); return; }
+
+    const usage = execFileSync(bin, ['help'], { encoding: 'utf8' });
+    assert.match(usage, /nav-agent upgrade/, 'usage 里有 upgrade');
+    assert.match(usage, /amd64 \/ arm64 \/ armv7/, '说明支持哪些架构');
+
+    // --- version --raw：机器可读入口 ---
+    // ⚠️ 这条是被实测逼出来的：upgrade 最初解析人类可读那行，
+    // 按空白切第 2 段拿到的是 "1.6.7（协议"，然后被当版本号去比较。
+    // 任何一次改文案都会静默弄坏它，所以机器可读的字段必须有自己的入口。
+    const raw = execFileSync(bin, ['version', '--raw'], { encoding: 'utf8' }).trim();
+    assert.match(raw, /^(dev|\d+(\.\d+)*)$/, `version --raw 只输出版本号（实际 ${raw}）`);
+    const human = execFileSync(bin, ['version'], { encoding: 'utf8' });
+    assert.match(human, /nav-agent/, '人类可读那行仍以 nav-agent 开头');
+    assert.match(human, /（协议 v/, '人类可读那行仍带协议版本');
+
+    // --- 缺 --server 时明确报错，不静默 ---
+    const r = spawnSync(bin, ['upgrade'], { encoding: 'utf8', timeout: 20000 });
+    assert.notEqual(r.status, 0, '缺 --server 时非零退出');
+    assert.match(r.stderr + r.stdout, /缺少 --server/, '说清缺什么');
+
+    // --- 三道校验的顺序：都在替换之前 ---
+    const up = /func cmdUpgrade\(args options\) error \{[\s\S]*?\n\}/.exec(goSource);
+    assert.ok(up, '找到 cmdUpgrade');
+    const sizeAt = up[0].indexOf('written < 1024*1024');
+    const probeAt = up[0].indexOf('probeBinaryVersion(tmpPath)');
+    const backupAt = up[0].indexOf('copyFile(self, backup)');
+    const renameAt = up[0].indexOf('os.Rename(tmpPath, self)');
+    assert.ok(sizeAt > 0 && probeAt > sizeAt, '大小检查在自检之前');
+    assert.ok(backupAt > probeAt,
+        '**替换前**先自检通过，才备份（顺序反了会留下跑不起来的 agent）');
+    assert.ok(renameAt > backupAt, '备份之后才替换');
+
+    // --- 校验失败时不得动原文件 ---
+    // 升级最重要的一条性质：失败的升级必须让机器上仍然有一个能跑的
+    // agent，而用户已经在目标机上——那比「升级失败」糟糕得多。
+    assert.match(up[0], /新下载的文件跑不起来：[\s\S]{0,60}保持现有版本不变/,
+        '自检失败的提示要说明原版本未被动过');
+    assert.ok(up[0].indexOf('保持现有版本不变') < renameAt,
+        '「保持不变」那个分支必须在 rename 之前返回');
+
+    // --- 替换后再验一次 + 回滚 ---
+    assert.match(up[0], /probeBinaryVersion\(self\)/, '替换后复验落地的那一个');
+    assert.match(up[0], /rollback := func/, '有回滚实现');
+    assert.match(up[0], /os\.Remove\(backup\)/, '成功后清掉备份');
+});
+
+test('agent 的版本解析来自受控输出，不解析人类可读那行', () => {
+    const fn = /func probeBinaryVersion\(path string\) \(string, error\) \{[\s\S]*?\n\}/.exec(goSource);
+    assert.ok(fn, '找到 probeBinaryVersion');
+    assert.match(fn[0], /"version", "--raw"/,
+        '用 --raw 入口（人类可读那行带中文括号，按空白切会切错）');
+    assert.match(fn[0], /版本号格式异常/, '格式不对要拒绝而不是放行');
+    assert.doesNotMatch(fn[0], /strings\.Fields\(line\)\[1\]/,
+        '不得靠切人类可读输出取版本号');
+});
+
+test('采集在 macOS 与 Linux 上都拿得到，缺的那项诚实降级', (t) => {
+    const bin = localAgentBinary();
+    if (!bin) { t.skip('未构建 agent 二进制'); return; }
+
+    const m = JSON.parse(execFileSync(bin, ['collect'], { encoding: 'utf8' }));
+
+    // 内存与存储必须在所有平台都拿得到 —— 用户明确要求这两项跨平台
+    for (const k of ['memoryUsed', 'memoryTotal', 'diskUsed', 'diskTotal']) {
+        assert.equal(typeof m[k], 'number', `${k} 是数字`);
+    }
+    assert.ok(m.memoryTotal > 0, '内存总量大于 0（取不到时显示「—」）');
+    assert.ok(m.diskTotal > 0, '存储总量大于 0');
+
+    // CPU 在 macOS 上拿不到（现代内核移除了 kern.cp_time，没有 cgo 就
+    // 读不到累计值），实测为 null —— 诚实降级，不是 0。
+    //
+    // ⚠️ 断言的形态是「数字或 null」而不是「大于 0」：
+    // 早期版本只断言函数存在，于是「数组减数字 = NaN → CPU 恒 null」
+    // 这一整类缺陷全都能通过，而返回的 JSON 完全合法、看不出出错。
+    assert.ok(m.cpu === null || typeof m.cpu === 'number', 'CPU 是数字或 null');
+    if (m.cpu !== null) {
+        assert.ok(m.cpu >= 0 && m.cpu <= 1, `CPU 在 0..1 之间（实际 ${m.cpu}）`);
+    }
+});
+
+test('build 约束只圈住真正支持的平台', () => {
+    // ⚠️ 这条来自一次真实踩坑：`//go:build !windows` 把 OpenBSD 圈了进来，
+    // 而它的 syscall.Statfs_t 字段叫 F_bsize —— 于是 main.go 的调用处
+    // 变成 undefined: readDiskUsage，整个包编译不过。
+    //
+    // 「这台机器没有磁盘数据」与「这个平台编不出 agent」是两件事：
+    // 后者意味着用户连装都装不上。
+    const disk = fs.readFileSync(path.join(ROOT, 'agent', 'disk_other.go'), 'utf8');
+    const tag = /\/\/go:build (.+)/.exec(disk);
+    assert.ok(tag, 'disk_other.go 有 build 约束');
+    // 白名单式而不是排除式：排除式会在新增平台时静默圈错
+    assert.match(tag[1], /\blinux\b/, '含 linux');
+    assert.match(tag[1], /\bdarwin\b/, '含 darwin');
+    assert.doesNotMatch(tag[1], /^!/, '不用 !xxx 排除式');
+
+    // 必须有对应的降级实现，否则不支持的平台上整个包编译不过
+    const fallback = path.join(ROOT, 'agent', 'disk_unsupported.go');
+    assert.ok(fs.existsSync(fallback), '有 disk_unsupported.go 兜底');
+    const fb = fs.readFileSync(fallback, 'utf8');
+    assert.match(fb,
+        /func readDiskUsage\(path string\) \(used float64, total float64\) \{ return 0, 0 \}/,
+        '不支持的平台上返回 0,0（界面显示「—」而不是假值）');
+    const fbTag = /\/\/go:build (.+)/.exec(fb);
+    assert.ok(fbTag && fbTag[1].includes('!linux'), '兜底与主实现的条件互补');
+});
+
+test('服务端能读到 agent 的软件版本（升级提示的前提）', () => {
+    // ⚠️ 没有它，后台无法判断「目标机上跑的是不是旧版」。
+    // 而旧 agent 根本没有 upgrade 子命令——所以只知道「版本旧」没用，
+    // 必须把版本值取回来才能给出一条可执行的动作。
+    const health = /async function probeAgentHealth[\s\S]*?\n\}/.exec(monitorSource);
+    assert.ok(health, '找到 probeAgentHealth');
+    assert.match(health[0], /agentVersion/,
+        '健康探测把 agent 的软件版本带出来');
+    assert.match(health[0], /typeof payload\.agentVersion === 'string'/,
+        '校验类型，不把任意值当版本');
+    // ⚠️ 不要断言它叫 payload.version —— 那是**协议**版本（恒为 1），
+    // 与软件版本是两件事。混用会让「升级了 agent」变成「协议不一致」。
+    assert.match(health[0], /payload\.version === AGENT_PROTOCOL_VERSION/,
+        '协议版本仍只用于判断能不能解析');
+
+    const route = routeBody("/api/modules/servers/:id/probe");
+    assert.ok(route.length > 800, '切出 probe 路由');
+    assert.match(route, /agentVersion: health\.agentVersion \|\| null/,
+        'probe 响应带出 agent 版本');
 });
 
 test('服务器列表的按钮高度：桌面 36px 起，窄屏必须抬回 44px', () => {

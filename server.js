@@ -2429,6 +2429,11 @@ app.post('/api/modules/servers/:id/probe', rateLimit, requireAdmin, async (req, 
 
         return reply({
             deployState: state,
+            // agent 的**软件**版本（与 deployState 那个协议版本是两件事）。
+            // 后台据此提示「目标机上跑的是旧版，可升级」——
+            // 而旧 agent 没有 upgrade 子命令，所以光看到版本旧没有用，
+            // 必须同时知道它的版本才能给出一条可执行的动作。
+            agentVersion: health.agentVersion || null,
             reachable: online,
             error: result.ok ? null : result.error,
             authFailed: result.authFailed === true,

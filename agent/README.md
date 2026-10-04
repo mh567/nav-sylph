@@ -168,13 +168,64 @@ nav-agent health    # 自检：配置、证书、权限、采集、端口
 私钥权限对不对、采集有没有数据、端口在不在听。单看「失败」没有用——
 配置错、证书读不到、端口不通、token 不对，处置完全不同。
 
+### `version` / `upgrade`
+
+```bash
+nav-agent version                    # nav-agent 1.6.8（协议 v1，linux/amd64，…）
+nav-agent version --raw              # 只输出 "1.6.8"，供脚本解析
+nav-agent upgrade --server https://nav.example.com
+```
+
+`upgrade` 从本服务下载对应架构的产物并替换自己。**配置与凭据不动**
+（它们在 `/etc/nav-agent/`，与二进制无关）。
+
+三道校验全部在**替换之前**，任何一道不过都保持现有版本不变：
+
+1. 文件大小 —— 小于 1MB 不是可执行文件
+2. 架构自检 —— 执行 `version --raw`，跑不起来或输出不像版本号就拒绝
+3. 版本格式 —— 只接受数字与点（外加 `dev`）
+
+之后才备份 → `rename`（原子，不会出现写了一半的损坏文件）→ 复验落地的那一个 →
+不过就回滚 → 成功则清掉备份。
+
+⚠️ **自签证书要加 `--server-ca`**，与 `enroll` 一样：
+
+```bash
+nav-agent upgrade --server https://nav.example.com --server-ca /etc/ssl/certs/你的证书.crt
+```
+
+**架构自动选择**（`amd64` / `arm64` / `armv7`）。`GOARCH=arm` 一律按 `armv7` 处理——
+v7 的二进制能在 v5/v6 上跑，反过来不行，所以这是安全的一侧。
+
+**升级后重启才生效**（systemd 服务）：
+
+```bash
+systemctl restart nav-agent
+```
+
+## 协议版本与软件版本
+
+这是**两件事**，不要混：
+
+| | 含义 | 何时变 |
+| --- | --- | --- |
+| `version`（载荷里的） | **协议**版本 | 指标字段有增减时 |
+| `agentVersion`（`/health` 里） | **软件**版本 | 每次发布 |
+
+服务端遇到协议版本不一致会明确报错，而不是把不认识的字段当 0 读进去
+（那会显示成「CPU 0%」，是一个错误的结论而不是一个可见的失败）。
+所以升级 agent 不会让旧服务端报「协议不一致」。
+
+`agentVersion` 由构建脚本从 `version.json` 用 `-ldflags -X` 注入。
+从源码直接 `go build` 的产物会自报 `dev`，后台据此认出它不是正式版。
+
 ## 端点
 
 拉取模式（**只走 HTTPS**：没配证书时 agent 拒绝启动）：
 
 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- |
-| `GET /health` | 否 | 存活检查，返回 `{"status":"ok","version":1}`。**不含主机名** —— 它不需要鉴权，泄露主机名等于给每个能扫到该端口的人一份资产清单 |
+| `GET /health` | 否 | 存活检查，返回 `{"status":"ok","version":1,"agentVersion":"1.6.8","goos":"linux","goarch":"amd64"}`。**不含主机名** —— 它不需要鉴权，泄露主机名等于给每个能扫到该端口的人一份资产清单 |
 | `GET /metrics` | **是** | 指标 JSON，需要 `Authorization: Bearer <token>`。主机名在这里 |
 
 `/metrics` 返回：

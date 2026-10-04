@@ -27,16 +27,37 @@ mkdir -p "$OUT"
 # 而这些设备里 armv7 不少。
 LINUX_ARCHES=(amd64 arm64 armv7)
 
+# 软件版本从 version.json 读，编译期用 -ldflags -X 注入。
+#
+# ⚠️ 它与 agent 代码里的 `VERSION`（协议版本，恒为 1）是**两件事**：
+# 协议版本决定服务端能不能解析指标载荷，软件版本决定「有没有新版本可升」。
+# 混用会让「升级了 agent」变成「协议不一致」，而指标字段一个没变。
+#
+# 为什么不写死在 main.go 里：升级命令要回答「我手上这个是哪一版」，
+# 而版本号是发布时决定的。写死就得改源码、编译、再记得同步 tag，
+# 三处各自漂移——而这里一次读取就保证了产物与发布版本一致。
+# 读不到就回落到 "dev"，让「从源码直接 go build 的产物」能被识别出来，
+# 而不是伪装成某个正式版本。
+AGENT_VERSION="dev"
+if [ -f "$ROOT/version.json" ]; then
+    AGENT_VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        "$ROOT/version.json" | head -1 | cut -d'"' -f4)
+fi
+if [ -z "$AGENT_VERSION" ]; then
+    AGENT_VERSION="dev"
+fi
+LDFLAGS="-s -w -X main.buildVersion=$AGENT_VERSION"
+
 build() {
     local goos="$1" goarch="$2" out="$3" goarm="${4:-}"
     printf '  %-16s %s/%s\n' "$out" "$goos" "$goarch"
     # CGO_ENABLED=0 保证是静态二进制——否则「拷过去就能跑」不成立。
     ( cd "$ROOT/agent" && \
       CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
-      go build -trimpath -ldflags='-s -w' -o "$OUT/$out" . )
+      go build -trimpath -ldflags="$LDFLAGS" -o "$OUT/$out" . )
 }
 
-echo "构建 agent（$(go version)）"
+echo "构建 agent（$(go version)，版本 $AGENT_VERSION）"
 for arch in "${LINUX_ARCHES[@]}"; do
     if [ "$arch" = "armv7" ]; then
         # ⚠️ armv7 的正确写法是 GOARCH=arm + GOARM=7，

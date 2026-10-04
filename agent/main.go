@@ -47,10 +47,31 @@ import (
 	"time"
 )
 
-// VERSION 必须与服务端 server.js 的 AGENT_PROTOCOL_VERSION 一致。
+// VERSION 是**协议版本**，必须与服务端 server.js 的 AGENT_PROTOCOL_VERSION 一致。
 // 不一致时服务端会明确报错，而不是把不认识的字段当成 0 读进去
 // （那样会显示「CPU 0%」这种错误结论）。
+//
+// ⚠️ 它**不是软件版本**。指标载荷的字段没变就是同一个协议，agent 换了几个
+// 版本不该让服务端报「协议不一致」。
+// 软件版本是 buildVersion，两者混用会让「升级了 agent」变成「协议坏了」。
 const VERSION = 1
+
+// buildVersion 是**软件版本**，由构建脚本用 -ldflags 注入，形如 "1.6.8"。
+//
+// 为什么必须在编译期注入：升级命令要知道「我手上这个二进制是哪一版」，
+// 而版本号是发布时决定的。写死在源码里就得改一次源码、编译一次，
+// 还要记得同步 tag——三处各自漂移。
+// 留空时回落到 "dev"，让「从源码直接 go build 的产物」能被识别出来，
+// 而不是伪装成某个正式版本。
+var buildVersion = "dev"
+
+// agentVersion 返回软件版本号，供 version 子命令与 /health 上报。
+func agentVersion() string {
+	if buildVersion == "" {
+		return "dev"
+	}
+	return buildVersion
+}
 
 // cpuSampleGap 是两次 CPU 采样之间的间隔。累计值只能靠做差得到百分比，
 // 间隔太短则差值接近噪声。
@@ -85,8 +106,22 @@ func main() {
 		err = cmdCollect()
 	case "health":
 		err = cmdHealth(args)
+	case "upgrade":
+		err = cmdUpgrade(args)
 	case "version", "--version", "-v":
-		fmt.Printf("nav-agent v%d (%s/%s, %s)\n", VERSION, runtime.GOOS, runtime.GOARCH, runtime.Version())
+		// --raw 只输出版本号本身，供脚本与 upgrade 解析。
+		//
+		// ⚠️ 为什么不让 upgrade 去解析上面那行人类可读输出：那份格式里
+		// 带着中文括号与逗号（实测踩过——按空白切第 2 段拿到的是
+		// "1.6.7（协议"，然后被当成版本号去比较）。让一个脚本去解析
+		// 给人看的字符串，任何一次改文案都会静默弄坏它。
+		// 机器可读的字段就该有一个只输出它的入口。
+		if args.has("raw") {
+			fmt.Println(agentVersion())
+			break
+		}
+		fmt.Printf("nav-agent %s（协议 v%d，%s/%s，%s）\n",
+			agentVersion(), VERSION, runtime.GOOS, runtime.GOARCH, runtime.Version())
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -117,7 +152,10 @@ func usage() {
 
   nav-agent collect      打印一份指标 JSON（调试用）
   nav-agent health       自检：配置、证书、连通性
-  nav-agent version      版本
+  nav-agent upgrade --server <地址> [--server-ca <PEM>]
+      从本服务下载并替换自己。自动按本机架构选产物
+      （amd64 / arm64 / armv7）；配置与凭据不动。
+  nav-agent version      版本（软件版本 + 协议版本）
 
 说明：
   凭据从环境变量读更安全——命令行参数会出现在 ps 输出与 shell 历史里。
@@ -791,7 +829,17 @@ func cmdServe(args options) error {
 		// /health 不需要鉴权（方便「agent 起来了吗」这类探测），所以**不能**返回
 		// 主机名：它会跟着其它信息一起泄露这台机器叫什么、内网里怎么称呼它。
 		// 需要主机名的人自己看 /metrics（那里要鉴权）。
-		payload := map[string]any{"status": "ok", "version": VERSION}
+		// ⚠️ `version` 是**协议**版本（服务端据此判断能不能解析载荷），
+		// `agentVersion` 是**软件**版本（后台据此提示可以升级）。
+		// 两个都放，因为它们回答不同的问题，混用会让「升级了 agent」
+		// 变成「协议不一致」。
+		payload := map[string]any{
+			"status":       "ok",
+			"version":      VERSION,
+			"agentVersion": agentVersion(),
+			"goarch":       runtime.GOARCH,
+			"goos":         runtime.GOOS,
+		}
 		if args.has("expose-hostname") {
 			payload["hostname"] = sysHostname()
 		}
@@ -837,7 +885,7 @@ func cmdServe(args options) error {
 	if err != nil {
 		return fmt.Errorf("监听 %s 失败：%w", srv.Addr, err)
 	}
-	fmt.Printf("Nav Sylph agent v%d\n", VERSION)
+	fmt.Printf("Nav Sylph agent %s\n", agentVersion())
 	fmt.Printf("  主机名 %s\n", sysHostname())
 	fmt.Printf("  监听 %s://%s\n", scheme, srv.Addr)
 	if host == "127.0.0.1" {
@@ -927,7 +975,7 @@ func cmdPush(args options) error {
 	}
 	interval = resolveInterval(interval)
 
-	fmt.Printf("Nav Sylph agent v%d\n", VERSION)
+	fmt.Printf("Nav Sylph agent %s\n", agentVersion())
 	fmt.Printf("  主机名 %s\n", sysHostname())
 	fmt.Printf("  推送目标 %s/api/modules/agent-push\n", server)
 	fmt.Printf("  上报间隔 %ds\n", interval)
@@ -1030,7 +1078,7 @@ func cmdCollect() error {
 // cmdHealth 自检：把「为什么连不上」拆成几个能分别回答的问题。
 // 单看「失败」没有用——配置错、证书读不到、端口不通、token 不对，处置完全不同。
 func cmdHealth(args options) error {
-	fmt.Printf("nav-agent v%d\n", VERSION)
+	fmt.Printf("nav-agent %s\n", agentVersion())
 	fmt.Printf("  平台 %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("  主机名 %s\n", sysHostname())
 
@@ -1123,6 +1171,237 @@ func (s probeState) describe() string {
 	default:
 		return "出错"
 	}
+}
+
+// ========== 自升级 ==========
+
+// cmdUpgrade 从本服务下载新版本并替换自己。
+//
+// 为什么需要它：agent 装在**目标机**上，而用户在另一台机器（自己的电脑）
+// 上操作后台。没有升级通道的话，改一个 agent 缺陷就要求用户 SSH 上目标机
+// 重新跑一遍安装脚本——正是这个项目花力气消除的那种交互。
+//
+// 三个必须处理对的地方：
+//
+//  1. **替换正在运行的自己**。Linux 上可以覆写（ETXTBSY 只在**执行中**时
+//     出现），但稳妥做法是写新文件再 rename——rename 是原子的，
+//     不会出现「写了一半、二进制已损坏」的中间态。所以走临时文件 + rename。
+//
+//  2. **架构要对**。本机是 armv7 而下载的是 amd64，装上去当场崩。
+//     所以按 runtime.GOARCH/GOARM 选产物，选不到就明说支持哪些。
+//
+//  3. **配置与凭据不能动**。它们在 configDir 里，与二进制无关。
+//     而且升级失败时旧二进制必须还能用——所以先备份、替换后再校验、
+//     校验不过就回滚。
+func cmdUpgrade(args options) error {
+	server := strings.TrimRight(args.str("server", os.Getenv("NAV_AGENT_SERVER")), "/")
+	if server == "" {
+		return errors.New("缺少 --server（本服务地址）")
+	}
+
+	arch, err := currentArch()
+	if err != nil {
+		return err
+	}
+	current := agentVersion()
+	fmt.Printf("当前版本 %s（%s）\n", current, arch)
+
+	url := fmt.Sprintf("%s/agent/nav-agent-linux-%s", server, arch)
+	fmt.Printf("检查更新 %s\n", url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	// 自签的服务端要显式给 CA：Go 在 macOS 不读 SSL_CERT_FILE，
+	// 在 Linux 上自签证书也不在系统根池里。
+	resp, err := upgradeHTTPClient(args).Do(req)
+	if err != nil {
+		return fmt.Errorf("连不上本服务 %s：%w（自签证书请加 --server-ca）", server, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载失败（HTTP %d）：本服务可能没有这个架构的产物（%s）", resp.StatusCode, arch)
+	}
+
+	// 下载到临时文件再算校验，不能直接信任流。
+	tmp, err := os.CreateTemp("", "nav-agent-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败：%w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	written, err := io.Copy(tmp, io.LimitReader(resp.Body, 128<<20))
+	tmp.Close()
+	if err != nil {
+		return fmt.Errorf("写入临时文件失败：%w", err)
+	}
+	if written < 1024*1024 {
+		return fmt.Errorf("下载到的文件只有 %d 字节，太小，不像是可执行文件", written)
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return err
+	}
+
+	// ⚠️ 必须先验证新二进制能跑，再替换当前这个。
+	// 顺序反了的话，一次失败的升级会留下一个跑不起来的 agent，
+	// 而用户已经在目标机上——那比「升级失败」糟糕得多。
+	newVersion, err := probeBinaryVersion(tmpPath)
+	if err != nil {
+		return fmt.Errorf("新下载的文件跑不起来：%w（保持现有版本不变）", err)
+	}
+	if newVersion == current {
+		fmt.Printf("已经是最新版本 %s，无需升级。\n", current)
+		return nil
+	}
+	fmt.Printf("发现新版本 %s\n", newVersion)
+
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("找不到自己所在的位置：%w", err)
+	}
+	self, _ = filepath.EvalSymlinks(self)
+
+	// 备份：替换失败时能立刻回去。权限 0755，systemd 以 root 跑，
+	// 属主跟着当前进程。
+	backup := self + ".bak"
+	if err := copyFile(self, backup); err != nil {
+		return fmt.Errorf("备份现有二进制失败：%w", err)
+	}
+	rollback := func() {
+		if err := copyFile(backup, self); err != nil {
+			fmt.Fprintf(os.Stderr, "回滚也失败了：%v\n", err)
+			fmt.Fprintf(os.Stderr, "原二进制仍在 %s，可手动复制回去。\n", backup)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "已回滚到 %s。\n", current)
+	}
+
+	// rename 是原子的：不会出现「目标路径上是个写了一半的文件」。
+	if err := os.Rename(tmpPath, self); err != nil {
+		// 最可能的原因是 self 所在文件系统与临时目录不同（跨设备）。
+		// 那就退回「复制 + rename」在同一文件系统内完成。
+		if err2 := copyFile(tmpPath, self); err2 != nil {
+			return fmt.Errorf("替换二进制失败：%v / %v", err, err2)
+		}
+	}
+
+	// 替换后再验一次：确认落地的那个真的能跑。
+	if v, err := probeBinaryVersion(self); err != nil || v != newVersion {
+		rollback()
+		return fmt.Errorf("替换后的新版本自检未通过（%v），已回滚", err)
+	}
+
+	os.Remove(backup)
+	fmt.Printf("已升级到 %s。\n", newVersion)
+	fmt.Println("配置与凭据未改动（在 " + configDir + "）。")
+	fmt.Println("若它是 systemd 服务，重启后生效：systemctl restart nav-agent")
+	return nil
+}
+
+// upgradeHTTPClient 返回下载用的客户端。与 enrollClient 同一套 CA 逻辑，
+// 但不复用它的语义名——一个叫「enroll 的客户端」用在下载上会让人读不懂。
+func upgradeHTTPClient(args options) *http.Client {
+	caPath := args.str("server-ca", "NAV_AGENT_SERVER_CA")
+	if caPath == "" {
+		return http.DefaultClient
+	}
+	pem, err := os.ReadFile(caPath)
+	if err != nil {
+		return http.DefaultClient
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+}
+
+// currentArch 返回本机对应的产物架构名（amd64 / arm64 / armv7）。
+//
+// ⚠️ 不能用 runtime.GOARCH 直接拼：GOARCH=arm 可能是 armv5/v6/v7，
+// 而服务端只提供 armv7 的产物。GOARM=7 时匹配，其余明确报不支持——
+// 装一个架构不对的二进制会当场段错误，那种失败比「装不了」糟得多。
+func currentArch() (string, error) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "amd64", nil
+	case "arm64":
+		return "arm64", nil
+	case "arm":
+		if os.Getenv("GOARM") == "7" {
+			return "armv7", nil
+		}
+		// 运行中的二进制不带 GOARM 环境变量（那是编译期变量）。
+		// 所以运行期靠 GOARCH 只能到 arm 这一层——而本项目只发 armv7。
+		// 保守起见按 armv7 走：v7 能在 v6/v5 上运行，反之不行。
+		return "armv7", nil
+	default:
+		return "", fmt.Errorf("暂不支持的架构 %s（本服务提供 amd64 / arm64 / armv7）", runtime.GOARCH)
+	}
+}
+
+// probeBinaryVersion 执行一个二进制问它版本，拿不到就说明它跑不起来。
+//
+// ⚠️ 必须用 `version --raw`：那个入口只输出版本号本身，
+// 不带人类可读那行的括号与中文分隔符。早先这里解析的是普通输出，
+// 实测拿到的是 "1.6.7（协议" —— 一个被当成版本号去比较的垃圾值。
+// 机器可读的字段就该有一个只输出它的入口，而不是让脚本去解析给人看的那行。
+func probeBinaryVersion(path string) (string, error) {
+	out, err := exec.Command(path, "version", "--raw").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v：%s", err, firstLine(out))
+	}
+	v := strings.TrimSpace(firstLine(out))
+	if v == "" {
+		return "", fmt.Errorf("没有输出版本号")
+	}
+	// 校验：这是从另一个可执行文件的输出里取的值，要拿去比较版本、
+	// 可能被写进日志。格式不对就拒绝，而不是让任意字符串流过去。
+	if v == "dev" {
+		return v, nil
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && r != '.' {
+			return "", fmt.Errorf("版本号格式异常：%q", v)
+		}
+	}
+	return v, nil
+}
+
+// copyFile 复制文件并保留权限位。升级与回滚都靠它。
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	// 写完再 chmod：OpenFile 的 mode 会被 umask 改掉
+	if err := out.Chmod(info.Mode().Perm()); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func probeTCP(addr string, timeout time.Duration) probeState {
