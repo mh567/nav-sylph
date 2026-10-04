@@ -2190,6 +2190,61 @@ test('前端按服务端回的周期重排自己的定时器', () => {
         '周期变化时重排表——否则会一直用旧周期直到下次进页面');
     // 页面不可见时暂停这条不能被改掉
     assert.match(mod, /document\.hidden/, '不可见时停表');
+
+    // ⚠️ 切回前台这条路径曾经写死 POLL_MS，于是「切一次后台再回来」会把
+    // 用户设的周期悄悄改回 15 秒。浏览器实测：服务端设 30 秒时，正常间隔
+    // 30s，触发一次 visibilitychange 后立刻掉回 15s，且无任何提示。
+    //
+    // ⚠️ 锚点必须是**定义形态**而不是裸名字：这个文件里
+    // `visibilityHandler =` 有三处，裸名字首次命中的是顶部那句
+    // `let visibilityHandler = null;`（第 10 行），切片会一路吃掉
+    // startPolling() 和它里面那处**本来就正确**的
+    // `setInterval(poll, pollMs)`——于是把 handler 里那行整行删掉，断言
+    // 仍然匹配到 startPolling 里的另一处而全绿（变异验证过的假绿）。
+    // 所以锚到 `visibilityHandler = () => {`，终点锚到注册那一行。
+    const vis = mod.slice(
+        mod.indexOf('visibilityHandler = () => {'),
+        mod.indexOf("document.addEventListener('visibilitychange', visibilityHandler)"));
+    assert.ok(vis.length > 100, `visibilityHandler 被正确切出（长度 ${vis.length}）`);
+    assert.match(vis, /pollTimer = setInterval\(poll, pollMs\)/,
+        '切回前台用当前生效的 pollMs，不能回落成常量');
+    // 写死常量名或写死字面量都是同一种漂移，两种都要挡
+    assert.doesNotMatch(vis, /setInterval\(poll,\s*(POLL_MS|15000)\)/,
+        '不得用硬编码周期重排表——那正是「改完不生效」的第二个来源');
+});
+
+test('模块编辑器读到的 pollInterval 是服务端真值，不是回落出来的 15 秒', () => {
+    // ⚠️ 这个 bug 浏览器实测抓到的，不是读代码看出来的：
+    // 服务端设 30 秒、落盘确认 30、首页轮询实测间隔也是 30s，
+    // 可重开管理面板时下拉框显示「每 15 秒」。
+    //
+    // 根因在 loadModulesConfig：它只从响应里挑 enabledModules / widgets /
+    // servers 三个字段，pollInterval 被丢在门外。于是模块编辑器渲染下拉框
+    // 时拿到 undefined，pollIntervalOptions 回落到 15。
+    // 「读了但没人写」的反面：**服务端写了，前端没读**。
+    //
+    // 只断言存在性会被注释骗过，所以断言必须落在归一化那一段，
+    // 并且反向断言那三个原有字段仍在（防止为修这个把别的挤掉）。
+    const appCode = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
+    const start = appCode.indexOf('async loadModulesConfig(');
+    assert.ok(start > 0, '找得到 loadModulesConfig');
+    const fn = appCode.slice(start, appCode.indexOf('enabledModuleIds()', start));
+    assert.ok(fn.length > 200, 'loadModulesConfig 函数体被正确切出');
+
+    assert.match(fn, /pollInterval:\s*Number\(data\?\.pollInterval\)\s*\|\|\s*15/,
+        '归一化时保留 pollInterval');
+    for (const key of ['enabledModules', 'widgets', 'servers']) {
+        assert.match(fn, new RegExp(`${key}:\\s*Array\\.isArray`), `${key} 仍在归一化结果里`);
+    }
+
+    // 下拉框与提示文字都必须读这个值，而不是各自算一个默认值
+    const editor = appCode.slice(appCode.indexOf('renderModulesEditorContent(host, config)'));
+    const editorBody = editor.slice(0, editor.indexOf('pollIntervalOptions(current)'));
+    assert.ok(editorBody.length > 200, '模块编辑器渲染体被正确切出');
+    assert.match(editorBody, /this\.pollIntervalOptions\(config\.pollInterval\)/,
+        '下拉框读 config.pollInterval');
+    assert.match(editorBody, /this\.updatePollIntervalHint\(config\.pollInterval\)/,
+        '提示文字读同一个值——两处若各算一个默认值，回显就会自相矛盾');
 });
 
 test('部署面板的层级高于管理面板，否则点开却看不见', () => {

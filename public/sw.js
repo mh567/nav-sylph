@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v58：修「后台更新周期改完不生效」——两处前端漂移：
+// loadModulesConfig 归一化时漏掉 pollInterval（模块编辑器回显恒为 15 秒，
+// 用户改的值确实落盘了、首页轮询也真按新周期跑，唯独回显是假的），
+// visibilityHandler 切回前台时用硬编码 POLL_MS 重排表（周期被悄悄打回 15 秒）。
+// 改了 app.js、modules/server-monitor.js、sw.js。同批升缓存名。
 // nav-v57：发版审查修正——部署面板 push 文案引用屏幕上真实出现的字样
 // （「已就绪」「尚未收到推送」「已 N 分钟未收到推送」，两态不合并）、
 // note 也按模式分支（push 无自动翻牌）；自签说明再减一句；
@@ -62,7 +67,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v57';
+const CACHE = 'nav-v58';
 const ASSETS = [
     '/',
     '/index.html',

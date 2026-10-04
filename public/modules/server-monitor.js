@@ -289,7 +289,10 @@
                 pollTimer = null;
             } else if (!pollTimer) {
                 poll();
-                pollTimer = setInterval(poll, POLL_MS);
+                // ⚠️ 这里原来写死 POLL_MS，于是「切到后台再切回来」会把用户
+                // 设的周期悄悄改回 15 秒，无任何提示（浏览器实测：设 30 秒时
+                // 切一次前后台就掉回 15s）。必须是可变状态 pollMs。
+                pollTimer = setInterval(poll, pollMs);
             }
         };
         document.addEventListener('visibilitychange', visibilityHandler);

@@ -198,7 +198,13 @@
                 this.modulesConfig = {
                     enabledModules: Array.isArray(data?.enabledModules) ? data.enabledModules : [],
                     widgets: Array.isArray(data?.widgets) ? data.widgets : [],
-                    servers: Array.isArray(data?.servers) ? data.servers : []
+                    servers: Array.isArray(data?.servers) ? data.servers : [],
+                    // ⚠️ 早先这里只挑了三个字段，pollInterval 被丢在门外，
+                    // 于是模块编辑器读到 undefined、回落到 15 秒：不管服务端
+                    // 存的是什么，重开面板永远显示「每 15 秒」。值其实一直
+                    // 落盘了、首页轮询也真按新周期在跑（那条路径走
+                    // /api/modules/metrics 回的 pollInterval），唯独回显是假的。
+                    pollInterval: Number(data?.pollInterval) || 15
                 };
                 this.modulesLoaded = true;
                 return this.modulesConfig;
