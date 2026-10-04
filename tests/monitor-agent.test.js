@@ -797,6 +797,165 @@ test('注册成功即作废令牌，重放必须失败', () => {
     assert.ok(delAt > 0 && writeAt > delAt, '先作废再写盘');
 });
 
+test('自签服务器要带 --server-ca，且失败提示要说清这件事', () => {
+    // 【实测】Go 在 macOS 上不读 SSL_CERT_FILE / SSL_CERT_DIR（那是 Linux
+    // 行为，macOS 走系统 Keychain），GODEBUG=x509usefallbackroots=1 也无效。
+    // 于是自托管用户（自签证书而非 certbot）的 enroll 必然握手失败——
+    // 报「certificate signed by unknown authority」，而这不是「明文不可用」
+    // 那条安全要求想要的结果，只是让自签部署完全不可用。
+    //
+    // 所以必须有一条显式的 CA 通路：--server-ca <PEM 路径>。
+    // 用路径而不是 PEM 字符串：命令行会出现在 ps 输出里。
+    assert.match(goSource, /func enrollClient\(args options\) \*http\.Client/,
+        '有专门构造客户端的函数');
+    const fn = /func enrollClient\(args options\) \*http\.Client \{[\s\S]*?\n\}/.exec(goSource);
+    assert.ok(fn, '切出 enrollClient');
+    assert.match(fn[0], /server-ca/, '接受 --server-ca');
+    assert.match(fn[0], /NAV_AGENT_SERVER_CA/, '也支持环境变量');
+    assert.match(fn[0], /RootCAs: pool/, '把它当可信根（而不是 InsecureSkipVerify）');
+    assert.doesNotMatch(goSource, /InsecureSkipVerify:\s*true/,
+        '不得用「跳过证书校验」糊过去——那等于把 HTTPS 降级成明文');
+
+    // install.sh 要真的把它传下去
+    assert.match(installSh, /--server-ca\) SERVER_CA=/, 'install.sh 接受该参数');
+    assert.match(installSh, /ENROLL_ARGS\+=\(--server-ca "\$SERVER_CA"\)/, '并传给 agent');
+
+    // 失败提示必须给出这个具体原因，否则用户只会看到一句天书
+    const seg = installSh.slice(installSh.indexOf('if ! "$BIN_PATH"'));
+    assert.ok(seg.length > 100, '切出注册失败的分支');
+    assert.match(seg.slice(0, 800), /certificate signed by unknown authority/,
+        '失败提示点名证书不受信这个原因');
+    assert.match(seg.slice(0, 800), /--server-ca/, '并给出怎么补');
+});
+
+test('agent 发出的注册请求带 token——这个 bug 曾让 NAS 上 100% 失败', async (t) => {
+    // 【真实缺陷，用户在 NAS 上跑安装脚本时发现】
+    // HTTP 400「缺少令牌」。根因：agent 校验了 token 非空（main.go 的
+    // `args.pick("token", ...)` + 空值检查），却**没把它放进发出去的
+    // JSON body**。于是：
+    //   · 二进制编译通过（Go 不管这件事）
+    //   · 341 项单元测试全绿（没有一条跑过两端通话）
+    //   · 代码审计也没看出来（两边各自都有测试，却没有一个断言
+    //     「agent 发的字段名 == 服务端读的字段名」）
+    //   · 真实调用 100% 失败
+    //
+    // 这条断言的作用不是「检查代码里有没有这个字」，而是
+    // **真的把两个程序放在一起跑一次**。形状断言看不见
+    // 一个组件间的字段契约对不对得上。
+    //
+    // 守卫方式：把 agent 构造请求的那段代码切出来，逐字断言
+    // 它与服务端读的那一行是同一个键名。
+    const start = goSource.indexOf('body, _ := json.Marshal(map[string]string{');
+    assert.ok(start > 0, '找到 agent 构造注册请求体的位置');
+    const seg = goSource.slice(start, start + 600);
+    assert.match(seg, /"token":\s*token,/, '请求体里必须带 token 字段');
+
+    // 而服务端读的是 body.token —— 两个名字必须对得上
+    const enroll = routeBody("app.post('/api/modules/enroll'");
+    assert.ok(enroll.length > 400, '拿到 enroll 路由');
+    assert.match(enroll, /body\.token/, '服务端从 body.token 读取');
+
+    // 变异验证：删掉 "token": token, 这一行后本条必须红
+});
+
+test('enroll 能端到端跑通：真 agent 打通真服务端（这是唯一可靠的守卫）', async (t) => {
+    // 上面那条钉住「token 在请求体里」，但那是形状断言。
+    // 真正证明两端对得上的是把它们放在一起跑：
+    //   真 agent 二进制 → 真 enroll 路由 → 真配置落盘
+    //
+    // 需要能写的配置目录，所以 agent 支持 NAV_AGENT_HOME 覆盖
+    // （非 root 环境下 /etc/nav-agent 不可写）。这个覆盖最初不存在，
+    // 于是 enroll 这条路径**从未在测试里跑过一次**——正是它漏掉
+    // 上一个 bug 的原因。
+    assert.match(goSource, /NAV_AGENT_HOME/,
+        '配置目录可被覆盖，否则非 root 环境无法端到端测试');
+
+    const bin = path.join(ROOT, 'agent', 'dist', 'nav-agent-darwin-arm64');
+    if (!fs.existsSync(bin) || process.platform !== 'darwin') {
+        t.skip('需要先跑 scripts/build-agent.sh 生成 darwin 产物');
+        return;
+    }
+
+    const os = require('os');
+    const https = require('https');
+    const { spawn } = require('child_process');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-enroll-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+    // ⚠️ 必须用 HTTPS：agent 硬切掉明文（用户要求「坚决不能用 http」），
+    // 连自己测试的服务端也不例外。
+    //
+    // ⚠️⚠️ agent 必须用**异步** spawn，不能用 spawnSync/execSync：
+    // 同步调用会阻塞整个 Node 进程的事件循环，于是同一个进程里的
+    // HTTPS 服务器根本来不及响应，握手卡到超时。表现是
+    // 「TLS handshake timeout」——一个与被测代码毫无关系的假信号，
+    // 而且会让人误以为是证书信任问题。（实测在这个坑里绕了两圈。）
+    const { execFileSync: ef } = require('child_process');
+    let key, cert;
+    try {
+        ef('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            '-keyout', path.join(home, 'k.pem'), '-out', path.join(home, 'c.pem'),
+            '-days', '1', '-subj', '/CN=127.0.0.1',
+            '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
+        key = fs.readFileSync(path.join(home, 'k.pem'), 'utf8');
+        cert = fs.readFileSync(path.join(home, 'c.pem'), 'utf8');
+    } catch {
+        t.skip('本机没有 openssl，无法起自签 HTTPS 测试服务端');
+        return;
+    }
+
+    let received = null;
+    const srv = https.createServer({ key, cert }, (req, res) => {
+        let body = '';
+        req.on('data', c => { body += c; });
+        req.on('end', () => {
+            received = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ serverId: 's1', mode: 'pull', token: 'tok' }));
+        });
+    });
+    srv.on('clientError', (e, sock) => sock.destroy());
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    t.after(() => srv.close());
+
+    const env = {
+        ...process.env,
+        NAV_AGENT_HOME: home
+    };
+
+    // --server-ca 是真实能力，不只是测试后门：Go 在 macOS 不读 SSL_CERT_FILE，
+    // 自签部署的 enroll 必须靠它（Linux 上自签同样要）。
+    // 所以这里用**命令行参数**而不是环境变量，顺带证明那条路径真的通了。
+    const args = [
+        'enroll', '--server', `https://127.0.0.1:${port}`,
+        '--token', 'test-enroll-token',
+        '--server-ca', path.join(home, 'c.pem')
+    ];
+
+    const { code, stdout, stderr } = await new Promise((resolve) => {
+        const child = spawn(bin, args, { env });
+        let out = '', err = '';
+        child.stdout.on('data', c => { out += c; });
+        child.stderr.on('data', c => { err += c; });
+        child.on('close', c => resolve({ code: c, stdout: out, stderr: err }));
+    });
+    const r = { status: code, stdout, stderr };
+
+    assert.equal(r.status, 0, `enroll 成功退出：${r.stderr || r.stdout}`);
+    // 服务端真的收到了 token，且值一字不差
+    assert.ok(received, '服务端收到了请求');
+    assert.equal(received.token, 'test-enroll-token',
+        '服务端读到的 token 与 agent 持有的一致');
+    assert.ok(received.certPem && received.certPem.includes('BEGIN CERTIFICATE'),
+        'agent 自签了证书（不依赖 openssl）');
+    assert.equal(received.mode, 'pull', '模式随请求带上');
+    // agent 把自己收到的长期凭据落盘了
+    const saved = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
+    assert.equal(saved.token, 'tok', '长期凭据落盘');
+    assert.ok(saved.certPem, '证书也落盘，供服务端作 ca');
+});
+
 
 test('二进制与安装脚本可被下载，且 404 必须是 shell 注释', () => {
     assert.match(serverSource, /app\.get\('\/agent\/nav-agent-linux-:arch'/, '二进制路由');

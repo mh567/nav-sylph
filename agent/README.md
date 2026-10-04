@@ -94,10 +94,31 @@ sudo rm -rf /etc/nav-agent
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `--token <令牌>` | — | 后台生成的一次性令牌。**优先用环境变量 `NAV_AGENT_ENROLL_TOKEN`** |
+| `--server-ca <路径>` | — | 本服务证书的 CA（PEM）。**只在自签时需要**，见下 |
 | `--mode pull\|push` | pull | 上报方向 |
 | `--host <地址>` | 0.0.0.0 | 拉取模式的监听地址 |
 | `--port <端口>` | 4195 | 拉取模式的监听端口 |
 | `--interval <秒>` | 15 | 推送周期，可选 `10/15/30/60/300` |
+
+**`--server-ca` 什么时候需要。** 绝大多数情况不需要——用 certbot 签的证书本来就在系统根证书池里。
+但**自托管用户常用自签证书**，而 Go 的默认客户端只认系统根池：
+在 macOS 上它走系统 Keychain、不读 `SSL_CERT_FILE`（那是 Linux 行为），
+Linux 上自签证书同样不在根池里，于是 enroll 会握手失败并报：
+
+```
+x509: certificate signed by unknown authority
+```
+
+这时把本服务的证书路径给它：
+
+```bash
+curl -fsSL https://你的服务/agent/install.sh | sudo bash -s -- \
+  --server https://你的服务 --enroll <令牌> \
+  --server-ca /etc/letsencrypt/live/你的域名/fullchain.pem
+```
+
+它被追加进 `RootCAs`（系统根池之上），**不是**跳过证书校验——
+`InsecureSkipVerify` 等于把 HTTPS 悄悄降级成明文，本项目不这么做。
 
 ### `serve`（拉取模式）
 

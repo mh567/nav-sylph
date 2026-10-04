@@ -104,9 +104,10 @@ func usage() {
 	fmt.Print(`nav-agent — Nav Sylph 监控 agent
 
 用法：
-  nav-agent enroll --server <本服务地址> --token <一次性令牌> [选项]
+  nav-agent enroll --server <本服务地址> --token <一次性令牌> [--server-ca <PEM>]
       注册并落盘配置。生成自签证书（不需要 openssl），把证书交给本服务，
       换回长期凭据写入 /etc/nav-agent/。
+      --server-ca 只在本服务用自签证书时才需要（把它当作可信根）。
 
   nav-agent serve [--tls-cert ... --tls-key ...] [--host 0.0.0.0] [--port 4195]
       拉取模式：起一个带 Bearer 鉴权的 HTTPS 服务等本服务来连。
@@ -123,6 +124,8 @@ func usage() {
     NAV_AGENT_TOKEN      拉取模式的 Bearer token
     NAV_AGENT_PUSH_SECRET 推送凭据
     NAV_AGENT_SERVER_ID  推送模式的目标机器 id
+    NAV_AGENT_SERVER_CA  本服务证书的 CA（自签时才需要）
+    NAV_AGENT_HOME       配置目录，默认 /etc/nav-agent（仅测试用）
 `)
 }
 
@@ -484,9 +487,65 @@ func fingerprintOfPEM(p []byte) string {
 // ========== 配置 ==========
 
 const (
-	configDir  = "/etc/nav-agent"
-	configFile = "/etc/nav-agent/config.json"
+	defaultConfigDir = "/etc/nav-agent"
 )
+
+// configDir / configFile 是变量而不是常量，因为要能被环境变量覆盖：
+// 端到端测试必须能在非 root 环境里跑完整的 enroll。
+//
+// ⚠️ 这个覆盖最初不存在，于是 enroll 这条路径**从未被端到端执行过**——
+// 结果是它 100% 失败（agent 发出的 JSON 里漏了 token，服务端回 400），
+// 而二进制编译通过、全部单元测试全绿、代码审计也没看出来。
+// 一个组件间的字段契约，只有真把两个程序放在一起跑一次才会暴露；
+// 「两边各自都有测试」不等于「它们对得上」。
+//
+// 仅供测试与非标准部署使用；systemd 里不设它，走默认的 /etc/nav-agent。
+var (
+	configDir  = envOr("NAV_AGENT_HOME", defaultConfigDir)
+	configFile = filepath.Join(configDir, "config.json")
+)
+
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+// enrollClient 返回连本服务用的 HTTP 客户端。
+//
+// ⚠️ 默认的 http.DefaultClient 只认系统根证书池，而 Go 在 macOS 上**不读**
+// SSL_CERT_FILE / SSL_CERT_DIR（那是 Linux 行为，macOS 走系统 Keychain），
+// GODEBUG=x509usefallbackroots=1 实测也无效。
+// 于是自托管用户（用自签证书跑 nav-sylph，而不是 certbot）会让 agent
+// 在 enroll 这一步就握手失败，报「certificate signed by unknown authority」——
+// 而这不是「明文不可用」那条安全要求想要的结果，只是让自签部署完全不可用。
+//
+// 所以显式提供 --server-ca：安装脚本从后台已存的 certPem 取一份带过去。
+// 证书不是用户能自己生成的东西（它本来就是本服务签发的），所以这里给的是
+// 文件路径而不是 PEM 字符串——命令行传 PEM 会出现在 ps 输出里。
+func enrollClient(args options) *http.Client {
+	caPath := args.str("server-ca", "NAV_AGENT_SERVER_CA")
+	if caPath == "" {
+		return http.DefaultClient
+	}
+	pem, err := os.ReadFile(caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "读取 --server-ca 失败：%v\n", err)
+		return http.DefaultClient
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		fmt.Fprintf(os.Stderr, "--server-ca 里没有可用的证书：%s\n", caPath)
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+}
 
 type config struct {
 	Server      string `json:"server"`
@@ -577,7 +636,14 @@ func cmdEnroll(args options) error {
 		return fmt.Errorf("收紧私钥权限失败：%w", err)
 	}
 
+	// ⚠️ token 必须在这里，而且必须在 JSON body 里（不是只作为请求头）：
+	// 服务端 enroll 端点读的是 `body.token`。曾经这个 map 里没有它，
+	// 于是 NAS 上跑安装脚本稳定返回 HTTP 400「缺少令牌」——
+	// agent 侧校验通过了（token 非空）、二进制编译通过、全部测试全绿，
+	// 而真实调用 100% 失败：单元测试与形状断言都看不见两个组件之间的
+	// 契约是否对得上，只有真把这两个程序放在一起跑一次才会暴露。
 	body, _ := json.Marshal(map[string]string{
+		"token":       token,
 		"certPem":     string(certPEM),
 		"certFile":    "cert.pem",
 		"keyFile":     "key.pem",
@@ -592,7 +658,7 @@ func cmdEnroll(args options) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := enrollClient(args).Do(req)
 	if err != nil {
 		return fmt.Errorf("连不上本服务 %s：%w", server, err)
 	}

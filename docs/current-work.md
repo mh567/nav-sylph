@@ -2268,3 +2268,109 @@ git diff --check
   需要追溯视觉决策的话，仿真的结论已经写进本文「做了什么」一节与
   `docs/architecture.md` 的对应段落——那份 HTML 里有些设计已被实现取代
   （TOFU 配对 → 令牌注册；首页双状态位 → 后台双状态位），不宜当现状参考。
+
+---
+
+## v1.6.5 用户实测：NAS 上安装失败（HTTP 400「缺少令牌」）
+
+### 现象
+
+用户在自己的 NAS（x86_64）上跑后台生成的一键命令，失败：
+
+```
+[安装] 注册到本服务
+  错误：注册失败（HTTP 400）：{"error":"缺少令牌"}
+[错误] 注册失败（服务端原文）
+```
+
+同时全部中文显示成 `å®è£` 这样的乱码。
+
+### 两个独立问题，根因完全不同
+
+**问题一（真缺陷）：agent 没把 token 放进请求体。**
+`agent/main.go` 的 `cmdEnroll` 取到了 token、校验了非空（`args.pick` + 空值检查），
+但构造 JSON 时那个 map 里**没有 `"token"` 这个键**。服务端读的是 `body.token`，
+于是稳定 400。
+
+这个缺陷能一路漏到用户手上，是因为它同时满足：
+- Go 编译通过（编译器不管跨进程契约）
+- 341 项单元测试全绿（没有一条真的让两端通话）
+- 代码审计没看出来（两边各自都有测试，却没有一个断言
+  「agent 发的字段名 == 服务端读的字段名」）
+
+**修复**：`body` 里补上 `"token": token`。
+
+**问题二（不是缺陷）：乱码。**
+`å®è£` 正是「安装」的 UTF-8 字节被按 Latin-1 解码。实测确认脚本发出的字节是对的
+（`安装` = `e5 ae 89 e8 a3 85`，在 `LC_ALL=C` 与 `LC_ALL=C.UTF-8` 下**完全相同**），
+坏的是 NAS 终端的显示。**`LC_ALL` 修不了这个问题**——我先写了一段「强制 UTF-8」
+的代码，实测证明无效后删掉了：脚本侧无法修复接收端的解码器。
+真要在 NAS 上看清中文，得改那个 Web 终端的编码设置，或改用 SSH 连接。
+
+### 顺带发现并修掉的第三件事：自签服务器无法 enroll
+
+写端到端测试时撞上的：测试用的自签 HTTPS 服务端被 agent 拒绝
+（`x509: certificate signed by unknown authority`）。
+
+实测确认 **Go 在 macOS 上不读 `SSL_CERT_FILE` / `SSL_CERT_DIR**（那是 Linux 行为，
+macOS 走系统 Keychain），`GODEBUG=x509usefallbackroots=1` 也无效。
+所以**自托管用户（用自签证书而非 certbot）必然卡在这一步**——
+而这不是「明文不可用」那条安全要求想要的结果，只是让自签部署完全不可用。
+
+修复：agent 新增 `--server-ca <PEM 路径>`，把它追加进 `RootCAs`。
+**不用 `InsecureSkipVerify`**——那等于把 HTTPS 悄悄降级成明文，
+守卫里明确断言它不出现。`install.sh` 透传该参数，并在注册失败时点名这个原因
+（`certificate signed by unknown authority` → 加 `--server-ca`）。
+
+用户不确定自己的服务器用的是哪种证书，所以后台命令生成里留了
+`serverIsSelfSigned` 开关（默认不勾，多数人用 certbot）。
+
+### 为此新增的测试
+
+| 测试 | 作用 |
+| --- | --- |
+| agent 发出的注册请求带 token | 形状：逐字断言请求体里有 `"token": token`，且服务端读 `body.token` |
+| enroll 能端到端跑通 | **真 agent 二进制 + 真 HTTPS 服务端**，断言服务端收到的 token 一字不差 |
+| 自签服务器要带 --server-ca | 断言走 `RootCAs` 而非 `InsecureSkipVerify`，且 install.sh 透传、失败提示点名原因 |
+
+为此给 agent 加了 `NAV_AGENT_HOME`（配置目录覆盖）。
+**这个覆盖最初不存在，于是 enroll 从未在测试里跑过一次**——正是它漏掉上述缺陷的原因。
+
+### 变异验证
+
+三处破坏各自让对应断言变红，还原后 `diff` 一致：
+- 从请求体删掉 `"token": token` → 两条守卫红
+- 改成 `InsecureSkipVerify: true` → 自签守卫红
+- install.sh 不再传 `--server-ca` → 自签守卫红
+
+### 端到端实测数据
+
+```
+341 → 344 项测试全绿
+四架构构建通过、ELF 自检通过、gofmt 干净
+
+真 agent enroll → 真服务端 enroll 端点：注册成功
+服务端配置落盘：certPem ✓ / fingerprint ✓ / deployState=ready ✓
+                 一次性令牌已清除 ✓
+令牌复用：HTTP 401「部署令牌无效或已被使用」✓
+agent 自身：/metrics 无 token → 401；带 token → 真实指标 ✓
+服务端采集：解密 token + certPem 作 ca → ok:true + 真实指标 ✓
+后台探测：deployState=ready, reachable=true ✓
+首页 /api/modules/metrics：本机 + 测试机两张卡片都在线 ✓
+```
+
+### 我自己在这个过程中走错的三条路
+
+1. **把 `LC_ALL` 当成乱码的解法**，写了「强制 UTF-8」的代码，实测证明无效后删掉。
+   脚本发什么字节都会被同样地误解码——接收端的解码器修不了。
+2. **用 `spawnSync`/`execSync` 调 agent**，阻塞了事件循环，同进程的 HTTPS 服务器
+   根本来不及响应，表现为「TLS handshake timeout」——一个与被测代码无关的假信号。
+   在这个坑里绕了两圈才想到。正确做法是异步 `spawn`。
+3. 改 `app.js` 时把「什么也不会发生」写成了 `what also happens`——
+   本项目反复记录过的错误类型（中文里混入英文）。读回时发现并改回。
+
+### 仍未验证
+
+- **install.sh 在真 Linux 上仍未执行过。** 本机 macOS 被平台校验第一步拦下。
+  本轮修的 `--server-ca` 与端到端测试都在 macOS 上完成，
+  Linux 上「自签 vs 系统根证书池」的差异没有真机验证。

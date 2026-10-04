@@ -5,6 +5,7 @@
 # 用法（后台「部署」面板会生成这一行）：
 #   curl -fsSL <本服务>/agent/install.sh | sudo bash -s -- \
 #     --server <本服务地址> --enroll <一次性令牌> [--mode pull|push]
+# 本服务用自签证书（不是 certbot）时加：--server-ca /path/to/server.crt
 #
 # 这个脚本只做四件事：下二进制、注册、配 systemd、自检。
 # 证书由 agent 自己生成（Go 的 crypto/x509 能签发，不需要 openssl），
@@ -24,6 +25,7 @@ HOST_ARG=""
 PORT_ARG=""
 INTERVAL_ARG=""
 BIN_URL_OVERRIDE=""
+SERVER_CA=""
 SKIP_SYSTEMD=0
 
 log()  { printf '\033[0;34m[安装]\033[0m %s\n' "$1"; }
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
         --port)     PORT_ARG="${2:-}"; shift 2 ;;
         --interval) INTERVAL_ARG="${2:-}"; shift 2 ;;
         --bin-url)  BIN_URL_OVERRIDE="${2:-}"; shift 2 ;;
+        --server-ca) SERVER_CA="${2:-}"; shift 2 ;;
         --no-systemd) SKIP_SYSTEMD=1; shift ;;
         -h|--help)
             sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
@@ -132,12 +135,20 @@ ENROLL_ARGS=(enroll --server "$SERVER" --token "$ENROLL_TOKEN")
 [ -n "$HOST_ARG" ] && ENROLL_ARGS+=(--host "$HOST_ARG")
 [ -n "$PORT_ARG" ] && ENROLL_ARGS+=(--port "$PORT_ARG")
 [ -n "$INTERVAL_ARG" ] && ENROLL_ARGS+=(--interval "$INTERVAL_ARG")
+# --server-ca：只在本服务用自签证书时才需要。Go 在 macOS 上不读
+# SSL_CERT_FILE（那是 Linux 行为），Linux 上 agent 也会因为自签而握手失败，
+# 所以这里显式传路径，不用环境变量兜底。
+[ -n "$SERVER_CA" ] && ENROLL_ARGS+=(--server-ca "$SERVER_CA")
 
 if ! "$BIN_PATH" "${ENROLL_ARGS[@]}"; then
     die "注册失败。上面是服务端返回的原文。
 常见原因：
   · 令牌已过期（15 分钟有效）或已被用过（一次性）
   · 本服务地址填错，目标机连不上它
+  · 上面若报 certificate signed by unknown authority，说明**本服务用的是
+    自签证书**。加一个参数重新跑：
+        --server-ca /你的/服务器证书.crt
+    （certbot 签的证书不需要这一步。）
 若令牌过期，回后台点「重新生成令牌」再执行一次。"
 fi
 ok "注册完成"

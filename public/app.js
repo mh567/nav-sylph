@@ -3014,11 +3014,21 @@
                 .then(res => {
                     const origin = location.origin;
                     const mode = res.mode === 'push' ? 'push' : 'pull';
-                    const command = [
-                        `curl -fsSL ${origin}/agent/install.sh | sudo bash -s -- \\`,
-                        `  --server ${origin} \\`,
-                        `  --enroll ${res.token}${mode === 'push' ? ' \\\n  --mode push' : ''}`
-                    ].join('\n');
+                    // 自签服务端要在命令里带上 CA，否则 agent 的 TLS 握手会失败
+                    // （Go 在 macOS 上不读 SSL_CERT_FILE，Linux 上自签也不在
+                    // 系统根池里）。默认不勾：多数人用 certbot。
+                    const parts = [
+                        `curl -fsSL ${origin}/agent/install.sh | sudo bash -s --`,
+                        `  --server ${origin}`,
+                        `  --enroll ${res.token}`
+                    ];
+                    if (mode === 'push') parts.push('  --mode push');
+                    // 自签时用户得自己给证书路径——我们不知道他装在哪，
+                    // 而猜一个路径比让用户改一行更糟。
+                    if (this.serverIsSelfSigned === true) {
+                        parts.push('  --server-ca /etc/ssl/certs/你的证书.crt');
+                    }
+                    const command = parts.join(' \\\n');
                     const mins = Math.max(1, Math.round((res.expiresAt - Date.now()) / 60000));
 
                     this.showCommandPanel(`部署到「${name}」`, [

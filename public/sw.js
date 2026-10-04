@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v50：修 agent 注册漏发 token（NAS 上安装稳定 400）+ 自签服务器
+// 需要 --server-ca。改了 app.js、agent/、tests/。
+// ⚠️ 改了 public/ 下的文件必须同批升缓存名，否则老用户继续吃旧 bundle、
+// 本次修复对他们完全不生效，而本地测试是绿的、看不出这个问题。
 // nav-v49：监控接入重构——Go 静态二进制 agent、一键安装命令、
 // 后台卡片拆成「在线」+「部署就绪」两个状态位。改了 app.js、admin.css、
 // styles.css、modules/server-monitor.js。

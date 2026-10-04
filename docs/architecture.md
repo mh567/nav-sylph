@@ -105,7 +105,13 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 **为什么不用人工核对指纹。** 上一版要求用户 SSH 上去生成证书、把终端打印的指纹抄回后台逐字核对——七步以上，且第一步就需要用户已经能上目标机。令牌的语义是「持有即信任」，用户只做一次复制粘贴。
 
-⚠️ **这里刻意没有「绑定来源 IP」那道防护**（代码里曾有过一版，已删）：部署令牌在**目标机**上使用，而服务端看到的是它的**出口 IP**（NAT 之后），与用户在后台填的地址没有可比性。拿它做判定就是把「局域网地址」推出后台，和本文「不按私网地址自动切换」一节拒绝的推断同一类错误。真实防护是上面那三条。
+⚠️ **这里没有「绑定来源 IP」那道防护**（代码里曾有过一版，已删）：部署令牌在**目标机**上使用，而服务端看到的是它的**出口 IP**（NAT 之后），与用户在后台填的地址没有可比性。拿它做判定就是把「局域网地址」推出后台，和本文「不按私网地址自动切换」一节拒绝的推断同一类错误。真实防护是上面那三条。
+
+**enroll 的字段契约必须真跑一次才能验证。** agent 发出的 JSON 与服务端读取的字段名是一个**跨进程契约**，而两边各自都有测试却互不相干：token 一度在 agent 侧校验了非空、却没放进请求体，于是 NAS 上稳定返回 400「缺少令牌」——二进制编译通过、全部单元测试全绿、代码审计也没看出来。所以现在有一条**真的把 agent 二进制和 enroll 端点放在一起跑**的测试（自签 HTTPS 服务端 + 异步 spawn + `--server-ca`）。
+
+⚠️ 那条测试本身踩过两个坑，都写进了注释：① agent 必须用**异步** `spawn`，`spawnSync`/`execSync` 会阻塞事件循环，同进程的 HTTPS 服务器来不及响应，表现为与证书无关的「TLS handshake timeout」；② 测试服务端是自签的，所以要 `--server-ca`。
+
+**自签服务器要显式给 CA。** `http.DefaultClient` 只认系统根池，而 **Go 在 macOS 上不读 `SSL_CERT_FILE`/`SSL_CERT_DIR`**（那是 Linux 行为，macOS 走 Keychain），`GODEBUG=x509usefallbackroots=1` 实测也无效。于是自托管用户（自签而非 certbot）的 enroll 必然握手失败。所以 agent 提供 `--server-ca <PEM 路径>`，把它追加进 `RootCAs`——**不是 `InsecureSkipVerify`**，那等于把 HTTPS 悄悄降级成明文。`install.sh` 透传该参数，并在注册失败时明确点名这个原因（`certificate signed by unknown authority` → 加 `--server-ca`）。
 
 **必须存证书 PEM 而不是指纹。** Node 的 `https.request` 只支持把某张证书作为可信锚点传进 `ca`，没有「按指纹信任」的接口。实测（Node 22）：自签证书会先被 OpenSSL 链校验拦下（`DEPTH_ZERO_SELF_SIGNED_CERT`），`checkServerIdentity` 在这种情况下**根本不会被调用**——所以「自定义一个指纹比对函数」这条路在 Node 上走不通，只能存 PEM 交给 `ca`。这也是 `fetchRemoteMetrics` 用 `node:https` 而不是内置 `fetch` 的原因（内置 fetch 不接受 dispatcher 选项）。
 
