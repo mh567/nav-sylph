@@ -2014,8 +2014,10 @@ test('每台服务器可单独控制是否在首页显示', () => {
     // 过滤逻辑：enabled === false 才隐藏，缺省为显示
     assert.match(modCode, /filter\(w => w\.enabled === false\)/, '只隐藏显式关掉的');
     assert.match(modCode, /hidden\.has\(`server-monitor:\$\{e\.id\}`\)/, '按服务器 id 匹配');
-    // 本机不可关：关掉后模块区可能全空且无处可恢复
-    assert.match(modCode, /e\.id === 'local' \|\| !hidden\.has/, '本机始终可见');
+    // 本机与远端同一过滤器（旧断言「本机始终可见」曾把交付时的行为
+    // 钉成契约名：关掉无处恢复——而后台加上本机复选框后那个前提已不成立，
+    // 详见下方专门用例）
+    assert.doesNotMatch(modCode, /e\.id === 'local' \|\| !hidden\.has/, '本机不再无条件放行');
 
     // 界面：每行一个开关，且立即落盘
     assert.match(appCode, /data-server-visible=/, '每行有可见性开关');
@@ -2756,4 +2758,44 @@ test('renderServerList 里不引用它没有的参数', () => {
     for (const p of params) {
         assert.ok(body.includes(p), `参数 ${p} 有被使用`);
     }
+});
+
+test('本机卡片可以被「显示/隐藏」真正关掉（后台与首页不再互相矛盾）', () => {
+    // 用户报：后台把本机的「显示」取消勾选，toast 也说了「已从首页隐藏」，
+    // 首页却照常挂着本机卡片。
+    //
+    // 根因（server-monitor.js mountWidget）：过滤器里给本机塞了
+    // `e.id === 'local' ||` 无条件放行，并配有一条注释解释「关掉的话
+    // 用户会得到一个空模块区，却没有任何入口能把它开回来」。
+    // 那条理由的前提**已经不存在**：后台「监控目标」的本机卡片就有
+    // 「显示/隐藏」复选框（app.js renderLocalServerCard）——恢复入口
+    // 一直在。结果是后台一个承诺、首页另一个行为，互相矛盾。
+    const moduleCode = stripComments(moduleSource);
+
+    // ① 过滤器一视同仁：本机与远端走同一条 hidden 判断
+    const mountAt = moduleCode.indexOf('function mountWidget(');
+    assert.ok(mountAt > 0, '找到 mountWidget');
+    // 边界：下一个同级 function（本文件是顶层 function 风格，缩进 4）
+    const nextFn = moduleCode.indexOf('\n    function ', mountAt);
+    assert.ok(nextFn > mountAt, '找到 mountWidget 的下边界');
+    const mount = moduleCode.slice(mountAt, nextFn);
+    assert.ok(mount.length > 400, `切出 mountWidget（${mount.length}）`);
+
+    assert.match(mount, /entries\.filter\(e => !hidden\.has\(`server-monitor:\$\{e\.id\}`\)\)/,
+        '过滤器对全部条目统一走 hidden 表');
+    // ⚠️ 旧的放行分支不得复活。这是负向断言，锚在过滤表达式本身附近，
+    // 不锚在全局（「local」这个词在本文件别处还有合法出现）。
+    assert.doesNotMatch(mount, /\|\| !hidden\.has/,
+        '「local 短路优先、其他才查 hidden」的旧形状不得复活');
+
+    // ② 本机的恢复入口必须存在——那是「可以关」这件事成立的前提。
+    //    若有人删掉后台的本机复选框，①就退回「关掉打不开」的老困境，
+    //    到时该重新讨论而不是静默沿用此规则。
+    const app = stripComments(appSource);
+    const cardAt = app.indexOf('renderLocalServerCard(config) {');
+    assert.ok(cardAt > 0, '找到 renderLocalServerCard');
+    const cardNext = app.indexOf('\n        async ', cardAt);
+    const card = app.slice(cardAt, cardNext > cardAt ? cardNext : undefined);
+    assert.match(card, /'server-monitor:local'/, '后台本机卡用的就是 home 那个键');
+    assert.match(card, /data-server-visible="\$\{key\}"/, '且真的渲染了显示/隐藏复选框');
 });

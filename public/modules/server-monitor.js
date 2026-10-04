@@ -375,13 +375,18 @@
         const entries = [{ id: 'local', name: '本机', online: true, isLocal: true }]
             .concat(servers.map(s => ({ id: s.id, name: s.name || s.url, online: false })));
 
-        // 逐台可见性由 widgets[].enabled 控制，缺省为「显示」。
-        // 本机不可关：它是这个模块唯一的零配置产物，关掉的话
-        // 用户会得到一个空模块区，却没有任何入口能把它开回来。
+        // 逐台可见性由 widgets[].enabled 控制，缺省为「显示」——本机与远端
+        // 同一套规则，过滤器一视同仁。
+        // ⚠️ 早先这里给本机塞了一个 `e.id === 'local' ||` 无条件放行，理由是
+        // 「关掉的话用户会得到一个空模块区，却没有任何入口能把它开回来」。
+        // 那条理由成立的前提（没有恢复入口）已经不存在了：后台「监控目标」
+        // 的本机卡片就有「显示/隐藏」复选框（app.js renderLocalServerCard），
+        // 而首页无视它，用户取消勾选后 toast 说「已从首页隐藏」、
+        // 首页却照常挂着——一个后台与首页互相矛盾的开关。
         const hidden = new Set((state.config.widgets || [])
             .filter(w => w.enabled === false)
             .map(w => w.id));
-        const visible = entries.filter(e => e.id === 'local' || !hidden.has(`server-monitor:${e.id}`));
+        const visible = entries.filter(e => !hidden.has(`server-monitor:${e.id}`));
 
         startPolling();
         return visible.map(buildCard);

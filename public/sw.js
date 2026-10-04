@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v56：修「后台取消本机「显示」、首页照常挂着」——mountWidget 的过滤器
+// 曾给本机一个无条件放行（理由「关掉无处恢复」在后台本机卡片出现后已不成立）。
+// 改了 modules/server-monitor.js。同批升缓存名：老用户否则拿不到。
 // nav-v55：后台自签开关重排（成块靠左、修嵌套 label、说明限宽两行）
 // + 部署面板第 3 步按模式分开说（原文案指向一个被面板自己遮住、
 // 且 push 模式下压根不存在的「检测」按钮）。
@@ -54,7 +57,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v55';
+const CACHE = 'nav-v56';
 const ASSETS = [
     '/',
     '/index.html',
