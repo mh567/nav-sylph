@@ -23,15 +23,6 @@
         return value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`;
     }
 
-    function fmtBytes(bytes) {
-        if (!Number.isFinite(bytes)) return '—';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let value = bytes;
-        let i = 0;
-        while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
-        return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
-    }
-
     function fmtDuration(seconds) {
         if (!Number.isFinite(seconds)) return '—';
         const d = Math.floor(seconds / 86400);
@@ -79,7 +70,15 @@
         }
     }
 
-    /** 字节数 → 人类可读（GB/TB）。取不到时返回 '—'。 */
+    /** 字节数 → 人类可读（GB/TB/PB）。取不到时返回 '—'。
+     *
+     *  ⚠️ 这里曾经有**两份** fmtBytes：本函数是新增的，而文件上方
+     *  另有一份旧的（只到 TB，且多一条「≥100 就取整」的分支）。JS 的函数
+     *  声明提升让**后一份覆盖前一份**，于是旧的那份成了死代码——而它看起来
+     *  完全正常，测试也全绿（没有任何一条断言过具体输出）。
+     *  症状是同一个值在详情页与卡片上可能显示成两种精度。
+     *  现在只有这一份。
+     */
     function fmtBytes(bytes) {
         if (!Number.isFinite(bytes) || bytes <= 0) return '—';
         const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -441,23 +440,26 @@
         // 也要能看到它。用户在排障时第一句问的是「它到底在哪台机器上」，
         // 而那个状态下没有 metrics、没有 detail，只有一句 error。
         //
-        // 服务端一直在传 `url`（server.js 的 collect 里就有），前端此前
-        // 从没读过它——又一个「算了没人用」的字段。
-        if (entry.url) {
+        // 服务端对远端一直在传 `url`（server.js 的 collect 里就有）；
+        // 本机没有它（url 为 null，因为它不通过 agent 采集），而本机的
+        // 地址就是**用户此刻访问本服务的位置**——浏览器自己知道，
+        // 让服务端再猜一遍反而多一处可能不一致。
+        const address = entry.isLocal ? location.origin : entry.url;
+        if (address) {
             const addr = document.createElement('div');
             addr.className = 'module-panel-address';
             const host = document.createElement('span');
             host.className = 'module-panel-address-host';
             // 只显示主机与端口：https:// 前缀每一台都一样，占地方且不增信息
-            host.textContent = displayHost(entry.url);
+            host.textContent = displayHost(address);
             const copy = document.createElement('button');
             copy.type = 'button';
             copy.className = 'btn btn-sm';
             copy.textContent = '复制';
-            copy.title = `复制 ${entry.url}`;
+            copy.title = `复制 ${address}`;
             copy.addEventListener('click', async () => {
                 try {
-                    await navigator.clipboard.writeText(entry.url);
+                    await navigator.clipboard.writeText(address);
                     copy.textContent = '已复制';
                     setTimeout(() => { copy.textContent = '复制'; }, 1500);
                 } catch {
@@ -525,10 +527,13 @@
                 // 名称后面带上地址：概览里最常见的问题是「这一行是哪台机器」，
                 // 而两台机器可能都叫「服务器」。
                 name.textContent = s.name || s.id;
-                if (s.url && !s.isLocal) {
+                // 本机也带：它的 url 是 null，但访问地址就是浏览器所在处。
+                // 排除本机会让概览第一行缺地址，而那行恰恰是最常被问的。
+                const rowAddress = s.isLocal ? location.origin : s.url;
+                if (rowAddress) {
                     const host = document.createElement('span');
                     host.className = 'module-panel-list-host';
-                    host.textContent = displayHost(s.url);
+                    host.textContent = displayHost(rowAddress);
                     name.append(' · ', host);
                 }
                 const value = document.createElement('span');

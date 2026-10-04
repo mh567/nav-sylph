@@ -1302,34 +1302,28 @@ func cmdUpgrade(args options) error {
 	return nil
 }
 
-// upgradeHTTPClient 返回下载用的客户端。与 enrollClient 同一套 CA 逻辑，
-// 但不复用它的语义名——一个叫「enroll 的客户端」用在下载上会让人读不懂。
-func upgradeHTTPClient(args options) *http.Client {
-	caPath := args.str("server-ca", "NAV_AGENT_SERVER_CA")
-	if caPath == "" {
-		return http.DefaultClient
-	}
-	pem, err := os.ReadFile(caPath)
-	if err != nil {
-		return http.DefaultClient
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
-	}
-	if !pool.AppendCertsFromPEM(pem) {
-		return http.DefaultClient
-	}
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
-	}
-}
+// upgradeHTTPClient 是 enrollClient 的别名 —— 两者需要的 CA 逻辑完全相同，
+// 早先各写一份 23 行，而 upgrade 那份**丢掉了 enroll 的两条 stderr 提示**：
+// CA 路径写错时它静默回落到系统根池，用户看到的是一句
+// 「certificate signed by unknown authority」，完全指不到「你的 --server-ca 路径不对」。
+//
+// 不按调用点拆开，而是共用一份并让提示只出现一次：拆开等于让两份副本漂移，
+// 这正是本项目反复吃过亏的地方（协议常量、轮询白名单、架构白名单）。
+func upgradeHTTPClient(args options) *http.Client { return enrollClient(args) }
 
 // currentArch 返回本机对应的产物架构名（amd64 / arm64 / armv7）。
 //
-// ⚠️ 不能用 runtime.GOARCH 直接拼：GOARCH=arm 可能是 armv5/v6/v7，
-// 而服务端只提供 armv7 的产物。GOARM=7 时匹配，其余明确报不支持——
-// 装一个架构不对的二进制会当场段错误，那种失败比「装不了」糟得多。
+// ⚠️ `GOARCH=arm` 实际可能是 armv5/v6/v7，而本项目只发 armv7 的产物。
+// 这里**一律按 armv7 走**，不按 GOARM 分支——
+//
+//	· 早先写的是 `if os.Getenv("GOARM") == "7" { return "armv7" }` 之后
+//	  再 `return "armv7"`：**两个分支返回同值**，是一段死代码。
+//	· 而且 `GOARM` 是**编译期**变量，运行中的二进制不带它——读它永远
+//	  得到空串，所以那个 `if` 永远不成立。
+//
+// 统一按 v7 是安全的一侧：v7 的二进制能在 v6/v5 上运行，反过来不行。
+// 真要区分 v5/v6 需要读 CPU 型号或 /proc/cpuinfo，那是另一种复杂度，
+// 而本项目不支持那些机器。
 func currentArch() (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
@@ -1337,12 +1331,6 @@ func currentArch() (string, error) {
 	case "arm64":
 		return "arm64", nil
 	case "arm":
-		if os.Getenv("GOARM") == "7" {
-			return "armv7", nil
-		}
-		// 运行中的二进制不带 GOARM 环境变量（那是编译期变量）。
-		// 所以运行期靠 GOARCH 只能到 arm 这一层——而本项目只发 armv7。
-		// 保守起见按 armv7 走：v7 能在 v6/v5 上运行，反之不行。
 		return "armv7", nil
 	default:
 		return "", fmt.Errorf("暂不支持的架构 %s（本服务提供 amd64 / arm64 / armv7）", runtime.GOARCH)

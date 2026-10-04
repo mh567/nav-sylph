@@ -788,6 +788,86 @@ async function init() {
 // 这条软门在无会话时会跑一次 bcrypt 比对，而匿名访问必走这条路。
 // 不限流的话，伪造的 X-Admin-Password 就能把每次请求从约 7ms 抬到 63ms
 // （约 9 倍 CPU），且完全无需认证。匿名也要能读首页，因此用独立限流桶。
+
+// 供浏览器读**服务级**配置的只读端点。
+//
+// ⚠️ 为什么单开一个而不塞进 /api/config：
+// `/api/config` 返回的是 **config.json**（用户的公开配置：主题、分类、
+// 搜索引擎），而 `selfSignedCert` 住在**服务配置**里
+// （`server-config/defaults.js` 的 security 段，与 cookieSecure 同级）——
+// 两个文件是两套东西。所以那条字段从 `/api/config` 永远读不到，
+// 前端只能拿到 undefined，而界面看起来一切正常。
+// （浏览器实测发现：单元测试全绿，因为没有任何一条断言它真的被下发。）
+//
+// ⚠️ 只回**这一个布尔**：整个 security 段里有 defaultPassword、
+// adminPasswordFile 那些绝不能下发的字段。这里的东西必须是
+// 「即使公开也无害」且「前端确实需要」。
+app.get('/api/server-flags', publicReadLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.json({
+        selfSignedCert: config.security.selfSignedCert === true
+    });
+});
+
+/**
+ * 改服务级配置里那几个后台能调的开关。
+ *
+ * ⚠️ 为什么不用 `POST /api/config`：那个端点只写 **config.json**
+ * （用户的公开配置），而这些开关住在 **server-config.json**（服务配置，
+ * 覆盖 defaults.js 的默认值）。两个文件是两套东西，往错的那个写会
+ * 「保存成功但下次启动就没了」。
+ *
+ * ⚠️ 为什么不用直接改内存里的 `config`：它被 Object.freeze 了
+ * （server-config/index.js 的末尾），而且改内存不落盘，重启即丢。
+ * 这里写文件；下次启动由 loadFromConfigFile() 读回来。
+ *
+ * ⚠️ 白名单式：只接受明确列出的键。整个 security 段里有 defaultPassword
+ * 与 adminPasswordFile，那两个绝不能从这个端点被改——它是 requireAdmin
+ * 保护的，但白名单让「将来加了新键」不会自动变成「可被网页改写」。
+ */
+const WRITABLE_SERVER_FLAGS = new Set(['selfSignedCert']);
+
+app.post('/api/server-flags', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        const body = req.body || {};
+        const updates = {};
+        for (const [key, value] of Object.entries(body)) {
+            if (!WRITABLE_SERVER_FLAGS.has(key)) {
+                return res.status(400).json({
+                    error: `不允许修改 ${key}（可改的：${[...WRITABLE_SERVER_FLAGS].join(', ')}）`
+                });
+            }
+            if (typeof value !== 'boolean') {
+                return res.status(400).json({ error: `${key} 必须是布尔值` });
+            }
+            updates[key] = value;
+        }
+        if (!Object.keys(updates).length) {
+            return res.status(400).json({ error: '没有可修改的项' });
+        }
+
+        const file = path.join(config.rootDir, 'server-config.json');
+        let existing = {};
+        try {
+            existing = JSON.parse(await fs.readFile(file, 'utf8'));
+        } catch {
+            // 文件不存在是正常路径：第一次通过网页改设置
+        }
+        if (!existing.security || typeof existing.security !== 'object') {
+            existing.security = {};
+        }
+        Object.assign(existing.security, updates);
+        await writeJSON(file, existing);
+
+        // 内存里那份是冻结的，不能改 —— 所以前端要立刻生效就得刷新。
+        // 这里明确告知，而不是假装已经生效。
+        res.json({ success: true, ...updates, needsReload: true });
+    } catch (err) {
+        console.error('保存服务配置失败:', err);
+        res.status(500).json({ error: '保存失败: ' + err.message });
+    }
+});
+
 app.get('/api/config', publicReadLimit, async (req, res) => {
     try {
         // 允许浏览器缓存但每次用 ETag 校验：配置未变时返 304（零响应体），

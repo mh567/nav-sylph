@@ -26,6 +26,16 @@ module.exports = {
         // Cookie 是否带 Secure。默认 true；纯 http 部署需在 .env 设 COOKIE_SECURE=false，
         // 否则浏览器不会保存该 Cookie，登录态静默失效。
         cookieSecure: true,
+        // 本服务自己的 https 证书是不是自签的。
+        //
+        // 为什么需要它：agent 连本服务（enroll / upgrade）时，如果证书是自签的
+        // 就必须显式拿到那份证书当可信根——而 Go 在 macOS 上不读
+        // SSL_CERT_FILE（那是 Linux 行为），Linux 上自签也不在系统根池里。
+        // 不知道这一点，生成的部署/升级命令就会缺 --server-ca，在目标机上
+        // 报一句指不到真因的「certificate signed by unknown authority」。
+        //
+        // 不知道就保持默认 false（按公网可信证书处理）——多数人用 certbot。
+        selfSignedCert: false,
         // 设备绑定的地理位置判据。geoEnabled=false 或库文件缺失时该判据被跳过。
         geoEnabled: true,
         geoDatabase: 'lib/geo/ip2region_v4.xdb',

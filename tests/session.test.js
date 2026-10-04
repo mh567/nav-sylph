@@ -609,7 +609,7 @@ test('登录与登出都会同步 sessionTrusted', () => {
 
 // ========== 源码形状守卫 ==========
 
-test('21 个特权路由 + change-password 都改用 requireAdmin 中间件', () => {
+test('特权路由 + change-password 都改用 requireAdmin 中间件', () => {
     // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
     // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
     const code = stripComments(server);
@@ -626,9 +626,68 @@ test('21 个特权路由 + change-password 都改用 requireAdmin 中间件', ()
     const afterPush = code.indexOf('\napp.', pushStart);
     const withoutPush = code.slice(0, pushStart) + code.slice(afterPush > pushStart ? afterPush : pushStart);
     assert.ok(withoutPush.length > 0 && withoutPush.length < code.length, '推送端点被摘出');
+
     const guarded = withoutPush.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
-    // 11 特权路由 + change-password + trust-device + 模块平台 8 条 = 21
-    assert.equal(guarded.length, 21, '特权路由 + change-password + trust-device + 模块 8 条共 21 处');
+
+    // ⚠️ 计数必须**推导**而不是写死。
+    //
+    // 写死的版本（本条曾如此是 21）在新增一条特权路由时会假红：数字对不上了，
+    // 而「新增特权端点」恰恰是正常、可预期的事 —— 让人去改一个魔数字，
+    // 只会掩盖「新增的路由漏了守卫」这种真正该报的情况。
+    //
+    // 推导方式：把**所有** API 路由列出来，再逐个判断它有没有 requireAdmin。
+    // 一个「漏了守卫」的端点会出现在第二份列表里而不在第一份里。
+    const allRoutes = [...withoutPush.matchAll(
+        /app\.(post|get|delete)\('(\/api\/[^']*)',\s*([^\n]{0,60})/g)]
+        .map(m => ({ method: m[1].toUpperCase(), path: m[2], args: m[3] }));
+    assert.ok(allRoutes.length > 20, `数出 API 路由（${allRoutes.length}）`);
+
+    // ⚠️ 也不写死「未受保护的恰好是这些」——实测列出来是 13 条
+    // （分享、健康检查、配置读取、会话探测…），那是一份凭印象就会写错的清单，
+    // 而它每次新增公开端点都得改一次，改到最后没人看了。
+    //
+    // 真正该报的是一件事：**哪些该受保护的没受保护**。
+    // 用**豁免清单**（默认全部要守卫，逐条列出例外）而不是「该守卫的前缀」：
+    // 前缀表在新增端点用新路径时会漏检（真实踩过：`/api/server-flags`
+    // 不在任何前缀表里），而豁免清单的默认是「全部受保护」。
+    //
+    // ⚠️⚠️ 豁免的键必须是「方法 + 路径」而不是路径本身：
+    // 同一个路径上 GET 公开而 POST 受保护是这里的常态
+    // （`/api/server-flags`：GET 要让前端匿名可读，POST 要管理员）。
+    // 按路径豁免会让 GET 那次把 POST 一起豁免掉 ——
+    // 真实踩过：POST 明明挂了 requireAdmin，断言仍报它「漏了守卫」。
+    const key = r => `${r.method} ${r.path}`;
+    const GUARD_EXEMPT = new Set([
+        // 公开只读：首页要能匿名渲染
+        'GET /api/session', 'GET /api/version', 'GET /api/changelog',
+        'GET /api/health', 'GET /api/config', 'GET /api/favorites',
+        // 登录与登出：它们是**鉴权流程本身**，挂了 requireAdmin 就无法登录
+        'POST /api/verify-password', 'POST /api/logout',
+        // 分享：本来就设计为公开（分享码是访问凭证）
+        'POST /api/p', 'POST /api/p/code', 'POST /api/p/:code',
+        // agent 的注册端点：目标机上还没有任何凭据，鉴权是**一次性令牌**。
+        // ⚠️ 只有推送端点被上面摘出（它在 enroll 之前，所以 enroll 仍在
+        // withoutPush 里）—— 实测确认过，把 enroll 也写进「已摘除」会漏检它。
+        'POST /api/modules/enroll',
+        // ⚠️ 同路径的 POST 是受保护的（写服务配置要管理员），
+        // 所以只豁免 GET —— 按路径豁免会把它一起放过
+        'GET /api/server-flags'
+    ]);
+    const missing = allRoutes
+        .filter(r => !/\brequireAdmin\b/.test(r.args) && !GUARD_EXEMPT.has(key(r)))
+        .map(key);
+    assert.deepEqual(missing, [],
+        `这些端点必须挂 requireAdmin（当前漏了：${missing.join(', ') || '无'}）`);
+
+    // 豁免清单里的每一条都要真的存在，否则清单会悄悄过期
+    for (const p of GUARD_EXEMPT) {
+        assert.ok(allRoutes.some(r => key(r) === p),
+            `豁免清单里的 ${p} 在源码里不存在了（该删）`);
+    }
+
+    assert.ok(guarded.length >= 22,
+        `特权路由 ${guarded.length} 条（少于 22 说明有路由丢了守卫）`);
+
     assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
         '手写守卫必须全部移除');
 });

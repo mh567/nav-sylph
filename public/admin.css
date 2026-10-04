@@ -787,6 +787,22 @@
     border-color: color-mix(in srgb, var(--admin-error) 40%, transparent);
 }
 .modal .server-item-state[data-kind="alert"] .lead { color: var(--admin-error); }
+/* agent 版本提示。刻意不用 alert 色 —— 旧版 agent 不是故障，
+   它只是缺一个新功能；染成警告色会让用户以为出问题了。 */
+.modal .server-item-version {
+    margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--admin-edge);
+    color: var(--text-secondary); font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.modal .server-item-version span {
+    margin-left: 7px; padding: 1px 6px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent); font-size: 10px; font-weight: 600;
+}
+/* 自签证书开关 */
+.modal .setting-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.modal .setting-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.modal .setting-toggle span { color: var(--text-secondary); font-size: 12px; min-width: 1.4em; }
 .modal .server-item-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* 可见性开关用原生 checkbox + 文字，而不是现有的 toggle-switch：
    那一套是给整行设置项的（占满一行），这里要和按钮并排。

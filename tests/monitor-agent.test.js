@@ -64,6 +64,65 @@ function routeBody(marker, endMarker) {
     return next > start ? code.slice(start, next) : code.slice(start);
 }
 
+/**
+ * 取出 app.js 里某个方法的函数体。
+ *
+ * ⚠️ 切片以「下一个缩进 8 的方法定义」为界。用 `\n        }` 当边界时，
+ * 函数体里任何一层缩进 8 的右花括号都会提前截断——加几行注释就切不全，
+ * 而表现是「断言不成立」而不是「切错了」。
+ *
+ * ⚠️ 同样不能用固定字符窗口：实现里插入过「agent 版本提示」那几行，
+ * 200 字符的窗口就切不全了。按方法边界切才与内容长度无关。
+ *
+ * ⚠️⚠️ 必须匹配**带参数的定义形态**，不能只匹配名字：
+ * `indexOf('\n        isAgentOutdated')` 会先命中**调用处**
+ * （`isAgentOutdated(s);` 在另一个方法体里，缩进也是 8），
+ * 于是切出一段几百字符的无关代码，而里面当然找不到该方法的实现 ——
+ * 断言会全部落空，且**没有任何一条会失败**。本项目已经在这个坑上栽过
+ * 多次（局部变量名当锚点、同形字符串抢先匹配）。
+ */
+function methodBodyOf(code, name) {
+    // 定义处：名字后面紧跟一个参数列表与 `{`
+    const re = new RegExp(`\\n        (?:async )?${name}\\([a-zA-Z_$][\\w$, ]*\\) \\{`);
+    const m = re.exec(code);
+    if (!m) return '';
+    const rest = code.slice(m.index + 1);
+    const next = rest.search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
+    return next > 0 ? rest.slice(0, next) : rest;
+}
+
+/**
+ * methodBodyOf 的自检。
+ *
+ * ⚠️ 这是**给它自己**的测试。
+ *
+ * 曾经的 bug：它只按名字匹配，而同名方法有「调用处」与「定义处」两份，
+ * 于是可能切到调用处（`this.isAgentOutdated(s);` 在另一个方法体里），
+ * 后果是**所有基于它的断言全部落空、且没有一条失败** ——
+ * 一个什么都不检查的测试看起来和通过的测试一样绿。
+ *
+ * 所以下面断言的是**可观测**的性质：切出的片段以「名字 + 参数列表 +
+ * 花括号」开头，并且**含方法体**而不是只有一行签名。
+ */
+test('切片辅助函数切到的是定义（含参数列表与花括号），不是裸调用', () => {
+    const code = stripComments(appSource);
+    for (const name of ['isAgentOutdated', 'renderServerStateBody',
+        'renderServerStatusBits', 'showDeployDialog']) {
+        const body = methodBodyOf(code, name);
+        assert.ok(body.length > 200, `切出 ${name}（${body.length}）`);
+        // ⚠️ 片段必须以**定义形态**开头：名字 + 参数列表 + 花括号。
+        // 只按名字匹配会命中裸调用（`this.foo(s);` 后面没有 `{`），
+        // 于是断言全部落空且没有一条失败 —— 一个什么都不检查的测试
+        // 看起来和通过的测试一样绿。
+        assert.match(body, new RegExp(`^\\s*(?:async )?${name}\\([a-zA-Z_$][\\w$, ]*\\) \\{`),
+            `${name} 切到的是定义而非调用`);
+    }
+    // 而 app.js 里确实同时存在这三种形态，说明这条断言不是空转：
+    // 定义带 `{`，调用不带。
+    assert.match(code, /isAgentOutdated\(s\) \{/, '定义形态：带 {');
+    assert.match(code, /this\.isAgentOutdated\(s\);/, '调用形态：不带 {');
+});
+
 /** 取出某个 @media 查询的正文（按括号配平，不靠正则）。 */
 function mediaBlockOf(css, query) {
     const start = css.indexOf(query);
@@ -341,11 +400,9 @@ const code = stripComments(appSource);
     // 函数体里任何一层缩进 8 的右花括号都会提前截断——加了注释就切不全，
     // 而表现是「第一条断言无故失败」而不是「切错了」。
     const methodBody = (name) => {
-        const start = code.indexOf(`\n        ${name}(`);
-        assert.ok(start > 0, `找到 ${name}`);
-        const rest = code.slice(start + 1);
-        const next = rest.search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
-        return next > 0 ? rest.slice(0, next) : rest;
+        const body = methodBodyOf(code, name);
+        assert.ok(body, `找到 ${name}`);
+        return body;
     };
     const render = methodBody('renderServerStatusBits');
     assert.ok(render.length > 100, `切出 renderServerStatusBits（${render.length}）`);
@@ -395,8 +452,16 @@ const code = stripComments(appSource);
             `${state} → ${kind}`);
     }
     // 措辞只有一处：说明区与 toast 都取自它，否则两边说法会漂移
-    assert.match(code, /const bit = this\.serverDeployBit\(s\);[\s\S]{0,200}?server-item-state/,
+    //
+    // ⚠️ 不要用固定字符窗口：实现里插入过「agent 版本提示」那几行，
+    // 200 字符的窗口就切不全了，而表现是「断言不成立」而不是「切错了」。
+    // 这里改成在同一方法体内逐个断言，不依赖顺序距离。
+    const body = methodBodyOf(code, 'renderServerStateBody');
+    assert.ok(body.length > 200, `切出 renderServerStateBody（${body.length}）`);
+    assert.match(body, /const bit = this\.serverDeployBit\(s\);/,
         '说明区复用 serverDeployBit 的措辞');
+    assert.match(body, /class="server-item-state"/,
+        '确实渲染成那块说明区');
     assert.doesNotMatch(code, /serverStateLabel|serverStateKind/,
         '旧的两套状态文案已删除（零消费者，留着必然漂移）');
 });
@@ -1215,9 +1280,20 @@ test('详情页显示设备地址，且在指标之外（拉不到数据时也�
     // ⚠️ 位置是关键：必须在 `if (!entry.metrics)` **之前**。
     // 放在之后意味着「这台机器连不上」时看不到地址——而那正是最需要
     // 地址的时候（排障第一句问「它在哪台机器上」）。
-    assert.match(panel[0], /entry\.url/, '按 entry.url 渲染');
+    // ⚠️ 本机也必须有地址（用户拍板「d 显示」）。它的 url 是 null ——
+    // 因为它不通过 agent 采集——而本机的地址就是**用户此刻访问本服务
+    // 的位置**，浏览器自己知道，让服务端再猜一遍反而多一处可能不一致。
+    assert.match(panel[0], /entry\.isLocal \? location\.origin : entry\.url/,
+        '本机用浏览器所在处，远端用配置里的地址');
     assert.match(panel[0], /module-panel-address/, '有专门的地址条');
-    assert.match(panel[0], /displayHost\(entry\.url\)/, '只显示主机与端口');
+    assert.match(panel[0], /displayHost\(address\)/, '只显示主机与端口');
+
+    // 概览列表里也带地址，且同样覆盖本机 ——
+    // 排除本机会让第一行缺地址，而那行恰恰是最常被问的
+    assert.match(moduleSource, /const rowAddress = s\.isLocal \? location\.origin : s\.url;/,
+        '概览行里本机也带地址');
+    assert.doesNotMatch(moduleSource, /if \(s\.url && !s\.isLocal\)/,
+        '不得把本机排除在外');
 
     // 服务端一直在传 url（server.js 的 collect 里每条都有），前端此前
     // 从没读过它——又一个「算了没人用」的字段。守卫钉住消费方存在。
@@ -1453,8 +1529,14 @@ test('重复执行部署命令不会撞 ETXTBSY，且会先停掉旧 agent', () 
 
 test('部署面板给出独立的升级命令，且路径与脚本一致', () => {
     const code = stripComments(appSource);
+    // ⚠️ 切片必须守长度上界：本文件（app.js）里 showDeployDialog 之类的名字
+    // 可能同时出现在**调用处**与定义处，取第一个匹配的 `\n        }` 会切出
+    // 一个几百字符的片段，于是后面的断言全部指向错误的范围。
+    // 同批新增的断言都守了这条（route.length > 800、slice(0, 2500)），唯独它没有。
     const dialog = /showDeployDialog\(server\) \{[\s\S]*?\n        \}/.exec(code);
-    assert.ok(dialog, '找到 showDeployDialog');
+    assert.ok(dialog, '切出 showDeployDialog');
+    assert.ok(dialog[0].length > 800,
+        `切到的是定义而非调用处（${dialog[0].length} 字符）`);
 
     // 升级命令必须在面板里，与部署命令**并列**
     assert.match(dialog[0], /upgrade --server \$\{origin\}/, '面板给出升级命令');
@@ -1488,6 +1570,239 @@ test('enrollTokenIp 已彻底移除（含作废时的删除循环）', () => {
     // 而两个真键必须在（它们写在同一个 for 的数组字面量里）
     assert.match(route, /for \(const k of \['enrollTokenHash', 'enrollTokenExpiresAt'\]\)/,
         '作废时删掉这两个键');
+});
+
+test('同一 IIFE 里不得有两份同名函数（声明提升会让前一份变死代码）', () => {
+    // ⚠️ 代码审查发现（而 360 项测试全绿）：server-monitor.js 里曾有**两份**
+    // fmtBytes —— 旧的在上方（只到 TB，多一条「≥100 就取整」的分支），
+    // 新加的在下方。JS 的函数声明提升让**后一份覆盖前一份**，于是旧的成了
+    // 死代码，而它看起来完全正常，没有任何一条断言过具体输出。
+    //
+    // 「看起来正常 + 全绿 + 实际不生效」是这个项目反复遇到的组合，
+    // 所以这里钉的是「同一作用域内不得重复声明」这个结构本身。
+    const fns = ['fmtBytes', 'fmtPercent', 'fmtDuration', 'displayHost'];
+    for (const name of fns) {
+        const count = (stripComments(moduleSource).match(
+            new RegExp(`function ${name}\\(`, 'g')) || []).length;
+        assert.equal(count, 1,
+            `${name} 在 server-monitor.js 里声明了 ${count} 次（必须恰好 1 次）`);
+    }
+});
+
+test('agent 的 CA 客户端只有一份实现，升级与注册共用', () => {
+    // 审查发现：早先 enrollClient 与 upgradeHTTPClient 各写一份 23 行，
+    // 而 upgrade 那份**丢掉了 enroll 的两条 stderr 提示** —— CA 路径写错时
+    // 它静默回落到系统根池，用户只看到「certificate signed by unknown
+    // authority」，完全指不到「你的 --server-ca 路径不对」。
+    //
+    // 两份副本必然漂移，这正是本项目反复吃过亏的地方（协议常量、
+    // 轮询白名单、架构白名单）。
+    assert.match(goSource, /func upgradeHTTPClient\(args options\) \*http\.Client \{ return enrollClient\(args\) \}/,
+        'upgrade 复用 enroll 的 CA 客户端');
+    // 两处「读不到 CA 就报错」的提示必须还在
+    for (const msg of ['读取 --server-ca 失败', '里没有可用的证书']) {
+        const at = goSource.indexOf(msg);
+        assert.ok(at > 0, `${msg} 仍在`);
+        // 且必须在 enrollClient 之内（也就是共用路径上），不是各写一份
+        const fnStart = goSource.indexOf('func enrollClient');
+        const fnEnd = goSource.indexOf('\n}', fnStart);
+        assert.ok(at > fnStart && at < fnEnd, `${msg} 在共享的那一份里`);
+    }
+});
+
+test('currentArch 不得留「两个分支返回同值」的死代码', () => {
+    // 早先写的是 `if os.Getenv("GOARM") == "7" { return "armv7" }` 之后
+    // 再 `return "armv7"` —— 两支同值。而且 GOARM 是**编译期**变量，
+    // 运行中的二进制不带它，那个 if 永远不成立。
+    const fn = /func currentArch\(\) \(string, error\) \{[\s\S]*?\n\}/.exec(goSource);
+    assert.ok(fn, '找到 currentArch');
+    assert.doesNotMatch(fn[0], /GOARM/,
+        '不得按 GOARM 分支（那是编译期变量，运行期读不到）');
+    // 三个支持的架构各一个 case，不多不少
+    const cases = fn[0].match(/case "(\w+)":/g) || [];
+    assert.equal(cases.length, 3, `恰好三个架构分支（实际 ${cases.length}）`);
+    for (const a of ['amd64', 'arm64', 'arm']) {
+        assert.match(fn[0], new RegExp(`case "${a}":\\s*return "${a === 'arm' ? 'armv7' : a}"`),
+            `${a} → ${a === 'arm' ? 'armv7（v7 能在 v5/v6 上跑，反之不行）' : a}`);
+    }
+    // 白名单与 server.js 那份一致，且有比对测试
+    const server = stripComments(serverSource);
+    const arches = /const AGENT_ARCHES = new Set\(\[([^\]]*)\]\)/.exec(server);
+    assert.ok(arches, '找到服务端的架构白名单');
+    for (const a of ['amd64', 'arm64', 'armv7']) {
+        assert.ok(arches[1].includes(`'${a}'`), `服务端白名单含 ${a}`);
+    }
+});
+
+test('自签证书开关是真实可用的（有配置键、有 UI、有赋值）', () => {
+    // 【P0，代码审查发现】部署面板读的是 `this.serverIsSelfSigned`，
+    // 而那个属性**从未被赋值、也没有任何 UI 能设置它** —— 恒为 undefined，
+    // 于是自签分支永不触发：自签部署的用户拿到的命令必然缺 --server-ca，
+    // agent 在目标机上报一句指不到真因的
+    // 「certificate signed by unknown authority」。
+    //
+    // 这类 bug 最贵的地方在于它**看起来完全正常**：属性名合理、判断有模有样、
+    // 形状断言与全绿测试都看不见「它从来没有被写」。
+    const code = stripComments(appSource);
+    const defs = fs.readFileSync(path.join(ROOT, 'server-config', 'defaults.js'), 'utf8');
+    // 剥掉行注释再查「赋值」：init 里那条注释正解释着为什么要赋值，
+    // 不剥的话 `/\/\//` 之类会误伤。
+    const codeOnly = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
+    // ① 配置键存在，有默认值与解释
+    assert.match(defs, /selfSignedCert:\s*false/,
+        '配置有 selfSignedCert 且默认 false（按可信证书处理）');
+    // ⚠️ 不要用固定字符窗口：解释它的那段注释有 8 行。
+    // 断言的是「默认值紧跟着解释」，所以取「键之前 700 字符」而不是之后。
+    const keyAt = defs.indexOf('selfSignedCert: false');
+    assert.ok(keyAt > 0, '找到 selfSignedCert 默认值');
+    assert.match(defs.slice(Math.max(0, keyAt - 700), keyAt),
+        /certificate signed by unknown authority/,
+        '默认值处说清它不设会怎样');
+
+    // ② 它真的被读出来赋给状态（而不是靠某个从未执行的分支）
+    // ⚠️⚠️ 必须走**服务配置**的端点，而不是 `/api/config`：
+    // 那条字段住在 server-config.json，而 `/api/config` 返回的是
+    // config.json（用户的公开配置：主题/分类/搜索引擎）——两个文件、
+    // 两套字段，从后者读永远是 undefined，而界面看起来一切正常。
+    // 浏览器实测发现；单元测试全绿，因为没有任何一条断言它真的被下发。
+    const init = /async init\(\) \{[\s\S]*?\n        \}/.exec(codeOnly);
+    assert.ok(init, '切出 init');
+    assert.match(init[0], /API\.get\('\/api\/server-flags'\)/, '从服务配置端点读');
+    assert.doesNotMatch(init[0], /this\.config\?\.security\?\.selfSignedCert/,
+        '不得从 /api/config 读 —— 那是用户公开配置，没有这个字段');
+    assert.match(init[0], /this\.selfSignedCert = flags\?\.selfSignedCert === true;/,
+        '保存到状态');
+    // 读失败也要有明确落点，而不是留 undefined
+    assert.match(init[0], /catch[\s\S]{0,200}?this\.selfSignedCert = false;/,
+        '读失败按「否」处理');
+
+    // ③ 服务端真的提供这个端点，且只回那一个布尔
+    const getRoute = routeBody("app.get('/api/server-flags'");
+    assert.ok(getRoute.length > 100, `切出 GET 端点（${getRoute.length}）`);
+    assert.match(getRoute, /config\.security\.selfSignedCert === true/,
+        '读的是服务配置里那个值');
+    // ⚠️ 整个 security 段里有 defaultPassword / adminPasswordFile，
+    // 那两个绝不能被这个公开只读端点下发
+    assert.doesNotMatch(getRoute, /defaultPassword|adminPasswordFile/,
+        '不得下发凭据与密码文件路径');
+
+    // ④ 写端点：白名单 + 类型校验 + 落盘 + 告知需重启
+    const postRoute = routeBody("app.post('/api/server-flags'");
+    assert.ok(postRoute.length > 400, `切出 POST 端点（${postRoute.length}）`);
+    // ⚠️ 白名单常量定义在**路由之前**，所以 routeBody 切不到它 ——
+    // 按整份 server.js 源码查，并确认它就在这条路由之前（顺序反了会有 TDZ 报错）。
+    // ⚠️ 而且它在 **server.js** 里，不在 app.js —— 查错文件时 indexOf 返回 -1，
+    // 表现是「找到白名单定义」失败，与「它根本不存在」无法区分。
+    const serverCodeOnly = stripComments(serverSource);
+    const WL = "WRITABLE_SERVER_FLAGS = new Set(['selfSignedCert'])";
+    const wlAt = serverCodeOnly.indexOf(WL);
+    assert.ok(wlAt > 0, '在 server.js 里找到白名单定义');
+    assert.ok(wlAt < serverCodeOnly.indexOf("app.post('/api/server-flags'"),
+        '白名单定义在路由之前（TDZ：路由执行时它必须已初始化）');
+    assert.match(postRoute, /if \(!WRITABLE_SERVER_FLAGS\.has\(key\)\)/,
+        '不在白名单的一律拒');
+    assert.match(postRoute, /typeof value !== 'boolean'/, '类型校验');
+    assert.match(postRoute, /requireAdmin/, '写端点要管理员');
+    assert.match(postRoute, /server-config\.json/, '落盘到服务配置');
+    assert.match(postRoute, /needsReload: true/,
+        '告知需重启（内存里那份被 Object.freeze，改它不落盘）');
+
+    // ⑤ UI 存在且真的能写
+    assert.match(code, /id="selfSignedCertBox"/, '有那个开关');
+    // ⚠️ 不要用固定字符窗口：这段的处理里有 8 行注释，
+    // 而 900 字符的窗口在加注释之前刚好够。改用「切到下一个同缩进的收尾」。
+    const boxAt = code.indexOf("const selfSignedBox = $('#selfSignedCertBox');");
+    assert.ok(boxAt > 0, '找到开关的处理起点');
+    const onchange = code.slice(boxAt, code.indexOf('\n        }', boxAt) + 10);
+    assert.ok(onchange.length > 400, `切出开关的处理（${onchange.length}）`);
+    assert.match(onchange, /onchange = async \(\) =>/, '有 change 处理');
+    // ⚠️ 写端点必须与读端点是同一个
+    assert.match(onchange, /API\.post\('\/api\/server-flags', \{ selfSignedCert: value \}\)/,
+        '写到同一个端点');
+    assert.doesNotMatch(onchange, /API\.post\('\/api\/config'/,
+        '不得写到 /api/config —— 那是用户公开配置，不含服务级字段');
+    assert.match(onchange, /重启本服务后生效/, '提示里说清要重启才生效');
+    assert.match(onchange, /this\.selfSignedCert = value;/, '并更新本地状态');
+    // ⚠️ 保存失败必须把开关拨回去，否则界面显示的是一个没生效的值
+    assert.match(onchange, /catch[\s\S]{0,300}?selfSignedBox\.checked = !value/,
+        '保存失败要回滚开关');
+
+    // ⑥ 那个从未被赋值的属性名不得复活。
+    // ⚠️ 只查可执行代码（上面已剥好）：注释里正写着它是什么、
+    // 以及为什么废弃 —— 不剥的话这条会把自己的说明当成违规代码。
+    assert.doesNotMatch(codeOnly, /serverIsSelfSigned/,
+        '可执行代码里不得再有 serverIsSelfSigned');
+
+    // ⑦ 部署与升级两条命令都要用它
+    const dialog = methodBodyOf(code, 'showDeployDialog');
+    assert.ok(dialog.length > 800, `切出 showDeployDialog（${dialog.length}）`);
+    const uses = dialog.match(/this\.selfSignedCert === true/g) || [];
+    assert.equal(uses.length, 2, `部署与升级各用一次（实际 ${uses.length}）`);
+});
+
+test('agent 版本有真实消费者：后台提示「可升级」', () => {
+    // 审查发现：服务端把 agentVersion 算出来、probe 回传了，而 public/
+    // 里零引用——正是本项目自己的注释所描述的假承诺（「后台据此提示
+    // 旧版可升级」，而那个提示不存在）。
+    const code = stripComments(appSource);
+
+    // ① 真的比较了版本
+    const fn = methodBodyOf(code, 'isAgentOutdated');
+    assert.ok(fn.length > 200, `切出 isAgentOutdated（${fn.length}）`);
+    assert.match(fn, /s\.agentVersion/, '读目标机版本');
+    assert.match(fn, /this\.currentVersion \|\| this\.serverVersion/, '读本服务版本');
+    // ⚠️ 必须逐段比数字：字符串比较会让 '1.10.0' < '1.9.0'
+    assert.match(fn, /split\('\.'\)\.map\(Number\)/, '按段转数字再比');
+    assert.doesNotMatch(fn, /have\s*<\s*want/, '不得直接比字符串');
+    // 拿不到就不说 —— 「拿不到就说有新版」会让用户被反复告知可以升级，
+    // 而升完还是同一个版本
+    for (const guard of ['!have', '!want', "have === 'dev'", "want === 'dev'"]) {
+        assert.ok(fn.includes(guard), `${guard} 的守卫还在`);
+    }
+
+    // ② 真的有 UI 消费它
+    const body = methodBodyOf(code, 'renderServerStateBody');
+    assert.match(body, /isAgentOutdated\(s\)/, '说明区会问「是不是旧版」');
+    assert.match(body, /server-item-version/, '旧版时渲染版本提示');
+    // ⚠️ 「已就绪」原本无条件 return ''，那会把「已就绪但版本旧」一起吞掉
+    assert.match(body, /\(state === 'ready' \|\| state === 'unchecked'\) && !outdated/,
+        '已就绪但版本旧时仍要显示');
+
+    // ③ agentVersion 从探测结果里读 —— 它不在配置里
+    assert.match(code, /const probe = this\.lastProbe\?\.\[raw\.id\];/,
+        '读缓存的探测结果');
+    assert.match(code, /const s = probe \? \{ \.\.\.raw, \.\.\.probe \} : raw;/,
+        '合并探测结果（不改配置对象）');
+    assert.doesNotMatch(code, /\bs\.agentVersion\s*=/,
+        '不得把探测结果写进配置对象（那是永久状态）');
+
+    // ④ 样式在
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8');
+    assert.match(css, /\.modal \.server-item-version\s*\{/, '版本提示有样式');
+});
+
+test('本机详情页与概览行都显示地址', () => {
+    // 用户拍板「d 显示」。本机的 url 是 null（它不走 agent 采集），
+    // 而它的地址就是用户此刻访问本服务的位置 —— 浏览器自己知道。
+    const code = stripComments(moduleSource);
+    const panel = /function renderPanelBody\(body, entry, all\) \{[\s\S]*?if \(!entry\.metrics\)/.exec(code);
+    assert.ok(panel, '切出 renderPanelBody 到 metrics 判断之前');
+    assert.match(panel[0], /entry\.isLocal \? location\.origin : entry\.url/,
+        '本机用浏览器所在处');
+    assert.match(panel[0], /displayHost\(address\)/, '只显示主机与端口');
+    // ⚠️ 必须在 if (!entry.metrics) 之前 —— 离线那台才是最需要地址的
+    assert.ok(panel[0].indexOf('isLocal') < panel[0].indexOf('!entry.metrics'),
+        '地址渲染在 metrics 判断之前');
+
+    // 概览行也要，且不排除本机
+    assert.match(code, /const rowAddress = s\.isLocal \? location\.origin : s\.url;/,
+        '概览行里本机也带地址');
+    assert.doesNotMatch(code, /if \(s\.url && !s\.isLocal\)/, '不得把本机排除');
+
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    assert.match(css, /\.module-panel-address-host\s*\{/, '地址条有样式');
+    assert.match(css, /\.module-panel-list-host\s*\{/, '概览地址有样式');
 });
 
 test('服务器列表的按钮高度：桌面 36px 起，窄屏必须抬回 44px', () => {

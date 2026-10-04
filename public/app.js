@@ -531,6 +531,19 @@
             try {
                 this.config = await (window.__navSylphConfigPromise || API.get('/api/config'));
                 this.migrateConfig();
+                // 自签标记住在**服务配置**里（server-config.json），
+                // 而 this.config 是**用户公开配置**（config.json）——
+                // 两个文件、两套字段，所以它必须单独取。
+                // 早先从 `this.config?.security?.selfSignedCert` 读，
+                // 而那个路径上永远是 undefined（浏览器实测发现，
+                // 单元测试全绿：没有任何一条断言它真的被下发过）。
+                try {
+                    const flags = await API.get('/api/server-flags');
+                    this.selfSignedCert = flags?.selfSignedCert === true;
+                } catch (e) {
+                    console.warn('读取服务配置标志失败，自签标记按「否」处理:', e);
+                    this.selfSignedCert = false;
+                }
                 this.applyTheme();
                 this.render();
                 this.bind();
@@ -2586,6 +2599,23 @@
                 <button class="btn" id="addServerBtn">添加服务器</button>
                 <div class="setting-row">
                     <label>
+                        <span>本服务的 https 证书是自签的</span>
+                        <label class="setting-toggle">
+                            <input type="checkbox" id="selfSignedCertBox"
+                                   ${this.selfSignedCert ? 'checked' : ''}>
+                            <span>${this.selfSignedCert ? '是' : '否'}</span>
+                        </label>
+                    </label>
+                </div>
+                <p class="fav-hint">
+                    用 certbot / Let's Encrypt 签的证书选「否」。
+                    自签（自己生成的那种）选「是」——否则生成的部署与升级命令会少一个
+                    <code>--server-ca</code> 参数，agent 在目标机上会报
+                    「certificate signed by unknown authority」。
+                    存在服务配置里，改完<strong>重启本服务</strong>才生效。
+                </p>
+                <div class="setting-row">
+                    <label>
                         <span>更新周期</span>
                         <select id="pollIntervalSelect">
                             ${this.pollIntervalOptions(config.pollInterval)}
@@ -2594,6 +2624,31 @@
                 </div>
                 <p class="fav-hint" id="pollIntervalHint"></p>
             `;
+            // ⚠️ 这两项必须真的接上。早先部署面板读的是 `this.serverIsSelfSigned`，
+            // 而那个属性**从未被赋值、也没有任何 UI 能设置它** —— 恒为 undefined，
+            // 于是自签分支永不触发，自签部署的用户拿到的命令必然缺 --server-ca。
+            // 「读了但没人写」是本项目最贵的一类 bug：形状断言与全绿测试都看不见。
+            const selfSignedBox = $('#selfSignedCertBox');
+            selfSignedBox.onchange = async () => {
+                const value = selfSignedBox.checked;
+                selfSignedBox.nextElementSibling.textContent = value ? '是' : '否';
+                try {
+                    await API.post('/api/server-flags', { selfSignedCert: value });
+                    this.selfSignedCert = value;
+                    // ⚠️ 服务端写的是 server-config.json，而内存里那份被冻结
+                    // （server-config/index.js 末尾），所以**要重启才真的生效**。
+                    // 不说清楚的话，用户拨了开关、命令这次变了，
+                    // 重启后又变回去 —— 看起来像「保存有时灵有时不灵」。
+                    this.showToast(value
+                        ? '已标记为自签证书（重启本服务后生效），之后生成的命令会带 --server-ca'
+                        : '已按可信证书处理（重启本服务后生效），命令不带 --server-ca');
+                } catch (e) {
+                    console.error('Save selfSignedCert failed:', e);
+                    selfSignedBox.checked = !value;
+                    selfSignedBox.nextElementSibling.textContent = !value ? '是' : '否';
+                    this.showToast('保存失败，请重试', 'error');
+                }
+            };
             this.updatePollIntervalHint(config.pollInterval);
             $('#pollIntervalSelect').onchange = async (e) => {
                 const value = Number(e.target.value);
@@ -2727,17 +2782,56 @@
          */
         renderServerStateBody(s) {
             const state = this.serverDeployState(s);
-            if (state === 'ready' || state === 'unchecked') return '';
+            // 「已就绪」时那块不渲染 —— 正常机器没有需要解释的事。
+            // 但**已就绪的机器可能跑着旧版 agent**，那是要解释的，
+            // 所以这里多一个例外而不是无条件 return ''。
+            const outdated = this.isAgentOutdated(s);
+            if ((state === 'ready' || state === 'unchecked') && !outdated) return '';
             // 措辞统一取自 serverDeployBit —— 状态位与说明区说同一句话，
             // 两处各写一份文案必然漂移（然后用户看到卡片说「未部署」
             // 而展开说「等待部署」）。
             const bit = this.serverDeployBit(s);
             const text = s.error ? this.esc(s.error) : this.esc(bit.title);
+            const version = outdated ? `
+                <div class="server-item-version">
+                    agent ${this.esc(outdated.have)} · 本服务 ${this.esc(outdated.want)}
+                    <span title="升级不会改凭据与证书，只替换程序本身">可升级</span>
+                </div>` : '';
             return `
                 <div class="server-item-state" data-kind="${bit.kind}">
                     <div class="lead">${this.esc(bit.text)}</div>
                     <div class="sub">${text}</div>
+                    ${version}
                 </div>`;
+        }
+
+        /**
+         * 这台机器上的 agent 是不是旧版。
+         *
+         * ⚠️ 只有**真的比较过**才返回结论。拿不到目标机版本（没探测过、
+         * 旧 agent 不报这个字段、版本是 dev）一律返回 null —— 那样界面
+         * 什么都不显示。
+         * 「拿不到就说有新版」比反过来糟得多：用户会被反复告知可以升级，
+         * 而升完还是同一个版本。
+         */
+        isAgentOutdated(s) {
+            const have = s.agentVersion;
+            // 本服务版本：复用版本管理已经取过的 this.currentVersion，
+            // 不另发一次请求——两个字段在同一次会话里必须是同一个值，
+            // 而各取一次就多了一个「不一致」的时机。
+            const want = this.currentVersion || this.serverVersion;
+            // dev 是从源码直接构建的产物，它与任何正式版都不可比
+            if (!have || !want || have === 'dev' || want === 'dev') return null;
+            // 逐段比数字：字符串比较会让 '1.10.0' < '1.9.0'
+            const a = String(have).split('.').map(Number);
+            const b = String(want).split('.').map(Number);
+            if (a.length === 0 || a.some(n => !Number.isFinite(n))) return null;
+            if (b.length === 0 || b.some(n => !Number.isFinite(n))) return null;
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                const x = a[i] || 0, y = b[i] || 0;
+                if (x !== y) return x < y ? { have, want } : null;
+            }
+            return null;
         }
 
         /** 地址只显示主机与端口，不必让用户每次都看见 https:// 前缀。 */
@@ -2887,10 +2981,17 @@
             // 确认「这套东西活着」的第一眼。此前它只出现在首页卡片里，
             // 后台列表从空开始，用户会以为「还没配任何东西」。
             host.innerHTML = this.renderLocalServerCard(config)
-                + servers.map(s => {
-                const key = `server-monitor:${s.id}`;
+                + servers.map(raw => {
+                const key = `server-monitor:${raw.id}`;
                 const item = (config.widgets || []).find(w => w.id === key);
                 const shown = item ? item.enabled !== false : true;
+                // ⚠️ 合并探测结果：agentVersion 只存在于 /probe 的响应里
+                // （配置里没有这个字段），所以「目标机上跑的是不是旧版」
+                // 这个判断必须读缓存，否则永远拿不到那个值。
+                // 用 {...raw, ...probe} 而不是直接改 raw —— 那是配置对象，
+                // 改它会让「这次探测的结果」变成「永久状态」。
+                const probe = this.lastProbe?.[raw.id];
+                const s = probe ? { ...raw, ...probe } : raw;
                 const isPush = s.mode === 'push';
                 // 一台一张卡、卡内竖排：横向由 grid 排多台，纵向因此有空间做
                 // 达标的触控目标。此前是一行一台、按钮挤在右侧一行里（实测 26px，
@@ -3042,7 +3143,7 @@
                     if (mode === 'push') parts.push('  --mode push');
                     // 自签时用户得自己给证书路径——我们不知道他装在哪，
                     // 而猜一个路径比让用户改一行更糟。
-                    if (this.serverIsSelfSigned === true) {
+                    if (this.selfSignedCert === true) {
                         parts.push('  --server-ca /etc/ssl/certs/你的证书.crt');
                     }
                     const command = parts.join(' \\\n');
@@ -3063,7 +3164,7 @@
                     // 不会变的常量——而两处不一致时用户会拿到一条跑不通的命令。
                     const upgradeCommand =
                         `sudo /usr/local/bin/nav-agent upgrade --server ${origin}`
-                        + (this.serverIsSelfSigned === true
+                        + (this.selfSignedCert === true
                             ? ' \\\n  --server-ca /etc/ssl/certs/你的证书.crt'
                             : '');
 
