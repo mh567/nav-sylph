@@ -3,6 +3,13 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v55：后台自签开关重排（成块靠左、修嵌套 label、说明限宽两行）
+// + 部署面板第 3 步按模式分开说（原文案指向一个被面板自己遮住、
+// 且 push 模式下压根不存在的「检测」按钮）。
+// ⚠️ 同时**补上 v1.6.8 漏升的那一级**：v50–v54 的改动都记在下面的注释里，
+// 而 CACHE 一直停在 nav-v49 —— 也就是 v1.6.8 那个「自签用户命令缺
+// --server-ca」的 P0 修复，老用户从服务端拿到的仍是旧 bundle。
+// 改了 public/ 下的文件必须同批升缓存名，否则本地全绿、老用户拿不到修复。
 // nav-v54：修一个 P0 —— 部署面板读的自签标记从未被赋值也没有 UI 可设，
 // 于是自签用户拿到的命令必然缺 --server-ca；接上 agent 版本提示；
 // 本机详情页与概览行显示地址。改了 app.js、server-monitor.js、admin.css。
@@ -47,7 +54,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v49';
+const CACHE = 'nav-v55';
 const ASSETS = [
     '/',
     '/index.html',

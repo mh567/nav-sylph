@@ -1741,6 +1741,157 @@ test('自签证书开关是真实可用的（有配置键、有 UI、有赋值�
     assert.equal(uses.length, 2, `部署与升级各用一次（实际 ${uses.length}）`);
 });
 
+test('部署面板第 3 步不给看不见的入口，且按模式分开说', () => {
+    // 用户报：面板里写着「也可以点上面的「检测」立刻试一次」，可他找不到那个按钮。
+    //
+    // 【两处独立的缺陷，不是一处】
+    // ① 面板是 fixed 覆盖层（z-index 1100）盖在管理弹窗（1000）之上，
+    //    而它盖住的正是服务器卡片那一块 —— 面板开着时那个按钮在**它下面**，
+    //    看不见。指向一个被自己遮住的控件，等于没有指向。
+    // ② push 模式**压根没有那个按钮**：renderServerList 对 isPush 直接不渲染
+    //    probe-server。而 push 机器恰恰是最需要确认部署结果的那种
+    //    （一个端口都不开，只靠注册与上报时间）。
+    //
+    // 顺带修掉同一句里的自相矛盾：原文案同时说「每 60 秒自动探测」与
+    // 「也可以点检测立刻试一次」。而 schedulePendingProbe 只轮询
+    // `!s.enrolled` 的机器（app.js 里 `return !s.enrolled`）——
+    // **已注册的那台永远不会被自动探测**，照原文案读，用户执行完部署
+    // 却等不到卡片自己变。
+    const code = stripComments(appSource);
+    const dialog = methodBodyOf(code, 'showDeployDialog');
+    assert.ok(dialog.length > 800, `切出 showDeployDialog（${dialog.length}）`);
+
+    // ① 第 3 步必须按模式分支，不能是一句通吃的话
+    assert.match(dialog, /plain:\s*mode === 'push'/, '第 3 步按模式分支');
+    // ⚠️ 两个分支各自都要点明本模式的真相。注意断言的是**客户端文案本身**，
+    // 不是服务端 probe 的 hint（那句是「推送模式的机器不开放端口，所以…」，
+    // 措辞不同）——写成断言另一层的字符串，守卫就会在代码正确时变红。
+    assert.match(dialog, /推送模式下目标机不开放端口，探测不到主机在不在线/,
+        'push 分支说明不开放端口、探测不到主机');
+
+    // ② 「检测」这个词只能出现在 pull 分支里，且必须交代怎么走
+    //    （面板是覆盖层，得先关掉才看得见按钮）
+    //
+    // ⚠️⚠️ 分支边界必须锚在**三元表达式的 `?` 与 `:`** 上，不能锚在文案内容上。
+    // 本项目在这个坑上栽过（守卫写对了、断言却打偏）：早先按「push 文案出现
+    // 的位置」切，于是 pushBranch 只切到那句文案**之前**、留一片空白——
+    // 往 push 文案里加「检测」它根本看不见，破坏不红。
+    // 变异验证（往 push 分支塞「检测」）就是抓出这个漏洞的那一刀。
+    const plainAt = dialog.indexOf('plain:');
+    assert.ok(plainAt > 0, '切到第 3 步的 plain');
+    const plain = dialog.slice(plainAt);
+    const qAt = plain.indexOf('?');
+    const cAt = plain.indexOf(':', qAt + 1);
+    assert.ok(qAt > 0, '找到三元表达式的 ?');
+    assert.ok(cAt > qAt, '找到三元表达式的 :（收 push 分支）');
+    const pushBranch = plain.slice(0, cAt);
+    const pullBranch = plain.slice(cAt);
+    assert.ok(pushBranch.length > 50 && pullBranch.length > 50,
+        `两个分支都要有实际内容（push ${pushBranch.length} / pull ${pullBranch.length}）`);
+
+    // ⚠️ 关键：pull 分支是「推荐手动检测」的那一支，push 分支不是。
+    // 断言必须落在**正确的分支**上，否则重排这两支就会让断言指向
+    // 另一个模式——本项目在这个坑上栽过（守卫写对了、断言却打偏）。
+    assert.doesNotMatch(pushBranch, /「检测」/, 'push 分支不得推荐那个不存在的按钮');
+    assert.match(pushBranch, /推送模式下目标机不开放端口/, 'push 分支仍点明不开放端口');
+    assert.match(pullBranch, /「检测」/, 'pull 分支才提「检测」');
+    assert.match(pullBranch, /关掉这个面板/, '并说清要先关掉面板才看得见按钮');
+
+    // ③ 不得再无条件宣称「每 60 秒自动探测」——那条只覆盖未注册的机器
+    assert.match(pullBranch, /未部署的机器本页面每 60 秒自动探测/,
+        '把自动探测限定在未部署的机器上');
+    assert.match(pullBranch, /这台已注册的机器不会自动探测/, '说清已注册的不自动探');
+
+    // ④ 回到源头核对：轮询确实只覆盖 !enrolled，
+    //    否则上面那句限定就是我说得比代码宽
+    const sched = methodBodyOf(code, 'schedulePendingProbe');
+    assert.ok(sched.length > 400, `切出 schedulePendingProbe（${sched.length}）`);
+    assert.match(sched, /return !s\.enrolled/, '轮询确实只覆盖未注册的机器');
+
+    // ⑤ 回到源头核对：push 卡片确实不渲染「检测」按钮。
+    //    没有这条，将来有人给 push 加了按钮，上面的分支就过时了——
+    //    而那时它不会变红，只会悄悄给出一段多余的解释。
+    const list = methodBodyOf(code, 'renderServerList');
+    assert.ok(list.length > 800, `切出 renderServerList（${list.length}）`);
+    assert.match(list, /isPush \? '' : `/, 'push 模式不渲染「检测」按钮');
+});
+
+test('自签开关：开关靠右、说明不再是一大块、且没有嵌套 label', () => {
+    // 用户报：这个选项「说明太详细、位置奇怪、是和之间有大量空白」。
+    // 根因是三条独立的声明叠在一起：
+    // ① `.setting-row label` 是 `justify-content: space-between`（styles.css:994），
+    //    把标题甩到最左、开关推到最右，「是」与标题之间横跨整行空白；
+    // ② 说明文字是 `.setting-row` 之外的独立 `.fav-hint` 块，落在开关**下面**，
+    //    离它描述的那一行太远，读的时候要来回对照；
+    // ③ 标记里是 `<label>` 套 `<label>` —— 无效 HTML，浏览器会把它拆开，
+    //    而点击「是/否」文字是否还能拨动开关在这类结构上并不可靠。
+    //
+    // 这三条都属于**布局**，单元测试看不见，但可以钉住「不许退回旧形状」：
+    // 旧形状是能跑通的（开关照常工作），所以不会被任何行为测试发现，
+    // 而它正是用户抱怨的东西。
+    const code = stripComments(appSource);
+
+    // ① 嵌套 label 不得复活。单数形式断言的是「没有 label 开标签但没关」
+    // 这种明显坏掉的写法；真正的守卫是下面那条成对计数。
+    const labelOpen = (code.match(/<label/g) || []).length;
+    const labelClose = (code.match(/<\/label>/g) || []).length;
+    assert.equal(labelOpen, labelClose, `<label> 成对（开 ${labelOpen} / 闭 ${labelClose}）`);
+
+    // ② 这一行用的是自己的一组类，不再复用通用 `.setting-row label`
+    const editor = methodBodyOf(code, 'renderModulesEditorContent');
+    assert.ok(editor.length > 800, `切出 renderModulesEditorContent（${editor.length}）`);
+    assert.match(editor, /class="setting-row self-signed-row"/, '自签行有自己的一组类');
+    assert.match(editor, /class="self-signed-label"/, '标题与开关那一层有自己的类');
+    assert.match(editor, /class="self-signed-hint"/, '说明有自己的类');
+    // ⚠️ 旧的「说明是 .setting-row 外面独立一块 fav-hint」不得复活：
+    // 那正是用户说的「位置很奇怪」——说明落在开关下面、离描述对象太远。
+    assert.doesNotMatch(editor, /selfSignedCertBox[\s\S]{0,400}?<\/label>\s*<\/div>\s*<p class="fav-hint"/,
+        '说明不得回到 setting-row 之外的独立 fav-hint 块');
+
+    // ③ CSS 侧：说明与标题同行由 .self-signed-label 管，且必须显式
+    //    重设 flex-direction —— styles.css 的 max-width:768px 块里有一条
+    //    `.setting-row label { flex-direction: column }`，窄屏下会把
+    //    这一行拆成竖排。不在自己的选择器上压回去，窄屏就是坏的。
+    const rowRule = /\.modal \.self-signed-label \{([^}]*)\}/.exec(adminCss);
+    assert.ok(rowRule, '找到 .self-signed-label 规则');
+    assert.match(rowRule[1], /flex-direction:\s*row/,
+        '在自己的选择器上压回横排（否则窄屏被 styles.css 的 column 拆竖）');
+    // ⚠️⚠️ 这里断言的是 flex-start，且**必须否定 space-between**。
+    // 第一版这里写的就是 `space-between` —— 那是把空白的**成因**照抄了一遍，
+    // 浏览器实测标题与开关仍相距 707px、截图一看形状根本没变。
+    // 「按用户抱怨去改」不等于改到了点上：必须盯住那个**被量出来的数字**，
+    // 而不是盯住一个看起来合理的属性值。
+    assert.match(rowRule[1], /justify-content:\s*flex-start/,
+        '内容按自身宽度成块靠左（space-between 会把标题与开关拉开一整屏）');
+    assert.doesNotMatch(rowRule[1], /space-between/,
+        '不得用 space-between —— 那正是 707px 空白的成因');
+    assert.match(rowRule[1], /width:\s*auto/,
+        '不拉满整行（width:100% 会让成块失效）');
+
+    // 说明也要限宽：横贯 915px 的一行小字实测难读（第一版 11px 单行）
+    const hintRule = /\.modal \.self-signed-hint \{([^}]*)\}/.exec(adminCss);
+    assert.ok(hintRule, '找到 .self-signed-hint 规则');
+    assert.match(hintRule[1], /max-width:/,
+        '说明限宽，不横贯整屏');
+    const hintFs = /font-size:\s*(\d+)px/.exec(hintRule[1]);
+    assert.ok(hintFs, '说明有显式字号');
+    assert.ok(Number(hintFs[1]) >= 12,
+        `说明字号不得低于 12px（实测 11px 单行发虚，实际 ${hintFs[1]}px）`);
+
+    // ④ 说明文字必须比旧版短：旧版 4 行（含一句完整英文报错 + 为什么要重启），
+    //    缩到 3 行以内，且不再重复解释「用 certbot 的选否」——
+    //    那句是在解释一个绝大多数人不需要的分支。
+    const hintAt = editor.indexOf('class="self-signed-hint"');
+    assert.ok(hintAt > 0, '找到说明块');
+    const hintEnd = editor.indexOf('</p>', hintAt);
+    const hint = editor.slice(hintAt, hintEnd);
+    assert.ok(hint.length > 60, `切出说明（${hint.length}）`);
+    assert.doesNotMatch(hint, /certbot|Let's Encrypt/,
+        '不再解释 certbot 分支——那是绝大多数用户用不到的一支');
+    assert.match(hint, /--server-ca/, '仍点明不设会少哪个参数');
+    assert.match(hint, /重启本服务/, '仍说清要重启才生效');
+});
+
 test('agent 版本有真实消费者：后台提示「可升级」', () => {
     // 审查发现：服务端把 agentVersion 算出来、probe 回传了，而 public/
     // 里零引用——正是本项目自己的注释所描述的假承诺（「后台据此提示

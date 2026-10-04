@@ -803,6 +803,40 @@
 .modal .setting-toggle { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .modal .setting-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .modal .setting-toggle span { color: var(--text-secondary); font-size: 12px; min-width: 1.4em; }
+
+/* 自签开关那一行：标题与开关紧邻成块、说明贴在下方，**不拉满整行**。
+   此前是 `.setting-row` + 独立的一块 `fav-hint`，三个问题：
+   ① `.setting-row label` 是 `justify-content: space-between`（styles.css:994），
+      把标题甩到最左、开关推到最右——浏览器实测两者相距 **707px**，
+      中间整片空白，那正是用户说的「是和之间有大量空白」；
+   ② 说明文字是 `.setting-row` 之外的独立块，落在开关**下面**，
+      离它描述的那一行太远，读的时候要来回对照；
+   ③ 标记里是 `<label>` 套 `<label>` —— 无效 HTML。
+   ⚠️ 修法不是「把 space-between 搬过来」：那只会把同一个形状换了个类名，
+      707px 一分不少。第一版正是这么写的，截图一看形状没变——
+      而 `space-between` 正是空白的**成因**，不是解法。
+      真正要的是 `flex-start`：内容按自身宽度成块，靠左排。
+   ⚠️ 必须在自己的选择器上重设 flex-direction：styles.css 的
+   `max-width: 768px` 块里有一条 `.setting-row label { flex-direction: column }`，
+   窄屏下会把这一行拆成竖排。本文件后加载、同特异性，靠 `.self-signed-label`
+   这个类提一级 specificity（0,2,1 > 0,1,1），不必依赖加载顺序。 */
+.modal .self-signed-row { display: block; }
+.modal .self-signed-label {
+    display: flex; align-items: center; justify-content: flex-start;
+    flex-direction: row; gap: 14px; width: auto;
+}
+.modal .self-signed-name { font-size: 13px; font-weight: 500; color: var(--text); }
+/* 说明限宽并略放大：横贯 915px 的一行 11px 小字既难读又发虚
+   （浏览器实测两行更易读）。max-width 用 em，随字号缩放。 */
+.modal .self-signed-hint {
+    margin: 8px 0 0; max-width: 62em;
+    color: var(--text-muted); font-size: 12px; line-height: 1.6;
+}
+.modal .self-signed-hint code {
+    font-size: 11px; padding: 1px 5px; border-radius: 4px;
+    background: var(--admin-row); color: var(--text-secondary);
+}
+.modal .self-signed-hint strong { font-weight: 600; color: var(--text-secondary); }
 .modal .server-item-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 /* 可见性开关用原生 checkbox + 文字，而不是现有的 toggle-switch：
    那一套是给整行设置项的（占满一行），这里要和按钮并排。

@@ -2597,23 +2597,20 @@
                     单台机器的配置在它的「编辑」里保存。</p>
                 <div id="serverList"></div>
                 <button class="btn" id="addServerBtn">添加服务器</button>
-                <div class="setting-row">
-                    <label>
-                        <span>本服务的 https 证书是自签的</span>
-                        <label class="setting-toggle">
+                <div class="setting-row self-signed-row">
+                    <label class="self-signed-label">
+                        <span class="self-signed-name">本服务的 https 证书是自签的</span>
+                        <span class="setting-toggle">
                             <input type="checkbox" id="selfSignedCertBox"
                                    ${this.selfSignedCert ? 'checked' : ''}>
                             <span>${this.selfSignedCert ? '是' : '否'}</span>
-                        </label>
+                        </span>
                     </label>
+                    <p class="self-signed-hint">自签选「是」，否则部署与升级命令会少一个
+                        <code>--server-ca</code>，agent 会报
+                        <code>certificate signed by unknown authority</code>。
+                        存在服务配置里，改完<strong>重启本服务</strong>才生效。</p>
                 </div>
-                <p class="fav-hint">
-                    用 certbot / Let's Encrypt 签的证书选「否」。
-                    自签（自己生成的那种）选「是」——否则生成的部署与升级命令会少一个
-                    <code>--server-ca</code> 参数，agent 在目标机上会报
-                    「certificate signed by unknown authority」。
-                    存在服务配置里，改完<strong>重启本服务</strong>才生效。
-                </p>
                 <div class="setting-row">
                     <label>
                         <span>更新周期</span>
@@ -3194,8 +3191,29 @@
                             // 没有可复制的命令，所以不放代码块——
                             // 放一个装注释的代码块只会让用户以为要复制它，
                             // 而复制到终端里什么也不会发生。
-                            plain: '无需命令 —— 本页面每 60 秒自动探测一次，'
-                                + '状态变了会自动刷新。也可以点上面的「检测」立刻试一次。'
+                            //
+                            // ⚠️ 这个面板是 fixed 覆盖层（z-index 1100），盖在管理弹窗
+                            // （1000）之上，正对着服务器卡片那一块——用户在这里看不到
+                            // 任何按钮。原文案「点上面的「检测」」因此是条**看不见的
+                            // 入口**：面板开着时那个按钮在它下面。
+                            //
+                            // ⚠️ 而且 push 模式压根没有那个按钮（renderServerList
+                            // 对 isPush 直接不渲染）。push 机器恰恰是最需要确认
+                            // 部署结果的那种——它一个端口都不开，只靠注册与上报时间。
+                            // 所以必须按模式分开说，不能给一句两处都不成立的话。
+                            //
+                            // ⚠️ 也不要再写「每 60 秒自动探测」：那个轮询
+                            // （schedulePendingProbe）只覆盖 `!s.enrolled` 的机器，
+                            // 已注册的那台永远不会被自动探测——照原文案读，用户
+                            // 执行完部署却等不到卡片自己变。
+                            plain: mode === 'push'
+                                ? '无需命令 —— 推送模式下目标机不开放端口，探测不到主机在不在线。'
+                                  + '部署是否成功看卡片上的「已就绪」和上报时间：'
+                                  + '卡片显示「已 N 分钟未收到」说明 agent 还没跑起来。'
+                                : '无需命令 —— 未部署的机器本页面每 60 秒自动探测一次，'
+                                  + '状态变了会自动刷新。'
+                                  + '这台已注册的机器不会自动探测，'
+                                  + '关掉这个面板后点它卡片上的「检测」可以立刻试一次。'
                         }
                     ], {
                         // ⚠️ 不要用 Markdown 强调：intro 经过 esc() 转义后是纯文本，
