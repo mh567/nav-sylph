@@ -3057,6 +3057,52 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-zone[data-drop-side="left"] .module-widget[data-side="left"],
 .module-zone[data-drop-side="right"] .module-widget[data-side="right"] { border-color: var(--accent); }
 
+/* ========== 首页编辑模式（书签网格的增删改与拖拽） ==========
+   显隐全部由 .grid.is-editing 控制，JS 不写 hidden 属性——与模块拖拽把手
+   同一条纪律（tests/api-boundary.test.js:509）：挂载时 editLayout 几乎总是
+   false，而 hidden 属性压过任何 CSS，控件会实测 0×0、点不到。
+   这组规则**紧跟模块区**，不要挪到文件末尾：同优先级的重复声明后者胜，
+   仓库已因尾部覆盖栽过两次。 */
+.category-action { display: none; min-width: 26px; min-height: 26px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer; transition: color 110ms, background 110ms; }
+.grid.is-editing .category-action { display: inline-flex; align-items: center; justify-content: center; }
+.category-action:hover { background: var(--bg-hover); color: var(--accent); }
+/* 删除按钮的红色与既有 .btn-danger 取同一批色值（styles.css:2872-2875），
+   不新造变量——本仓库的危险色是硬编码的，成对定义在浅色与深色两处。 */
+.grid.is-editing .category-del:hover { background: rgba(164,76,70,.11); color: #a44c46; }
+:root[data-theme="dark"] .grid.is-editing .category-del:hover { background: rgba(233,166,157,.13); color: #e9a69d; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .grid.is-editing .category-del:hover { background: rgba(233,166,157,.13); color: #e9a69d; } }
+.grid.is-editing .category-drag { cursor: grab; }
+.grid.is-editing .category-drag:active { cursor: grabbing; }
+
+/* ＋占位卡必须与真实书签卡同尺寸，否则网格会因尺寸不同而错位。
+   box-shadow 也要清掉：.bookmark 带 --bookmark-idle-shadow（内含 --shadow），
+   虚线占位卡带着实体投影会比真实卡更重，与「占位」的视觉约定相反。 */
+.bookmark-add, .category-add { border-style: dashed; border-color: var(--border); background: transparent; box-shadow: none; color: var(--text-muted); font-family: inherit; cursor: pointer; }
+.bookmark-add { display: grid; place-items: center; min-height: 42px; border-width: 1px; border-radius: 7px; font-size: 17px; line-height: 1; }
+.bookmark-add:hover { border-color: var(--accent); color: var(--accent); background: var(--bookmark-hover-face); }
+.category-add { min-height: 40px; padding: 9px 14px; border-width: 1px; border-radius: var(--radius); font-size: 13px; }
+.category-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 编辑态下书签卡是拖拽宿主，取代链接跳转。关掉 hover 抬升与按下凹陷，
+   否则拖拽时卡片会浮起来，落点判断跟着偏。
+   ⚠️ 必须连 :active / .is-pressed 一起中和：bindBookmarkPress 在 pointerdown
+   就加 .is-pressed 并保留 135ms，只压 :hover 的话松手后的那一小段里
+   抬升+缩放照旧出现——正是这里要避免的「卡片浮起来」。 */
+.grid.is-editing .bookmark { cursor: grab; }
+.grid.is-editing .bookmark:hover { transform: none; }
+.grid.is-editing .bookmark:active, .grid.is-editing .bookmark.is-pressed { transform: none; }
+.grid.is-editing .bookmark-add:hover { transform: none; }
+.grid.is-editing .bookmark.is-dragging { opacity: .4; }
+.category.is-dragging { opacity: .55; }
+
+/* 书签删除按钮：压在卡右上角，常态隐藏，编辑态悬停才显形。
+   不写 hidden 属性，交给 .grid.is-editing + :hover 控制。 */
+.bookmark-del { display: none; position: absolute; top: 3px; right: 3px; min-width: 22px; min-height: 22px; padding: 0; border: 0; border-radius: 5px; background: var(--control-pressed-top); color: var(--text-muted); font-family: inherit; font-size: 11px; line-height: 1; cursor: pointer; }
+.grid.is-editing .bookmark:hover .bookmark-del, .grid.is-editing .bookmark-del:focus-visible { display: inline-flex; align-items: center; justify-content: center; }
+.grid.is-editing .bookmark-del:hover { background: rgba(164,76,70,.11); color: #a44c46; }
+:root[data-theme="dark"] .grid.is-editing .bookmark-del:hover { background: rgba(233,166,157,.13); color: #e9a69d; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .grid.is-editing .bookmark-del:hover { background: rgba(233,166,157,.13); color: #e9a69d; } }
+
 /* 指标行：标签 / 数值 / 进度条三段。进度不可知时 --pct 缺失，回落到 0 宽。 */
 .module-metric { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 8px; margin-bottom: 7px; }
 .module-metric:last-child { margin-bottom: 0; }

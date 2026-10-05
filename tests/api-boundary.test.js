@@ -27,6 +27,46 @@ function fav(id, extra = {}) {
     return { id, title: `title-${id}`, url: `https://example.com/${id}`, ...extra };
 }
 
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+
+// 剥掉整行注释与块注释。源码形状断言曾因 `/* (reverted) .app.set(...) */`
+// 这类「注释里提到了标识符」的写法而假绿。
+function stripComments(css) {
+    return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+/**
+ * 按**大括号配对**取出一个类方法的完整方法体。
+ *
+ * 不能用「下一个顶格方法定义」当结束标记：嵌套的 catch { / if { 也会匹配，
+ * 方法体会被提前截断，于是断言在错误的位置通过——这类切片 bug 已经在
+ * 本仓库出现过好几次（切片长度断言是它的兜底）。
+ */
+function methodBody(source, name) {
+    const head = source.indexOf(`\n        ${name}(`) >= 0
+        ? source.indexOf(`\n        ${name}(`)
+        : source.indexOf(`\n        async ${name}(`);
+    assert.ok(head >= 0, `${name} 存在`);
+    const open = source.indexOf('{', head);
+    assert.ok(open > head, `${name} 的方法体起点可定位`);
+    let depth = 0;
+    for (let i = open; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                const body = source.slice(open, i + 1);
+                // 切片太短说明配对提前收口（多半是字符串里的花括号），
+                // 断言会因此在空窗口里「通过」。
+                assert.ok(body.length > 60, `${name} 的方法体切片长度合理（${body.length}）`);
+                return body;
+            }
+        }
+    }
+    throw new Error(`${name} 的方法体没有闭合`);
+}
+
 test('the public favorites view drops private entries and the private field itself', () => {
     const view = toPublicFavorites({
         version: 1,
@@ -524,22 +564,203 @@ test('拖拽把手不由模块自己写 hidden 属性', () => {
         '平台侧必须有让把手在编辑模式显示的规则');
 });
 
-test('拖拽落盘后必须重排，宽屏下卡片要真的移动', () => {
-    // 宽屏模块是绝对定位（left/right + --i），改配置不会自动改界面。
-    // 漏掉 applyWidgetLayout 的症状很隐蔽：落盘正确、配置已变，
-    // 但卡片停在原处——浏览器实测才发现（拖完 side 已是 right，卡片却还在左边）。
-    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    const start = appSource.indexOf('async commitWidgetDrag(');
-    assert.ok(start >= 0, 'commitWidgetDrag 存在');
-    const rest = appSource.slice(start);
-    const end = rest.search(/\n        [a-zA-Z_$][\w$]*\s*\(/);
-    const body = rest.slice(0, end > 0 ? end : 1500);
+test('拖拽不落盘：布局是草稿，由「保存编辑」统一提交', () => {
+    // 改动前：commitWidgetDrag 末尾直接 await saveWidgetLayout(snapshot)，
+    // 也就是松手即存。改成草稿后，模块布局与首页书签在同一次提交里落盘。
+    // 反向断言：只要这个函数里还有任何一次网络提交，草稿语义就已经破了。
+    const body = methodBody(appSource, 'commitWidgetDrag');
+    assert.doesNotMatch(body, /saveWidgetLayout\s*\(/,
+        'commitWidgetDrag 不得落盘——落盘只发生在保存编辑时');
+    assert.doesNotMatch(body, /API\.post|API\.request|fetch\s*\(/,
+        'commitWidgetDrag 不得发任何请求');
+    // 但必须仍然重排：applyWidgetLayout 按刚写入内存的 order 排序，
+    // 漏掉它的症状是「宽屏卡片停在原处」，落盘正确而界面不动。
+    assert.match(body, /applyWidgetLayout\s*\(\s*\)/,
+        'commitWidgetDrag 仍需按新顺序重排 DOM');
+});
 
-    const saveAt = body.indexOf('saveWidgetLayout(');
-    const layoutAt = body.indexOf('applyWidgetLayout()');
-    assert.ok(saveAt >= 0 && layoutAt >= 0, 'commitWidgetDrag 里有落盘与重排');
-    assert.ok(layoutAt > saveAt,
-        '重排必须在落盘之后——落盘失败时 saveWidgetLayout 会回滚并重绘，不能先重排');
+/**
+ * 把一个类方法变成可独立执行的函数。
+ *
+ * methodBody 返回的是**从 `{` 开始**的方法体，不含方法签名，所以这里
+ * 不能靠替换签名来造函数——直接 `(function(){ <方法体> }).call(this)`。
+ * 方法体只依赖 `this`、API 与 console，全部作为形参注入。
+ */
+function runMethod(source, name, thisArg, { API = {}, console: log = console } = {}) {
+    const body = methodBody(source, name);
+    // 用 with 之外的显式形参：方法体里的自由变量只有 API 与 console
+    const factory = vm.runInNewContext(
+        `(function(API, console){ return async function(){ ${body} }; })`,
+        { console: log }
+    );
+    return factory(API, log).call(thisArg);
+}
+
+test('保存编辑一次提交两套存储，且布局失败即中止', () => {
+    // 两套存储是两个文件，没有跨文件事务。串行 + 前者失败即中止，
+    // 把最坏情况收敛成「只有布局变了」，而不是并发后两者状态不确定。
+    //
+    // 这里**执行**该方法，而不是在源码里找字符串位置。早先那版断言的是
+    // `configAt > widgetsAt` 这类下标关系，把整个 `if (this.modulesConfig)`
+    // 改成 `if (false)` 后——布局那次提交根本不发生，而被它删掉的位置只剩
+    // 一个 `;`，`saveWidgetLayout(`、`'/api/config'`、`try {` 这些字符串
+    // 仍在切片里，下标关系原样成立。位置断言在原理上无法区分
+    // 「这段代码在控制流里」与「这段文本在切片里」。
+    const calls = [];
+    let widgetSaveSucceeds = true;
+    const makeApp = () => ({
+        editSession: { config: { a: 1 }, widgets: [{ id: 'w1' }] },
+        modulesConfig: { widgets: [{ id: 'w1', order: 0 }] },
+        config: { a: 1 },
+        saveWidgetLayout: async () => { calls.push('modules'); return widgetSaveSucceeds; },
+        rollbackEditSession: () => calls.push('rollback'),
+        exitEditLayout: () => calls.push('exit'),
+        showToast: (m, s) => calls.push(`toast:${s === undefined ? '(默认)' : s}`)
+    });
+    const API = { post: (url) => { calls.push(url); return Promise.resolve({ success: true }); } };
+
+    return (async () => {
+        // 布局成功 → 两次提交都发生，顺序为布局先、书签后
+        calls.length = 0;
+        widgetSaveSucceeds = true;
+        const ok = makeApp();
+        await runMethod(appSource, 'saveEditSession', ok, { API });
+        assert.deepEqual(calls, ['modules', '/api/config', 'exit', 'toast:(默认)'],
+            '布局成功后串行提交书签，随后退出编辑态并提示「已保存」');
+        assert.equal(ok.editSession, null, '成功后清空 editSession');
+
+        // 布局失败 → 只提交布局，书签那次**不发生**，并回滚退出
+        calls.length = 0;
+        widgetSaveSucceeds = false;
+        await runMethod(appSource, 'saveEditSession', makeApp(), { API });
+        assert.deepEqual(calls, ['modules', 'rollback', 'exit'],
+            '布局失败必须中止：书签不提交、草稿回滚、退出编辑态');
+        // 提示由 saveWidgetLayout 发出（真实实现里是「布局保存失败，已还原」），
+        // 所以这里不重复断言 toast——它属于被调方，不属于本方法的职责。
+    })();
+});
+
+test('保存编辑传给 saveWidgetLayout 的是对象而不是裸数组', () => {
+    // 形状缺陷（审查抓到的真缺陷）：saveWidgetLayout 的回滚分支读
+    // `snapshot.widgets`。传裸数组会让它变 undefined，.map 抛 TypeError——
+    // 而那个异常从 catch 块内部抛出，会穿透两层 try/catch，
+    // 于是回滚、退出、提示一行都不执行，只留下改坏了的 widgets。
+    //
+    // 断言的是**实际传出去的值**，不是源码里有没有 `widgets:` 字样。
+    let received;
+    const app = {
+        editSession: { config: {}, widgets: [{ id: 'w1' }, { id: 'w2' }] },
+        modulesConfig: { widgets: [{ id: 'w1' }] },
+        config: {},
+        saveWidgetLayout: async (snapshot) => { received = snapshot; return true; },
+        rollbackEditSession: () => {}, exitEditLayout: () => {}, showToast: () => {}
+    };
+    const API = { post: () => Promise.resolve({ success: true }) };
+
+    return runMethod(appSource, 'saveEditSession', app, { API }).then(() => {
+        assert.ok(received && typeof received === 'object' && !Array.isArray(received),
+            'snapshot 必须是对象——回滚分支读 snapshot.widgets');
+        assert.ok(Array.isArray(received.widgets),
+            'snapshot.widgets 必须是数组，否则回滚时 .map 直接抛');
+        assert.equal(received.widgets.length, 2, '快照内容来自 editSession.widgets');
+    });
+});
+
+test('saveWidgetLayout 的回滚分支读到的形状，与调用方传入的一致', () => {
+    // 上一条断言的是「调用方传对了」，这条反过来钉住「被调方怎么读」——
+    // 两侧必须用同一个字段名，否则其中一侧改了另一侧不会察觉。
+    const body = methodBody(appSource, 'saveWidgetLayout');
+    assert.match(body, /snapshot\.widgets\.map\(/,
+        'saveWidgetLayout 的回滚读 snapshot.widgets');
+    assert.match(body, /if \(snapshot\)/,
+        'snapshot 允许缺省（调用方可能没有草稿快照）');
+});
+
+test('drop 落在分类之外时必须先守卫再解引用', () => {
+    // 真缺陷：原写法把 `if (toCat >= 0)` 放在求值之后，
+    // 「＋ 添加分类」按钮与网格间隙都在任一 .category 之外 →
+    // closest 返回 null → categories[-1] 是 undefined → .bookmarks 抛
+    // TypeError。异常从监听器抛出，dragKind 的清理不执行，拖拽状态卡住。
+    //
+    // 断言的是**相对顺序**：守卫语句必须排在解引用之前。
+    const body = methodBody(appSource, 'bindGridEdit');
+    const guardAt = body.indexOf('if (toCat < 0)');
+    const derefAt = body.indexOf('this.config.categories[toCat].bookmarks.length');
+    assert.ok(guardAt >= 0, '有 toCat < 0 的守卫');
+    assert.ok(derefAt > guardAt,
+        '守卫必须排在 categories[toCat] 解引用之前——否则 closest 返回 null 时抛');
+    // 且放弃时要清掉拖拽状态，否则下一次 dragover 仍认为在拖拽
+    const bail = body.slice(guardAt, body.indexOf('}', guardAt));
+    assert.match(bail, /dragKind = null/, '提前返回前要清 dragKind');
+    assert.match(bail, /dragFrom = null/, '提前返回前要清 dragFrom');
+});
+
+test('编辑态下按下与松手的形变都被中和', () => {
+    // bindBookmarkPress 在 pointerdown 就加 .is-pressed 并保留 135ms。
+    // 只中和 :hover 的话，松手后的那一小段里抬升+缩放照旧出现——
+    // 而「卡片在拖拽时浮起来」正是这条规则要避免的。
+    const code = stripComments(stylesCss);
+    const rule = /\.grid\.is-editing \.bookmark:active\s*,\s*\.grid\.is-editing \.bookmark\.is-pressed\s*\{([^}]*)\}/
+        .exec(code);
+    assert.ok(rule, '编辑态同时中和 :active 与 .is-pressed');
+    assert.match(rule[1], /transform:\s*none/, '两者都置 transform: none');
+});
+
+test('＋占位卡不保留真实卡的实体投影', () => {
+    // .bookmark 带 --bookmark-idle-shadow（内含 --shadow）。虚线占位卡
+    // 带着它会比真实卡更重，与「占位」的视觉约定相反。
+    const code = stripComments(stylesCss);
+    const rule = /\.bookmark-add\s*,\s*\.category-add\s*\{([^}]*)\}/.exec(code);
+    assert.ok(rule, '存在 ＋卡片的共享规则');
+    assert.match(rule[1], /box-shadow:\s*none/, '＋卡片清掉 box-shadow');
+});
+
+test('网格编辑态标志在构造函数里显式初始化', () => {
+    // syncEditLayoutUI 靠 `this._gridEditing !== editing` 判断「状态真的翻转了」。
+    // 靠 undefined !== false 成立纯属巧合，而这条判断被 architecture.md
+    // 列为「必须保持的性质」之一——一条性质不该依赖未声明字段的隐式初值。
+    const body = methodBody(appSource, 'init');
+    assert.ok(body.indexOf('_gridEditing') < 0,
+        'init 负责调用，别把初始化塞进它');
+    assert.match(appSource, /this\._gridEditing = false;/,
+        '_gridEditing 在构造函数里显式初始化');
+});
+
+test('toggleEditLayout 不接受 force 参数', () => {
+    // 退出与放弃的后果完全不同（一个提交、一个丢弃），不该由布尔量隐式决定。
+    // 保留 force 会让后来者以为 toggleEditLayout(false) 能静默退出。
+    const head = appSource.slice(
+        appSource.indexOf('async toggleEditLayout('),
+        appSource.indexOf('async toggleEditLayout(') + 60);
+    assert.match(head, /async toggleEditLayout\(\s*\)/, '签名里没有 force');
+    // 先剥注释：JSDoc 里正正写着 `toggleEditLayout(false)` 这句话，
+    // 直接扫源码会被自己的文档命中——本仓库反复栽过的那个坑。
+    assert.doesNotMatch(stripComments(appSource), /toggleEditLayout\((true|false|force)/,
+        '没有任何调用方传参——退出与放弃是两个不同的方法');
+});
+
+test('放弃编辑只在真有改动时确认，无改动直接退出', () => {
+    // 未登录或未改动时不该弹「放弃编辑」——那会让 Esc 变成一个总是要确认的键。
+    const body = methodBody(appSource, 'cancelEditSession');
+    const changedAt = body.indexOf('JSON.stringify(this.config)');
+    const confirmAt = body.indexOf('confirmAction(');
+    assert.ok(changedAt >= 0, '要先比对快照判断有无改动');
+    assert.ok(confirmAt > changedAt,
+        '确认框必须在改动比对之后——无改动时不该问用户');
+    assert.match(body, /rollbackEditSession\s*\(\s*\)/,
+        '放弃时要把两套存储都还原回草稿快照');
+});
+
+test('模块区拖拽：宽屏下松手即改 order 后立即重排', () => {
+    // 保留自 orderOf 排序所需的「写 order → 重排」这一段：
+    // applyWidgetLayout 按 widgets[i].order 排序，先重排会按旧 order
+    // 把拖拽结果撤销（实测拖 NAS 到本机位置，松手又弹回原样）。
+    const body = methodBody(appSource, 'commitWidgetDrag');
+    const orderAt = body.indexOf('item.order = index');
+    const layoutAt = body.indexOf('applyWidgetLayout');
+    assert.ok(orderAt >= 0, 'commitWidgetDrag 按 DOM 顺序写 order');
+    assert.ok(layoutAt > orderAt,
+        '重排必须在写完 order 之后');
 });
 
 test('管理分区记住当前分区，重渲染后恢复而不是弹回第一个', () => {

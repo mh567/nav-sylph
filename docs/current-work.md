@@ -2,7 +2,187 @@
 
 核对日期：2026-10-04。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：修「后台更新周期改完不生效」（v1.6.12）
+## 最新一轮：首页「布局」按钮改为「编辑 / 保存编辑」（未提交，工作树）
+
+把右下角原本只管模块拖拽的「布局」按钮，扩成覆盖首页全部内容的一次性编辑会话：书签网格也能拖、能增删改，改完点一次「保存编辑」统一落盘。
+
+### 先说一个与原描述冲突的事实
+
+模块拖拽原本是**松手即存**（`commitWidgetDrag` 末尾直接 `await saveWidgetLayout`）。用户描述的「点保存编辑后所有改动自动保存」对书签天然成立，对模块则意味着改掉即时保存。四选一后按推荐项执行：**统一草稿语义**，两者都攒到点保存。代价是拖坏了布局没有逐次反悔的余地，只能整体放弃。
+
+### 数据范围：只做 config.json 的 categories
+
+仓库里有**两套互不相通**的收藏存储，本次只动前者：
+
+| 存储 | 路径 | 内容 | 本次 |
+| --- | --- | --- | --- |
+| 首页书签分类 | `config.json` → `categories[].bookmarks[]` | `{id, title, url}` | ✅ 做 |
+| 平铺收藏 | `favorites.json` → `favorites[]` | `{title, url, description, category, tags, private}` | ❌ 不做 |
+
+后台「书签分类」分区（`renderCatsEditor`）编辑的正是前者，两边是**同一份数据**，只是前台改为直接交互。后台「管理收藏」那套是后者，未动。
+
+### 改动清单
+
+| 文件 | 改什么 |
+| --- | --- |
+| `public/index.html` | `#layoutBtn` 文案「布局」→「编辑」，补 `aria-pressed="false"` |
+| `public/app.js` | 新增 `editSession` 草稿快照；改写 `syncEditLayoutUI` / `exitEditLayout`；新增 `saveEditSession` / `cancelEditSession` / `rollbackEditSession`；`renderGrid` / `createBookmark` 加编辑态分支；新增 `bindGridEdit` 与六个增删改方法；`commitWidgetDrag` 去掉落盘 |
+| `public/styles.css` | 新增 `.grid.is-editing` 规则组（紧跟模块区，**没有**追加到文件末尾） |
+| `public/sw.js` | `CACHE` `nav-v58 → nav-v59` |
+| `tests/api-boundary.test.js` | 改写 1 条既有用例（顺序断言的前提已不成立），新增 3 条 |
+| `tests/homepage-material.test.js` | 新增 8 条 |
+
+### 三个设计决定及其理由
+
+1. **书签拖拽用 HTML5 DnD，不用 pointer 事件。** 模块那边用 pointer 是因为宽屏绝对定位卡片要实时跟手并自己处理基准跳变（`--stack-top` 补偿）；书签网格是 CSS grid、没有那一层，后台的 `bindEditorDrag` 已是成熟范式。一次拖拽开始后浏览器会抑制随后的 click（规范行为），所以同一张卡既能拖又能点开编辑框，不需要计时器区分。
+
+2. **`syncEditLayoutUI` 只在「真的发生切换」时重绘网格。** 它还被 `applyWidgetLayout` 调用，而后者会在视口变化时触发——无差别重绘会让正在被拖拽的书签 DOM 凭空重建。判据是 `this._gridEditing !== editing`。
+
+3. **删除按钮不写 `hidden`，显隐交给 CSS。** 与模块拖拽把手同一条纪律（见 `tests/api-boundary.test.js` 里「拖拽把手不由模块自己写 hidden 属性」那条用例）：挂载时 `editLayout` 几乎总是 `false`，而 `hidden` 属性压过任何 CSS，控件会实测 0×0、点不到。
+
+### 两套存储的提交不是原子的
+
+`/api/modules/config` 与 `/api/config` 写两个文件，没有跨文件事务。采用**串行 + 前者失败即中止**，把最坏情况收敛成「只有布局变了」，而不是并发后两者状态不确定。彻底解决要服务端加合并端点，属结构性改动，本轮不做。
+
+### 浏览器实测（真实交互，非源码推断）
+
+登录后逐项驱动，**每一项都读回服务端或 DOM**：
+
+| 操作 | 结果 |
+| --- | --- |
+| 非编辑态初始 | 按钮「编辑」、`is-editing` 缺省、＋卡片 0 个、分类操作按钮 0 个、书签 11 张 |
+| 进编辑 | 按钮「保存编辑」、两处 `is-editing`、＋卡片 3 个（每分类一个）、「添加分类」1 个、分类操作按钮 9 个（3×3）、`draggable` 书签 11 张 |
+| 点 ＋卡片 | 弹窗开 → 提交 → 该分类 5→6、toast「书签已添加，点「保存编辑」生效」 |
+| 点已有书签 | 编辑框带原值（`V2EX` / `https://v2ex.com`）、提示「所属分类：…」、**点了取消则值不变** |
+| 校验 | 空标题 → 「请填写标题」；`javascript:` URL → 「网址必须以 http:// 或 https:// 开头」；两者都保持对话框打开 |
+| Esc | 弹「放弃编辑 / 放弃本次编辑的改动？未保存的内容会丢失。」 |
+| 确认放弃 | 书签数 6→5、新增那条消失、按钮与两处 class 复位、`editSession=null`、**服务端 `config.json` 未含该条** |
+| 改分类名 + 新增分类 → 保存 | toast「编辑已保存」，从磁盘读回：分类 3→4、改名与新分类都在 |
+| 书签跨分类拖拽 | V2EX 从分类 0 移到分类 1 首位、无 `.is-dragging` 残留 |
+| 分类拖拽 | `[论坛,视频,AI,实测新分类]` → `[视频,AI,论坛,实测新分类]` |
+| 删除书签 | 确认框「删除书签「V2EX」？」→ 确认后该分类 4→3 |
+| 删除分类 | 确认框带书签数：「删除分类「AI」及其中的 3 个书签？」 |
+| 删到只剩一个再删 | toast「至少保留一个分类」、**不弹确认框**、数量仍为 1 |
+
+五视口（390×844 / 360×640 / 834×1112 / 844×390 / 1280×800）逐个量，**每次都重跑 `unregister()` + `caches.delete()` + cache-busting 重载**：
+
+| 视口 | ＋卡与真实卡同高 | 可见操作钮 | 横向溢出 | 首行数 |
+| --- | --- | --- | --- | --- |
+| 390×844 | 是 | 9/9 | 0 | 4 |
+| 360×640 | 是 | 9/9 | 0 | 4 |
+| 834×1112 | 是 | 9/9 | 0 | 3 |
+| 844×390 | 是 | 9/9 | 0 | 3 |
+| 1280×800 | 是 | 9/9 | 0 | 3 |
+
+分类头在 390px 下实测标题 `(12,116,63×17)`、三个按钮 `(87/125/163, 111, 26×26)`——**同一行、未换行**（`flex-wrap: nowrap`）。
+
+### 我这轮自己搞出又修掉的几件事
+
+1. **第一版守卫有三条是假绿的**，红/绿验证抓出来的：
+   - 变异锚点 `this.applyWidgetLayout();\n        }` 在文件里**命中两处**（`renderModuleZone` 与 `commitWidgetDrag`），`String.replace` 只改了前者，被测代码毫发无损而测试照绿。脚本因此加了「锚点必须唯一」的硬门（命中数 ≠ 1 即退出 3）。
+   - 「＋卡片不限定在编辑态」那条只断言「`bookmark-add` 出现在书签循环之后」，把 `if (editing)` 改成 `if (true)` 断言仍成立。已补两条断言：`if (editing) { bms.appendChild … bookmark-add` 与 `if (editing) { fragment.appendChild … category-add`。
+   - 「保存编辑的提交顺序」那条断言的是**字符串位置**，改 `if (this.modulesConfig)` 为 `if (false)`（让布局那次提交根本不发生）照样通过。**审查第二轮证明我改的版本仍然是位置断言**，下详。
+
+2. **红/绿脚本第一版 12 条全部 SKIP**，而输出看起来像「无法验证」。真因是脚本自己 `[...after.match(/MUT-MARK/g)]` 在 `match` 返回 `null` 时抛错，把这一步的退出码吞掉了。破坏其实全部生效——**报告会把「脚本崩了」读成「守卫不可信」**。
+
+3. **`node --check` 被套到 CSS/HTML 上**，四条非 JS 变异因此全判「语法错」而 SKIP。已按扩展名分流。
+
+4. **端到端 fixture 用 curl 登录、fetch 发后续请求**，两个客户端 UA 不同，服务端的环境变化判据直接把会话判为异常并自动登出（`code: env_changed`）。**那是产品行为正确**，是 fixture 造了一个真实浏览器不会产生的场景。改为全程 fetch 后 14/14 通过。
+
+5. **端到端里「布局顺序未变」是我的 fixture 缺陷**：`.modules.json` 初始 `widgets: []`，空数组倒序仍是空数组。已改为先种两条 widget 再倒序。
+
+6. **`methodBody` 切片**：本仓库已多次栽在「用下一个方法定义当结束标记会在嵌套 `catch {` 处截断」。两处新增 helper 都用大括号配对，并断言切片长度 > 60 作为兜底。
+
+7. **`--danger-rgb` 变量不存在**（仓库的危险色是硬编码，成对定义在 `styles.css:2872-2875`）。最初写的 `rgba(var(--danger-rgb, …), .12)` 改为与 `.btn-danger` 同一批色值，深浅两套都写。
+
+8. **我曾误判「取消编辑会留下 DOM 残留」**：推断 `rollbackEditSession` 在 `exitEditLayout` 之前重绘会渲染出编辑态 DOM，而 `_gridEditing` 已翻转导致跳过重绘。**实测证明代码是对的**（`adds: 3 → 0` 照常发生），已撤回该结论。
+
+### 提交前的两轴代码审查，以及它抓到的三个真缺陷
+
+审查跑在**未提交的工作树**上（`git diff` 两横线），这样发现的问题折进同一个 commit，不用事后 amend。
+
+**Standards 轴报的三条，全部由我手工复现确认成立：**
+
+**(1) `saveWidgetLayout` 的参数形状不对 —— 布局保存失败时回滚路径崩溃**
+
+`saveEditSession` 传的是**裸数组**，而 `saveWidgetLayout` 的回滚分支读的是 `snapshot.widgets`：
+
+```js
+const ok = await this.saveWidgetLayout(this.editSession.widgets);   // 数组
+// saveWidgetLayout 内部：
+this.modulesConfig.widgets = snapshot.widgets.map(w => ({ ...w }));  // undefined.map → TypeError
+```
+
+基线里调用方传的是 `snapshot = { widgets: [...] }`（对象），我删掉 `beginWidgetDrag` 的局部 snapshot 后改传裸数组，**形状没跟着改**。
+
+后果比看上去严重：那个异常从 `catch` 块**内部**抛出，穿透 `saveWidgetLayout` 的 catch → 穿透 `saveEditSession` 的 try（`try` 只包了 `/api/config` 那段）→ 于是 `rollbackEditSession()` / `exitEditLayout()` / toast **一行都不执行**：草稿没回滚、没退出编辑态、用户看不到任何提示，而 `widgets` 已被改坏。触发条件恰是断网/服务重启这类用户真会遇到的场景。已改为传 `{ widgets: ... }`，并加一条**运行时**断言（`vm` 抽出该方法真跑一遍，断言实际传出去的值不是数组）。
+
+**(2) `drop` 处理器在落点不属于任何分类时崩溃**
+
+守卫写晚了：
+
+```js
+const toCat = section ? +section.dataset.cat : -1;
+const toBm = ... : this.config.categories[toCat].bookmarks.length;  // ← 守卫在这之前
+if (toCat >= 0 && toBm >= 0) ...                                   // ← 太晚
+```
+
+「＋ 添加分类」按钮与网格间隙都在任一 `.category` 之外 → `closest` 返回 `null` → `categories[-1]` 是 `undefined` → 抛 `TypeError`。且异常从监听器抛出，**`dragKind = null` 的清理不执行**，拖拽状态就此卡住，下一次 `dragover` 仍认为在拖拽。
+
+浏览器实测确认（`window.addEventListener('error')` 捕获到 `Cannot read properties of undefined (reading 'bookmarks')`）。已把守卫前置，并在提前返回前清 `dragKind`/`dragFrom`。
+
+**(3) 我上一轮的自评是错的：「已改为断言控制流」并没有生效**
+
+Standards 轴按我文档里写的做法做了变异——把 `if (this.modulesConfig)` 改成 `if (false)`——**全绿**。原因：位置断言（`configAt > widgetsAt` 这类下标关系）在原理上无法区分「这段代码在控制流里」与「这段文本在切片里」；把整个 `if` 体删掉后只剩一个 `;`，而 `saveWidgetLayout(`、`'/api/config'`、`try {`、`catch (e)` 这些**字符串本身仍在切片里**，下标关系原样成立。
+
+已改为 `vm` 抽出 `saveEditSession` 真跑两遍：一遍布局成功（断言调用序列恰好是 `modules → /api/config → exit → toast`），一遍布局失败（断言恰好是 `modules → rollback → exit`，书签那次**不发生**）。
+
+**而这条运行时断言在写的过程中又抓出第三个真缺陷**：布局失败时我原来写的是 `if (!ok) return;` —— `saveWidgetLayout` 自己回滚了 `widgets` 并提示，但**编辑会话没结束**：书签草稿还在内存里，界面仍停在编辑态。用户点了「保存编辑」却什么都没发生，也没有下一步可走。已改为与书签提交失败同构的回滚+退出。
+
+**Spec 轴结论**：9 条原子需求全部做到（含删除书签入口可达、书签字段与后台完全对齐），四个决策 4/4 落地，五个声明范围外的项逐一核实未被触碰，无范围蔓延。
+
+**建议项四条已全部处理**：
+- `_gridEditing` 在构造函数里显式初始化（原靠 `undefined !== false` 成立纯属巧合，而它被架构文档列为「必须保持的性质」之一）
+- 编辑态下连 `:active` / `.is-pressed` 一起中和——`bindBookmarkPress` 在 `pointerdown` 就加 `.is-pressed` 并保留 135ms，只压 `:hover` 的话松手后那一小段里抬升+缩放照旧出现
+- ＋占位卡清掉 `box-shadow`（`.bookmark` 带 `--bookmark-idle-shadow`，虚线占位卡带实体投影会比真实卡更重）
+- 删掉 `toggleEditLayout(force)` 的死参数（`force=false` 因为 `if (!next) return` 早就无法退出，留着会让后来者以为还能控制方向）
+
+**另修一处文档漂移**：`docs/current-work.md` 引用 `tests/api-boundary.test.js:509`，实际已漂到 542（本次新增的 helper 与用例把它挤下去了）。已改为引用用例名而非行号。
+
+### 与既有约束的冲突及处理
+
+- `tests/api-boundary.test.js` 原有那条「重排必须在落盘之后」的前提（`layoutAt > saveAt`）在本轮**不再成立**——落盘已移出 `commitWidgetDrag`。已改写为「不得落盘」的反向断言 + 「仍需按新顺序重排」，并新增一条单独钉住 `order = index` 先于 `applyWidgetLayout`。
+- `beginWidgetDrag` 里的局部 `snapshot`（原本给 `saveWidgetLayout` 回滚用）随之失去用途，已删。
+
+### 本轮已验证 / 仍未验证
+
+**已本地核实**：
+- `node --test tests/*.test.js` → **401 pass / 0 fail**（改前 385，本轮新增 16 条）
+- **红/绿 19/19 全部精确变红**，变异标记零残留，恢复走 `trap ... EXIT`
+- 真实 HTTP 端到端（临时目录 + 独立端口 + 真实登录）→ 14/14
+- 浏览器真实交互 13 项 + 五视口测量（见上表）
+- 审查抓到的三条缺陷**逐条手工复现**后才动手修（不是照单全收）
+- 修复后在浏览器里复验：drop 到「＋ 添加分类」不再抛（`threw: null`、书签与分类数量未变、拖拽状态无残留）；布局提交失败时正确收尾（退出编辑态、按钮复位、草稿回滚、无残留）
+- `node --check`（全部改动 JS）、`git diff --check`
+- SW 缓存一致性：`CACHE=59`，注释块最大 `59`，**相等**（判据是同一性，不是大小——`Math.max(...) < CACHE` 会把结论反过来）
+- 临时目录的私有文件逐个检查：`.modules.json` / `.admin-password.json` / `config.json` / `favorites.json` / `nav-sylph.db` 全部 absent；源树私有文件 mtime 停留在 10-01 ~ 10-04，本轮未触碰
+- 端口 4319 / 4321 已释放，临时目录已删除
+
+**仍未验证**：
+- **触摸设备的书签拖拽手势**。HTML5 DnD 在触摸设备上不可靠（这是既有 `bindEditorDrag` 的同一取舍）。headless Chrome 既不产生真实 touch 事件、`set device` 也给不出 `pointer: coarse`，本地无法判定。**需要你在手机上按一下**：编辑态下长按一张书签卡，看能否拖到别的分类。
+- **分类操作按钮 26×26px 低于仓库既有的 `--ctl-h: 44px` 触摸下限**。与模块拖拽把手是同一设计取舍（鼠标/长按操作），但真机上是否够用只能你按了才知道。
+- **SW `nav-v59` 是否真的送达老用户**——需对着已部署的源做一次真实刷新。规则要求升、已升，但不能断言「修复未送达」。
+
+### 下一步
+
+1. 发布（本轮未提交）。`scripts/release.sh` + 三文件版本号同步；`public/` 有改动，pre-flight 第一条命令就会要求确认 `CACHE` 已 bump（已提前升到 `nav-v59`）。
+2. 真机确认上面两条触摸相关的未验证项。
+
+---
+
+## 上一轮：修「后台更新周期改完不生效」（v1.6.12）
+
+> 本节原先 titled 「最新一轮」，已随本节升格为「上一轮」。
 
 用户报「后台服务器监控的更新周期修改后不生效」。**先说结论：用户的改动其实一直是生效的**，服务端写入、落盘、缓存失效三段经实测全部正常；坏掉的是两处别的地方——所以这轮的诊断不是「保存没写进去」，而是「写进去了但界面不回显，且另一条路径会把它改回去」。
 

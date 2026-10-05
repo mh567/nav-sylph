@@ -649,3 +649,179 @@ test('每个下拉框都被同一条 option 规则覆盖', () => {
     assert.deepEqual(moduleSelects, ['pollIntervalSelect'],
         '模块分区的更新周期下拉框存在，且位于 .modal 内（被上面那条规则覆盖）');
 });
+
+// ========== 首页编辑模式 ==========
+
+// 按大括号配对取方法体。用「下一个顶格方法定义」当结束标记会在嵌套的
+// catch { / if { 处截断，断言于是在错误的位置通过。
+function methodBody(source, name) {
+    const sync = source.indexOf(`\n        ${name}(`);
+    const asyncHead = source.indexOf(`\n        async ${name}(`);
+    const head = sync >= 0 ? sync : asyncHead;
+    assert.ok(head >= 0, `${name} 存在`);
+    const open = source.indexOf('{', head);
+    assert.ok(open > head, `${name} 的方法体起点可定位`);
+    let depth = 0;
+    for (let i = open; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        else if (source[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                const body = source.slice(open, i + 1);
+                assert.ok(body.length > 60, `${name} 的切片长度合理（${body.length}）`);
+                return body;
+            }
+        }
+    }
+    throw new Error(`${name} 的方法体没有闭合`);
+}
+
+test('编辑按钮的文案随状态切换，且初值是「编辑」', () => {
+    // 按钮承担两个动作：进入编辑 / 保存编辑。停在「布局」会与模块区那条
+    // 旧语义混淆，而实际可编辑的早已不止模块。
+    assert.match(indexHtml, /id="layoutBtn"[^>]*>编辑</,
+        'index.html 里 #layoutBtn 的初值文案是「编辑」');
+    assert.match(indexHtml, /id="layoutBtn"[^>]*aria-pressed="false"/,
+        '#layoutBtn 带初始 aria-pressed');
+
+    const body = methodBody(appSource, 'syncEditLayoutUI');
+    assert.match(body, /textContent\s*=\s*editing\s*\?\s*'保存编辑'\s*:\s*'编辑'/,
+        'syncEditLayoutUI 必须按 editing 切换按钮文案');
+    assert.match(body, /btn\.setAttribute\(\s*'aria-pressed',\s*String\(editing\)\s*\)/,
+        'aria-pressed 跟着同一个 editing 走，不另开真相来源');
+    // 两处 is-editing 都要切：模块区拖拽把手与网格增删控件各靠一个 class
+    assert.match(body, /zone\.classList\.toggle\(\s*'is-editing',\s*editing\s*\)/,
+        '模块区的 is-editing 由状态驱动');
+    assert.match(body, /grid\.classList\.toggle\(\s*'is-editing',\s*editing\s*\)/,
+        '网格的 is-editing 也由同一个状态驱动');
+});
+
+test('网格的编辑控件由模板分支生成，且只在编辑态出现', () => {
+    // 非编辑态的模板与改动前逐字相同，所以正常访问的首页零回归；
+    // 正因如此，增删入口必须挂在 editing 分支里而不是一直渲染。
+    const body = methodBody(appSource, 'renderGrid');
+    assert.match(body, /const editing = this\.editLayout;/,
+        'renderGrid 必须按 editLayout 分支');
+    assert.match(body, /bookmark bookmark-add/, '编辑态追加「＋」占位卡');
+    assert.match(body, /category-add/, '编辑态追加「＋ 添加分类」');
+    assert.match(body, /category-del/, '编辑态分类头有删除按钮');
+    assert.match(body, /editing \? `<button/, '增删控件必须包在 editing 分支里');
+    // ＋卡片与「添加分类」都**受 editing 门控**。只断言「它们出现了」
+    // 是不够的：`if (editing)` 改成 `if (true)` 后断言仍然成立，
+    // 而结果是登录用户之外的所有访客都看到一堆点不动的加号。
+    assert.match(body, /if \(editing\) \{\s*\n\s*bms\.appendChild[\s\S]*?bookmark-add/,
+        '＋卡片必须由 if (editing) 门控');
+    assert.match(body, /if \(editing\) \{\s*\n\s*fragment\.appendChild[\s\S]*?category-add/,
+        '「添加分类」必须由 if (editing) 门控');
+    // ＋卡片每个分类末尾各一个，所以它挂在 cat.bookmarks 循环之后
+    const loopAt = body.indexOf('cat.bookmarks.forEach');
+    const addAt = body.indexOf('bookmark-add');
+    assert.ok(loopAt >= 0 && addAt > loopAt,
+        '＋卡片在书签循环之后追加，即每个分类末尾一个');
+
+    // 书签卡要带定位坐标：拖拽、增删改全靠 data-cat/data-bm
+    const bm = methodBody(appSource, 'createBookmark');
+    assert.match(bm, /data-cat="\$\{catIdx\}"/, '书签卡带 data-cat');
+    assert.match(bm, /data-bm="\$\{bmIdx\}"/, '书签卡带 data-bm');
+    assert.match(bm, /draggable="true"/, '编辑态书签卡是原生拖拽宿主');
+});
+
+test('编辑态书签的点击被拦下，不会跳转', () => {
+    // 书签卡本体是 <a href>。不拦就会一边打开新标签页、一边想编辑。
+    const body = methodBody(appSource, 'bindGridEdit');
+    assert.match(body, /if \(!this\.editLayout\) return;/,
+        '网格交互必须先判编辑态，否则常态下会被劫持');
+    assert.match(body, /addEventListener\(\s*'click'/, '有 click 分支处理增删改');
+    assert.match(body, /addEventListener\(\s*'dragstart'/, '有 dragstart 分支处理拖拽');
+    const clickAt = body.indexOf("addEventListener( 'click'") >= 0
+        ? body.indexOf("addEventListener( 'click'")
+        : body.indexOf("addEventListener('click'");
+    const guardAt = body.indexOf('preventDefault', clickAt);
+    assert.ok(clickAt >= 0 && guardAt > clickAt,
+        'click 分支里必须有 preventDefault 拦掉链接导航');
+    // 增删改五条路径都要在
+    for (const fn of ['addHomeBookmark', 'editHomeBookmark', 'deleteHomeBookmark',
+        'addHomeCategory', 'renameHomeCategory', 'deleteHomeCategory']) {
+        assert.ok(body.includes(fn), `${fn} 由编辑态点击调用`);
+    }
+});
+
+test('删除最后一个分类被拦下', () => {
+    // 首页要有一个容器，删光后网格整块空掉且无法恢复。
+    const body = methodBody(appSource, 'deleteHomeCategory');
+    assert.match(body, /length <= 1/, '至少保留一个分类');
+    assert.match(body, /至少保留一个分类/, '拦下时要告诉用户为什么');
+    // 且拦下必须早于确认框与删除，否则「已被拦下」只是 toast 而数组照样少一项
+    const guardAt = body.indexOf('length <= 1');
+    const spliceAt = body.indexOf('splice(catIdx, 1)');
+    assert.ok(guardAt >= 0 && spliceAt > guardAt, '拦截在 splice 之前');
+});
+
+test('书签拖拽复用既有的 moveBookmark，不另写一套排序', () => {
+    // 自己重写一套排序就会与后台的编辑器各有一份真值，
+    // 两边拖出不同结果时无从判断该信哪个。
+    const body = methodBody(appSource, 'bindGridEdit');
+    assert.match(body, /this\.moveBookmark\(/, '书签拖拽走 moveBookmark');
+    assert.match(body, /this\.moveCategory\(/, '分类拖拽走 moveCategory');
+    assert.match(body, /dragKind === 'cat'/, '分类与书签是两条独立的拖拽分支');
+    // 加号卡是新增入口，不该被当成拖拽宿主
+    assert.match(body, /bookmark-add'\)\s*\)?\s*return|bookmark-add\)\) return/,
+        '＋卡片不参与拖拽');
+});
+
+test('＋占位卡与真实书签卡同尺寸，否则网格错位', () => {
+    // .bookmarks 是 grid auto-fill，尺寸不同会让整行高度被占位卡拉偏。
+    const addRule = ruleBlock(fullCode, '.bookmark-add', 'min-height');
+    assert.match(addRule, /min-height:\s*42px/, '＋卡片 min-height 42px');
+    // 真实书签卡的 42px 来自材质层的合并规则
+    assert.match(fullCode, /\.bookmark,\.bookmark-text-only\s*\{[^}]*min-height:\s*42px/,
+        '真实书签卡的 min-height 同样是 42px（材质层 styles.css:2848）');
+    const addRadius = /border-radius:\s*([\d.]+px)/.exec(addRule);
+    const realRadius = /border-radius:\s*([\d.]+px)/.exec(fullCode.slice(
+        fullCode.indexOf('.bookmark,.bookmark-text-only {')
+    ));
+    assert.equal(addRadius[1], '7px', '＋卡片圆角 7px');
+    assert.equal(realRadius[1], '7px', '真实书签卡圆角同为 7px');
+});
+
+test('编辑态显隐只由 .grid.is-editing 控制，JS 不写 hidden', () => {
+    // 与模块拖拽把手同一条纪律：hidden 属性压过任何 CSS，
+    // 而 editLayout 在挂载时几乎总是 false，控件会实测 0×0、点不到。
+    assert.doesNotMatch(stripComments(appSource), /\.category-action[^\n]*\.hidden\s*=/,
+        '分类按钮的显隐交给 CSS，JS 不得写 hidden');
+    assert.doesNotMatch(stripComments(appSource), /bookmark-add[^\n]*\.hidden\s*=/,
+        '＋卡片的显隐交给 CSS，JS 不得写 hidden');
+    assert.match(fullCode, /\.grid\.is-editing \.category-action\s*\{[^}]*display:\s*inline-flex/,
+        '编辑态必须让分类按钮显形');
+    assert.match(fullCode, /\.category-action\s*\{[^}]*display:\s*none/,
+        '非编辑态分类按钮隐藏');
+});
+
+test('.grid.is-editing 规则只有一处定义，不会被尾部覆盖', () => {
+    // 同优先级下后写的赢。本仓库已因尾部重复声明让前部规则静默失效
+    // 两次（.category-tree-children、.search.paste-mode .search-input）。
+    // 枚举**同一个选择器**的声明次数，而不是数规则条数——后者会随
+    // 新增选择器自然变化，测不出「同一个选择器写了两次」。
+    const declared = [...fullCode.matchAll(/(^|[},;]\s*)\.grid\.is-editing\s+([^{@]+?)\s*[,{]/g)]
+        .map(m => m[2].trim());
+    assert.ok(declared.length >= 4,
+        `编辑态规则按选择器拆成若干条，实际 ${declared.length} 条：${declared.join(' / ')}`);
+    const seen = [];
+    const dup = declared.filter(sel => {
+        if (seen.includes(sel)) return true;
+        seen.push(sel);
+        return false;
+    });
+    assert.deepEqual(dup, [], `以下选择器在 .grid.is-editing 下被声明了两次：${dup.join(', ')}`);
+});
+
+test('首页第一屏没有因为编辑模式变重', () => {
+    // 编辑模式的全部代码在 app.js 里（首页本来就要加载它），
+    // 样式也在既有文件内，没有新增资源或新增请求。
+    assert.doesNotMatch(indexHtml, /edit-mode|editMode/,
+        '首页不引入额外的编辑模式资源');
+    const swAssets = fs.readFileSync(path.join(__dirname, '..', 'public/sw.js'), 'utf8');
+    const precached = [...swAssets.matchAll(/'(\/?[^']+\.(?:js|css))'/g)].map(m => m[1]);
+    assert.ok(!precached.some(p => /edit/i.test(p)),
+        '预缓存清单里没有新增的编辑模式文件');
+});

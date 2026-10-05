@@ -150,6 +150,13 @@
             this.modulesError = null;
             this.modulesEditorRendered = false;
             this.editLayout = false;
+            // 编辑会话的草稿快照：进入编辑模式时对 config 与 widgets 各存一份，
+            // 「保存编辑」才落盘，Esc/退出则整体丢弃。
+            this.editSession = null;
+            // 网格上一次渲染时是否处于编辑态。显式初始化而不是靠 undefined
+            // 与 false 的隐式比较：syncEditLayoutUI 靠它判断「状态真的翻转了」，
+            // 而 undefined !== false 成立纯属巧合。
+            this._gridEditing = false;
             this.init();
         }
 
@@ -484,22 +491,111 @@
         }
 
         /**
-         * 编辑模式开关。这是显式的，不是默认拖拽：
-         * widget 卡片本身可点击（点开全屏面板），默认态开拖拽会劫持点击，
-         * 而 bookmark 卡片已经是拖拽排序的宿主（moveBookmark）。
+         * 编辑模式开关。这是显式的，不是默认拖拽：widget 卡片本身可点击
+         * （点开全屏面板），默认态开拖拽会劫持点击。
+         *
+         * 进入时对两套存储各存一份草稿快照，「保存编辑」才落盘；
+         * 放弃则走 cancelEditSession（Esc / 自动登出），整体丢弃。
+         *
+         * **没有 force 参数**：退出与放弃的后果完全不同（一个提交、一个丢弃），
+         * 不该由一个布尔量隐式决定。保留 force 会让后来者以为
+         * `toggleEditLayout(false)` 能静默退出，而实际上它做不到。
          */
-        toggleEditLayout(force) {
-            const next = force === undefined ? !this.editLayout : !!force;
-            this.editLayout = next;
+        async toggleEditLayout() {
+            if (this.editLayout) return this.saveEditSession();
+            if (!this.authenticated) return;
+            this.editSession = {
+                config: JSON.parse(JSON.stringify(this.config)),
+                widgets: JSON.parse(JSON.stringify(this.modulesConfig?.widgets || []))
+            };
+            this.editLayout = true;
             this.syncEditLayoutUI();
         }
 
         syncEditLayoutUI() {
             const zone = $('#moduleZone');
+            const grid = $('#grid');
             const btn = $('#layoutBtn');
-            if (btn) btn.setAttribute('aria-pressed', String(this.editLayout));
-            if (zone) zone.classList.toggle('is-editing', this.editLayout);
-            if (btn) btn.classList.toggle('is-active', this.editLayout);
+            const editing = this.editLayout;
+            if (btn) {
+                btn.textContent = editing ? '保存编辑' : '编辑';
+                btn.title = editing ? '保存全部改动并退出编辑' : '编辑首页布局与书签';
+                btn.setAttribute('aria-pressed', String(editing));
+                btn.classList.toggle('is-active', editing);
+            }
+            if (zone) zone.classList.toggle('is-editing', editing);
+            if (grid) grid.classList.toggle('is-editing', editing);
+            // 网格的增删控件（＋卡片、分类删除把手）由模板分支生成，
+            // 所以切态要重画网格。但只在**真的发生切换**时重画：
+            // syncEditLayoutUI 还被 applyWidgetLayout 调，而后者会在
+            // 视口变化、轮询重绘等时机触发——那时正在被拖拽的书签 DOM
+            // 会凭空重建。
+            if (grid && this._gridEditing !== editing) {
+                this._gridEditing = editing;
+                this.renderGrid();
+            }
+        }
+
+        /** 提交草稿：模块布局与首页书签分两套存储，串行提交，前者失败即中止。 */
+        async saveEditSession() {
+            if (!this.editSession) { this.exitEditLayout(); return; }
+            if (this.modulesConfig) {
+                // 传**对象**而不是裸数组：saveWidgetLayout 的回滚分支读的是
+                // snapshot.widgets。传数组会让 snapshot.widgets 为 undefined，
+                // .map 直接抛——而那个异常从 catch 块内部抛出，会穿透
+                // saveWidgetLayout 的 catch、穿透 saveEditSession 的 try，
+                // 于是回滚、退出编辑态、提示 toast 一行都不执行，
+                // 只留下一个改坏了的 widgets。
+                const ok = await this.saveWidgetLayout({ widgets: this.editSession.widgets });
+                // saveWidgetLayout 自己回滚了 widgets 并已提示，但**编辑会话还没结束**：
+                // 书签那部分草稿仍在内存里，界面也仍停在编辑态。早先这里直接
+                // return，用户点了「保存编辑」却什么都没发生，也没有下一步可走。
+                // 所以失败路径与书签提交失败同构：还原整份草稿、退出、提示。
+                // 两套存储不是原子的，串行 + 前者失败即中止，
+                // 把最坏情况收敛成「只有布局变了」。
+                if (!ok) {
+                    this.rollbackEditSession();
+                    this.exitEditLayout();
+                    return;
+                }
+            }
+            try {
+                const res = await API.post('/api/config', this.config);
+                if (!res.success) throw new Error(res.error || '保存失败');
+            } catch (e) {
+                this.rollbackEditSession();
+                this.exitEditLayout();
+                this.showToast('首页书签保存失败，已还原', 'error');
+                return;
+            }
+            this.editSession = null;
+            this.exitEditLayout();
+            this.showToast('编辑已保存');
+        }
+
+        /** Esc 放弃编辑：有改动时先问一句，没改动则静默退出。 */
+        async cancelEditSession() {
+            if (!this.editSession) { this.exitEditLayout(); return; }
+            const changed =
+                JSON.stringify(this.config) !== JSON.stringify(this.editSession.config)
+                || JSON.stringify(this.modulesConfig?.widgets || []) !== JSON.stringify(this.editSession.widgets);
+            if (changed) {
+                const ok = await this.confirmAction('放弃本次编辑的改动？未保存的内容会丢失。', '放弃编辑', true);
+                if (!ok) return;
+            }
+            this.rollbackEditSession();
+            this.editSession = null;
+            this.exitEditLayout();
+        }
+
+        /** 整体替换回草稿快照——不能逐字段还原，
+         *  一次拖拽往往同时推进 order、side 与 updatedAt。 */
+        rollbackEditSession() {
+            if (!this.editSession) return;
+            this.config = this.editSession.config;
+            if (this.modulesConfig) this.modulesConfig.widgets = this.editSession.widgets;
+            this.renderGrid();
+            this.renderModuleZone();
         }
 
         /** 退出编辑模式并清掉全部拖拽残留状态。
@@ -520,6 +616,8 @@
         async syncModuleVisibility() {
             const btn = $('#layoutBtn');
             if (!this.authenticated) {
+                // 会话已失效，无可保存，也不该弹确认框：直接丢弃草稿。
+                this.rollbackEditSession();
                 this.exitEditLayout();
                 const zone = $('#moduleZone');
                 if (zone) { zone.hidden = true; zone.replaceChildren(); }
@@ -628,11 +726,18 @@
         renderGrid() {
             const grid = $('#grid');
             const fragment = document.createDocumentFragment();
+            // 编辑态多生成两类节点：分类头的手柄/删除按钮，与每类末尾的
+            // ＋占位卡。**不进编辑态的模板与改动前逐字相同**，
+            // 所以正常访问的首页零回归。
+            const editing = this.editLayout;
             this.config.categories.forEach((cat, catIdx) => {
                 const section = html(`
                     <section class="category" data-cat="${catIdx}">
                         <div class="category-header">
                             <h2 class="category-title">${this.esc(cat.name)}</h2>
+                            ${editing ? `<button type="button" class="category-action category-drag" title="拖拽调整分类顺序" aria-label="拖拽调整分类顺序">⠿</button>
+                            <button type="button" class="category-action category-edit" data-edit-cat="${catIdx}" title="重命名分类">✎</button>
+                            <button type="button" class="category-action category-del" data-del-cat="${catIdx}" title="删除分类" aria-label="删除分类 ${this.esc(cat.name)}">✕</button>` : ''}
                         </div>
                         <div class="bookmarks"></div>
                     </section>
@@ -641,15 +746,30 @@
                 cat.bookmarks.forEach((bm, bmIdx) => {
                     bms.appendChild(this.createBookmark(bm, catIdx, bmIdx));
                 });
+                if (editing) {
+                    bms.appendChild(html(`<button type="button" class="bookmark bookmark-add" data-add-cat="${catIdx}" title="为「${this.esc(cat.name)}」添加书签" aria-label="为 ${this.esc(cat.name)} 添加书签">＋</button>`));
+                }
                 fragment.appendChild(section);
             });
+            if (editing) {
+                fragment.appendChild(html(`<button type="button" class="category-add">＋ 添加分类</button>`));
+            }
             grid.replaceChildren(fragment);
         }
 
         createBookmark(bm, catIdx, bmIdx) {
+            // 编辑态下 data-cat/data-bm 是拖拽与增删改的定位依据；
+            // 非编辑态不写，首页 DOM 与改动前完全一致。
+            const editing = this.editLayout;
+            const attrs = editing ? ` data-cat="${catIdx}" data-bm="${bmIdx}" draggable="true"` : '';
+            // 删除按钮压在卡的右上角：整张卡是拖拽宿主，按钮必须自己
+            // stopPropagation，否则拖拽起手会把它一起带走。
+            const del = editing
+                ? `<button type="button" class="bookmark-del" data-del-bm="${bmIdx}" title="删除书签" aria-label="删除书签 ${this.esc(bm.title)}">✕</button>`
+                : '';
             return html(`
-                <a class="bookmark bookmark-text-only" href="${this.esc(bm.url)}" target="_blank" rel="noopener" title="${this.esc(bm.title)}">
-                    <span class="bookmark-title">${this.esc(bm.title)}</span>
+                <a class="bookmark bookmark-text-only"${attrs} href="${this.esc(bm.url)}" target="_blank" rel="noopener" title="${this.esc(bm.title)}">
+                    <span class="bookmark-title">${this.esc(bm.title)}</span>${del}
                 </a>
             `);
         }
@@ -718,17 +838,19 @@
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
-            // Esc 退出编辑模式。放在 window 而非按钮上：编辑态下焦点可能在
-            // 任何 widget 内部，按钮收不到冒泡不到的路径。
+            // Esc 放弃编辑。放在 window 而非按钮上：编辑态下焦点可能在
+            // 任何 widget 或书签内部，按钮收不到冒泡不到的路径。
             document.addEventListener('keydown', event => {
                 if (event.key !== 'Escape' || !this.editLayout) return;
                 const zone = $('#moduleZone');
-                // 全屏面板自己处理 Esc（它是 overlay，不属于编辑态）
+                // 全屏面板与站内对话框自己处理 Esc（它们是 overlay，不属于编辑态）
                 if (zone && zone.querySelector('.module-overlay')) return;
+                if ($('.ui-dialog-overlay, .fav-dialog-overlay')) return;
                 event.preventDefault();
-                this.exitEditLayout();
+                this.cancelEditSession();
             });
             this.bindWidgetDrag();
+            this.bindGridEdit();
             // 视口变化时重算模块区的停靠方式：936 背板在宽屏两侧放得下、
             // 窄屏放不下，这个判据是连续量，跨过阈值时要重新摆放。
             let dockResizeTimer = null;
@@ -933,6 +1055,222 @@
             this.markConfigDirty();
         }
 
+        // ========== 首页编辑模式（书签 / 分类的增删改与拖拽） ==========
+        //
+        // 拖拽走 HTML5 DnD 而非 pointer 事件：模块那边用 pointer 是因为宽屏
+        // 绝对定位卡片要实时跟手并自己处理基准跳变，而书签网格是 CSS grid、
+        // 没有 --stack-top 那一层补偿，后台的 bindEditorDrag 已是成熟范式。
+        // 一次拖拽开始后浏览器会抑制随后的 click（规范行为），所以同一张卡
+        // 既能拖又能点开编辑框，不需要额外的计时器去区分。
+
+        bindGridEdit() {
+            const grid = $('#grid');
+            if (!grid) return;
+            let dragFrom = null;
+            let dragKind = null;
+
+            const catIndexOf = node => {
+                const section = node.closest('.category');
+                return section ? +section.dataset.cat : -1;
+            };
+            const bmIndexOf = node => {
+                const card = node.closest('.bookmark');
+                return card && card.dataset.bm !== undefined ? +card.dataset.bm : -1;
+            };
+
+            grid.addEventListener('dragstart', event => {
+                if (!this.editLayout) return;
+                const handle = event.target.closest('.category-drag');
+                if (handle) {
+                    dragKind = 'cat';
+                    dragFrom = catIndexOf(handle);
+                    return;
+                }
+                const card = event.target.closest('.bookmark');
+                // 加号卡不参与排序，它是「新增」入口
+                if (!card || card.classList.contains('bookmark-add')) return;
+                dragKind = 'bm';
+                dragFrom = { cat: catIndexOf(card), bm: bmIndexOf(card) };
+                card.classList.add('is-dragging');
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', card.dataset.bm);
+            });
+
+            grid.addEventListener('dragover', event => {
+                if (!this.editLayout || !dragKind) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+            });
+
+            grid.addEventListener('drop', event => {
+                if (!this.editLayout || !dragKind) return;
+                event.preventDefault();
+                if (dragKind === 'cat') {
+                    const to = catIndexOf(event.target);
+                    if (to >= 0 && to !== dragFrom) this.moveCategory(dragFrom, to);
+                } else {
+                    const section = event.target.closest('.category');
+                    const targetBm = event.target.closest('.bookmark');
+                    const toCat = section ? +section.dataset.cat : -1;
+                    // 守卫必须在**解引用之前**。「＋ 添加分类」按钮与网格间隙
+                    // 都在任一 .category 之外，closest 返回 null → toCat = -1，
+                    // 而 categories[-1] 是 undefined。原写法把 if (toCat >= 0)
+                    // 放在求值之后，异常从监听器抛出，dragKind 的清理
+                    // （下面两行）不执行——拖拽状态就此卡住，下一次
+                    // dragover 仍认为在拖拽。
+                    if (toCat < 0) { dragKind = null; dragFrom = null; return; }
+                    // 落在空白书签区（没有具体书签）时追加到该分类末尾
+                    const toBm = targetBm && !targetBm.classList.contains('bookmark-add')
+                        ? +targetBm.dataset.bm
+                        : this.config.categories[toCat].bookmarks.length;
+                    if (toBm >= 0) this.moveBookmark(dragFrom.cat, dragFrom.bm, toCat, toBm);
+                }
+                dragKind = null;
+                dragFrom = null;
+            });
+
+            grid.addEventListener('dragend', () => {
+                $$('.bookmark.is-dragging', grid).forEach(n => n.classList.remove('is-dragging'));
+                dragKind = null;
+                dragFrom = null;
+            });
+
+            grid.addEventListener('click', event => {
+                if (!this.editLayout) return;
+                const target = event.target;
+
+                const addCard = target.closest('.bookmark-add');
+                if (addCard) { event.preventDefault(); this.addHomeBookmark(+addCard.dataset.addCat); return; }
+
+                if (target.closest('.category-add')) { event.preventDefault(); this.addHomeCategory(); return; }
+
+                const delCat = target.closest('.category-del');
+                if (delCat) { event.preventDefault(); this.deleteHomeCategory(+delCat.dataset.delCat); return; }
+
+                const editCat = target.closest('.category-edit');
+                if (editCat) { event.preventDefault(); this.renameHomeCategory(+editCat.dataset.editCat); return; }
+
+                // 删除按钮优先于卡片本身：它压在卡右上角，
+                // 若继续往下走会当成「点卡片」而打开编辑框。
+                const delBm = target.closest('.bookmark-del');
+                if (delBm) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.deleteHomeBookmark(catIndexOf(delBm), +delBm.dataset.delBm);
+                    return;
+                }
+
+                const card = target.closest('.bookmark');
+                if (card) {
+                    // 编辑态下书签卡不再是链接入口，点了是打开编辑框
+                    event.preventDefault();
+                    this.editHomeBookmark(catIndexOf(card), bmIndexOf(card));
+                }
+            });
+
+            // 编辑态下书签卡整体是拖拽宿主，按下即进入原生拖拽，
+            // 同时拦掉链接默认导航（click 分支已拦，这里拦的是拖拽起手的那一下）。
+            grid.addEventListener('pointerdown', event => {
+                if (!this.editLayout || event.button !== 0) return;
+                const card = event.target.closest('.bookmark');
+                if (!card || card.classList.contains('bookmark-add')) return;
+                card.focus();
+            });
+        }
+
+        /** 书签字段校验：标题非空、URL 必须是 http/https。 */
+        bookmarkFieldError([title, url]) {
+            if (!title || !title.trim()) return '请填写标题';
+            const trimmed = (url || '').trim();
+            if (!trimmed) return '请填写网址';
+            let parsed;
+            try { parsed = new URL(trimmed); } catch (e) { return '网址格式不正确'; }
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '网址必须以 http:// 或 https:// 开头';
+            return '';
+        }
+
+        async addHomeBookmark(catIdx) {
+            const cat = this.config.categories[catIdx];
+            if (!cat) return;
+            const result = await this.showUiDialog({
+                title: `为「${cat.name}」添加书签`,
+                fields: [{ label: '标题' }, { label: '网址', placeholder: 'https://' }],
+                confirmText: '添加',
+                validate: (values, choices) => this.bookmarkFieldError(values)
+            });
+            if (!result) return;
+            const [title, url] = result.values;
+            cat.bookmarks.push({ id: uid(), title: title.trim(), url: url.trim() });
+            this.renderGrid();
+            this.markConfigDirty();
+            this.showToast('书签已添加，点「保存编辑」生效');
+        }
+
+        async editHomeBookmark(catIdx, bmIdx) {
+            const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
+            if (!bm) return;
+            const result = await this.showUiDialog({
+                title: '编辑书签',
+                message: `所属分类：${this.config.categories[catIdx].name}`,
+                fields: [{ label: '标题', value: bm.title }, { label: '网址', value: bm.url }],
+                confirmText: '保存',
+                validate: values => this.bookmarkFieldError(values)
+            });
+            if (!result) return;
+            const [title, url] = result.values;
+            bm.title = title.trim();
+            bm.url = url.trim();
+            this.renderGrid();
+            this.markConfigDirty();
+        }
+
+        async deleteHomeBookmark(catIdx, bmIdx) {
+            const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
+            if (!bm) return;
+            if (!await this.confirmAction(`删除书签「${bm.title}」？`, '删除书签', true)) return;
+            this.config.categories[catIdx].bookmarks.splice(bmIdx, 1);
+            this.renderGrid();
+            this.markConfigDirty();
+        }
+
+        async addHomeCategory() {
+            const name = await this.promptValue('添加分类', '分类名称', { validate: ([v]) => (v && v.trim()) ? '' : '请填写分类名称' });
+            if (name === null) return;
+            this.config.categories.push({ id: uid(), name: name.trim(), bookmarks: [] });
+            this.renderGrid();
+            this.markConfigDirty();
+        }
+
+        async renameHomeCategory(catIdx) {
+            const cat = this.config.categories[catIdx];
+            if (!cat) return;
+            const name = await this.promptValue('重命名分类', '分类名称', {
+                value: cat.name,
+                validate: ([v]) => (v && v.trim()) ? '' : '请填写分类名称'
+            });
+            if (name === null) return;
+            cat.name = name.trim();
+            this.renderGrid();
+            this.markConfigDirty();
+        }
+
+        async deleteHomeCategory(catIdx) {
+            // 至少留一个分类：首页要有一个容器，否则网格整块空掉
+            if (this.config.categories.length <= 1) {
+                this.showToast('至少保留一个分类', 'error');
+                return;
+            }
+            const cat = this.config.categories[catIdx];
+            if (!cat) return;
+            const message = cat.bookmarks.length
+                ? `删除分类「${cat.name}」及其中的 ${cat.bookmarks.length} 个书签？`
+                : `删除分类「${cat.name}」？`;
+            if (!await this.confirmAction(message, '删除分类', true)) return;
+            this.config.categories.splice(catIdx, 1);
+            this.renderGrid();
+            this.markConfigDirty();
+        }
+
         search() {
             const q = $('#searchInput').value.trim();
             if (!q) return;
@@ -982,7 +1320,8 @@
          *  1. 终止监听挂在 window 上——挂在元素上用 { once:true } 会在指针于元素外
          *     释放时永久卡住（分享编辑器的 auto-grow 曾这样冻结整个会话）。
          *  2. 同时处理 pointercancel，只有 pointerup 会漏掉系统中断手势。
-         *  3. 排序是持久化状态，拖完立即落盘，失败整体回滚，不做乐观更新。
+         *  3. 排序写进内存后按新顺序重排一次；落盘交给「保存编辑」，
+         *     两套存储的提交在那里串行进行，失败整体回滚。
          */
         bindWidgetDrag() {
             const zone = $('#moduleZone');
@@ -1007,8 +1346,6 @@
             // 回落到 moduleId。两者不一致会让拖拽写进一条布局项、
             // 而渲染读的是另一条——卡片看着「拖了但没动」。
             const id = widget.dataset.instanceId || widget.dataset.moduleId;
-            // 快照在拖拽开始时取，回滚要用它而不是拖拽后的值
-            const snapshot = { widgets: this.modulesConfig.widgets.map(w => ({ ...w })) };
 
             const isWide = window.matchMedia('(min-width: 1024px)').matches;
             const startX = event.clientX;
@@ -1020,8 +1357,8 @@
             try { widget.setPointerCapture(event.pointerId); } catch (e) {}
 
             // startX/startY 挂在 dragData 上：插入导致基准跳变时要把它们同步调整，
-// 否则下一帧仍用旧起点算 dy，位置会逐帧漂移。
-            this.dragData = { id, widget, isWide, targetSide: null, snapshot, bounds: null, startX, startY };
+            // 否则下一帧仍用旧起点算 dy，位置会逐帧漂移。
+            this.dragData = { id, widget, isWide, targetSide: null, bounds: null, startX, startY };
 
             const move = ev => {
                 if (!this.dragData) return;
@@ -1169,12 +1506,15 @@
             return m ? { x: Number(m[1]), y: Number(m[2]) } : { x: 0, y: 0 };
         }
 
-        /** 拖拽结束：按 DOM 顺序重排 order、按落点写 side，然后落盘。 */
-        async commitWidgetDrag(drag) {
+        /** 拖拽结束：按 DOM 顺序重排 order、按落点写 side。
+         *  **不落盘**——布局是草稿的一部分，由「保存编辑」统一提交。
+         *  早先这里是松手即存，那样点「保存编辑」时只剩书签可存，
+         *  且拖坏了布局没有反悔的余地。 */
+        commitWidgetDrag(drag) {
             const zone = $('#moduleZone');
             if (!this.modulesConfig) return;
 
-            const { id, widget, snapshot, targetSide } = drag;
+            const { id, widget, targetSide } = drag;
             const widgets = this.modulesConfig.widgets;
             // 配置里还没有这条（首次启用、布局从未保存过）时补一条
             if (!widgets.some(w => w.id === id)) {
@@ -1200,12 +1540,11 @@
             widget.classList.remove('is-dragging');
             widget.style.transform = '';
 
-            await this.saveWidgetLayout(snapshot);
-            // 落盘后重排。**必须**在写完 order 之后调：applyWidgetLayout 按
-            // modulesConfig.widgets[i].order 排序，而 commitWidgetDrag 正是
-            // 刚把新顺序写进那里的。早先在写之前调，它按旧 order 重排，
-            // 拖拽结果被自己撤销——实测拖 NAS 到本机位置，松手又弹回原样。
-            if (this.modulesConfig) this.applyWidgetLayout();
+            // 重排。**必须**在写完 order 之后调：applyWidgetLayout 按
+            // modulesConfig.widgets[i].order 排序，而这里正是刚把新顺序写进去。
+            // 早先在写之前调，它按旧 order 重排，拖拽结果被自己撤销——
+            // 实测拖 NAS 到本机位置，松手又弹回原样。
+            this.applyWidgetLayout();
         }
 
         // 会话状态只存在于 HttpOnly Cookie，JS 读不到内容，

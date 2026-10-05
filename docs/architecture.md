@@ -290,6 +290,43 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **`pushSecretHash` 与 `token` 一样只进不出。** `normalizeServer` **不接收**它（否则 merge 的按 id 补回分支永远走不到），只有「领取」那一步写入，merge 按 id 补回。读接口折成 `hasPushSecret` 布尔。
 - **中间件必须在路由之上定义。** `app.post` 的第二个参数在注册时就要求中间件存在，而 `const` 有暂时性死区——定义在下方时服务器启动即抛 `ReferenceError`，而 `node --check` 与全部单元测试都是绿的：语法检查不查标识符是否已定义，静态断言更看不出「谁在什么时候求值」。只有真正把服务器起起来才会暴露。
 
+## 首页编辑模式
+
+右下角 `#layoutBtn` 承担两个动作：常态是「编辑」，编辑态变「保存编辑」。进入编辑模式时对两套存储各存一份草稿快照（`this.editSession`），**改动一律只落在内存与 DOM，点「保存编辑」才提交**；Esc 或自动登出则整体丢弃（有改动时先确认）。
+
+### 覆盖范围与边界
+
+- **模块区**：既有能力，行为从「松手即存」改为草稿。`commitWidgetDrag` 不再调 `saveWidgetLayout`，只按新 `order` 重排一次。
+- **书签网格**：分类之间、分类之内都可拖；每类末尾一个「＋」卡新增该类书签；网格末尾一个「＋ 添加分类」；点书签卡弹窗改标题/URL；点分类头的 ⠿/✎/✕ 分别拖拽/重命名/删除。
+- **只覆盖 `config.json` 的 `categories[].bookmarks[]`**（`{id, title, url}`）。后台「书签分类」分区编辑的是同一份数据。后台的「管理收藏」那套是 `favorites.json` 的平铺收藏（多 `description`/`category`/`tags`/`private`），**不在编辑模式范围内**。
+
+### 三条必须保持的性质
+
+- **书签拖拽走 HTML5 DnD 而非 pointer 事件。** 模块那边用 pointer 是因为宽屏绝对定位卡片要实时跟手并自己处理 `--stack-top` 基准补偿；书签网格是 CSS grid，没有那一层。`dragstart` 后浏览器会抑制随后的 `click`（规范行为），所以同一张卡既能拖又能点开编辑框，不需要计时器区分。
+- **增删控件的显隐只由 `.grid.is-editing` 控制，JS 不写 `hidden`。** 与模块拖拽把手同一条纪律：挂载时 `editLayout` 几乎总是 `false`，而 `hidden` 属性压过任何 CSS，控件会实测 0×0、点不到。
+- **`syncEditLayoutUI` 只在状态真的翻转时重绘网格。** 它还被 `applyWidgetLayout` 调用（视口变化时会触发），无差别重绘会让正在被拖拽的书签 DOM 凭空重建。判据是 `this._gridEditing !== editing`——`_gridEditing` 在构造函数里显式初始化，不靠 `undefined !== false` 成立。
+
+### 两套存储的提交不是原子的
+
+`/api/modules/config` 写 `.modules.json`、`/api/config` 写 `config.json`，**没有跨文件事务**。保存走**串行 + 前者失败即中止**，把最坏情况收敛成「只有布局变了」，而不是并发后两者状态不确定。彻底解决要服务端加一个合并端点。
+
+**失败路径必须收尾，不能只是中止。** `saveWidgetLayout` 自己回滚 `widgets` 并提示，但**编辑会话不会因此结束**——书签草稿还在内存里，界面仍停在编辑态，用户点了「保存编辑」却什么都没发生。所以 `if (!ok)` 分支要与书签提交失败同构：`rollbackEditSession()` + `exitEditLayout()`。
+
+**`saveWidgetLayout` 的入参是 `{ widgets }` 对象，不是裸数组。** 它的回滚分支读 `snapshot.widgets`；传数组会让那行抛 `TypeError`，而异常从 `catch` 块**内部**抛出，会穿透 `saveWidgetLayout` 的 catch、穿透 `saveEditSession` 的 `try`，于是回滚、退出、提示一行都不执行。改这个签名时，调用方与被调方必须同时改——测试用 `vm` 抽出方法真跑一遍，断言实际传出去的值。
+
+### 拖拽落点的守卫要排在解引用之前
+
+`closest('.category')` 在「＋ 添加分类」按钮与网格间隙上返回 `null`。写 `this.config.categories[toCat]` 之前必须先判 `toCat < 0` 并**清掉 `dragKind`/`dragFrom`**——异常从事件监听器抛出时，监听器末尾的清理代码不会执行，拖拽状态就此卡住，下一次 `dragover` 仍认为在拖拽。
+
+### 校验责任在前端
+
+书签的标题非空与 URL 协议（只接受 `http:` / `https:`）由编辑模式的对话框 `validate` 把关。**`POST /api/config` 对 `categories` 只有一条形状检查**（必须是数组），不校验书签字段——实测 `javascript:alert(1)` 会原样落盘。所以这一层的守卫不能省。
+
+### 尚未实现
+
+- **触摸设备的 DnD 不可靠**（与后台 `bindEditorDrag` 同一取舍）。
+- **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。
+
 ## 数据与请求路径
 
 `server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。

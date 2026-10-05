@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v59：首页「布局」按钮改为「编辑 / 保存编辑」——编辑模式扩到书签网格：
+// 分类与书签可拖拽、可增删改，模块拖拽改为草稿（不再松手即存）。
+// 改了 index.html、app.js、styles.css。同批升缓存名。
 // nav-v58：修「后台更新周期改完不生效」——两处前端漂移：
 // loadModulesConfig 归一化时漏掉 pollInterval（模块编辑器回显恒为 15 秒，
 // 用户改的值确实落盘了、首页轮询也真按新周期跑，唯独回显是假的），
@@ -67,7 +70,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v58';
+const CACHE = 'nav-v59';
 const ASSETS = [
     '/',
     '/index.html',
