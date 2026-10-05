@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v61：首页编辑模式拖拽真正可用——补上从未注册过的 pointermove 监听；
+// 分类拖拽宿主定为 .category-header，并在 pointerdown 排除 ✎/✕（否则拖拽吞掉 click）。
+// 改了 app.js、styles.css。
 // nav-v60：删掉后台的「书签分类」分区——编辑器、容器与整块分区一并
 // 移除，书签的编辑入口唯一是首页右下角的「编辑」。同时清掉随之
 // 失去引用的 CSS（.bookmarks-list / .bookmark-item / .cat-toggle /
@@ -75,7 +78,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v60';
+const CACHE = 'nav-v61';
 const ASSETS = [
     '/',
     '/index.html',
