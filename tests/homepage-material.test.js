@@ -769,13 +769,18 @@ test('书签拖拽复用既有的 moveBookmark，不另写一套排序', () => {
         '＋卡片不参与拖拽');
 });
 
-test('后台不再有书签分类编辑器，书签只在首页编辑', () => {
+test('后台彻底没有书签分类分区，书签只在首页编辑', () => {
     // 首页编辑模式上线后，后台那份编辑器（#catsEditor / renderCatsEditor /
-    // bindEditorDrag / #addCat）连同它的 CSS 一起删除。
-    // 这里钉住两件事：容器不再出现在后台模板里，编辑能力没有被删掉——
+    // bindEditorDrag / #addCat）连同它的 CSS 与整个「书签分类」分区一起删除。
+    // 这里钉住两件事：容器与分区都不在后台模板里，编辑能力没有被删掉——
     // 用户要改书签得有一条明确的路，而不是发现功能凭空消失。
     const code = stripComments(appSource);
-    for (const dead of ['#catsEditor', 'renderCatsEditor(', 'bindEditorDrag(', "'#addCat'"]) {
+    // 后台模板里既没有容器，也没有分区标题
+    assert.doesNotMatch(appSource, /id="catsEditor"/,
+        '后台模板里不应再有 #catsEditor 容器');
+    assert.doesNotMatch(appSource, /id="addCat"/,
+        '后台模板里不应再有 #addCat 按钮');
+    for (const dead of ['renderCatsEditor(', 'bindEditorDrag(']) {
         assert.ok(!code.includes(dead), `${dead} 应已随后台书签编辑器一起删除`);
     }
     // 五个 CSS 选择器在 app.js 里已零引用，一并清掉了。
@@ -784,13 +789,17 @@ test('后台不再有书签分类编辑器，书签只在首页编辑', () => {
         assert.ok(!fullCode.includes(sel), `styles.css 里不应再有 ${sel}`);
         assert.ok(!adminCode.includes(sel), `admin.css 里不应再有 ${sel}`);
     }
-    // 但编辑能力必须还在，且后台要指路
+    // 编辑能力必须还在。后台不再保留任何指路文案——
+    // 用户要改书签就去首页点「编辑」，那里是唯一入口。
     for (const alive of ['addHomeBookmark', 'editHomeBookmark', 'deleteHomeBookmark',
         'addHomeCategory', 'renameHomeCategory', 'deleteHomeCategory']) {
         assert.match(code, new RegExp(`${alive}\\s*\\(`), `${alive} 仍是首页编辑的入口`);
     }
-    assert.match(appSource, /书签与分类请在首页点右下角「编辑」直接改/,
-        '后台保留一行指路，避免用户以为功能没了');
+    // 整个「书签分类」分区已从后台模板里消失（不只是容器被清空）
+    assert.doesNotMatch(appSource, /<div class="section-title">书签分类<\/div>/,
+        '后台不再有「书签分类」分区——不留空壳也不留指路文案');
+    assert.doesNotMatch(appSource, /书签与分类请在首页/,
+        '后台不再有指向首页编辑的提示文案');
 });
 
 test('搜索引擎编辑器不受影响：它与书签编辑器共用过 .item 与 .add-btn', () => {

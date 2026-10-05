@@ -3870,10 +3870,6 @@
                         <button class="add-btn" id="addEngine">添加搜索引擎</button>
                     </div>
                 </div>
-                <div class="section">
-                    <div class="section-title">书签分类</div>
-                    <p class="fav-hint">书签与分类请在首页点右下角「编辑」直接改，改完点「保存编辑」。</p>
-                </div>
                 </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelModules" aria-labelledby="adminTabModules" hidden>
                 <div class="section">
