@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public/index.html'), 'utf8');
@@ -767,6 +768,256 @@ test('书签拖拽复用既有的 moveBookmark，不另写一套排序', () => {
     // 加号卡是新增入口，不该被当成拖拽宿主
     assert.match(body, /bookmark-add'\)\s*\)?\s*return|bookmark-add\)\) return/,
         '＋卡片不参与拖拽');
+});
+
+test('分类的拖拽宿主是分类头，不是 ⠿ 按钮也不是整块 section', () => {
+    // 两条边界都是真实浏览器实测出来的，方向相反：
+    //  · 宿主太小：只给书签卡加 draggable 时，从 ⠿ 按下一个 dragstart 都不发（0 事件）。
+    //  · 宿主太大：挂到整块 <section> 上时 section 内任何位置按下都起拖，
+    //    **包括 ✎ 重命名与 ✕ 删除**——按住横拖就起拖，浏览器按规范抑制随后的
+    //    click，对话框再也打不开（实测：单独点击正常，一拖就死）。
+    // 所以宿主是 .category-header：可拖区域与分流判据落在同一处，
+    // ✎/✕ 作为 draggable=false 的后代，按下不起拖。
+    const body = methodBody(appSource, 'renderGrid');
+    assert.match(body, /<div class="category-header"\$\{editing \? ' draggable="true"' : ''\}>/,
+        'draggable 必须挂在 .category-header 上');
+    assert.doesNotMatch(body, /<section class="category" data-cat="\$\{catIdx\}"\$\{editing/,
+        '整块 <section> 不得挂 draggable——那会让 ✎/✕ 起死拖并吞掉 click');
+    assert.doesNotMatch(body, /class="category-drag"[^>]*draggable/,
+        '⠿ 是 <button>，不可拖拽；把 draggable 写在这里不解决问题');
+
+    // 分流判据必须与宿主一致：落在分类头里，而不是落在 ⠿ 上。
+    const edit = methodBody(appSource, 'bindGridEdit');
+    assert.match(edit, /pointerdown[\s\S]*?closest\('\.category-header'\)/,
+        'pointerdown 的定性判据要与宿主同为 .category-header');
+    assert.doesNotMatch(edit, /downOnCategory\s*=\s*!!event\.target\.closest\('\.category-drag'\)/,
+        '判据不能是 ⠿ ——宿主已经是分类头，把手只是它内部一个点');
+    assert.match(edit, /if \(downOnCategory\)/, 'dragstart 要靠这个标志分流');
+
+    // ⚠️ 宿主收窄到分类头之后，✎/✕ 就在可拖拽区域**里面**了，而
+    // 后代的 draggable="false" 不能豁免（对照页实测：Chrome 里可拖拽祖先的
+    // 后代——普通 button、写死 draggable=false 的 button、h2——按下照样起拖，
+    // dragstart 命中祖先）。于是按住 ✎ 横拖就拖走整个分类，浏览器按规范
+    // 抑制随后的 click，重命名/删除对话框再也打不开（实测：一拖就死）。
+    // 解法是在 pointerdown 里对这两个按钮 preventDefault：对照页实测取消后
+    // 一个 dragstart 都不发，click 照常送达。dragstart 里再取消就晚了。
+    const pd = stripComments(edit.slice(edit.indexOf("addEventListener('pointerdown'"),
+        edit.indexOf("addEventListener('dragstart'")));
+    assert.match(pd, /category-action:not\(\.category-drag\)/,
+        'pointerdown 必须把 ✎/✕ 排除在可拖区域外');
+    assert.match(pd, /closest\('\.category-action:not\(\.category-drag\)'\)\)\s*\{[\s\S]*?preventDefault\(\)/,
+        '落在 ✎/✕ 上要 preventDefault —— 否则按钮会被拖拽吞掉 click');
+    assert.match(pd, /downOnCategory = false/,
+        '按钮上按下必须把定性复位，否则上一次的状态会带进下一次 dragstart');
+
+    // 兜底分支必须显式取消：既不在分类头也不在书签卡上按下时，
+    // 什么都不做就会「能拖、松手没 drop」的死拖。
+    // ⚠️ 断言要剥注释后再找：那个兜底分支的说明文字里就写着 preventDefault，
+    // 不剥的话「从 closest('.bookmark') 往后找 preventDefault」会命中**注释**，
+    // 于是把真正那行删掉测试照样绿——反向断言的同类陷阱。
+    const start = edit.indexOf("addEventListener('dragstart'");
+    assert.ok(start >= 0, '有 dragstart 监听');
+    const tail = stripComments(edit.slice(start));
+    const bmAt = tail.indexOf("closest('.bookmark')");
+    assert.ok(bmAt >= 0, '书签分支存在');
+    const branchEnd = tail.indexOf('dragKind = \'bm\';', bmAt);
+    assert.ok(branchEnd > bmAt, '书签分支的兜底 return 边界可定位');
+    const branch = tail.slice(bmAt, branchEnd);
+    assert.match(branch, /preventDefault\(\)/,
+        '兜底 return 之前要 preventDefault，否则 ＋卡片起手是死拖');
+
+    // JS 会加 .drop-target，但**只有 CSS 真的消费它**这个 class 才有意义。
+    assert.match(stripComments(stylesCss), /\.category\.drop-target\s*\{[^}]*opacity/,
+        '.category.drop-target 必须有样式，否则拖动时毫无反馈');
+});
+
+test('编辑态的拖拽反馈样式不被覆盖成死规则', () => {
+    // .grid.is-editing 是宿主类：JS 只 toggle 它，不写 hidden / display。
+    // 若某条规则用 hidden 或 display:none 接管这些控件，它们会实测 0×0。
+    const code = stripComments(stylesCss);
+    assert.doesNotMatch(code, /\.grid\.is-editing [^{]*\{[^}]*(?:^|[;{\s])display:\s*none/,
+        '编辑态控件不得被 display:none 接管（显隐只由 .grid.is-editing 门控）');
+    // 书签卡在编辑态必须中和 hover 抬升，否则拖动时卡片浮起来、落点判断跟着偏。
+    // 钉住「有这条规则」而不是它的排版：多一个空格不该让用例变红。
+    assert.match(code, /\.grid\.is-editing\s+\.bookmark:hover\s*\{[^}]*transform:\s*none/,
+        '编辑态书签卡取消 hover 抬升');
+});
+
+/**
+ * 把 bindGridEdit 的真实方法体摘出来执行一遍。
+ *
+ * 上一条断言的是「代码写了分流」，这里钉住**分流真的执行**：
+ * 分类拖拽整个不可用时，dragstart 里的定性永远走不到，
+ * 源码断言照样全绿——403 条测试就是这么放过去的。
+ *
+ * DOM 全是假节点，唯一为真的就是「按下落在哪 → 定性成哪种 → drop 调谁」。
+ */
+function mountGridEdit(editLayout = true) {
+    const calls = [];
+    const config = {
+        categories: [
+            { name: 'A', bookmarks: [{ title: 'a1' }, { title: 'a2' }] },
+            { name: 'B', bookmarks: [] }
+        ]
+    };
+    // 假节点：closest 按选择器向上查找，返回自身或 parents 里登记的祖先。
+    // ⚠️ 祖先也必须是带 classList 的节点：dragstart 的分类分支会写
+    // source.classList.add('is-dragging')，而 source 来自 closest——
+    // 这里少给一层 classList，测试就会挂在「read of 'add'」上，
+    // 读起来像产品代码炸了，其实是自己造的桩太薄。
+    const node = (className, dataset, parents = {}) => ({
+        className, dataset,
+        classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+        closest(sel) {
+            if (sel === `.${className}`) return this;
+            const parent = parents[sel];
+            if (!parent) return null;
+            return parent.__node || (parent.__node = Object.assign(node(className, {}), parent));
+        },
+        querySelectorAll: () => []
+    });
+
+    const app = {
+        editLayout,
+        config,
+        moveCategory: (from, to) => calls.push(['cat', from, to]),
+        moveBookmark: (fc, fb, tc, tb) => calls.push(['bm', fc, fb, tc, tb]),
+        renderGrid() {}, markConfigDirty() {}
+    };
+    // 方法体通过文件级 $ 拿 grid；这里让它返回能记录监听的桩。
+    // ⚠️ 监听必须**全部**留存成数组：bindGridEdit 对 pointerdown 注册了两次
+    // （定性 + 既有的 card.focus()），只留最后一个会把定性那个悄悄丢掉，
+    // 于是测试读起来像「代码没生效」，其实是桩自己丢了监听。
+    // ⚠️ listeners 建在 vm 沙箱**内**，挂到宿主对象上再回读是拿不到的
+    // （跨上下文属性不可见），所以由方法体自己 return 出来。
+    const grid = { querySelectorAll: () => [] };
+    const mount = vm.runInNewContext(`(function (grid) {
+        const $ = () => grid;
+        const $$ = () => [];
+        const listeners = {};
+        grid.addEventListener = (t, f) => { (listeners[t] ||= []).push(f); };
+        ${methodBody(appSource, 'bindGridEdit')}
+        return listeners;
+    })`);
+    const listeners = mount.call(app, grid);
+
+    // 浏览器语义：同一类型的所有监听按注册顺序依次收到事件
+    const fire = (type, event) =>
+        (listeners[type] || []).forEach(fn => fn(event));
+    const dataTransfer = { setData() {}, effectAllowed: '', dropEffect: '' };
+
+    return {
+        calls, config, listeners,
+        countOf: type => (listeners[type] || []).length,
+        // pointerdown 的落点：分类头内 or 书签卡上
+        press: onHeader => fire('pointerdown', {
+            button: 0,
+            target: { closest: sel => (onHeader && sel === '.category-header' ? {} : null) }
+        }),
+        // 分类宿主是 .category-header，它自身带 draggable
+        header: idx => node('category-header', {}, {
+            '.category': { dataset: { cat: String(idx) } }
+        }),
+        category: idx => node('category', { cat: String(idx) }),
+        bookmark: (cat, bm) => node('bookmark', { cat: String(cat), bm: String(bm) },
+            { '.category': { dataset: { cat: String(cat) } } }),
+        dragstart: target => fire('dragstart', { target, dataTransfer }),
+        dragover: target => fire('dragover', { target, dataTransfer }),
+        drop: target => fire('drop', { target, preventDefault() {}, dataTransfer })
+    };
+}
+
+test('从分类头起手走 moveCategory，从卡片起手走 moveBookmark', () => {
+    const grid = mountGridEdit();
+    // 两条 pointerdown 监听并存（定性 + card.focus()）——桩退化成只留一个
+    // 会把定性悄悄丢掉，于是测试读起来像「代码没生效」，其实是自己丢了监听
+    assert.equal(grid.countOf('pointerdown'), 2,
+        'pointerdown 应有两个监听（定性 + 聚焦），只留一个说明桩退化了');
+
+    // 场景一：从分类头起手，落到第二个分类 → moveCategory(0, 1)
+    grid.press(true);
+    grid.dragstart(grid.header(0));
+    grid.drop(grid.header(1));
+    assert.deepEqual(grid.calls, [['cat', 0, 1]],
+        '从分类头起手时 drop 必须调用 moveCategory(0, 1)');
+
+    // 场景二：从书签卡起手 → 必须走 moveBookmark，不能被误判成分类
+    grid.calls.length = 0;
+    grid.press(false);
+    grid.dragstart(grid.bookmark(0, 1));
+    grid.drop(grid.bookmark(0, 0));
+    assert.deepEqual(grid.calls, [['bm', 0, 1, 0, 0]],
+        '从卡片起手时 drop 必须调用 moveBookmark(0,1→0,0)');
+});
+
+test('非编辑态下整条拖拽链都不许动配置', () => {
+    // dragstart 的第一道门是 editLayout。少了它，退出编辑后一次拖拽
+    // 就会改到配置上——而那一刻用户以为自己在浏览首页。
+    const grid = mountGridEdit(false);
+    grid.press(true);
+    grid.dragstart(grid.header(0));
+    grid.drop(grid.header(1));
+    assert.deepEqual(grid.calls, [], '非编辑态下整条链都不该有调用');
+});
+
+test('拖拽残留的清理覆盖 dragend，不只靠 drop', () => {
+    // drop 只在松手点位于 #grid 内才触发（监听挂在 grid 上）。拖到页头、
+    // 模块区或留白处松手走不到它——而 .drop-target 与 .is-dragging 视觉完全相同
+    // （同为 opacity .55），漏清会让用户以为「分类卡住了」。
+    const body = methodBody(appSource, 'bindGridEdit');
+    const end = body.indexOf("addEventListener('dragend'");
+    assert.ok(end >= 0, '有 dragend 监听');
+    const tail = body.slice(end);
+    // 按下一个方法定义当结束标记会在嵌套处截断，用到下一个 addEventListener 为止
+    const next = tail.indexOf("addEventListener('click'");
+    const dragend = next > 0 ? tail.slice(0, next) : tail;
+    assert.match(dragend, /\.bookmark\.is-dragging/,
+        'dragend 清书签的 is-dragging');
+    assert.match(dragend, /\.category\.is-dragging/,
+        'dragend 清分类的 is-dragging');
+    assert.match(dragend, /\.category\.drop-target/,
+        'dragend 必须也清 .drop-target —— 松手在网格外时 drop 不触发');
+});
+
+test('退出编辑时清掉两处容器的拖拽残留，且 class 名要对', () => {
+    // exitEditLayout 的注释声称清掉「全部拖拽残留」，那就必须同时覆盖
+    // #grid 与 #moduleZone。早先这里写的是 .drop-active —— 那个 class 在
+    // 样式表里根本不存在，整行是空转，模块拖拽后按 Esc 放弃编辑会留下压暗卡片。
+    // ⚠️ 断言前必须剥注释：解释这段历史的那几行里就写着「drop-active」，
+    // 不剥就会把「注释里提到过」读成「代码里还在用」——反向断言的同类陷阱。
+    // ⚠️ 「选中了什么」不够——还要「真的遍历并移除了」。只查选择器的话，
+    // 把 querySelectorAll 的结果丢在一边不迭代，这用例照样绿。
+    const body = stripComments(methodBody(appSource, 'exitEditLayout'));
+    assert.match(body, /is-dragging/, '清 is-dragging');
+    assert.doesNotMatch(body, /drop-active/,
+        '.drop-active 在样式表里不存在，用它是空转；真实落点高亮叫 .drop-target');
+    assert.match(body, /drop-target/, '清 .drop-target');
+    // 两个容器都要：选择器 + forEach 里真的移除了这两个 class
+    for (const [id, what] of [['$(\'#grid\')', '网格（分类/书签）'], ['$(\'#moduleZone\')', '模块区']]) {
+        const at = body.indexOf(id);
+        assert.ok(at >= 0, `${what} 也要清（找不到 ${id}）`);
+        // 窗口按**方法边界**给，不用字符数：早先用 220 字符，
+        // 正好在第二个 remove 之前切掉，读起来像「代码没清」而其实切窄了。
+        const slice = body.slice(at, at + 320);
+        assert.ok(slice.length > 200, `${what} 的切片长度合理（${slice.length}）`);
+        assert.match(slice, /querySelectorAll\('\.is-dragging, \.drop-target'\)/,
+            `${what} 要同时清 .is-dragging 与 .drop-target`);
+        assert.match(slice, /forEach\(n => \{/,
+            `${what} 的结果必须真的被遍历——选中却丢弃等于没清`);
+        assert.match(slice, /n\.classList\.remove\('is-dragging'\)/, `${what} 移除 is-dragging`);
+        assert.match(slice, /n\.classList\.remove\('drop-target'\)/, `${what} 移除 drop-target`);
+    }
+});
+
+test('落点与自己相同时分类不动', () => {
+    // 拖回自己身上是最常见的空拖。若不加 to !== dragFrom 判断，
+    // moveCategory(0, 0) 会 splice 再插回——虽然结果碰巧一样，
+    // 但它会把 markConfigDirty 打开，用户只是点了一下就被标记成「有未保存改动」。
+    const grid = mountGridEdit();
+    grid.press(true);
+    grid.dragstart(grid.header(0));
+    grid.drop(grid.header(0));
+    assert.deepEqual(grid.calls, [], '落回自身不应算一次移动');
 });
 
 test('后台彻底没有书签分类分区，书签只在首页编辑', () => {

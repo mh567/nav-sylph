@@ -1,8 +1,116 @@
 # 当前工作交接
 
-核对日期：2026-10-04。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+核对日期：2026-10-05。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：删掉后台的书签分类编辑器（v1.7.1，提交 `90833a8` + `60c67f2`）
+## 最新一轮：修首页编辑模式拖拽完全不可用（v1.7.2）
+
+用户报「首页编辑模式下各导航分类及模块的位置均无法拖拽，自由拖拽功能未生效」。查实**两个独立缺陷**，都自模块平台上线（`ada60c6`）起就存在，而当时 403 条测试全绿。
+
+### 缺陷一：模块拖拽的 pointermove 监听从未注册
+
+`beginWidgetDrag` 定义了 `move` 处理器、结束时也调了 `removeEventListener('pointermove', move)`，但**从来没 add 过**。按下设好 `dragData`、加上 `.is-dragging`，然后指针一动就没人跟——松手回原位。连带 `markDropSide`（宽屏左右换边）整段是死代码，因为它只在这个没注册的处理器里跑。
+
+改法是一行 `window.addEventListener('pointermove', move)`。
+
+### 缺陷二：分类拖拽的宿主是 `<button>`，而 `<button>` 不可拖拽
+
+原生 DnD 只从**最近的 draggable 元素**起手。改动前只有书签卡带 `draggable`，分类的 `<section>` 没有，于是从 ⠿ 把手按下**一个 dragstart 都不发**（真实浏览器实测事件数 0）。
+
+修这个的过程中踩到一条反直觉的规则，两侧都实测过：
+
+| 宿主 | 从 ⠿ 按下 | 从 ✎/✕ 按下 | 从分类标题按下 |
+| --- | --- | --- | --- |
+| 无（改前） | 不起拖 | 不起拖 | 不起拖 |
+| 整块 `<section>` | 能拖 ✓ | **起死拖 ✗** | 能拖 ✓ |
+| `.category-header`（终版） | 能拖 ✓ | 起拖 ✗ → 再用 pointerdown 排除 | 能拖 ✓ |
+
+终版行为：从 ⠿、从分类标题按下都能拖；✎/✕ 上按下被 `pointerdown` 里的 `preventDefault()` 取消，既不起拖、也不吞掉 click。
+
+**宿主不能太大**：挂到整块 section 上，✎ 重命名与 ✕ 删除也在可拖区域里，按住横拖就起拖，而浏览器按规范抑制随后的 click——**对话框再也打不开**。实测：✎ 单独点击正常，一拖就死。这比改前更糟。
+
+**收窄到分类头也不够**：✎/✕ 就在分类头里面，且后代的 `draggable="false"` **不能豁免**（对照页实测：普通 button、写死 `draggable=false` 的 button、`<h2>` 三种后代按下都照样起拖，`dragstart.target` 命中祖先）。最终解法是在 `pointerdown` 里对 `.category-action:not(.category-drag)` 显式 `preventDefault()`——对照页实测取消后一个 dragstart 都不发、click 照常送达。等到 `dragstart` 里再取消就晚了，拖影已出现、click 已丢。
+
+代价是 `dragstart.target` 解析到 `.category-header`，与书签卡无法区分，所以分流靠 `pointerdown` 记住的真实落点（`downOnCategory`）。
+
+### 顺手修掉的两处残留（都在 dragend / 退出路径上）
+
+- `.category.drop-target` 只在 `drop` 分支清理，而 `drop` 只在**松手点位于 #grid 内**才触发。拖到页头或留白处松手走不到它，落点分类就一直压暗——而它与 `.is-dragging` 视觉完全相同（同为 `opacity: .55`），用户分不清「在拖」还是「卡住了」。现由 `dragend` 一并清理。
+- `exitEditLayout` 的注释声称清掉「全部拖拽残留」，实际只管模块区、且写的是 `.drop-active`——**那个 class 在样式表里根本不存在**，整行空转。现在两处容器都清、class 名也对上了。
+
+### 真实浏览器实测（非源码推断）
+
+驱动方式：`agent-browser` + 临时目录里的真实服务端副本（端口 4312，`admin123` 登录）。**每一项都清了 Service Worker 缓存再测**——中途有一次「改了不生效」是 `nav-v60` 缓存，不是代码问题。
+
+| 场景 | 结果 |
+| --- | --- |
+| 从分类头拖到另一分类 | `moveCategory(0,1)` 生效 |
+| 从 ⠿ 把手拖 | 生效（标题与把手两个起手点都验过） |
+| 书签跨分类拖拽 | `moveBookmark` 生效 |
+| 从 ✎ 拖拽 | **不起拖**（原先起死拖），拖后 ✎ 仍能打开重命名对话框 |
+| 从 ✕ 拖拽 | 同上，✕ 仍能打开删除对话框 |
+| 从 ＋ 卡片起手 | 明确取消（`defaultPrevented=true`），不再是死拖 |
+| 模块卡片末位拖到首位 | DOM 拖动中即换位，`order` 写入 0/1/2 并落盘 |
+| 模块卡片正向拖拽 | 同上 |
+| 宽屏（1760px）换边 | `data-drop-side=right` → 该卡 `side` 落为 `right` |
+| 保存编辑后服务端 | `.modules.json` 的 `widgets[].order` 与界面一致 |
+| 非编辑态首页 | `<section>`/分类头均无 `draggable`，无 ＋ 卡片与分类按钮，DOM 与改前逐字相同 |
+
+⚠️ **`agent-browser` 的合成拖拽会偶发不在目标上松手**（不发 `drop`）。已用对照页排除工具问题：对照页两个方向都稳定落上，而真实页面在同一条路径上稳定生效。测量用的是必然落点的分步重放。
+
+### 红/绿：10 项变异全部被捕获
+
+先修测试再谈绿。新增用例**执行 `bindGridEdit` 的真实方法体**（按下→起手→落下全程），不是匹配源码文本——上一轮那种「断言恒真」的教训正是本轮缺陷能溜过 403 条的原因。
+
+| 变异 | 结果 |
+| --- | --- |
+| M1 删掉 pointermove 的注册 | 转红 2 条 |
+| M2 draggable 挂回整块 section | 转红 |
+| M3 draggable 从分类头挪到 ⠿ 按钮 | 转红 |
+| M4 分流判据退回 ⠿ 按钮 | 转红 2 条 |
+| M5 dragend 不清 `.drop-target` | 转红 |
+| M6 `exitEditLayout` 退回 `.drop-active` | 转红 |
+| M7 `exitEditLayout` 不再清 #grid | 转红 |
+| M8 删掉 dragstart 兜底的 preventDefault | 转红 |
+| M9 删掉 `.category.drop-target` 的 CSS | 转红 |
+| M10 pointerdown 不再排除 ✎/✕ | 转红 |
+
+### 我自己搞出又修掉的几件事
+
+1. **M7 一开始没被捕获**，因为用例只查「选中了 `#grid`」，把 `querySelectorAll` 的结果丢在一边不迭代也照样绿。补上「必须真的 forEach 并 remove 两个 class」。
+2. **M8 一开始没被捕获**，因为断言从 `closest('.bookmark')` 往后找 `preventDefault`，而那个兜底分支的**说明文字里就写着 preventDefault**——命中的是注释。改成先剥注释、再按分支边界切片。
+3. **`exitEditLayout` 的用例把注释里的 `drop-active` 当成了代码在用**，反向断言自己被自己的注释绊倒。断言前先 `stripComments`。
+4. **切片按字符数（220）切窄了**，正好在第二个 `classList.remove` 之前切掉，读起来像「代码没清」。改成 320 并断言切片长度。
+5. **第一版 `countOf(type) >= 1` 是恒真的**，已换成「`pointerdown` 恰好两个监听」。
+6. **`adds/removes` 钉死 3 会把正确的将来改动判红**（加一个成对的 `lostpointercapture` 就红）。改成断言两者相等 + `>= 3`。
+7. 我给宿主加 `draggable` 时只测了 ⠿，没测 ✎/✕——**是新加的「双轴审查」在提交前抓到的**，不是我自己复验出来的。
+
+### 提交前的双轴代码审查抓到的真缺陷
+
+审查跑在**未提交的工作树**上（`git diff v1.7.1`，不是 `...HEAD`，后者对未提交改动返回空，等于审查了空气）。两个轴独立收敛到同一个阻断项：从 ✎/✕ 起手是死拖且按钮失效。已按实测结论修掉。
+
+⚠️ 其中一个轴报告的「v1.7.1 基线 337 tests / 324 pass（5 条在 v1.7.1 上就红）」**我不采信也未复核**——那与本机实测的 403 不符，本轮未对基线单独跑全量。若要复核：`git archive v1.7.1 | tar -x` 到临时目录跑 `node --test`。
+
+### 已验证
+
+- `node --test tests/*.test.js` → **411 pass / 0 fail**（v1.7.1 为 403）
+- 10 项变异全部转红，恢复后逐字一致
+- `node --check public/app.js`、`public/sw.js` 通过；`git diff --check` 无输出
+- 三处版本一致：`package.json` / `version.json` / `CHANGELOG.json` 均为 1.7.2，重新解析证明 JSON 仍合法
+- SW 缓存 `nav-v60` → `nav-v61`（改了 `public/` 资产必须同批升）
+
+### 仍未验证
+
+1. **Firefox / Safari**。全部修复依赖「从 draggable 后代按下能起拖、且 `pointerdown` 的 preventDefault 能取消它」这两条 Chrome 行为。仓库里第一次把 `draggable` 挂到非链接元素上，Firefox 的规则我没有把握。
+2. **触摸端**。原生 DnD 在 iOS Safari / Android Chrome 上多数不触发 `dragstart`，而 `.category-header` 也没有 `touch-action: none`（只有 `.module-drag-handle` 有）。这是 `architecture.md` 已登记的既定取舍，不在本轮范围。
+3. **拖拽中途按 Esc**。`exitEditLayout` 会 `renderGrid()` 重画网格，拖拽进行中重画源节点后浏览器如何发 `dragend` 无规范保证；`downOnCategory` 只由 `dragend` 复位。请试：按住 ⠿ 拖到一半按 Esc。
+4. **拖拽中改变窗口尺寸**。`reorderWhileDragging` 的中线在拖拽**开始时**缓存一次，布局重排后全部失效；`sideDockAvailable` 变化会触发 `renderModuleZone()` 把拖拽中的 DOM 换掉。
+5. **本地 `.modules.json` 里仍有两条演示数据**（NAS `127.0.0.1:4401`、VPS `127.0.0.1:4402`，端口早已不通，mtime 为 10-02/10-01）。它们被 `.gitignore` 排除、不进发布包，我**没有动**——属于你的本地数据，要清就在后台删掉这两台。
+
+### 与既有约束的冲突
+
+- `.category-header` 现在在编辑态是 draggable，会劫持该区域的**文字选中**。`styles.css` 的两处 `user-select: none` 都在 `.section-header` / `.category-tree-item` 上，不含 `.category-title`。实测未阻断使用，但与「整块可拖拽会劫持选中」的注释理由相关——若日后要支持选中分类名，需再收窄宿主。
+
+## 上一轮：删掉后台的书签分类编辑器（v1.7.1，提交 `90833a8` + `60c67f2`）
 
 首页编辑模式上线后，后台「书签分类」分区成了同一份数据的第二个编辑入口。已删除：**净删 213 行**（8 行新增全是注释）。
 

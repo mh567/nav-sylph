@@ -604,10 +604,22 @@
         exitEditLayout() {
             this.editLayout = false;
             this.syncEditLayoutUI();
+            // 两处都要清，且 class 名要对：模块区的落点高亮用的是 .drop-target，
+            // 早先这里写的是 .drop-active —— 那个 class 在样式表里根本不存在，
+            // 于是这行是空转，模块拖拽后按 Esc 放弃编辑会留下压暗的卡片。
             const zone = $('#moduleZone');
             if (zone) {
-                zone.querySelectorAll('.is-dragging').forEach(n => n.classList.remove('is-dragging'));
-                zone.querySelectorAll('.drop-active').forEach(n => n.classList.remove('drop-active'));
+                zone.querySelectorAll('.is-dragging, .drop-target').forEach(n => {
+                    n.classList.remove('is-dragging');
+                    n.classList.remove('drop-target');
+                });
+            }
+            const grid = $('#grid');
+            if (grid) {
+                grid.querySelectorAll('.is-dragging, .drop-target').forEach(n => {
+                    n.classList.remove('is-dragging');
+                    n.classList.remove('drop-target');
+                });
             }
             this.dragData = null;
         }
@@ -730,10 +742,24 @@
             // ＋占位卡。**不进编辑态的模板与改动前逐字相同**，
             // 所以正常访问的首页零回归。
             const editing = this.editLayout;
+            // ⚠️ 分类的拖拽宿主必须是 **.category-header**，不是那个 ⠿ 按钮，
+            // 也**不能是整块 <section>**。两条都是实测出来的：
+            //  1. <button> 不可拖拽，原生 DnD 只从最近的 draggable 起手，
+            //     所以把手上没有 draggable 时一个 dragstart 都不发（实测 0 事件）。
+            //  2. 反过来把 draggable 挂到整块 section 上，section 内部**任何**
+            //     位置按下都会起拖——包括 ✎ 重命名与 ✕ 删除。那两个按钮于是
+            //     变成「按住横拖 = 起拖 → 浏览器按规范抑制随后的 click →
+            //     对话框打不开」，比改前更糟（改前根本不起拖，按钮是好的）。
+            // 所以宿主收窄到分类头：**可拖的区域**与**分流判据**落在同一处，
+            // 而 ✎/✕ 作为 draggable=false 的后代，在按钮上按下不会起拖。
+            // 代价是 dragstart.target 解析到 .category-header，
+            // 「拖分类」与「拖书签」在该事件上无法区分（书签卡是 section 的子节点、
+            // 也是 draggable，命中它时 target 就是 <a> 本身）——
+            // 分流靠 pointerdown 记住的真实落点。
             this.config.categories.forEach((cat, catIdx) => {
                 const section = html(`
                     <section class="category" data-cat="${catIdx}">
-                        <div class="category-header">
+                        <div class="category-header"${editing ? ' draggable="true"' : ''}>
                             <h2 class="category-title">${this.esc(cat.name)}</h2>
                             ${editing ? `<button type="button" class="category-action category-drag" title="拖拽调整分类顺序" aria-label="拖拽调整分类顺序">⠿</button>
                             <button type="button" class="category-action category-edit" data-edit-cat="${catIdx}" title="重命名分类">✎</button>
@@ -1068,6 +1094,13 @@
             if (!grid) return;
             let dragFrom = null;
             let dragKind = null;
+            // pointerdown 落在哪个区域，比 dragstart.target 更可靠：
+            // 分类的宿主是 .category-header，而书签是 section 内部的 <a>，
+            // 两者在 dragstart.target 上无法区分（都解析到最近的 draggable）。
+            // 按下时记下真实落点，dragstart 只用它定性。
+            // ⚠️ 判据是「落在分类头里」，而**不是**「落在 ⠿ 上」——
+            // 宿主已经是分类头，把手只是它内部的一个点。
+            let downOnCategory = false;
 
             const catIndexOf = node => {
                 const section = node.closest('.category');
@@ -1078,17 +1111,50 @@
                 return card && card.dataset.bm !== undefined ? +card.dataset.bm : -1;
             };
 
+            grid.addEventListener('pointerdown', event => {
+                if (!this.editLayout || event.button !== 0) return;
+                // ⚠️ 落在 ✎/✕ 上必须取消这次按压，否则会连累按钮。
+                // 分类头整块 draggable，而**后代的 draggable="false" 并不能豁免**：
+                // 实测 Chrome 里可拖拽祖先的后代（普通 button、写死 draggable=false 的
+                // button、h2 都一样）按下照样起拖，dragstart 命中祖先。
+                // 于是按住 ✎ 横拖 = 拖走整个分类，浏览器按规范抑制随后的 click，
+                // 重命名/删除对话框再也打不开（实测：单独点击正常，一拖就死）。
+                // pointerdown 里 preventDefault 能彻底取消起拖——对照页实测
+                // 取消后一个 dragstart 都不发，只有 click 照常送达。
+                // dragstart 里再 preventDefault 就晚了：拖影已经出现、click 已丢。
+                if (event.target.closest('.category-action:not(.category-drag)')) {
+                    event.preventDefault();
+                    downOnCategory = false;
+                    return;
+                }
+                downOnCategory = !!event.target.closest('.category-header');
+            });
+
             grid.addEventListener('dragstart', event => {
                 if (!this.editLayout) return;
-                const handle = event.target.closest('.category-drag');
-                if (handle) {
+                if (downOnCategory) {
                     dragKind = 'cat';
-                    dragFrom = catIndexOf(handle);
+                    dragFrom = catIndexOf(event.target);
+                    // .category.is-dragging 的样式早已存在（压暗整块），
+                    // 但此前没有任何代码给分类加过这个 class——空规则。
+                    // 注意它挂在整个 <section> 上，所以拖一个分类会把它下面
+                    // 所有书签卡一起压暗 45%，不是只压暗把手。
+                    const source = event.target.closest('.category');
+                    if (source) source.classList.add('is-dragging');
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', String(dragFrom));
                     return;
                 }
                 const card = event.target.closest('.bookmark');
                 // 加号卡不参与排序，它是「新增」入口
-                if (!card || card.classList.contains('bookmark-add')) return;
+                if (!card || card.classList.contains('bookmark-add')) {
+                    // 既不是分类头也不是书签卡（例如从 ＋ 卡片起拖）：
+                    // 明确取消这次拖拽。什么都不做的话浏览器会照常画拖影，
+                    // 松手也没 drop——用户看到的是「能拖、拖了没反应」。
+                    event.preventDefault();
+                    dragKind = null;
+                    return;
+                }
                 dragKind = 'bm';
                 dragFrom = { cat: catIndexOf(card), bm: bmIndexOf(card) };
                 card.classList.add('is-dragging');
@@ -1100,6 +1166,14 @@
                 if (!this.editLayout || !dragKind) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'move';
+                if (dragKind !== 'cat') return;
+                // 分类拖拽的落点提示：拖到谁头上，谁就压暗。
+                // 书签拖拽靠 .is-dragging 半透明表达（卡片多、逐个高亮反而吵）。
+                const section = event.target.closest('.category');
+                $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
+                if (section && +section.dataset.cat !== dragFrom) {
+                    section.classList.add('drop-target');
+                }
             });
 
             grid.addEventListener('drop', event => {
@@ -1107,7 +1181,9 @@
                 event.preventDefault();
                 if (dragKind === 'cat') {
                     const to = catIndexOf(event.target);
+                    // 落在自己身上不算移动，必须严格不同才搬
                     if (to >= 0 && to !== dragFrom) this.moveCategory(dragFrom, to);
+                    $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
                 } else {
                     const section = event.target.closest('.category');
                     const targetBm = event.target.closest('.bookmark');
@@ -1131,8 +1207,16 @@
 
             grid.addEventListener('dragend', () => {
                 $$('.bookmark.is-dragging', grid).forEach(n => n.classList.remove('is-dragging'));
+                $$('.category.is-dragging', grid).forEach(n => n.classList.remove('is-dragging'));
+                // ⚠️ 落点高亮必须在这里也清一遍。drop 只在**松手点位于 #grid 内**
+                // 才触发，而监听挂在 grid 上——拖到页头、模块区、留白处松手
+                // 走不到 drop 的清理，落点分类就一直压暗着，而它的视觉与
+                // .is-dragging 完全相同（同为 opacity .55），用户分不清
+                // 「在拖」还是「卡住了」。
+                $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
                 dragKind = null;
                 dragFrom = null;
+                downOnCategory = false;
             });
 
             grid.addEventListener('click', event => {
@@ -1168,8 +1252,8 @@
                 }
             });
 
-            // 编辑态下书签卡整体是拖拽宿主，按下即进入原生拖拽，
-            // 同时拦掉链接默认导航（click 分支已拦，这里拦的是拖拽起手的那一下）。
+            // 编辑态下书签卡整体是拖拽宿主，按下即进入原生拖拽。
+            // 链接默认导航由下面的 click 分支拦（编辑态点了是打开编辑框，不是跳转）。
             grid.addEventListener('pointerdown', event => {
                 if (!this.editLayout || event.button !== 0) return;
                 const card = event.target.closest('.bookmark');
@@ -1388,6 +1472,11 @@
                 this.commitWidgetDrag(drag);
             };
 
+            // ⚠️ 这一行曾经**从未存在过**：move 只被 removeEventListener 解绑，
+            // 从来没有被注册，于是整个模块拖拽只按下不跟随，松手即回到原位——
+            // 而 403 条测试全绿，因为它们断言的是「监听挂在 window 且能解绑」，
+            // 恰好跳过了「要先注册」这一步。注册与解绑必须成对出现。
+            window.addEventListener('pointermove', move);
             window.addEventListener('pointerup', settle);
             window.addEventListener('pointercancel', settle);
         }

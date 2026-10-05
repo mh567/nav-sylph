@@ -2995,7 +2995,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* ========== 首页编辑模式（书签网格的增删改与拖拽） ==========
    显隐全部由 .grid.is-editing 控制，JS 不写 hidden 属性——与模块拖拽把手
-   同一条纪律（tests/api-boundary.test.js:509）：挂载时 editLayout 几乎总是
+   同一条纪律（见 api-boundary.test.js「拖拽把手不由模块自己写 hidden 属性」那条用例）：
+   挂载时 editLayout 几乎总是
    false，而 hidden 属性压过任何 CSS，控件会实测 0×0、点不到。
    这组规则**紧跟模块区**，不要挪到文件末尾：同优先级的重复声明后者胜，
    仓库已因尾部覆盖栽过两次。 */
@@ -3030,6 +3031,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .grid.is-editing .bookmark-add:hover { transform: none; }
 .grid.is-editing .bookmark.is-dragging { opacity: .4; }
 .category.is-dragging { opacity: .55; }
+/* 分类落点提示：与 .category.is-dragging 配对（拖到谁头上谁就压暗）。
+   这条规则此前不存在——分类拖拽整个不可用，也就没人写过它。 */
+.grid.is-editing .category.drop-target { opacity: .55; }
 
 /* 书签删除按钮：压在卡右上角，常态隐藏，编辑态悬停才显形。
    不写 hidden 属性，交给 .grid.is-editing + :hover 控制。 */

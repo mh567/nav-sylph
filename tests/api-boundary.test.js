@@ -869,9 +869,30 @@ test('拖拽终止监听挂在 window 且同时处理 pointercancel', () => {
     // 早先的 1800 字符窗口正好把它们切在外面，读起来像「监听没挂 window」。
     const body = appSource.slice(start, start + 2600);
 
+    // ⚠️ 反向断言：move 必须**被注册**。改动前这里只有 removeEventListener，
+    // 于是模块拖拽按下不跟随、松手回原位，而本用例全绿——
+    // 它断言的是「监听挂在 window 且能解绑」，恰好跳过了「要先注册」。
+    // 注册与解绑成对出现，所以断言数必须相等，不是「至少有一个」。
     assert.match(body, /window\.addEventListener\('pointerup', settle\)/, 'pointerup 挂 window');
     assert.match(body, /window\.addEventListener\('pointercancel', settle\)/, 'pointercancel 也要挂');
     assert.match(body, /removeEventListener\('pointerup', settle\)/, 'pointerup 要解绑');
     assert.match(body, /removeEventListener\('pointercancel', settle\)/, 'pointercancel 要解绑');
     assert.match(body, /removeEventListener\('pointermove', move\)/, 'pointermove 也必须解绑，否则拖拽后事件持续累积');
+    assert.match(body, /window\.addEventListener\('pointermove', move\)/,
+        'pointermove 必须注册——没有它整个模块拖拽只按下不跟随');
+});
+
+test('模块拖拽的注册与解绑数量相等', () => {
+    // 上面那条断言的是「文本出现过」。这里钉住**配对**这个性质：
+    // add 与 remove 数量相同，删掉任一个都会红。
+    // ⚠️ 钉「相等」而不是「恰好 3」：将来加一个正确的终止监听
+    // （例如 lostpointercapture，architecture.md 主张 pointerup/pointercancel
+    // 是主路径、capture 只是双保险），add 与 remove 会同时 +1，
+    // 写死 3 会把正确改动判红——那条测试不该让人不敢修。
+    const start = appSource.indexOf('beginWidgetDrag(event, widget)');
+    const body = appSource.slice(start, start + 2600);
+    const adds = (body.match(/addEventListener\('(pointermove|pointerup|pointercancel)'/g) || []).length;
+    const removes = (body.match(/removeEventListener\('(pointermove|pointerup|pointercancel)'/g) || []).length;
+    assert.ok(adds >= 3, `三个 pointer 监听都要注册（实际 ${adds}）`);
+    assert.equal(adds, removes, `注册与解绑必须成对（add ${adds} / remove ${removes}）`);
 });

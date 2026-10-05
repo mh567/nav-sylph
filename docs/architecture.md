@@ -315,6 +315,29 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 **`saveWidgetLayout` 的入参是 `{ widgets }` 对象，不是裸数组。** 它的回滚分支读 `snapshot.widgets`；传数组会让那行抛 `TypeError`，而异常从 `catch` 块**内部**抛出，会穿透 `saveWidgetLayout` 的 catch、穿透 `saveEditSession` 的 `try`，于是回滚、退出、提示一行都不执行。改这个签名时，调用方与被调方必须同时改——测试用 `vm` 抽出方法真跑一遍，断言实际传出去的值。
 
+### 拖拽的宿主元素必须是可拖拽的最近祖先，且不能是整块
+
+原生 DnD 从**最近的 draggable 元素**起手。所以书签与分类的宿主分别是卡片本身（`<a class="bookmark" draggable>`）与**分类头**（`.category-header` 带 `draggable`），而不是那个 ⠿ 按钮——`<button>` 不是可拖拽元素。
+
+两条都是实测出来的，方向相反：
+
+- **宿主不能太小**：只给书签卡加 `draggable` 时，从 ⠿ 按下**一个 dragstart 都不发**（浏览器实测事件数为 0）。
+- **宿主不能太大**：把 `draggable` 挂到整块 `<section>` 上，section 内部**任何**位置按下都会起拖，**包括 ✎ 重命名与 ✕ 删除**。那两个按钮于是变成「按住横拖 → 起拖 → 浏览器按规范抑制随后的 click → 对话框打不开」，比改前更糟（改前根本不起拖，按钮是好的）。实测：✎ 单独点击正常，一拖就死。
+
+所以宿主收窄到 `.category-header`。
+
+⚠️ **但收窄到分类头并不自动解决 ✎/✕——它们就在分类头里面。** 后代写 `draggable="false"` **不能豁免**：对照页实测，普通 `<button>`、写死 `draggable="false"` 的 `<button>`、`<h2>` 三种后代按下都照样起拖，`dragstart.target` 命中祖先。所以必须在 `pointerdown` 里对 `.category-action:not(.category-drag)` 显式 `preventDefault()`（对照页实测：取消后一个 `dragstart` 都不发，`click` 照常送达）。等到 `dragstart` 里再取消就晚了——拖影已出现、`click` 已丢。
+
+代价是 `dragstart.target` 解析到 `.category-header`，而书签卡是 section 的子节点、且自己可拖拽（命中它时 target 就是 `<a>` 本身）——两条路径在该事件上不能靠 target 区分，因此分流靠 `pointerdown` 记住的真实落点（`downOnCategory`）。
+
+`draggable` 必须由编辑态门控：常态首页整块可拖拽会劫持文字选中与点击。
+
+**`dragstart` 的兜底分支要显式 `preventDefault()`。** 既不在分类头也不在书签卡上按下（例如 ＋ 卡片）时什么都不做，浏览器会照常画拖影而松手没有 drop——又是「能拖、拖了没反应」的死拖。
+
+**注册与解绑必须成对。** `beginWidgetDrag` 的 `move` 曾经只有 `removeEventListener('pointermove', move)` 而从未注册，于是按下设好 `dragData`、指针一动就没人跟、`markDropSide` 连带成为死代码，而测试断言的是「监听挂在 window 且能解绑」——恰好跳过了「要先注册」。守卫要钉住 add 与 remove 的**数量相等**，不是「至少出现一次」。
+
+**拖拽残留的清理要覆盖 `dragend`，不能只靠 `drop`。** `drop` 只在松手点位于 `#grid` 内才触发（监听挂在 grid 上），拖到页头或留白处松手走不到它；`.drop-target` 与 `.is-dragging` 视觉完全相同（同为 `opacity: .55`），漏清会让用户以为「卡住了」。同理 `exitEditLayout` 的注释声称清掉「全部拖拽残留」，就必须同时覆盖 `#grid` 与 `#moduleZone`，且 class 名要对（那里曾写着样式表里根本不存在的 `.drop-active`，整行是空转）。
+
 ### 拖拽落点的守卫要排在解引用之前
 
 `closest('.category')` 在「＋ 添加分类」按钮与网格间隙上返回 `null`。写 `this.config.categories[toCat]` 之前必须先判 `toCat < 0` 并**清掉 `dragKind`/`dragFrom`**——异常从事件监听器抛出时，监听器末尾的清理代码不会执行，拖拽状态就此卡住，下一次 `dragover` 仍认为在拖拽。
@@ -325,7 +348,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ### 尚未实现
 
-- **触摸设备的 DnD 不可靠**。这是选 HTML5 DnD 时就接受的取舍。
+- **触摸设备的 DnD 不可靠**。这是选 HTML5 DnD 时就接受的取舍——书签与分类的拖拽走原生 DnD，触摸端多数浏览器不触发 `dragstart`（模块卡片那边是自建 pointer 事件，不受此限）。
 - **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。
 
 ## 数据与请求路径
