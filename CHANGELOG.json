@@ -1,6 +1,26 @@
 {
   "versions": [
     {
+      "version": "1.7.1",
+      "date": "2026-10-04",
+      "summary": "后台的书签分类管理去掉了，书签只在首页编辑",
+      "highlights": [
+        "后台不再有「书签分类」那块，书签改到首页右下角「编辑」里改",
+        "首页编辑模式现在是书签改动的唯一入口，后台不再有第二份",
+        "顺手清掉两百多行失去引用的样式"
+      ],
+      "changes": {
+        "improve": [
+          "删除后台书签分类编辑器（renderCatsEditor / bindEditorDrag / #addCat）与整块分区",
+          "清掉随之零引用的 CSS：.bookmarks-list / .bookmark-item / .cat-toggle / .cat-count / .item-drag",
+          "后台站点分区只剩「界面设置」与「搜索引擎」"
+        ],
+        "fix": [
+          "Service Worker 缓存升到 nav-v60——上一版漏了 bump，命中缓存的老用户拿不到本次改动"
+        ]
+      }
+    },
+    {
       "version": "1.7.0",
       "date": "2026-10-04",
       "summary": "首页可以直接编辑布局与书签了",
