@@ -758,8 +758,8 @@ test('删除最后一个分类被拦下', () => {
 });
 
 test('书签拖拽复用既有的 moveBookmark，不另写一套排序', () => {
-    // 自己重写一套排序就会与后台的编辑器各有一份真值，
-    // 两边拖出不同结果时无从判断该信哪个。
+    // 自己重写一套排序就会与别处各有一份真值，两边拖出不同结果时
+    // 无从判断该信哪个。后台那份编辑器已删除，现在只剩首页这一处调用方。
     const body = methodBody(appSource, 'bindGridEdit');
     assert.match(body, /this\.moveBookmark\(/, '书签拖拽走 moveBookmark');
     assert.match(body, /this\.moveCategory\(/, '分类拖拽走 moveCategory');
@@ -767,6 +767,51 @@ test('书签拖拽复用既有的 moveBookmark，不另写一套排序', () => {
     // 加号卡是新增入口，不该被当成拖拽宿主
     assert.match(body, /bookmark-add'\)\s*\)?\s*return|bookmark-add\)\) return/,
         '＋卡片不参与拖拽');
+});
+
+test('后台不再有书签分类编辑器，书签只在首页编辑', () => {
+    // 首页编辑模式上线后，后台那份编辑器（#catsEditor / renderCatsEditor /
+    // bindEditorDrag / #addCat）连同它的 CSS 一起删除。
+    // 这里钉住两件事：容器不再出现在后台模板里，编辑能力没有被删掉——
+    // 用户要改书签得有一条明确的路，而不是发现功能凭空消失。
+    const code = stripComments(appSource);
+    for (const dead of ['#catsEditor', 'renderCatsEditor(', 'bindEditorDrag(', "'#addCat'"]) {
+        assert.ok(!code.includes(dead), `${dead} 应已随后台书签编辑器一起删除`);
+    }
+    // 五个 CSS 选择器在 app.js 里已零引用，一并清掉了。
+    for (const sel of ['bookmarks-list', 'bookmark-item', 'cat-toggle', 'cat-count', 'item-drag']) {
+        assert.ok(!code.includes(sel), `${sel} 在 JS 里零引用，CSS 也应已删除`);
+        assert.ok(!fullCode.includes(sel), `styles.css 里不应再有 ${sel}`);
+        assert.ok(!adminCode.includes(sel), `admin.css 里不应再有 ${sel}`);
+    }
+    // 但编辑能力必须还在，且后台要指路
+    for (const alive of ['addHomeBookmark', 'editHomeBookmark', 'deleteHomeBookmark',
+        'addHomeCategory', 'renameHomeCategory', 'deleteHomeCategory']) {
+        assert.match(code, new RegExp(`${alive}\\s*\\(`), `${alive} 仍是首页编辑的入口`);
+    }
+    assert.match(appSource, /书签与分类请在首页点右下角「编辑」直接改/,
+        '后台保留一行指路，避免用户以为功能没了');
+});
+
+test('搜索引擎编辑器不受影响：它与书签编辑器共用过 .item 与 .add-btn', () => {
+    // 删除书签编辑器时最容易误伤的一条：搜索引擎编辑器用的是
+    // .item / .item-row / .item-header / .add-btn，与被删的那些同名。
+    //
+    // ⚠️ 断言要钉住**面板初始化处的那一次调用**，不只是「这个字符串在切片里」。
+    // 方法体内还有第二处调用（#addEngine 的 onclick 回调里），所以
+    // `assert.match(panel, /this\.renderEnginesEditor\(\)/)` 在删掉初始化
+    // 调用后照样匹配——实测过，守卫是假绿的。判据必须是「紧跟在
+    // bindAdminTabs() 之后」：这两行是面板每次渲染的固定序列。
+    const code = stripComments(appSource);
+    assert.match(code, /id="enginesEditor"/, '搜索引擎编辑器容器在');
+    assert.match(code, /id="addEngine"/, '「添加搜索引擎」按钮在');
+    const panel = methodBody(appSource, 'renderAdminPanel');
+    assert.match(panel, /this\.bindAdminTabs\(\);\s*\n\s*this\.renderEnginesEditor\(\);/,
+        '面板初始化时紧接着渲染搜索引擎编辑器——删掉这一步面板就空着');
+    assert.match(appSource, /class="item-row"/, '共用的 .item-row 仍在用');
+    assert.match(appSource, /class="item" data-idx=/, '共用的 .item 仍在用');
+    assert.match(fullCode, /\.item-row\s*\{/, '共用的 .item-row 样式仍在');
+    assert.match(adminCode, /\.modal \.add-btn\s*\{/, '共用的 .add-btn 样式仍在');
 });
 
 test('＋占位卡与真实书签卡同尺寸，否则网格错位', () => {

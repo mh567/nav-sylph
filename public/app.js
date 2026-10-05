@@ -1059,9 +1059,9 @@
         //
         // 拖拽走 HTML5 DnD 而非 pointer 事件：模块那边用 pointer 是因为宽屏
         // 绝对定位卡片要实时跟手并自己处理基准跳变，而书签网格是 CSS grid、
-        // 没有 --stack-top 那一层补偿，后台的 bindEditorDrag 已是成熟范式。
-        // 一次拖拽开始后浏览器会抑制随后的 click（规范行为），所以同一张卡
-        // 既能拖又能点开编辑框，不需要额外的计时器去区分。
+        // 没有 --stack-top 那一层补偿。一次拖拽开始后浏览器会抑制随后的
+        // click（规范行为），所以同一张卡既能拖又能点开编辑框，
+        // 不需要额外的计时器去区分。
 
         bindGridEdit() {
             const grid = $('#grid');
@@ -3872,8 +3872,7 @@
                 </div>
                 <div class="section">
                     <div class="section-title">书签分类</div>
-                    <div id="catsEditor"></div>
-                    <button class="add-btn" id="addCat">添加分类</button>
+                    <p class="fav-hint">书签与分类请在首页点右下角「编辑」直接改，改完点「保存编辑」。</p>
                 </div>
                 </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelModules" aria-labelledby="adminTabModules" hidden>
@@ -3931,7 +3930,8 @@
 
             this.bindAdminTabs();
             this.renderEnginesEditor();
-            this.renderCatsEditor();
+            // 书签分类不在这里编辑：首页右下角「编辑」按钮直接管，
+            // 后台保留这个分区只为告诉用户去哪改。
             // 面板 DOM 每次 openAdmin 都是新的，模块分区的容器也是；
             // 不复位的话，上一会话渲染过就会让本分区跳过加载（停在「加载中...」）。
             this.modulesEditorRendered = false;
@@ -3959,13 +3959,7 @@
                 this.markConfigDirty();
             };
 
-            $('#addCat').onclick = () => {
-                this.config.categories.push({ id: uid(), name: '新分类', bookmarks: [] });
-                this.renderCatsEditor();
-                this.markConfigDirty();
-            };
-
-            // 收藏相关绑定
+            // 收藏相关绑定（favorites.json 那套平铺收藏，与首页书签分类不同）
             $('#importFavBtn').onclick = () => $('#favFileInput').click();
             $('#favFileInput').onchange = (e) => this.handleFavImport(e);
             $('#addFavBtn').onclick = () => this.showAddFavDialog();
@@ -4475,142 +4469,6 @@
             };
         }
 
-        renderCatsEditor(expandCatId = null) {
-            const container = $('#catsEditor');
-            const expanded = new Set();
-            $$('.cat-toggle.expanded', container).forEach(btn => {
-                const catEl = btn.closest('.item[data-cat]');
-                const ci = +catEl.dataset.cat;
-                if (this.config.categories[ci]) expanded.add(this.config.categories[ci].id);
-            });
-            if (expandCatId !== null) expanded.add(expandCatId);
-            
-            const bmCount = (cat) => cat.bookmarks.length;
-            container.innerHTML = this.config.categories.map((cat, ci) => {
-                const isExpanded = expanded.has(cat.id);
-                return `
-                <div class="item cat-item" data-cat="${ci}">
-                    <div class="item-header">
-                        <span class="item-drag" draggable="true">⋮⋮</span>
-                        <button class="cat-toggle${isExpanded ? ' expanded' : ''}" data-cat="${ci}" aria-expanded="${isExpanded}">
-                            ${isExpanded ? '收起' : '展开'}
-                        </button>
-                        <input type="text" value="${this.esc(cat.name)}" data-field="name" placeholder="分类名称">
-                        <span class="cat-count">${bmCount(cat)}</span>
-                        <button class="btn btn-danger btn-sm del-cat">删除</button>
-                    </div>
-                    <div class="bookmarks-list${isExpanded ? '' : ' collapsed'}">
-                        ${cat.bookmarks.map((bm, bi) => `
-                            <div class="bookmark-item" data-bm="${bi}">
-                                <span class="item-drag" draggable="true">⋮</span>
-                                <input type="text" value="${this.esc(bm.title)}" data-field="title" placeholder="标题">
-                                <input type="text" value="${this.esc(bm.url)}" data-field="url" placeholder="URL">
-                                <button class="btn btn-danger btn-sm del-bm">删除</button>
-                            </div>
-                        `).join('')}
-                        <button class="add-btn add-bm">添加书签</button>
-                    </div>
-                </div>
-            `}).join('');
-
-            container.oninput = (e) => {
-                const catEl = e.target.closest('.item[data-cat]');
-                if (!catEl) return;
-                const ci = +catEl.dataset.cat;
-                const bmEl = e.target.closest('.bookmark-item');
-                const field = e.target.dataset.field;
-                if (bmEl && field) {
-                    const bi = +bmEl.dataset.bm;
-                    this.config.categories[ci].bookmarks[bi][field] = e.target.value;
-                } else if (field === 'name') {
-                    this.config.categories[ci].name = e.target.value;
-                }
-                if (field) this.markConfigDirty();
-            };
-
-            container.onclick = (e) => {
-                const catEl = e.target.closest('.item[data-cat]');
-                if (!catEl) return;
-                const ci = +catEl.dataset.cat;
-
-                const toggleBtn = e.target.closest('.cat-toggle');
-                if (toggleBtn) {
-                    const list = catEl.querySelector('.bookmarks-list');
-                    list.classList.toggle('collapsed');
-                    toggleBtn.classList.toggle('expanded');
-                    const expanded = !list.classList.contains('collapsed');
-                    toggleBtn.setAttribute('aria-expanded', String(expanded));
-                    toggleBtn.textContent = expanded ? '收起' : '展开';
-                    return;
-                }
-
-                if (e.target.classList.contains('del-cat')) {
-                    if (this.config.categories.length <= 1) { this.showToast('至少保留一个分类', 'error'); return; }
-                    this.config.categories.splice(ci, 1);
-                    this.renderCatsEditor();
-                    this.markConfigDirty();
-                } else if (e.target.classList.contains('del-bm')) {
-                    const bi = +e.target.closest('.bookmark-item').dataset.bm;
-                    this.config.categories[ci].bookmarks.splice(bi, 1);
-                    this.renderCatsEditor(this.config.categories[ci].id);
-                    this.markConfigDirty();
-                } else if (e.target.classList.contains('add-bm')) {
-                    this.config.categories[ci].bookmarks.push({ id: uid(), title: '', url: '' });
-                    this.renderCatsEditor(this.config.categories[ci].id);
-                    this.markConfigDirty();
-                }
-            };
-
-            this.bindEditorDrag(container);
-        }
-
-        bindEditorDrag(container) {
-            let dragType = null, dragFrom = null;
-
-            container.ondragstart = (e) => {
-                const catDrag = e.target.closest('.item[data-cat] > .item-header .item-drag');
-                const bmDrag = e.target.closest('.bookmark-item .item-drag');
-                
-                if (catDrag) {
-                    dragType = 'cat';
-                    dragFrom = +catDrag.closest('.item').dataset.cat;
-                } else if (bmDrag) {
-                    dragType = 'bm';
-                    const catEl = bmDrag.closest('.item[data-cat]');
-                    const bmEl = bmDrag.closest('.bookmark-item');
-                    dragFrom = { cat: +catEl.dataset.cat, bm: +bmEl.dataset.bm };
-                }
-            };
-
-            container.ondragover = (e) => e.preventDefault();
-
-            container.ondrop = (e) => {
-                e.preventDefault();
-                if (!dragType) return;
-
-                if (dragType === 'cat') {
-                    const target = e.target.closest('.item[data-cat]');
-                    if (target) {
-                        const to = +target.dataset.cat;
-                        this.moveCategory(dragFrom, to);
-                        this.renderCatsEditor();
-                    }
-                } else if (dragType === 'bm') {
-                    const targetBm = e.target.closest('.bookmark-item');
-                    const targetCat = e.target.closest('.item[data-cat]');
-                    if (targetBm && targetCat) {
-                        const toCat = +targetCat.dataset.cat;
-                        const toBm = +targetBm.dataset.bm;
-                        this.moveBookmark(dragFrom.cat, dragFrom.bm, toCat, toBm);
-                        this.renderCatsEditor();
-                    }
-                }
-                dragType = null;
-                dragFrom = null;
-            };
-
-            container.ondragend = () => { dragType = null; dragFrom = null; };
-        }
 
         async save() {
             const button = $('#saveBtn');

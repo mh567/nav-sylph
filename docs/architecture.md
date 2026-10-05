@@ -298,7 +298,8 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 - **模块区**：既有能力，行为从「松手即存」改为草稿。`commitWidgetDrag` 不再调 `saveWidgetLayout`，只按新 `order` 重排一次。
 - **书签网格**：分类之间、分类之内都可拖；每类末尾一个「＋」卡新增该类书签；网格末尾一个「＋ 添加分类」；点书签卡弹窗改标题/URL；点分类头的 ⠿/✎/✕ 分别拖拽/重命名/删除。
-- **只覆盖 `config.json` 的 `categories[].bookmarks[]`**（`{id, title, url}`）。后台「书签分类」分区编辑的是同一份数据。后台的「管理收藏」那套是 `favorites.json` 的平铺收藏（多 `description`/`category`/`tags`/`private`），**不在编辑模式范围内**。
+- **只覆盖 `config.json` 的 `categories[].bookmarks[]`**（`{id, title, url}`）。**这块数据现在只有一个编辑入口**——首页的编辑模式。后台原先还有一个「书签分类」分区（`#catsEditor` / `renderCatsEditor` / `bindEditorDrag`），已删除，改为一行指向首页的提示文案；重复的第二个入口意味着同一份数据有两个真相来源。
+- **别与后台「管理收藏」混淆。** `favorites.json` 的平铺收藏（多 `description`/`category`/`tags`/`private`）由收藏管理器编辑，**不在首页编辑模式范围内**。两者的分类结构长得像但不是一回事：前者是首页网格的分类，后者是收藏管理器左侧的树（含重命名、拖拽归类、批量隐私）。
 
 ### 三条必须保持的性质
 
@@ -324,7 +325,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ### 尚未实现
 
-- **触摸设备的 DnD 不可靠**（与后台 `bindEditorDrag` 同一取舍）。
+- **触摸设备的 DnD 不可靠**。这是选 HTML5 DnD 时就接受的取舍。
 - **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。
 
 ## 数据与请求路径
