@@ -62,6 +62,11 @@
      * （实测：卡片渲染出来了，同步一路失败）。
      */
     let api = null;
+    /**
+     * 平台注入的纵向重排请求（mountWidget 的 state.requestStack）。
+     * 与 api 同一套注入方式——模块不去摸 window.app 上的平台方法。
+     */
+    let requestStack = null;
     /** 当前挂载的卡片 body（本模块只有一张卡片） */
     let cardBody = null;
 
@@ -73,6 +78,10 @@
     let search = '';
     /** 面板上次渲染时的数据指纹：数据没变就不重渲染（保住搜索框焦点） */
     let lastPanelKey = '';
+    /** 卡片上次渲染时的数据指纹：同上，避免每轮轮询整块重写卡片 */
+    let lastCardKey = '';
+    /** 卡片状态行上次渲染时的指纹 */
+    let lastCardStatusKey = '';
 
     // ================= 离线草稿 =================
 
@@ -112,13 +121,16 @@
 
     function setSyncState(next) {
         syncState = next;
-        renderCard();
+        renderCardMaybe();
         renderPanelMaybe();
     }
 
     async function poll() {
         if (inFlight) return;
         inFlight = true;
+        // 自动轮询与手动同步都进「同步中」态——备忘录的既定需求是
+        // 「可通过服务器自动实时同步，并反馈同步状态，手动同步时也反馈同步状态」。
+        // 每轮多出来的那次状态更新由指纹兜住（只重写状态行，不整块重建卡片）。
         setSyncState('syncing');
         try {
             const data = await api.get('/api/memos');
@@ -176,9 +188,11 @@
         }
     }
 
-    function startPolling() {
-        stopPolling();
-        poll();
+    /** 只挂表与前后台监听，**不立即拉取**——首轮由 mountWidget 显式拉一次，
+     *  好把它的 promise 交给平台（state.whenReady），让模块区带着数据首次布局。 */
+    function schedulePolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
         pollTimer = setInterval(poll, pollMs);
 
         // 页面不可见时停表：后台 tab 继续轮询只会白耗请求配额；
@@ -194,15 +208,6 @@
             }
         };
         document.addEventListener('visibilitychange', visibilityHandler);
-    }
-
-    function stopPolling() {
-        if (pollTimer) clearInterval(pollTimer);
-        pollTimer = null;
-        if (visibilityHandler) {
-            document.removeEventListener('visibilitychange', visibilityHandler);
-            visibilityHandler = null;
-        }
     }
 
     // ================= 写操作 =================
@@ -296,8 +301,59 @@
         return n > 0 ? `<span class="module-card-status" data-kind="pending">待同步 ${n}</span>` : '';
     }
 
+    /**
+     * 卡片内容指纹。**不含 syncState**——同步态每轮都在变，含进去等于
+     * 每轮必然整块重写一次，而那正是要避免的事；同步态改由
+     * renderCardStatus 就地更新状态行。
+     * 时间那一项直接取**渲染出来的相对时间**（relTime），而不是自造一个
+     * 分钟档：自造档位一旦与渲染用的取整方式不一致，显示值就会比指纹晚
+     * 一个档变化，卡上那行停在旧值上。
+     */
+    function cardKey() {
+        return [
+            drafts.length,
+            memos.map(m => `${m.id}:${m.pinned}:${m.updatedAt}:${relTime(m.updatedAt)}`).join('|')
+        ].join('>');
+    }
+
+    /**
+     * 状态行的指纹。它比卡片指纹多含 syncState 与同步时刻——
+     * syncState 正是**不**该进卡片指纹的那一项（见 cardKey）。
+     * 有这一层，数据与同步态都没变的一轮轮询是**零 DOM 写入**。
+     */
+    function statusKey() {
+        return [syncState, drafts.length, lastSync ? hm(lastSync) : ''].join('|');
+    }
+
+    /** 只就地刷新状态行——数据没变时用它代替整块重建。 */
+    function renderCardStatus() {
+        if (!cardBody) return;
+        const key = statusKey();
+        if (key === lastCardStatusKey) return;
+        lastCardStatusKey = key;
+        const row = cardBody.querySelector('.memo-status-row');
+        if (row) row.innerHTML = statusPillHTML() + pendingPillHTML();
+        // 状态行本身也会变高：失败态多出一个「重试」按钮，而
+        // .memo-status-row 是 flex-wrap: wrap，窄卡片上会折成两行。
+        // 不请求重排的话，下面那几张的位置就停在旧高度上。
+        if (requestStack) requestStack();
+    }
+
+    /** 数据指纹没变就只刷新同步态，不整块重建卡片。 */
+    function renderCardMaybe() {
+        if (!cardBody) return;
+        if (cardKey() === lastCardKey) {
+            renderCardStatus();
+            return;
+        }
+        renderCard();
+    }
+
     function renderCard() {
         if (!cardBody) return;
+        lastCardKey = cardKey();
+        // 整块重建时状态行也一并重画了，指纹要跟着走，否则下一轮会白刷一次
+        lastCardStatusKey = statusKey();
         const rows = memos.slice(0, PREVIEW_ROWS).map(m =>
             `<div class="memo-row" data-action="open">` +
             `${m.pinned ? PIN_SVG : ''}` +
@@ -310,14 +366,13 @@
                 ? `<div class="memo-rows">${rows}</div>`
                 : '<div class="memo-empty-card">还没有备忘录</div>') +
             `<div class="module-card-hint">共 ${memos.length} 条 · 点击管理</div>`;
-        // 卡片高度随内容变化（0 条与 3 条差一截），宽屏的纵向偏移按实测高度排
-        if (typeof window.app?.stackWidgetsByHeight === 'function') {
-            window.app.stackWidgetsByHeight();
-        }
+        // 卡片高度随内容变化（0 条与 3 条差一截），宽屏的纵向偏移按实测高度排。
+        if (requestStack) requestStack();
     }
 
     function mountWidget(shell, state) {
         api = (state && state.api) || null;
+        requestStack = (state && state.requestStack) || null;
         if (!api) {
             // 平台契约变化要让它在界面上可见，而不是退化成一连串同步失败
             const box = document.createElement('div');
@@ -372,8 +427,13 @@
             openPanel();
         });
 
-        startPolling();
         renderCard();
+        // 首轮先拉一次、再挂表（schedulePolling 自己不拉取）；把这次 promise
+        // 交给平台，模块区首次布局就等到数据落地之后——卡片高度一次到位，
+        // 不会在数据到达时把下面的卡片整体推下去（与 server-monitor 同一处）。
+        const firstRound = poll();
+        schedulePolling();
+        if (state && typeof state.whenReady === 'function') state.whenReady(firstRound);
         return [card];
     }
 

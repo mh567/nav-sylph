@@ -176,6 +176,9 @@
             // 与 false 的隐式比较：syncEditLayoutUI 靠它判断「状态真的翻转了」，
             // 而 undefined !== false 成立纯属巧合。
             this._gridEditing = false;
+            // 同一帧内多次纵向重排请求合并成一个（见 requestWidgetStack）。
+            // 与 _gridEditing 同理显式初始化，不靠 undefined 的隐式比较。
+            this._stackFrame = null;
             this.init();
         }
 
@@ -202,6 +205,13 @@
 
         /** 已知模块 id 白名单。loadModule 只加载这里有的，避免任意路径被当成脚本请求。 */
         static KNOWN_MODULES = ['server-monitor', 'memo'];
+
+        /**
+         * 等模块首轮数据的上限。
+         * 超时后照常布局——某个模块卡住不该让整个模块区一直不出来；
+         * 此时退化成改动之前的行为（数据落地时让位一次）。
+         */
+        static FIRST_ROUND_TIMEOUT_MS = 1500;
 
         static moduleDefs = new Map();
 
@@ -299,18 +309,34 @@
                 return;
             }
 
-            zone.hidden = false;
             zone.dataset.dock = this.sideDockAvailable() ? 'outside' : 'below';
             if (this.modulesError) {
+                zone.hidden = false;
                 zone.replaceChildren(this.renderModuleZoneError());
                 return;
             }
 
             const inner = document.createElement('div');
             inner.className = 'module-zone-inner';
-            for (const id of ids) {
-                inner.appendChild(await this.mountModule(id));
-            }
+
+            // **并行**挂载，不串行 await：每个模块是一个独立脚本文件，
+            // 串行下载等于把 N 个往返累加。实测（本地回环）`memo.js` 53→56ms
+            // 结束之后 `server-monitor.js` 才在 58ms 起请求——第二个模块要等
+            // 前一个的脚本下载**加**挂载都完成；真实网络下这一段是成倍的等待。
+            const firstRound = [];
+            const parts = await Promise.all(ids.map(id => this.mountModule(id, firstRound)));
+            for (const part of parts) inner.appendChild(part);
+
+            // 等首轮数据再首次布局。卡片高度依赖首轮数据：服务器卡片没有数据
+            // 时 98px、拿到指标后 152px。不等的话卡片先以「无数据」的高度出生，
+            // 数据落地时把下面的卡片整体推下去——实测 54px 位移 + 一次
+            // margin-top 过渡（给 metrics 注入 600ms 延迟模拟远端网络）。
+            // 等过之后卡片出现时就是终态。
+            await this.waitFirstRound(firstRound);
+
+            // 显隐也等到首轮之后：dock=below 时模块区自带一条上边框与内边距，
+            // 先亮出来再等数据会凭空留一个空盒子。
+            zone.hidden = false;
 
             // 首次布局**不做**让位动画。--stack-top 要等节点进入文档、量完高度
             // 才算得出来，所以卡片是带着 `margin-top: 0` 出生的，而
@@ -337,8 +363,9 @@
             }
         }
 
-        /** 加载一个模块并返回它的 DOM 节点；加载失败返回错误卡片而非抛出。 */
-        async mountModule(id) {
+        /** 加载一个模块并返回它的 DOM 节点；加载失败返回错误卡片而非抛出。
+         *  `firstRound` 是平台收集「首轮数据」promise 的数组，见 waitFirstRound。 */
+        async mountModule(id, firstRound = []) {
             const shell = document.createElement('section');
             shell.className = 'module-widget';
             shell.dataset.moduleId = id;
@@ -368,7 +395,17 @@
                 const mounted = def.mountWidget(shell, {
                     config: this.modulesConfig,
                     editLayout: this.editLayout,
-                    api: API
+                    api: API,
+                    // 轮询路径的纵向重排放到这里注入，而不是让每个模块各自去摸
+                    // window.app 上的平台方法——两个模块此前各写了一份一模一样的
+                    // 转发函数（含回退分支），注入后只有平台这一处是真相来源。
+                    requestStack: () => this.requestWidgetStack(),
+                    // 模块把「首轮数据」的 promise 交回来，平台据此决定模块区
+                    // 首次布局的时机（见 waitFirstRound）。**不调用 = 不等待**，
+                    // 所以不轮询的模块不会白等一个超时。
+                    whenReady: promise => {
+                        if (promise && typeof promise.then === 'function') firstRound.push(promise);
+                    }
                 });
                 // mountWidget 有三种返回形态：
                 //  - 返回节点数组：一台机器一张卡片（如服务器监控，每台一台）
@@ -440,6 +477,30 @@
             retry.addEventListener('click', () => this.renderModuleZone());
             box.append(text, retry);
             return box;
+        }
+
+        /**
+         * 等模块的首轮数据，最多 FIRST_ROUND_TIMEOUT_MS。
+         *
+         * 为什么等：卡片高度由首轮数据决定（服务器卡片无数据 98px、有数据
+         * 152px），不等就会出现「卡片先以无数据的高度出生、数据落地时把
+         * 下面的卡片整体推下去」——实测 54px 加一次过渡。
+         *
+         * 兜底：某个模块的 promise 一直不 settle 时照常布局。宁可退化成
+         * 旧行为（让位一次），也不能让模块区一直不出现。
+         */
+        async waitFirstRound(promises) {
+            if (!promises.length) return;
+            let timer = null;
+            try {
+                await Promise.race([
+                    // 单模块失败不该拖垮等待：它的失败态同样是一个终态高度
+                    Promise.all(promises.map(p => p.catch(() => {}))),
+                    new Promise(resolve => { timer = setTimeout(resolve, App.FIRST_ROUND_TIMEOUT_MS); })
+                ]);
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
         }
 
         /**
@@ -521,14 +582,44 @@
 
             for (const side of ['left', 'right']) {
                 const nodes = [...zone.querySelectorAll(`.module-widget[data-side="${side}"]`)];
+
+                // **先读后写**：一次读完所有高度，再统一写 --stack-top。
+                // 边读边写的写法让每一次写都作废上一次的布局缓存，于是每张
+                // 卡都变成一次强制同步重排——轮询路径上每 15 秒白花一遍。
+                for (const node of nodes) if (node.style.marginTop) node.style.marginTop = '';
+                const tops = [];
                 let cursor = 0;
                 for (const node of nodes) {
-                    node.style.marginTop = '';
                     const height = node.getBoundingClientRect().height;
-                    node.style.setProperty('--stack-top', `${cursor}px`);
+                    tops.push(`${cursor}px`);
                     cursor += height + GAP;
                 }
+                for (let i = 0; i < nodes.length; i++) {
+                    const node = nodes[i];
+                    // 值没变就不写：写一个相同的值同样会让后续读取失去缓存，
+                    // 而轮询路径上多数时候高度根本没变。
+                    if (node.style.getPropertyValue('--stack-top') !== tops[i]) {
+                        node.style.setProperty('--stack-top', tops[i]);
+                    }
+                }
             }
+        }
+
+        /**
+         * 请求一次纵向重排，**同一帧内多次调用只做一次**。
+         *
+         * 轮询路径上每个模块渲染完都会请求一次，而两个模块的渲染常常落在
+         * 同一帧；不合并的话每轮要量两三遍高度、写两三遍 --stack-top。
+         *
+         * 布局路径**不走这里**：renderModuleZone 要先摆位再强制重排、
+         * compensateStackShift 要写完立刻读回，都要求同步执行。
+         */
+        requestWidgetStack() {
+            if (this._stackFrame) return;
+            this._stackFrame = requestAnimationFrame(() => {
+                this._stackFrame = null;
+                this.stackWidgetsByHeight();
+            });
         }
 
         /**

@@ -16,8 +16,13 @@
     let inFlight = false;
     let lastPayload = null;
     let visibilityHandler = null;
-    /** 已挂载的卡片：serverId → { card, body, label } */
+    /** 已挂载的卡片：serverId → { card, body, label, status, bodyKey } */
     const cards = new Map();
+    /**
+     * 平台注入的纵向重排请求（mountWidget 的 state.requestStack）。
+     * 与 state.api 同一套注入方式——模块不去摸 window.app 上的平台方法。
+     */
+    let requestStack = null;
 
     function fmtPercent(value) {
         return value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`;
@@ -214,6 +219,28 @@
     }
 
     /**
+     * 卡片体的内容指纹。
+     *
+     * 轮询每 15 秒一次，而绝大多数轮询里数字根本没变；整块 replaceChildren
+     * 一次会带来一次强制重排。指纹相同就整个跳过重建。
+     * 「最后更新 N 分钟前」那一项直接取**渲染出来的文案**（lastUpdatedText），
+     * 而不是自造一个分钟档：自造档位的取整方式与渲染用的不一致时，显示值
+     * 会比指纹早一个档变化，卡上那行就停在旧值上（实测差 30 秒）。
+     */
+    function bodyKeyOf(entry) {
+        if (!entry || (!entry.online && !entry.metrics)) {
+            return `err|${(entry && entry.error) || ''}|${entry && entry.authFailed ? 1 : 0}`;
+        }
+        const m = entry.metrics || {};
+        return [
+            m.cpu, m.memoryPercent, m.memoryUsed, m.memoryTotal, m.diskUsed, m.diskTotal,
+            Number.isFinite(entry.latencyMs) ? entry.latencyMs : '',
+            lastUpdatedText(entry.pushReceivedAt) || '',
+            entry.pushStale ? 1 : 0
+        ].join('|');
+    }
+
+    /**
      * 拉一次全部服务器，更新每张已挂载的卡片。
      * 失败要 render 出来——只渲染成功分支会让上一份数据一直留在屏上。
      */
@@ -240,11 +267,14 @@
                 }
             }
 
+            let rendered = false;
             for (const entry of payload.servers || []) {
                 const card = cards.get(entry.id);
                 if (!card) continue;
-                card.label.textContent = entry.name || entry.id;
-                card.card.dataset.online = entry.online ? '1' : '0';
+                const name = entry.name || entry.id;
+                if (card.label.textContent !== name) card.label.textContent = name;
+                const online = entry.online ? '1' : '0';
+                if (card.card.dataset.online !== online) card.card.dataset.online = online;
                 // 状态位每次刷新都要跟着更新：它是从「有没有指标 / 有没有注册」
                 // 推出来的，机器从「未部署」变成「已就绪」时全靠这一步体现。
                 // 只在挂载时设一次是不够的——那正是上一版的问题：
@@ -254,21 +284,26 @@
                     card.status.dataset.kind = kind;
                     card.status.textContent = statusLabelOf(entry);
                 }
-                renderCardBody(card.body, entry);
+                // 内容没变就不重建卡片体（见 bodyKeyOf）。重建过才需要重排。
+                const key = bodyKeyOf(entry);
+                if (card.bodyKey !== key) {
+                    card.bodyKey = key;
+                    renderCardBody(card.body, entry);
+                    rendered = true;
+                }
             }
 
             // 卡片高度随内容变（在线带延迟提示 174px、离线只有 98px），
-            // 而宽屏的纵向偏移是按实测高度排的——每次渲染后都要重排，
-            // 否则「上线」或「掉线」会让下面几张错位或重叠。
-            if (typeof window.app?.stackWidgetsByHeight === 'function') {
-                window.app.stackWidgetsByHeight();
-            }
+            // 而宽屏的纵向偏移是按实测高度排的——内容真的变了才重排。
+            if (rendered && requestStack) requestStack();
 
         } catch (e) {
             console.error('Server monitor poll failed:', e);
             for (const card of cards.values()) {
                 card.body.replaceChildren(errorBox('监控数据读取失败'));
+                card.bodyKey = '!error';
             }
+            if (requestStack) requestStack();
         } finally {
             inFlight = false;
         }
@@ -277,9 +312,14 @@
     /** 轮询周期。首次用服务端给的 pollInterval 覆盖，之后由用户设置决定。 */
     let pollMs = POLL_MS;
 
-    function startPolling() {
-        stopPolling();
-        poll();
+    /**
+     * 挂上轮询定时器与前后台切换监听。**不立即拉取**——首次拉取由
+     * mountWidget 显式做一次，好把它的 promise 交给平台（state.whenReady），
+     * 让模块区带着首轮数据首次布局、卡片出现时就是终态。
+     */
+    function schedulePolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
         pollTimer = setInterval(poll, pollMs);
 
         // 页面不可见时停表：后台 tab 继续轮询只会白耗请求配额
@@ -363,9 +403,10 @@
             openPanel(entry.id);
         });
 
-        // status 也要存进 Map：刷新时要更新它，而那时拿不到 DOM 引用
-        cards.set(entry.id, { card, body, label, status });
+        // status 也要存进 Map：刷新时要更新它，而那时拿不到 DOM 引用。
+        // bodyKey 记下首轮渲染的指纹——poll 的回调据此跳过重复重建。
         renderCardBody(body, entry);
+        cards.set(entry.id, { card, body, label, status, bodyKey: bodyKeyOf(entry) });
         return card;
     }
 
@@ -374,6 +415,7 @@
      * 本机永远存在、排在第一，不需要配置——装完就能看到一个有效卡片。
      */
     function mountWidget(shell, state) {
+        requestStack = (state && state.requestStack) || null;
         const servers = (state.config && state.config.servers) || [];
         const entries = [{ id: 'local', name: '本机', online: true, isLocal: true }]
             .concat(servers.map(s => ({ id: s.id, name: s.name || s.url, online: false })));
@@ -391,8 +433,19 @@
             .map(w => w.id));
         const visible = entries.filter(e => !hidden.has(`server-monitor:${e.id}`));
 
-        startPolling();
-        return visible.map(buildCard);
+        // 换一批卡片前先清干净：stopPolling 会清 cards 与 lastPayload，
+        // 首次挂载时它们本来就是空的，重挂载时则是上一次留下的。
+        stopPolling();
+        const nodes = visible.map(buildCard);
+
+        // 首轮先拉一次、再挂表（schedulePolling 自己不拉取），卡片因此
+        // 带着数据出生；把这次 promise 交给平台，模块区首次布局就会等它，
+        // 数据落地时不会再把下面的卡片整体推下去。
+        const firstRound = poll();
+        schedulePolling();
+        if (state && typeof state.whenReady === 'function') state.whenReady(firstRound);
+
+        return nodes;
     }
 
     /** 全屏面板：选中的一台的详情 + 全部服务器概览。 */

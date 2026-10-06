@@ -1166,8 +1166,13 @@ test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
     // 一个模块渲染多张卡片时，若都用 moduleId 作布局键，
     // 它们的 order 与 side 会互相覆盖——拖一张，另几张跟着变。
     const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
-    assert.match(moduleSource, /return visible\.map\(buildCard\)/,
-        'mountWidget 返回节点数组，一台一张（visible 是过滤后的）');
+    // 一台一张：节点仍由**过滤后的** visible 映射而来。形状从
+    // `return visible.map(buildCard)` 变成「先建好节点、拉一轮首轮数据
+    // 再 return nodes」（见 state.whenReady），意图未变。
+    assert.match(moduleSource, /const nodes = visible\.map\(buildCard\)/,
+        '节点由过滤后的 visible 一台一张映射而来');
+    assert.match(moduleSource, /return nodes;/,
+        'mountWidget 返回节点数组（visible 是过滤后的）');
     assert.match(moduleSource, /id:\s*'local'[\s\S]*?name:\s*'本机'/,
         '本机固定排第一且不需要配置');
     assert.match(appSource, /Array\.isArray\(mounted\)/, '平台支持多卡片返回');
@@ -2481,12 +2486,18 @@ test('前端按服务端回的周期重排自己的定时器', () => {
     const mod = stripComments(moduleSource);
     assert.match(mod, /let pollMs = POLL_MS/, '周期是可变状态，不是常量');
     assert.match(mod, /payload\.pollInterval/, '读服务端回的周期');
-    // 这条必须锚定到「poll() 里那段」而不是 startPolling()——
+    // 这条必须锚定到「poll() 里那段」而不是挂表那个函数——
     // 后者本来就有一对 clearInterval + setInterval，与「周期变化后重排」无关。
-    // 早先的断言扫全文件，在 startPolling 里就命中了；变异验证：
+    // 早先的断言扫全文件，在挂表那个函数里就命中了（它当时叫 startPolling，
+    // 现在叫 schedulePolling）；变异验证：
     // 把 poll() 里的 `if (pollTimer) {` 改成 `if (false) {`（彻底关掉重排），
     // 旧断言仍全绿。断言范围必须落在 poll 的函数体内。
-    const poll = mod.slice(mod.indexOf('async function poll('), mod.indexOf('function startPolling('));
+    // ⚠️ 两端都要断言存在：indexOf 返回 -1 时 slice 会静默切成「到文件末尾」，
+    //    看起来和通过一样（挂表函数改名为 schedulePolling 时正好会踩到）。
+    const pollStart = mod.indexOf('async function poll(');
+    const pollEnd = mod.indexOf('function schedulePolling(');
+    assert.ok(pollStart >= 0 && pollEnd > pollStart, `poll 切片两端都在（${pollStart}/${pollEnd}）`);
+    const poll = mod.slice(pollStart, pollEnd);
     assert.ok(poll.length > 200, 'poll 函数体被正确切出');
     assert.match(poll, /if \(pollTimer\)\s*\{/, '只有在跑着的时候才重排');
     assert.match(poll, /clearInterval\(pollTimer\)[\s\S]*?setInterval\(poll,\s*pollMs\)/,
@@ -2501,9 +2512,10 @@ test('前端按服务端回的周期重排自己的定时器', () => {
     // ⚠️ 锚点必须是**定义形态**而不是裸名字：这个文件里
     // `visibilityHandler =` 有三处，裸名字首次命中的是顶部那句
     // `let visibilityHandler = null;`（第 10 行），切片会一路吃掉
-    // startPolling() 和它里面那处**本来就正确**的
+    // 挂表那个函数（它当时叫 startPolling，现在叫 schedulePolling）
+    // 和它里面那处**本来就正确**的
     // `setInterval(poll, pollMs)`——于是把 handler 里那行整行删掉，断言
-    // 仍然匹配到 startPolling 里的另一处而全绿（变异验证过的假绿）。
+    // 仍然匹配到挂表函数里的另一处而全绿（变异验证过的假绿）。
     // 所以锚到 `visibilityHandler = () => {`，终点锚到注册那一行。
     const vis = mod.slice(
         mod.indexOf('visibilityHandler = () => {'),
@@ -2587,8 +2599,10 @@ test('宽屏卡片按实测高度堆叠，不按固定步进', () => {
     assert.match(appCode, /this\.stackWidgetsByHeight\(\)[\s\S]*?\}/,
         'applyWidgetLayout 里在归位之后调用');
 
-    // 内容变化后必须重排：上线会多出延迟提示、掉线会整张变矮
-    assert.match(moduleSource, /stackWidgetsByHeight/, '模块渲染后调用重排');
+    // 内容变化后必须重排：上线会多出延迟提示、掉线会整张变矮。
+    // 重排请求由平台注入（state.requestStack），模块侧不再直接提平台方法名。
+    assert.match(moduleSource, /if \(rendered && requestStack\) requestStack\(\)/,
+        '模块内容真的变了之后请求重排');
 });
 
 test('拖拽过程中真的移动 DOM，插入点按拖拽开始时的中线判定', () => {
@@ -3258,4 +3272,157 @@ test('本机卡片可以被「显示/隐藏」真正关掉（后台与首页不�
     const card = app.slice(cardAt, cardNext > cardAt ? cardNext : undefined);
     assert.match(card, /'server-monitor:local'/, '后台本机卡用的就是 home 那个键');
     assert.match(card, /data-server-visible="\$\{key\}"/, '且真的渲染了显示/隐藏复选框');
+});
+
+// ========== 模块加载速度与轮询开销 ==========
+
+test('模块脚本并行挂载，不回到逐个 await 的串行形状', () => {
+    // 症状（浏览器实测，本地回环）：`memo.js` 53→56ms 结束后
+    // `server-monitor.js` 才在 58ms 起请求——第二个模块要等第一个的
+    // **脚本下载加挂载**都完成才轮到它。每个模块是一个独立脚本文件，
+    // 串行下载等于把 N 个往返累加；真实网络下这段是成倍的等待。
+    const code = stripComments(appSource);
+    const body = methodBodyOf(code, 'renderModuleZone');
+    assert.ok(body.length > 300, `切出 renderModuleZone（${body.length}）`);
+
+    assert.match(body, /await Promise\.all\(ids\.map\(id => this\.mountModule\(id, firstRound\)\)\)/,
+        '所有模块并发挂载');
+    assert.match(body, /for \(const part of parts\) inner\.appendChild\(part\)/,
+        '节点按原顺序接回同一个容器');
+    assert.doesNotMatch(body, /await this\.mountModule\(id\)/,
+        '不得回到「循环里逐个 await」的串行形状');
+});
+
+test('模块区等首轮数据再首次布局，且有超时兜底', () => {
+    // 症状：卡片高度依赖首轮数据——服务器卡片没有数据时 98px、拿到指标后
+    // 152px。不等的话卡片先以「无数据」的高度出生，数据落地时把下面的卡片
+    // 整体推下去。实测（给 metrics 注入 600ms 延迟模拟远端）：
+    // memo 卡片从 top 112 跳到 166（**54px**），伴随 1 次 margin-top 过渡
+    // 与 3 次 layout-shift。
+    const code = stripComments(appSource);
+
+    // ① 时机：先等首轮数据，再进「关掉过渡」的首次布局窗口
+    const body = methodBodyOf(code, 'renderModuleZone');
+    const waitAt = body.indexOf('await this.waitFirstRound(firstRound)');
+    const addAt = body.indexOf("zone.classList.add('is-laying-out')");
+    assert.ok(waitAt >= 0 && addAt > waitAt,
+        `先等首轮数据再首次布局（wait=${waitAt} add=${addAt}）`);
+    assert.match(body, /const firstRound = \[\]/, '收集首轮 promise 的数组');
+    assert.match(body, /this\.mountModule\(id, firstRound\)/, '挂载时把收集器传下去');
+    // 显隐也排在首轮之后：dock=below 的模块区带一条上边框与内边距，
+    // 先亮出来再等数据会凭空留一个空盒子。
+    // ⚠️ 用 lastIndexOf：错误分支里另有一处 `zone.hidden = false`，
+    // indexOf 会命中那一处、与本节要钉的先后关系无关。
+    const showAt = body.lastIndexOf('zone.hidden = false');
+    assert.ok(showAt > waitAt, `模块区在首轮数据之后才显出来（wait=${waitAt} show=${showAt}）`);
+
+    // ② 兜底：某个模块不 settle 时不能把整个模块区扣住
+    assert.match(code, /static FIRST_ROUND_TIMEOUT_MS = \d+/,
+        '超时是显式常量，不是散落的字面量');
+    const wait = methodBodyOf(code, 'waitFirstRound');
+    assert.ok(wait.length > 150, `切出 waitFirstRound（${wait.length}）`);
+    assert.match(wait, /Promise\.race\(/, '用 race 加超时');
+    assert.match(wait, /setTimeout\(resolve, App\.FIRST_ROUND_TIMEOUT_MS\)/, '超时用那个常量');
+    assert.match(wait, /\.catch\(\(\) => \{\}\)/,
+        '单个模块失败不得拖垮等待——失败态同样是一个终态高度');
+    assert.match(wait, /if \(!promises\.length\) return;/, '没有模块声明就不等');
+
+    // ③ 契约：whenReady 只收 thenable；**不调用 = 不等待**，
+    //    否则一个不轮询的新模块会白等一个超时才出现
+    const mount = methodBodyOf(code, 'mountModule');
+    assert.match(mount, /whenReady: promise =>/, 'state 里暴露 whenReady');
+    assert.match(mount, /typeof promise\.then === 'function'/, '只收 thenable');
+    assert.match(mount, /firstRound\.push\(promise\)/, '塞进收集器');
+
+    // ④ 模块侧：把自己的首轮 promise 交出去，否则平台白等一个超时
+    const mod = stripComments(moduleSource);
+    assert.match(mod, /const firstRound = poll\(\)/, 'server-monitor 首轮拉取');
+    assert.match(mod, /state\.whenReady\(firstRound\)/, 'server-monitor 把首轮 promise 交给平台');
+    // 挂表函数不能再在**入口处**顺手拉一次，否则首轮跑两遍。
+    // ⚠️ 范围必须收在「定义 handler 之前」：visibilityHandler 里那处
+    // `poll();`（切回前台立即补拉）是合法的，扫全函数会把它误判成入口拉取。
+    const schedAt = mod.indexOf('function schedulePolling()');
+    assert.ok(schedAt > 0, '找到 schedulePolling');
+    const head = mod.slice(schedAt, mod.indexOf('visibilityHandler = () => {', schedAt));
+    assert.ok(head.length > 50, `切出挂表函数的入口段（${head.length}）`);
+    assert.doesNotMatch(head, /^\s*poll\(\);$/m,
+        '挂表函数入口不得自己发请求——首轮由 mountWidget 发一次');
+});
+
+test('卡片按内容指纹跳过重建，纵向重排同一帧内合并成一次', () => {
+    const appCode = stripComments(appSource);
+    const mod = stripComments(moduleSource);
+
+    // ① 先读后写。⚠️ 「第一次读在第一次写之前」这种顺序断言**抓不住**它要
+    //    防的缺陷：交错写法（每张卡 `读高度 → 写 --stack-top`）在源码里
+    //    读同样在写之前（循环体只出现一次，重复发生在运行时）。真正的性质是
+    //    **读与写分属两个循环**——写后再读会让每一次写都作废上一次的布局缓存，
+    //    每张卡各触发一次强制重排。所以钉「写入循环里没有任何几何读取」。
+    const stack = methodBodyOf(appCode, 'stackWidgetsByHeight');
+    assert.ok(stack.length > 200, `切出 stackWidgetsByHeight（${stack.length}）`);
+    assert.match(stack, /const tops = \[\];/, '高度先收集成数组');
+    assert.match(stack, /node\.style\.setProperty\('--stack-top', tops\[i\]\)/,
+        '写入用的是预先收集好的偏移，不是循环里现读现写的游标');
+    const writeLoopAt = stack.indexOf('for (let i = 0; i < nodes.length; i++)');
+    assert.ok(writeLoopAt > 0, '有独立的写入循环（交错写法没有这一个）');
+    assert.doesNotMatch(stack.slice(writeLoopAt), /getBoundingClientRect\(\)/,
+        '写入循环里不得读几何——那正是「边读边写、每张卡一次强制重排」的形状');
+    assert.match(stack, /getPropertyValue\('--stack-top'\) !==/,
+        '值没变就不写——写一个相同的值同样会让后续读取失去缓存');
+
+    // ② 合并：同一帧内多次请求只排一次
+    const req = methodBodyOf(appCode, 'requestWidgetStack');
+    assert.ok(req.length > 100, `切出 requestWidgetStack（${req.length}）`);
+    assert.match(req, /requestAnimationFrame\(/, '交给 rAF 合并');
+    assert.match(req, /if \(this\._stackFrame\) return;/, '同一帧只排一次');
+    // ⚠️ `this._stackFrame = null;` 在 app.js 里有**两处**（构造函数里那次
+    // 初始化，与 rAF 回调里那次复位）。整文件 match 会被复位那一处满足，
+    // 于是「删掉构造函数里的初始化」照样绿——必须锚到构造函数。
+    assert.match(appCode, /this\._gridEditing = false;[\s\S]{0,200}this\._stackFrame = null;/,
+        '标志在构造函数里显式初始化，不靠 undefined 的隐式比较');
+
+    // ③ 布局路径**必须**仍是同步的，不能被合并版替换：
+    //    applyWidgetLayout 要先摆位再强制重排；compensateStackShift 要写完立刻读回。
+    assert.match(methodBodyOf(appCode, 'applyWidgetLayout'), /this\.stackWidgetsByHeight\(\)/,
+        'applyWidgetLayout 仍走同步版');
+    const comp = methodBodyOf(appCode, 'compensateStackShift');
+    assert.match(comp, /this\.stackWidgetsByHeight\(\)/,
+        '基准补偿要写完立刻读回，必须同步');
+    assert.doesNotMatch(comp, /requestWidgetStack/, '补偿路径不得走合并版');
+
+    // ④ 模块走合并版：重排**由平台注入**（state.requestStack），模块不再
+    //    各自写一份一模一样的转发函数——两份副本必然漂移，而且模块本来
+    //    就不该去摸 window.app 上的平台方法（与 api 同一条纪律）。
+    assert.match(appCode, /requestStack: \(\) => this\.requestWidgetStack\(\)/,
+        '平台把重排请求注入给模块');
+    assert.match(mod, /requestStack = \(state && state\.requestStack\) \|\| null/,
+        'server-monitor 从 state 取注入的重排请求');
+    assert.doesNotMatch(mod, /function requestStack\(\)/,
+        '模块不得自带转发函数（两份副本是重复代码）');
+    assert.doesNotMatch(mod, /window\.app\.stackWidgetsByHeight/,
+        '模块不直接摸平台方法');
+
+    // ⑤ 卡片体按内容指纹跳过重建。每 15 秒整块 replaceChildren 一次会带来
+    //    一次强制重排，而绝大多数轮询里数字根本没变。
+    assert.match(mod, /function bodyKeyOf\(entry\)/, '有内容指纹函数');
+    // 「最后更新」那一项取**渲染出来的文案**，不是自造的分钟档：两处取整
+    // 方式不一致时显示值会比指纹早一个档变化，卡上那行停在旧值上。
+    const keyAt = mod.indexOf('function bodyKeyOf(entry)');
+    const keyFn = mod.slice(keyAt, mod.indexOf('\n    }', keyAt));
+    assert.ok(keyFn.length > 200, `切出 bodyKeyOf（${keyFn.length}）`);
+    assert.match(keyFn, /lastUpdatedText\(entry\.pushReceivedAt\)/,
+        '取渲染文案，不自造分钟档');
+    const pollStart = mod.indexOf('async function poll(');
+    const pollEnd = mod.indexOf('function schedulePolling(');
+    assert.ok(pollStart >= 0 && pollEnd > pollStart, `poll 切片两端都在（${pollStart}/${pollEnd}）`);
+    const poll = mod.slice(pollStart, pollEnd);
+    assert.match(poll, /if \(card\.bodyKey !== key\)/, '指纹相同就跳过重建');
+    assert.match(poll, /renderCardBody\(card\.body, entry\)/, '变了才重建');
+    assert.match(poll, /if \(rendered && requestStack\) requestStack\(\)/, '只有真的重建过才重排');
+    assert.match(poll, /card\.bodyKey = '!error'/,
+        '失败态重置指纹，否则恢复后仍停在错误态');
+    assert.match(mod, /bodyKey: bodyKeyOf\(entry\)/,
+        '挂载时记下首轮指纹，否则第一次轮询会白重建一遍');
+    // 状态位与名称仍要每轮更新——它们不是卡片体的一部分
+    assert.match(poll, /card\.status\.dataset\.kind !== kind/, '状态位照旧每轮比对');
 });

@@ -488,3 +488,90 @@ test('HTTP 边界：未登录 401，带密码头可增删改查', { timeout: 600
     // 实测落盘的库文件名对得上（备份/升级面）：nav-sylph.db 在副本里生成
     assert.ok(fs.existsSync(path.join(tmp, 'nav-sylph.db')), '备忘录与会话共用同一个库文件');
 });
+
+// ========== 轮询开销 ==========
+
+test('卡片按数据指纹跳过整块重建，同步态就地更新', () => {
+    // 症状（浏览器实测）：每 15 秒一轮，卡片 innerHTML **整块重写两次**
+    // ——「同步中」一次、「已同步」一次，每次都跟一次全量纵向重排。
+    // 一轮 48 次模块区 DOM 变更、12 次强制重排，而绝大多数轮询里数据没变。
+    const code = stripComments(memoSrc);
+
+    // ① 指纹不含 syncState：含进去等于每轮必然重写一次，正是要避免的那件事
+    const keyAt = code.indexOf('function cardKey()');
+    assert.ok(keyAt > 0, '有卡片内容指纹函数');
+    const keyBody = code.slice(keyAt, code.indexOf('\n    }', keyAt));
+    assert.ok(keyBody.length > 50, `切出 cardKey（${keyBody.length}）`);
+    assert.doesNotMatch(keyBody, /syncState/,
+        '指纹不得包含同步态——否则每轮必翻一次、跳过重建形同虚设');
+    assert.match(keyBody, /drafts\.length/, '离线草稿条数要进指纹');
+    assert.match(keyBody, /m\.updatedAt/, '每条的时间要进指纹');
+    // 时间那一项取**渲染出来的文案**（relTime），不是自造的分钟档：
+    // 两处取整方式不一致时显示值会比指纹早一个档变化，卡上那行停在旧值上。
+    assert.match(keyBody, /relTime\(m\.updatedAt\)/, '时间项取渲染文案，不自造档位');
+
+    // ② 「没变就只刷状态行」
+    const maybeAt = code.indexOf('function renderCardMaybe()');
+    assert.ok(maybeAt > 0, '有「没变就不重建」的入口');
+    const maybeBody = code.slice(maybeAt, code.indexOf('\n    }', maybeAt));
+    assert.match(maybeBody, /cardKey\(\) === lastCardKey/, '指纹相同走就地更新');
+    assert.match(maybeBody, /renderCardStatus\(\)/, '就地只刷状态行');
+    assert.match(maybeBody, /renderCard\(\)/, '不同才整块重建');
+    assert.match(code, /function renderCardStatus\(\)/, '状态行就地更新');
+    assert.match(code, /lastCardKey = cardKey\(\)/, '整块重建后记下指纹');
+    // 状态行自己也有指纹：数据与同步态都没变的一轮轮询应当零 DOM 写入
+    const statusAt = code.indexOf('function renderCardStatus()');
+    const statusBody = code.slice(statusAt, code.indexOf('\n    }', statusAt));
+    assert.ok(statusBody.length > 200, `切出 renderCardStatus（${statusBody.length}）`);
+    assert.match(statusBody, /if \(key === lastCardStatusKey\) return;/, '状态行没变就不写');
+    // ⚠️ 光钉「有指纹」不够：这个函数的**全部作用**就是把状态写进那一行，
+    // 删掉写入语句后上面几条断言照样绿。必须钉住写入本身。
+    assert.match(statusBody, /querySelector\('\.memo-status-row'\)/, '定位到状态行');
+    assert.match(statusBody, /row\.innerHTML = statusPillHTML\(\) \+ pendingPillHTML\(\)/,
+        '真的把状态行内容写进去');
+    assert.match(code, /lastCardStatusKey = statusKey\(\)/, '整块重建后同步状态行指纹');
+    // setSyncState 必须走 renderCardMaybe，否则上面两层都白搭
+    const syncAt = code.indexOf('function setSyncState(next)');
+    const syncBody = code.slice(syncAt, code.indexOf('\n    }', syncAt));
+    assert.match(syncBody, /renderCardMaybe\(\)/, '同步态变化走「没变就不重建」的入口');
+
+    // ③ 自动轮询与手动同步**都**进「同步中」态。备忘录的既定需求是
+    //    「可通过服务器自动实时同步，并反馈同步状态，手动同步时也反馈同步状态」。
+    //    ⚠️ 本轮我曾按「性能优化」把它改成只有手动才显示，并写了断言把那个
+    //    变更钉成契约——两轴审查独立指出这既超出所选选项、又与上面那句需求
+    //    相抵触（每轮多出来的那次更新本来就被指纹兜住了，不需要动行为）。
+    //    已撤回：断言现在守的是「不许再限制成手动」。
+    const pollAt = code.indexOf('async function poll()');
+    assert.ok(pollAt > 0, 'poll 不再带 manual 参数');
+    const pollBody = code.slice(pollAt, code.indexOf('\n    }', pollAt));
+    assert.ok(pollBody.length > 150, `切出 poll（${pollBody.length}）`);
+    assert.match(pollBody, /setSyncState\('syncing'\)/, '进「同步中」态');
+    assert.doesNotMatch(pollBody, /if \(manual\)/, '不得把「同步中」限制在手动轮询');
+    assert.doesNotMatch(code, /manual: true/, '不得留下手动开关的残迹');
+
+    // ④ 首轮 promise 交给平台（与 server-monitor 同一处契约）
+    assert.match(code, /const firstRound = poll\(\)/, '首轮拉取');
+    assert.match(code, /state\.whenReady\(firstRound\)/, '把首轮 promise 交给平台');
+
+    // ⑤ 重排**由平台注入**，且整块重建之后才请求。
+    //    ⚠️ 只断言「存在 state.requestStack」还不够——注入的取值、调用点、
+    //    以及状态行那条路径都要各自钉住，否则删掉任一处都还是绿。
+    assert.match(code, /requestStack = \(state && state\.requestStack\) \|\| null/,
+        '从 state 取注入的重排请求');
+    assert.match(code, /function mountWidget\(shell, state\) \{[\s\S]{0,200}requestStack = \(state/,
+        '挂载时就取，不能等到渲染时才取');
+    assert.doesNotMatch(code, /function requestStack\(\)/,
+        '模块不得自带转发函数（两份副本是重复代码）');
+    assert.doesNotMatch(code, /window\.app\.stackWidgetsByHeight/,
+        '模块不直接摸平台方法');
+    const cardAt = code.indexOf('function renderCard() {');
+    assert.ok(cardAt > 0, '找到 renderCard');
+    const renderCardBody = code.slice(cardAt, code.indexOf('\n    }', cardAt));
+    assert.ok(renderCardBody.length > 300, `切出 renderCard（${renderCardBody.length}）`);
+    assert.match(renderCardBody, /if \(requestStack\) requestStack\(\)/,
+        '整块重建后请求一次合并重排');
+    // 状态行自己也会变高（失败态多一个「重试」按钮，而 .memo-status-row 是
+    // flex-wrap: wrap），所以它那条路径也必须请求重排——否则下面几张停在旧高度
+    assert.match(statusBody, /if \(requestStack\) requestStack\(\)/,
+        '状态行变化后也要请求重排（它会折行变高）');
+});

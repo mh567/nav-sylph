@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v71：模块加载与轮询开销优化——① 模块脚本**并行**下载（此前串行，
+// 第二个模块要等第一个的脚本下载与挂载都完成）；② 模块区等**首轮数据**
+// 到手再首次布局，卡片出现即终态（此前数据落地会把下面的卡片整体下推，
+// 实测 54px 加一次过渡）；③ 卡片按内容指纹跳过重建、同一帧内多次纵向
+// 重排合并成一次。改了 app.js、modules/server-monitor.js、modules/memo.js。
 // nav-v70：模块卡片拖拽的落点修正——未登记布局的卡片要在松手时补条目，
 // 否则把一张卡拖到最后一个位置会弹回；并调细备忘录面板的观感
 // （输入框改下沉材质、按钮回到 35px/12px）。改了 app.js、styles.css。
@@ -108,7 +113,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v70';
+const CACHE = 'nav-v71';
 const ASSETS = [
     '/',
     '/index.html',

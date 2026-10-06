@@ -39,6 +39,16 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 **模块代码独立成文件，按需加载。** `public/app.js` 里的 `App.KNOWN_MODULES` 是 id 白名单，`registerModule()` 收定义，`loadModule(id)` 复用既有的 `loadScript()`（`/modules/<id>.js`）。**未在白名单里的 id 一律拒绝加载**——这些 id 会被拼进脚本路径，不是校验就等于任意路径可被请求。未登录访客不下载任何模块文件，首屏重量不受模块数量影响。
 
+**模块并发挂载，并等首轮数据再首次布局。** `renderModuleZone` 用 `Promise.all` 同时挂载全部模块——串行 `for … await` 会让第二个模块等前一个的脚本下载**加**挂载都完成（实测 `memo.js` 53→56ms 结束后 `server-monitor.js` 才在 58ms 起请求；改后两者同在 50ms 起）。挂载完成后、首次布局之前 `await this.waitFirstRound(firstRound)`：模块通过 `state.whenReady(promise)` 把「首轮数据」的 promise 交回来，平台等它，`App.FIRST_ROUND_TIMEOUT_MS = 1500` 是超时兜底。**不调用 = 不等待**，所以不轮询的模块不会白等一个超时。这条消掉的是「卡片先以无数据的高度出生、数据落地时把下面整排推下去」——实测 54px 位移 + 一次 `margin-top` 过渡 + 3 次 layout-shift，改后为 0。`zone.hidden = false` 也排在首轮之后（`dock=below` 时模块区自带边框与内边距，先亮出来会留一个空盒子）。超时后照常布局，退化成改动前的行为。
+
+**轮询路径的纵向重排要合并，且先读后写。** `stackWidgetsByHeight` 一次读完所有高度、再统一写 `--stack-top`，并对值未变的节点跳过写入（写一个相同的值同样会让后续读取失去布局缓存）。模块侧渲染完调 `state.requestStack()`——它由平台注入（`mountModule` 里的 `requestStack: () => this.requestWidgetStack()`，与 `state.api` 同一套机制），**模块不得自己去摸 `window.app` 上的平台方法**：两个模块此前各写了一份逐字节相同的转发函数，两份副本必然漂移。平台侧的 `requestWidgetStack` 用 rAF 合并，同一帧内多次请求只做一次；`stackWidgetsByHeight` 本身仍供布局路径同步使用——`applyWidgetLayout` 要先摆位再强制重排，`compensateStackShift` 要写完立刻读回，交给 rAF 会让那一步失去意义。
+
+**轮询期的卡片重建按内容指纹跳过。** `server-monitor` 的 `bodyKeyOf(entry)`（指标值 + 延迟 +「最后更新」的文案）与 `memo` 的 `cardKey()`（条数 + 每条 `id:pinned:updatedAt` + 相对时间文案，**不含** syncState）各自在 `poll` 里比对，相同就不重建 DOM、也不请求重排。时间那一项取的是**渲染出来的那串文案**（`lastUpdatedText` / `relTime`），不是自造的分钟档——两处取整方式不一致时（`floor` vs `round`，最多差 30 秒）显示值会比指纹早一个档变化，卡上那行就停在旧值上。实测「未变动的一轮」从 +48 次模块区 DOM 变更 / +12 次强制重排降到 **+15 / +4**，而数据真的变了照常更新。
+
+syncState 之所以不进卡片指纹：它每轮都在变，含进去等于每轮必然重写一次——同步态改由 `renderCardStatus()` 就地更新状态行（那一行自己也有一层指纹，并且**改完要请求一次重排**：`.memo-status-row` 是 `flex-wrap: wrap`，失败态多一个「重试」按钮后窄卡片上会折行变高）。**自动轮询与手动同步都照常进「同步中」态**——那是备忘录的既定需求（「可通过服务器自动实时同步，并反馈同步状态」）；不要为了省渲染把它限制成手动触发，那一轮剩下的只是一次状态行更新，指纹已经兜住了。
+
+**首轮由模块自己显式拉取。** 两个模块都把 `startPolling` 拆成 `schedulePolling`（只挂定时器与前后台监听，**不**立即拉取）+ mountWidget 里的一次显式 `poll()`，那次 promise 交给 `state.whenReady`。**别再让挂表函数顺手拉一次**——首轮会因此跑两遍。
+
 **模块配置独立存 `.modules.json`，不进 `config.json`。** 两个理由，都是绕开而非修补：`toPublicConfig()` 只剥离 `privacyMode` 一个 key，放进 `config.json` 的任何新字段会**默认公开下发**给匿名用户；`mergeConfig()` 是顶层浅合并，嵌套对象会被客户端旧副本整块覆盖。该文件已在 `PRIVATE_FILES` 名单里，自动获得 `writeJSON()` 的 0600 收紧。
 
 **归一化不得补默认值。** `normalizeModulesConfig()` 对缺席的键保持 `undefined`（而非空数组），`mergeModulesConfig()` 才能区分「显式清空」与「没提交」。拖拽排序只提交 `widgets`；若归一化补了空数组，一次排序就会清空 `servers` 与 `symbols`。这条是真实服务端到端才发现的——单元测试当时直接调 `merge` 绕过了归一化，于是恒绿。
