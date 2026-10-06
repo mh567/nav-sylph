@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v68：模块区首次挂载不再「四张卡叠成一叠再各自滑开」——卡片是带着
+// margin-top:0 出生的，.module-widget 上的让位过渡把它当成一次真实位移。
+// 首帧布局加 .is-laying-out 关掉这一次的过渡（之后的让位动画保留）。
+// 改了 app.js、styles.css。
 // nav-v67：升级命令的面板说明改口——agent 的 upgrade 现在自己重启服务，
 // 不再要求用户手动 systemctl restart（用户照做后后台仍催升级的那个 bug）。
 // 改了 app.js。
@@ -97,7 +101,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v67';
+const CACHE = 'nav-v68';
 const ASSETS = [
     '/',
     '/index.html',

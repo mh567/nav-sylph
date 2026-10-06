@@ -2909,6 +2909,10 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    写死 166px 会让带提示的卡片压住下一张（实测重叠 8px）。 */
 .module-widget[data-side="right"] { position: absolute; top: 0; right: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
 .module-widget[data-side="left"] { position: absolute; top: 0; left: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
+/* 首次布局不做让位动画（见 app.js 的 renderModuleZone）。
+   卡片是带着 margin-top: 0 出生的，此时若允许过渡，四张卡会先完全重叠
+   再各自滑开——那是加载时最显眼的「卡顿感」。只在这一次布局里关掉。 */
+.module-zone.is-laying-out .module-widget { transition: none; }
 /* 模块区整体不接收指针事件，只有卡片本身可交互——否则它铺满全宽会挡住背板 */
 .module-zone-inner > .module-widget { pointer-events: auto; }
 

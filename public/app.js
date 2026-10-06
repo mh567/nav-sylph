@@ -311,8 +311,30 @@
             for (const id of ids) {
                 inner.appendChild(await this.mountModule(id));
             }
-            zone.replaceChildren(inner);
-            this.applyWidgetLayout();
+
+            // 首次布局**不做**让位动画。--stack-top 要等节点进入文档、量完高度
+            // 才算得出来，所以卡片是带着 `margin-top: 0` 出生的，而
+            // .module-widget 上挂着 margin-top 的过渡——浏览器会把这个「从 0
+            // 到最终位置」的变化当成一次真实位移并做成动画。
+            // 实测（1440×900，两侧停靠）改前：插入瞬间四张卡 top 全是 48px，
+            // 完全重叠、文字互相压住；随后 180ms 滑到 48/214/342/470。
+            //
+            // 承重的是 `void zone.offsetHeight` 那一句，**不是**摘标记的时机。
+            // stackWidgetsByHeight 先读高度、后写 --stack-top，于是最后一张卡
+            // 写完之后没有任何读操作；不显式刷这一次，它那笔写入会等到摘掉
+            // 标记之后才落进计算值，过渡就又回来了（对照页实测：去掉这一句
+            // → 仍有 1 次 margin-top 过渡，且是最后一张卡，首帧落回 0）。
+            // 标记早摘晚摘都行（改成 rAF 实测同样 0 过渡）——只要在刷完之后。
+            zone.classList.add('is-laying-out');
+            try {
+                zone.replaceChildren(inner);
+                this.applyWidgetLayout();
+                void zone.offsetHeight;
+            } finally {
+                // 无条件摘掉：中间任一步抛异常，留着这个类会让模块区的让位
+                // 动画**永久**失效——它是全局关掉 .module-widget 过渡的。
+                zone.classList.remove('is-laying-out');
+            }
         }
 
         /** 加载一个模块并返回它的 DOM 节点；加载失败返回错误卡片而非抛出。 */

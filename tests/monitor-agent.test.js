@@ -82,8 +82,15 @@ function routeBody(marker, endMarker) {
  * 多次（局部变量名当锚点、同形字符串抢先匹配）。
  */
 function methodBodyOf(code, name) {
-    // 定义处：名字后面紧跟一个参数列表与 `{`
-    const re = new RegExp(`\\n        (?:async )?${name}\\([a-zA-Z_$][\\w$, ]*\\) \\{`);
+    // 定义处：名字后面紧跟一个参数列表与 `{`。
+    // ⚠️ 参数列表允许为空，也允许带默认值 / 解构——`renderModuleZone()` 没有
+    // 参数，`showToast(message, state = 'success', duration = 3500)`、
+    // `showUiDialog({ ... })`、`bookmarkFieldError([title, url])` 这类写法
+    // 都不含括号。早先的判据只认「至少一个普通参数」，实测 app.js 的 180 个
+    // 方法定义里**有 12 个**切不出来、返回空字符串——而空切片会让所有基于它
+    // 的断言静默落空，看起来和通过一样绿。
+    // `) {` 仍然把它与裸调用（`this.foo(s);`，后面是 `;`）区分开。
+    const re = new RegExp(`\\n        (?:async )?${name}\\([^()]*\\) \\{`);
     const m = re.exec(code);
     if (!m) return '';
     const rest = code.slice(m.index + 1);
@@ -107,16 +114,27 @@ function methodBodyOf(code, name) {
 test('切片辅助函数切到的是定义（含参数列表与花括号），不是裸调用', () => {
     const code = stripComments(appSource);
     for (const name of ['isAgentOutdated', 'renderServerStateBody',
-        'renderServerStatusBits', 'showDeployDialog']) {
+        'renderServerStatusBits', 'showDeployDialog', 'renderModuleZone']) {
         const body = methodBodyOf(code, name);
         assert.ok(body.length > 200, `切出 ${name}（${body.length}）`);
         // ⚠️ 片段必须以**定义形态**开头：名字 + 参数列表 + 花括号。
         // 只按名字匹配会命中裸调用（`this.foo(s);` 后面没有 `{`），
         // 于是断言全部落空且没有一条失败 —— 一个什么都不检查的测试
         // 看起来和通过的测试一样绿。
-        assert.match(body, new RegExp(`^\\s*(?:async )?${name}\\([a-zA-Z_$][\\w$, ]*\\) \\{`),
+        assert.match(body, new RegExp(`^\\s*(?:async )?${name}\\([\\w$, ]*\\) \\{`),
             `${name} 切到的是定义而非调用`);
     }
+    // 零参方法也要能切（renderModuleZone() 就是一个）——早先的判据要求
+    // 至少一个参数，把它切成空串，断言静默落空。
+    assert.match(code, /async renderModuleZone\(\) \{/, '零参方法在 app.js 里确实存在');
+    // 而「空切片」这一类要被整体堵死：把 app.js 里**每一个** 8 缩进方法定义
+    // 都过一遍，任何切不出来的名字直接让测试红。枚举用的判据比 helper 松
+    // （不管参数表），所以它不会跟着 helper 一起退化。
+    const defined = [...new Set([...code.matchAll(/\n        (?:async )?([a-zA-Z_$][\w$]*)\s*\(/g)].map(m => m[1]))];
+    assert.ok(defined.length > 150, `枚举到足够多的方法定义（${defined.length}）`);
+    const unsliceable = defined.filter(name => methodBodyOf(code, name).length === 0);
+    assert.deepEqual(unsliceable, [],
+        `这些方法定义切不出来（空切片会让断言静默落空）：${unsliceable.join(', ')}`);
     // 而 app.js 里确实同时存在这三种形态，说明这条断言不是空转：
     // 定义带 `{`，调用不带。
     assert.match(code, /isAgentOutdated\(s\) \{/, '定义形态：带 {');
@@ -2522,6 +2540,70 @@ test('让位的卡片有短过渡，拖拽中的那张不参与', () => {
     const dragging = /\.module-widget\.is-dragging\s*\{([^}]*)\}/.exec(css);
     assert.ok(dragging, '拖拽态有独立规则');
     assert.doesNotMatch(dragging[1], /margin-top/, '拖拽中的卡片不参与纵向过渡');
+});
+
+test('首次布局不做让位动画——卡片不得从重叠位置滑开', () => {
+    // 症状：首页加载、模块区出现时「卡一下」。不是掉帧（实测满 60fps、
+    // 无长任务），而是**首次挂载本身被做成了动画**：--stack-top 要等节点
+    // 进入文档、量完高度才算得出来，卡片于是带着 margin-top:0 出生，
+    // 而基础规则上挂着 margin-top 过渡——浏览器把这当成一次真实位移。
+    // 实测（1440×900、两侧停靠）改前：插入瞬间四张卡 top 全等于 48px，
+    // 完全重叠、文字互相压住，随后 180ms 滑到 48/214/342/470，
+    // LayoutShift 连记 7 帧（CLS 0.019 → 0.005）。
+    //
+    // ⚠️ 承重的是那次**同步强制重排**，不是「同步摘标记」。对照页实测
+    // （忠实复刻 stackWidgetsByHeight「先读后写」的顺序）：
+    //   · 无标记            → 3 次 margin-top 过渡，首帧 0/0/0/0
+    //   · 强制重排 + 同步摘  → 0 次，首帧 0/104/208/312   ✓
+    //   · 强制重排 + rAF 摘  → 0 次，首帧 0/104/208/312   ✓ 同样修好
+    //   · **删掉强制重排**   → 1 次（最后一张卡），首帧 0/104/208/**0**
+    //   · 标记加到 inner     → 3 次，首帧 0/0/0/0（CSS 规则失配）
+    // 所以这里钉「强制重排必须在窗口内」与「标记挂在 zone 上」，
+    // **不**钉摘标记的同步性——那会否掉一个功能正确的实现。
+    const code = stripComments(appSource);
+    const body = methodBodyOf(code, 'renderModuleZone');
+    assert.ok(body.length > 300, `切出 renderModuleZone 方法体（${body.length}）`);
+
+    // ① 标记必须加/摘在 `zone` 那个元素上（= #moduleZone）。
+    // CSS 是 `.module-zone.is-laying-out`——两个类必须在**同一宿主**上；
+    // 加到子元素 .module-zone-inner 上规则完全不命中。不钉元素名的话，
+    // 这个变异测试仍然绿，而线上缺陷原样复发。
+    const cls = /zone\.classList\.add\('([\w-]+)'\)/.exec(body)?.[1];
+    assert.equal(cls, 'is-laying-out', '标记加在 zone（#moduleZone，同时带 .module-zone）上');
+    assert.match(body, new RegExp(`zone\\.classList\\.remove\\('${cls}'\\)`),
+        '也从同一个元素上摘');
+
+    const addAt = body.indexOf(`zone.classList.add('${cls}')`);
+    const replaceAt = body.indexOf('zone.replaceChildren(inner)');
+    const layoutAt = body.indexOf('this.applyWidgetLayout()');
+    const flushAt = body.indexOf('zone.offsetHeight');
+    const removeAt = body.indexOf(`zone.classList.remove('${cls}')`);
+    assert.ok(addAt >= 0 && replaceAt >= 0 && layoutAt >= 0 && flushAt >= 0 && removeAt >= 0,
+        `五处都在：add=${addAt} replace=${replaceAt} layout=${layoutAt} flush=${flushAt} remove=${removeAt}`);
+    assert.ok(addAt < replaceAt && replaceAt < layoutAt && layoutAt < flushAt && flushAt < removeAt,
+        '顺序必须是「加标记 → 挂节点 → 摆位 → 强制重排 → 摘标记」');
+
+    // ② 强制重排是承重的那一步，必须在抑制窗口内（对照页实测：删掉它，
+    // 最后一张卡那笔 --stack-top 写入要等到摘标记之后才落进计算值，
+    // 过渡就回来了）。
+    assert.match(body.slice(addAt, removeAt), /void\s+zone\.offsetHeight/,
+        '抑制窗口内必须显式强制一次重排');
+
+    // ③ 标记不能被永久留下：applyWidgetLayout 内部会走 syncEditLayoutUI →
+    // renderGrid，任一步抛异常，留着这个类会让模块区的让位动画永久失效。
+    assert.match(body.slice(addAt, removeAt), /\}\s*finally\s*\{/,
+        '摘标记放在 finally 里，抛异常也不会留下标记');
+
+    // ④ 标记只在首帧布局用：拖拽换序仍要留住让位动画。
+    const layoutBody = methodBodyOf(code, 'applyWidgetLayout');
+    assert.ok(layoutBody.length > 200, '切出 applyWidgetLayout 方法体');
+    assert.doesNotMatch(layoutBody, new RegExp(cls),
+        'applyWidgetLayout 不得关过渡——拖拽让位就靠它');
+
+    // ⑤ 跨文件：CSS 里得真有这条规则，否则类加了也没用。
+    assert.match(stripComments(stylesSource),
+        new RegExp(`\\.module-zone\\.${cls}\\s+\\.module-widget\\s*\\{[^}]*transition:\\s*none`),
+        `styles.css 有 .module-zone.${cls} 关闭过渡的规则`);
 });
 
 test('采集方式默认拉取，非法值一律回落而不是被静默接受', () => {
