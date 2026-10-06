@@ -1261,7 +1261,15 @@ func cmdUpgrade(args options) error {
 		return fmt.Errorf("新下载的文件跑不起来：%w（保持现有版本不变）", err)
 	}
 	if newVersion == current {
-		fmt.Printf("已经是最新版本 %s，无需升级。\n", current)
+		fmt.Printf("已是最新版本 %s，无需下载。\n", current)
+		// ⚠️ 「文件是最新的」不等于「跑着的进程是最新的」：升级只换文件，而
+		// agentVersion() 是编译进进程的常量。上一次升级若没能重启——本功能
+		// **第一次上线时必然如此**，因为执行那次升级的是还没有重启逻辑的旧
+		// 代码（自举盲区）——进程会一直自报旧版本、后台据此提示「可升级」，
+		// 而用户再跑多少次 upgrade 都只走到这个分支、什么都不做，永远卡在
+		// 「文件是新的、进程是旧的」。所以这里也要收尾一次，让「再跑一次」
+		// 成为一条能自愈的路径。
+		reportRestart(restartAgentService())
 		return nil
 	}
 	fmt.Printf("发现新版本 %s\n", newVersion)
@@ -1306,15 +1314,24 @@ func cmdUpgrade(args options) error {
 	fmt.Printf("已升级到 %s。\n", newVersion)
 	fmt.Println("配置与凭据未改动（在 " + configDir + "）。")
 	// 替换文件只是把新的放在那里，**还在跑的仍是旧进程**——不重启等于没升级。
-	if err := restartAgentService(); err != nil {
-		fmt.Printf("⚠️ 未能自动重启（%v）。\n", err)
-		fmt.Println("   新版本要重启后才生效：")
-		fmt.Println("     sudo systemctl restart nav-agent    # systemd 服务")
-		fmt.Println("     sudo pkill -x nav-agent             # 手动运行的：停掉后按原样再起")
-	} else {
-		fmt.Println("已重启 nav-agent 服务，新版本即刻生效。")
-	}
+	reportRestart(restartAgentService())
 	return nil
+}
+
+// reportRestart 把重启结果如实报给用户。
+//
+// 两条路径共用：刚替换完二进制，以及「已是最新版本」那条（见那里的注释——
+// 文件新不等于进程新）。文案分「成了」与「没成」两种，没成时必须给出
+// **具体**命令，而不是笼统的「重启后生效」——那正是这个 bug 藏了这么久的原因。
+func reportRestart(err error) {
+	if err == nil {
+		fmt.Println("已重启 nav-agent 服务，新版本即刻生效。")
+		return
+	}
+	fmt.Printf("⚠️ 未能自动重启（%v）。\n", err)
+	fmt.Println("   新版本要重启后才生效：")
+	fmt.Println("     sudo systemctl restart nav-agent    # systemd 服务")
+	fmt.Println("     sudo pkill -x nav-agent             # 手动运行的：停掉后按原样再起")
 }
 
 // restartAgentService 让刚落地的二进制真正跑起来。

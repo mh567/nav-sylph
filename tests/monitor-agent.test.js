@@ -1454,23 +1454,28 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
     // 服务端后台却仍在催「可升级」——因为 agentVersion 是构建期注入的**常量**，
     // **跑着的那个进程**会一直自报旧版本，仅替换二进制文件不足以让它生效。
     // 修法是 upgrade 结束时自己 restart。这条真跑一次 upgrade：systemctl 是桩。
-    const src = localAgentBinary();
-    if (!src) { t.skip('未构建 agent 二进制'); return; }
     try { execFileSync('go', ['version'], { stdio: 'ignore' }); }
-    catch { t.skip('没有 go，现编不出一个版本不同的副本'); return; }
+    catch { t.skip('没有 go，现编不出两个版本不同的副本'); return; }
 
     const http = require('http');
     const os = require('os');
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nav-upgrade-'));
 
-    // 「旧版」副本：现编一个版本号不同的，upgrade 跑在它身上（换掉的也是它）
-    const template = path.join(tmp, 'nav-agent-template');
-    execFileSync('go', ['build', '-trimpath',
-        '-ldflags', '-X main.buildVersion=0.0.1', '-o', template, '.'],
+    // ⚠️ 两个版本都**现编**，且都含当前源码。
+    // 下载源绝不能用 agent/dist 里的预构建产物——那是上一次发布留下的，
+    // 不含本次改动，于是测试会拿旧逻辑去跑、把「没修好」误判成通过
+    // （实测踩过：断言「已是最新」时打出的是上一版的文案）。
+    const buildTo = (out, version) => execFileSync('go', ['build', '-trimpath',
+        '-ldflags', `-X main.buildVersion=${version}`, '-o', out, '.'],
         { cwd: path.join(ROOT, 'agent') });
 
-    // 服务端桩：不管什么路径都返回「新版」二进制的字节
-    const payload = fs.readFileSync(src);
+    // 「旧版」副本：upgrade 跑在它身上（换掉的也是它）
+    const template = path.join(tmp, 'nav-agent-template');
+    buildTo(template, '0.0.1');
+    // 「新版」：服务端桩发给它的字节
+    const payloadPath = path.join(tmp, 'nav-agent-new');
+    buildTo(payloadPath, '9.9.9');
+    const payload = fs.readFileSync(payloadPath);
     const server = http.createServer((req, res) => {
         res.setHeader('Content-Type', 'application/octet-stream');
         res.end(payload);
@@ -1488,10 +1493,12 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
     // ⚠️ 必须用**异步** spawn：spawnSync 会阻塞本进程的事件循环，而提供
     // 「新版」二进制的 http 服务就跑在这个进程里——下载永远等不到响应，
     // 只会等到超时（实测：卡满 30 秒且 stub 一次都没被调用）。
-    const runUpgrade = () => new Promise(resolve => {
+    // reset=true：先放一份「旧版」再跑（触发真正的升级）
+    // reset=false：沿用上一次留下的 self（已经是最新，用来走「已是最新」分支）
+    const runUpgrade = (reset = true) => new Promise(resolve => {
         fs.rmSync(callsFile, { force: true });
         const self = path.join(tmp, 'nav-agent');
-        fs.copyFileSync(template, self);   // 每次一份新的「旧版」——上一轮会把 self 换掉
+        if (reset) fs.copyFileSync(template, self);   // 上一轮会把 self 换掉
         const child = require('child_process').spawn(self,
             ['upgrade', '--server', `http://127.0.0.1:${port}`],
             { env: { ...process.env, PATH: stubDir + ':' + process.env.PATH } });
@@ -1524,6 +1531,18 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
         assert.match(bad.stdout + bad.stderr, /未能自动重启/, '失败要说出来，不能静默');
         assert.match(bad.stdout, /systemctl restart nav-agent/, '给 systemd 的手动命令');
         assert.match(bad.stdout, /pkill -x nav-agent/, '也给手动运行场景的命令');
+
+        // C. 已经是最新版本时**也要**重启。
+        // 这是用户实测卡住的那个状态：上一次升级跑的是还没有重启逻辑的旧代码
+        // （自举盲区），文件换了、进程没换；此时再跑 upgrade 会走「已是最新」
+        // 分支——那里若直接 return，用户再跑多少次都没用，永远卡在
+        // 「文件是新的、进程是旧的」。所以这条分支同样要收尾。
+        writeStub(0);
+        const again = await runUpgrade(false);   // self 已是上一轮换上的 9.9.9
+        assert.match(again.stdout, /已是最新版本 9\.9\.9/, '确实走到「已是最新」分支');
+        const calls2 = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8') : '';
+        assert.match(calls2, /restart nav-agent/,
+            '「已是最新」也要重启——文件是最新的不等于跑着的进程是最新的');
     } finally {
         server.close();
         fs.rmSync(tmp, { recursive: true, force: true });
