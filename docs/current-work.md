@@ -29,6 +29,7 @@
 - 红绿：backend / utc / wiring 三处变异各只让对应用例变红，破坏与恢复都有 before/after 校验。
 - 语法：改动文件 `node --check` OK，`git diff --check` 干净。
 - 发布：SW 缓存 `nav-v63 → nav-v64`（`public/` 在发布包内），三处版本号同为 `1.9.1`，走 `scripts/release.sh`。
+- **发布流程上的自身失误（已在随后一笔提交修正）**：升 `CACHE` 之后没重跑全量就提交发布，而 `tests/fav-tab.test.js` 里那条守卫硬编码着上一轮的期望（`nav-v63`），当时是红的；是发布完跑收尾回归才发现的。发布产物本身没问题（包内 `CACHE = nav-v64` 已核对，`tests/` 也不进发布包）。教训：**升了 SW 缓存名就必须再跑一次全量**——`public/` 的变更既影响发布产物，也影响测试。
 
 ### 仍未验证 / 下一步
 

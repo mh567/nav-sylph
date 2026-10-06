@@ -161,12 +161,12 @@ test('placeholder 在 index.html 与 app.js 两层一致（搜索网页或书签
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v63，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v63';/);
-    assert.match(swJs, /nav-v63：后台「收藏夹」成为独立 tab/);
+test('sw.js：CACHE 升到 nav-v64，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v64';/);
+    assert.match(swJs, /nav-v64：WebDAV 备份列表的时间不再比北京时间早 8 小时/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v63', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v64', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });
