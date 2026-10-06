@@ -783,7 +783,12 @@ test('模块区拖拽：宽屏下松手即改 order 后立即重排', () => {
     // 保留自 orderOf 排序所需的「写 order → 重排」这一段：
     // applyWidgetLayout 按 widgets[i].order 排序，先重排会按旧 order
     // 把拖拽结果撤销（实测拖 NAS 到本机位置，松手又弹回原样）。
-    const body = methodBody(appSource, 'commitWidgetDrag');
+    //
+    // ⚠️ 必须先剥注释再定位：`commitWidgetDrag` 里那条解释「未登记的卡片
+    // 在 applyWidgetLayout 里按 MAX_SAFE_INTEGER 排」的注释含有同一个标识符，
+    // `indexOf` 会先命中注释、得到 layoutAt < orderAt，于是断言报「重排必须在
+    // 写完 order 之后」而代码完全正确——本项目记过的同一类假红。
+    const body = methodBody(stripComments(appSource), 'commitWidgetDrag');
     const orderAt = body.indexOf('item.order = index');
     const layoutAt = body.indexOf('applyWidgetLayout');
     assert.ok(orderAt >= 0, 'commitWidgetDrag 按 DOM 顺序写 order');

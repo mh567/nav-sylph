@@ -3127,18 +3127,29 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* 管理面板：弹性布局，列表区独立滚动，头尾固定 */
 .memo-panel { display: flex; flex-direction: column; overflow: hidden; }
-.memo-dialog-header { display: flex; align-items: center; gap: 10px; padding: 15px 18px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.memo-dialog-header { display: flex; align-items: center; gap: 10px; padding: 13px 18px 11px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .memo-dialog-header h2 { margin-right: auto; }
 .memo-dialog-header .memo-status-row { margin: 0; }
-.memo-search { padding: 12px 18px 4px; }
-.memo-search input { width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit; color: var(--text); background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; outline: none; }
-.memo-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+/* 输入类控件照**仓库既有对话框**的配方，不是抬起的浅色板：
+   `.ui-dialog` 的输入框是「下沉的暗槽」——底色取 --bg、外加 inset 阴影
+   （实测：应用 rgb(42,37,33) + inset 0 1px 2px rgba(0,0,0,.24)）。
+   早先这里用 --bg-card 铺了一块比面板还亮的板，在 480px 的小面板里
+   读起来就是一整块「大输入框」——用户原话「搜索框太大」。
+   高度另按更紧凑的档取（7px 11px），比 .ui-dialog 的 40px 矮一点。 */
+.memo-search { padding: 10px 18px 6px; }
+.memo-search input {
+    width: 100%; padding: 7px 11px; font-size: 13px; font-family: inherit;
+    color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; outline: none;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.24), inset 0 -1px rgba(255,255,255,.09);
+}
+.memo-search input:focus { border-color: var(--accent); box-shadow: inset 0 1px 2px rgba(0,0,0,.24), 0 0 0 3px var(--focus); }
 .memo-search input::placeholder { color: var(--text-muted); }
 .memo-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 8px 18px 12px; }
 .memo-section-title { margin: 12px 0 6px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
 .memo-row-lg { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; transition: background 110ms; }
 .memo-row-lg:hover { background: var(--bg-hover); }
-.memo-pin-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; transition: color 110ms, background 110ms, transform 110ms; }
+.memo-pin-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; transition: color 110ms, background 110ms, transform 110ms; }
 .memo-pin-btn:hover { background: var(--bg-hover); color: var(--accent); }
 .memo-pin-btn[aria-pressed="true"] { color: var(--accent); }
 .memo-pin-btn:active { transform: scale(.92); }
@@ -3151,23 +3162,34 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .memo-row-lg:hover .memo-row-actions, .memo-row-lg:focus-within .memo-row-actions { opacity: 1; }
 .memo-del-confirm { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a44c46; flex-wrap: wrap; }
 .memo-del-confirm span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.memo-none { padding: 26px 0; text-align: center; color: var(--text-muted); font-size: 12px; }
-.memo-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.memo-none { padding: 19px 0; text-align: center; color: var(--text-muted); font-size: 12px; }
+.memo-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 18px; border-top: 1px solid var(--border); }
 .memo-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 /* 编辑表单 */
-.memo-form { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+.memo-form { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 12px 18px 14px; display: flex; flex-direction: column; gap: 6px; }
 .memo-form label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-top: 6px; }
-.memo-form input, .memo-form textarea { width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit; color: var(--text); background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; outline: none; resize: vertical; }
-.memo-form input:focus, .memo-form textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+.memo-form input, .memo-form textarea {
+    width: 100%; padding: 7px 11px; font-size: 13px; font-family: inherit;
+    color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; outline: none; resize: vertical;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.24), inset 0 -1px rgba(255,255,255,.09);
+}
+.memo-form input:focus, .memo-form textarea:focus { border-color: var(--accent); box-shadow: inset 0 1px 2px rgba(0,0,0,.24), 0 0 0 3px var(--focus); }
 .memo-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* 行内小按钮（编辑 / 删除），与 .module-panel-close 同族 */
-.icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 30px; padding: 0 7px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(170deg, var(--control-top), var(--control-bottom)); color: var(--text); font-size: 12px; box-shadow: inset 0 1px rgba(255,255,255,.48), 0 1px 3px rgba(67,51,39,.06); transition: transform 110ms, background 140ms; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(170deg, var(--control-top), var(--control-bottom)); color: var(--text); font-size: 12px; box-shadow: inset 0 1px rgba(255,255,255,.48), 0 1px 3px rgba(67,51,39,.06); transition: transform 110ms, background 140ms; }
 .icon-btn:hover { transform: translateY(-1px); background: linear-gradient(170deg, var(--control-hover-top), var(--control-hover-bottom)); }
 .icon-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
 .icon-btn.danger { color: #a44c46; }
 .icon-btn.danger:hover { background: rgba(164,76,70,.11); }
+
+/* 面板内的按钮与仓库既有对话框同级：12px 字 / 35px 高 / padding 6px 13px，
+   与 `.ui-dialog .btn` 实测值一致。早先沿用全局 .btn 的 14px / 38px / 8px 16px，
+   在 480px 面板里比周围文字（11–13px）明显重一档——用户原话「按钮不够精致」。 */
+.memo-panel .btn { padding: 6px 13px; font-size: 12px; min-height: 35px; }
+.memo-panel .module-panel-close { min-width: 30px; min-height: 30px; font-size: 18px; }
 
 /* 深色下警示色与「待同步」圆点要提亮（与 .module-card-status 同值） */
 :root[data-theme="dark"] .memo-pend-dot { background: #e0bd7a; }

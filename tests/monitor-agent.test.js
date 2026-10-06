@@ -1315,6 +1315,62 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     assert.match(bad.toasts[0].msg, /保存失败/);
 });
 
+test('拖拽落位：配置里没登记过的卡片也要补条目，否则落点被自己撤销', () => {
+    // 用户原话：「备忘录模块不能拖拽到最下面一个模块」。浏览器实测：拖到最下时
+    // DOM 顺序已经是 `本机 > srv461 > srv472 > 备忘录`，**松手后又弹回第二位**。
+    // 因为 commitWidgetDrag 早先只给「被拖的那一张」补布局条目，其余未登记的
+    // 卡片在 applyWidgetLayout 里按 MAX_SAFE_INTEGER 排，永远压在有 order 的
+    // 卡片之前——刚写下的 order 3 被三张 MAX 顶回第 2 位。任何新加的服务器都
+    // 踩同一条，不是备忘录独有。
+    // 这里跑真实的 commitWidgetDrag（假 zone / 假节点），断言每张渲染中的卡片
+    // 都拿到了与 DOM 位置一致的 order。
+    const code = stripComments(appSource);
+    const body = methodBodyOf(code, 'commitWidgetDrag');
+    assert.ok(body.length > 300, `切出 commitWidgetDrag（${body.length}）`);
+
+    const makeNode = key => ({
+        dataset: { instanceId: key, side: 'left' },
+        classList: { remove() {} },
+        style: { transform: '' }
+    });
+    // 松手时的 DOM 顺序：被拖的备忘录已在最下
+    const keys = ['server-monitor:local', 'server-monitor:srv_461', 'server-monitor:srv_472', 'memo:main'];
+    const nodes = keys.map(makeNode);
+    const zone = {
+        dataset: {},
+        querySelectorAll: sel => (sel === '.module-widget' ? nodes : [])
+    };
+    const config = {
+        widgets: [
+            { id: 'server-monitor:local', enabled: true, side: 'left', order: 0 },
+            // 已删机器留下的陈旧条目：不在 DOM 里，但也不该被动
+            { id: 'server-monitor:srv_1', enabled: true, side: 'left', order: 1 }
+        ]
+    };
+    let layoutCalls = 0;
+    const app = {
+        modulesConfig: config,
+        applyWidgetLayout() { layoutCalls++; }
+    };
+    const drag = { id: 'memo:main', widget: nodes[3], targetSide: null };
+
+    // methodBodyOf 返回的是**方法定义**（`commitWidgetDrag(drag) { … }`），
+    // 不是函数体——嵌进一个对象字面量再调用，`this` 即传入的 app。
+    const invoke = new Function('$', 'drag', 'app',
+        `return ({ ${body} }).commitWidgetDrag.call(app, drag);`);
+    invoke(() => zone, drag, app);
+
+    const orderOf = id => (config.widgets.find(w => w.id === id) || {}).order;
+    assert.deepEqual(
+        keys.map(k => orderOf(k)),
+        [0, 1, 2, 3],
+        '每张渲染中的卡片都要拿到与 DOM 位置一致的 order——缺一条就会让落点被撤销'
+    );
+    assert.equal(orderOf('memo:main'), 3, '被拖到最下的那张必须写 3，而不是被顶回 1');
+    assert.equal(orderOf('server-monitor:srv_1'), 1, '不在 DOM 里的陈旧条目不受影响');
+    assert.equal(layoutCalls, 1, '写完 order 之后必须重排一次（顺序：先写后排）');
+});
+
 test('改更新周期会让采集缓存失效，否则「改完不生效」', () => {
     // TTL 是跟着周期算出来的（周期 + 10s），但**已写下的缓存行不会因为
     // TTL 变小而提前失效**。用户把周期从 5 分钟改成 10 秒，TTL 确实变成

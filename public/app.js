@@ -1941,11 +1941,30 @@
 
             // 顺序取 DOM 当前顺序——拖拽过程中节点位置已经反映了用户的意图。
             // 键同样是 instanceId，否则同一模块的多张卡片会互相写同一个 order。
+            //
+            // ⚠️ 配置里**没有条目**的卡片必须在这里补条目，不能像早先那样跳过。
+            // 未登记的卡片在 applyWidgetLayout 里按 MAX_SAFE_INTEGER 排，永远
+            // 落在任何有 order 的卡片**之前**；于是「把一张卡往下拖过一张没
+            // 登记过的卡」会在松手那一刻被撤销。用户报的就是这个：「备忘录模块
+            // 不能拖拽到最下面一个模块」——浏览器实测：拖到最下时 DOM 顺序已是
+            // `本机 > srv461 > srv472 > 备忘录`，松手后弹回第二位（备忘录@3，
+            // 两张服务器卡无条目=MAX）。任何新加的服务器都踩同一条，不是备忘录
+            // 独有。此前只有**被拖的那张**会补条目（见上方那段），其余永远是 MAX。
             const nodes = zone ? [...zone.querySelectorAll('.module-widget')] : [];
             nodes.forEach((node, index) => {
                 const key = node.dataset.instanceId || node.dataset.moduleId;
-                const item = widgets.find(w => w.id === key);
-                if (item) item.order = index;
+                let item = widgets.find(w => w.id === key);
+                if (!item) {
+                    item = {
+                        id: key,
+                        enabled: true,
+                        side: node.dataset.side === 'right' ? 'right' : 'left',
+                        order: index,
+                        collapsed: false
+                    };
+                    widgets.push(item);
+                }
+                item.order = index;
             });
 
             // 清掉全部拖拽残留：transform、落点高亮、指针状态
