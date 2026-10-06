@@ -201,7 +201,7 @@
         // 首页首屏因此不因模块变重——未登录访客一个模块文件都不下载。
 
         /** 已知模块 id 白名单。loadModule 只加载这里有的，避免任意路径被当成脚本请求。 */
-        static KNOWN_MODULES = ['server-monitor'];
+        static KNOWN_MODULES = ['server-monitor', 'memo'];
 
         static moduleDefs = new Map();
 

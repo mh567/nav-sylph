@@ -298,6 +298,10 @@ setInterval(() => {
     // 长期凭据），也按 IP 计数。漏掉它就等于给了一个「只增不减、无人回收」
     // 的 Map —— 本仓库每个限流 Map 都登记在这个定时器里，不是可选项。
     sweepRateLimitStore(enrollLimitMap, now, ENROLL_LIMIT_WINDOW);
+    // 备忘录桶：路由虽要求登录，仍按 IP 计数——已登录会话下的
+    // 异常流量同样只增不减。桶定义在下方「备忘录 API」小节，
+    // 与注册桶同理：定时器 60 秒后才触发，那时 const 已初始化。
+    sweepRateLimitStore(memoRateLimitMap, now, MEMO_LIMIT_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
     // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
@@ -2967,6 +2971,140 @@ app.post('/api/modules/agent-push', pushLimit, async (req, res) => {
     } catch (err) {
         console.error('接收推送失败:', err);
         res.status(500).json({ error: '接收失败' });
+    }
+});
+
+// ========== 备忘录 API ==========
+//
+// 登录后的私有数据（SQLite memos 表，v4 迁移——独立于
+// config.json：那里的 key 会经 toPublicConfig 下发给匿名访客）。
+// 每条路由 rateLimit + requireAdmin + memoLimit：共享防爆破桶之外
+// 再按 IP 单列一只桶，15s 轮询只占 4 次/分钟，远低于上限。
+// 容量与长度在服务端再校验一遍——客户端 maxlength 只是体验不是边界。
+const MEMO_LIMIT_WINDOW = 60000;
+const MEMO_LIMIT_MAX = 30;
+const MEMO_MAX_ENTRIES = 200;
+const MEMO_TITLE_MAX = 60;
+const MEMO_BODY_MAX = 10240;
+const memoRateLimitMap = new Map();
+
+function memoLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const now = Date.now();
+    const rec = memoRateLimitMap.get(ip);
+    if (!rec || now > rec.resetAt) {
+        memoRateLimitMap.set(ip, { count: 1, resetAt: now + MEMO_LIMIT_WINDOW });
+        return next();
+    }
+    rec.count += 1;
+    if (rec.count > MEMO_LIMIT_MAX) {
+        res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+        return;
+    }
+    next();
+}
+
+// 行 → 客户端形态：SQLite 的 0/1 转布尔，下划线键改驼峰
+function memoToClient(row) {
+    return {
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        pinned: !!row.pinned,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+const MEMO_SELECT = 'SELECT id, title, body, pinned, created_at, updated_at FROM memos';
+// 排序在服务端做：固定组在前、组内按内容更新时间倒序——
+// 单一真相源，客户端不再各自排序。
+const MEMO_LIST_SQL = MEMO_SELECT + ' ORDER BY pinned DESC, updated_at DESC';
+
+app.get('/api/memos', rateLimit, requireAdmin, memoLimit, async (req, res) => {
+    try {
+        const rows = db.prepare(MEMO_LIST_SQL).all();
+        // 与 metrics 路由同理：回当前生效的周期，
+        // 用户在后台改过之后不必刷新页面就能按新周期走。
+        const pollInterval = await readPollInterval();
+        res.json({ memos: rows.map(memoToClient), pollInterval });
+    } catch (err) {
+        console.error('读取备忘录失败:', err);
+        res.status(500).json({ error: '读取失败' });
+    }
+});
+
+app.post('/api/memos', rateLimit, requireAdmin, memoLimit, (req, res) => {
+    try {
+        const body = req.body || {};
+        const title = typeof body.title === 'string' ? body.title.trim() : '';
+        const text = typeof body.body === 'string' ? body.body : '';
+        if (!title) return res.status(400).json({ error: '标题不能为空' });
+        if (title.length > MEMO_TITLE_MAX) return res.status(400).json({ error: `标题最长 ${MEMO_TITLE_MAX} 字符` });
+        if (text.length > MEMO_BODY_MAX) return res.status(400).json({ error: `正文最长 ${MEMO_BODY_MAX} 字符` });
+        if (db.prepare('SELECT COUNT(*) AS n FROM memos').get().n >= MEMO_MAX_ENTRIES) {
+            return res.status(400).json({ error: `最多 ${MEMO_MAX_ENTRIES} 条备忘录` });
+        }
+        const now = Date.now();
+        // WebCrypto 的 randomUUID：本文件不 require('crypto')，
+        // 以免 shadow 粘贴代码用的全局 WebCrypto（见上方说明）。
+        const id = crypto.randomUUID();
+        db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
+            .run(id, title, text, now, now);
+        const row = db.prepare(MEMO_SELECT + ' WHERE id = ?').get(id);
+        res.json({ memo: memoToClient(row) });
+    } catch (err) {
+        console.error('创建备忘录失败:', err);
+        res.status(500).json({ error: '创建失败' });
+    }
+});
+
+app.post('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
+    try {
+        const body = req.body || {};
+        const title = typeof body.title === 'string' ? body.title.trim() : '';
+        const text = typeof body.body === 'string' ? body.body : '';
+        if (!title) return res.status(400).json({ error: '标题不能为空' });
+        if (title.length > MEMO_TITLE_MAX) return res.status(400).json({ error: `标题最长 ${MEMO_TITLE_MAX} 字符` });
+        if (text.length > MEMO_BODY_MAX) return res.status(400).json({ error: `正文最长 ${MEMO_BODY_MAX} 字符` });
+        const now = Date.now();
+        // LWW（定稿决策 Q10）：直接覆盖，不带版本检查——
+        // 单管理员工具，两端同刻编辑同一条的概率极低。
+        const info = db.prepare('UPDATE memos SET title = ?, body = ?, updated_at = ? WHERE id = ?')
+            .run(title, text, now, req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        const row = db.prepare(MEMO_SELECT + ' WHERE id = ?').get(req.params.id);
+        res.json({ memo: memoToClient(row) });
+    } catch (err) {
+        console.error('保存备忘录失败:', err);
+        res.status(500).json({ error: '保存失败' });
+    }
+});
+
+app.post('/api/memos/:id/pin', rateLimit, requireAdmin, memoLimit, (req, res) => {
+    try {
+        const v = req.body && req.body.pinned;
+        if (typeof v !== 'boolean') return res.status(400).json({ error: 'pinned 必须为布尔值' });
+        // 只改 pinned，不动 updated_at：固定组内按「内容更新时间」
+        // 排序（定稿决策 Q3），固定操作本身不算内容更新。
+        const info = db.prepare('UPDATE memos SET pinned = ? WHERE id = ?')
+            .run(v ? 1 : 0, req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('固定备忘录失败:', err);
+        res.status(500).json({ error: '操作失败' });
+    }
+});
+
+app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
+    try {
+        const info = db.prepare('DELETE FROM memos WHERE id = ?').run(req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('删除备忘录失败:', err);
+        res.status(500).json({ error: '删除失败' });
     }
 });
 

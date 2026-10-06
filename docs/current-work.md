@@ -2,7 +2,86 @@
 
 核对日期：2026-10-06。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：修「首页加载、模块区出现时卡一下」（修复提交 `2c1211e`，发布为 v1.10.5）
+## 最新一轮：新增「备忘录」模块（本轮**未提交、未发布**）
+
+用户原话（`/grill-me`）：「新开发备忘录模块（只有登录后才能用），可增删改查备忘录内容，并可将指定备忘固定在最前面，备忘录可通过服务器自动实时同步，并反馈同步状态，手动同步时也反馈同步状态」。
+
+按仓库约定走完三步才动代码：grilling 定 14 项决策 → `docs/mockup-memo.html` 仿真样例（8 个工具栏控件可强制各状态）→ 书面计划 `~/.commandcode/plans/memo-module.md`（含「不在本次范围」与验证命令清单）→ 批准后实现。
+
+### 定稿决策（14 项，用户全部「同意所有」/「同意」）
+
+| # | 决策 | 结论 |
+| --- | --- | --- |
+| Q1–Q3 | 端数 / 内容 / 置顶 | 多设备同步（服务器为唯一真相源）；标题 + 纯文本正文；多条可置顶，组内按更新时间倒序 |
+| Q4 / Q6 | 删除 / 容量 | 硬删除 + 两步确认；≤200 条、标题 ≤60 字符、正文 ≤10KB |
+| Q7 | 存储 | **SQLite 新表**（`MIGRATIONS` 尾部 v4）——`server-config/index.js:166` 的 `rootDir` 把 JSON 路径钉在仓库根，加一个 `.memos.json` 要同时改 `PRIVATE_FILES`、`ensureFile`、`sylph.sh` 两处、WebDAV 三处；`architecture.md:205` 早已写明这条路线 |
+| Q8 | 入口 | 模块区模块（`registerModule`），「只有登录后才能用」由现成门控免费获得 |
+| Q9/Q12 | 同步机制 | 轮询：挂载拉一次 → `pollInterval`（白名单 10/15/30/60/300，默认 15s）→ `visibilitychange` 切回前台立即补拉 |
+| Q10/Q11 | 冲突 / 离线 | LWW 直接覆盖；断网时暂存 `localStorage`，恢复后随轮询自动补传，卡片显示「N 条待同步」 |
+| Q13 | 搜索 | 纯前端。**对 grilling 推荐的修正**：用子串 `includes` 而非 uFuzzy——uFuzzy 是英文模糊匹配，对中文无分词能力 |
+| Q14 | 卡片形态 | 卡片 = 置顶/最近摘要行，点击开完整管理对话框（server-monitor `openPanel` 同路线） |
+
+### 逐文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `lib/db.js` | `MIGRATIONS` **尾部**追加 v4（`memos` 表：id/title/body/pinned/created_at/updated_at），已发布的台阶一字未动 |
+| `server.js` | `MEMO_*` 常量、`memoRateLimitMap` + `memoLimit`、并入 60 秒 sweep、五条路由（`GET/POST /api/memos`、`POST /api/memos/:id`、`POST /api/memos/:id/pin`、`DELETE /api/memos/:id`），全部 `rateLimit, requireAdmin, memoLimit`；`GET` 顺带回当前生效的 `pollInterval` |
+| `public/modules/memo.js` | 新模块（`registerModule` + `mountWidget` + `openPanel`），~640 行 |
+| `public/app.js` | `KNOWN_MODULES = ['server-monitor', 'memo']` |
+| `public/styles.css` | 备忘录样式块（含窄屏 44px 触控下限与 `(hover: none)` 常显行内操作） |
+| `public/sw.js` | `ASSETS` 加 `/modules/memo.js`；`CACHE` `nav-v68 → nav-v69` |
+| `tests/fav-tab.test.js` | 缓存名守卫同步到 `nav-v69`（仓库既有的每轮同步项，连同用例名一起改） |
+| `tests/memo.test.js` | 新增 16 条（见下） |
+
+**存储面的一个必须说清的取舍**：`memos` 表随 `nav-sylph.db` 走 `sylph.sh` 的升级备份，但**不进 WebDAV 跨设备备份集**（与 `sessions` / `module_cache` / `agent_metrics` 同列）。跨设备靠服务器本身（那正是同步的真相源），不是靠备份。
+
+### 验证
+
+- `node --test tests/*.test.js` → **465 pass / 0 fail**（基线 449 + 新增 16；已用用例名 grep 确认参与全量运行，不是只跑了单文件）
+- 新增 16 条的构成：迁移表结构、五条路由**逐条**带 `rateLimit, requireAdmin`（正向枚举 + 计数 5）、限流桶登记进 sweep、真实处理器（vm 抽出 + 真实 SQLite）上的 CRUD/排序/pin 不动 `updated_at`/容量 200→201/服务端字段校验/404、`memoToClient` 形状、`KNOWN_MODULES`、SW 预缓存与缓存名同一性、**用户文本逐处 `esc()` 的正向枚举**、**模块不得引用裸 `API` 标识符**、**模块 id 不得与页面既有 id 冲突**
+- **红绿 5/5 全红**（每步都断言锚点命中、改后内容确实不同、恢复后与备份逐字节 `diff`）：去掉一条路由的 `requireAdmin`、删掉 sweep 登记、删掉 v4 迁移、`CACHE` 退回 `nav-v68`、预览行标题不过 `esc`
+- `node --check`（全部改动 JS）、`git diff --check` 干净
+
+### 真实浏览器实测（临时副本 + 默认密码，端口 61752；每轮 `unregister()` + `caches.delete()` + cache-buster；服务已停、副本已删、端口已释放、浏览器已 close）
+
+| 场景 | 结果 |
+| --- | --- |
+| 未登录 | 模块区不渲染（`#moduleZone.hidden`），一个模块文件都不下载 |
+| 登录后 | 卡片挂载，状态行「已同步 HH:MM」 |
+| 新建 | 表单空标题时保存按钮 `disabled` → 填写后启用；计数 `8 / 60`、`22 / 10240`；保存后列表与卡片同时更新 |
+| 编辑 | 表单回填原值（含换行）；改后卡片显示新标题、`updated_at` 前移、`pinned` 保留 |
+| 固定 | 行移入「已固定」组，卡片摘要行出现图钉；按钮 `aria-pressed` 与文案同步 |
+| 搜索 | 子串过滤生效；**真实键盘输入 3 个字符后输入框仍聚焦、光标停在 3**（只重渲染列表子树） |
+| 删除 | 行内两步确认；**取消后 2 行仍在**、确认后 1 行且库里同步 |
+| 注入对抗 | 标题 `<img onerror>`、正文 `<script>`/`<svg onload>`：三个探针变量全部 `undefined`、面板内 `img/script/svg[onload]` 计数 **0**、payload 以纯文本呈现 |
+| 持久化 | 清 SW 后硬重载，两条备忘仍在（已固定在前）；**直读库**：`user_version: 4`、`pinned` 为 0/1、字段与 UI 一致 |
+| 同步失败 | 停服后本轮询转「同步失败」+「重试」入口，**已显示的备忘不被清空**；服务恢复后下一次轮询自动回到「已同步」 |
+| 同步中 | 本地回环太快（<10ms），**未能截到 spinner 那一帧**；手动点「同步」后时间戳前移可证其执行过 |
+| 窄屏 390×844 | 模块区 `data-dock` 退化为横滑（`overflow-x: auto`）；面板 366px；触控目标修前 30×30 → 修后 **44×44**；行内操作 `opacity: 1` |
+| 桌面 1280×800 | 面板 480px、触控目标仍 30×30（窄屏块未泄漏）；行内操作 `opacity: 0` → hover 后 1；卡片摘要行 hover 实测 `translateY(-2px)` + 外投影 |
+| console | 清空后跨一次完整轮询静置 20 秒，**零日志** |
+
+### 浏览器实测抓到的三个真缺陷（源码形状断言与 `node --check` 全都放过了）
+
+1. **`ReferenceError: API is not defined`——模块会完全不能同步。** `API` 是 `app.js` IIFE 内部的 `const`，不是全局；平台是通过 `mountWidget(shell, { api })` 注入的，我却写了裸 `API`。症状是卡片正常渲染、每一轮同步都失败。已改为从 `state.api` 注入（取不到时在卡片上明说「模块未拿到 API」，不退化成一串静默失败），并加守卫：源码里不得出现裸 `API.`、必须从 `state.api` 赋值。
+2. **元素 id 与后台弹窗撞名，点击落空。** 我的 `#saveBtn` 与 `app.js:1037/4912` 的 `#saveBtn` 同名，`querySelector('#saveBtn')` 命中的是那个隐藏的后台按钮——`elementFromPoint` 落在遮罩上，于是**面板被关掉、编辑内容丢失**，看起来像「保存没反应」。已把模块内 id 全部加 `memo` 前缀，并加守卫：模块 id 必须以 `memo` 起头、且不得与 `index.html` / `app.js` 里的 id 相同。
+3. **窄屏触控目标 30×30、行内操作靠 hover 才显形。** 都已按仓库既有做法修正（`≤1023px` 抬到 44px、`(hover: none)` 常显）。顺带把「点空白关面板」改成**编辑态不关**——一次误点不该丢掉刚写的备忘，取消有显式的「取消 / ← 返回」。
+
+### 仍未验证
+
+1. **真机触摸**：`agent-browser set device` 在本环境仍报 `maxTouchPoints: 0`，`(hover: none)` 恒 false，因此那条常显规则**一行都没被浏览器执行过**（可测的是 `≤1023px` 那条，已测）。
+2. **真机软键盘**：与仓库既有记录同一条限制，本轮未涉及。
+3. **「同步中」spinner 的观感**：本地回环下该状态只存在几毫秒，没能截帧。
+4. **多设备同时编辑同一条**：LWW 是定稿决策，但「两端同刻编辑」这一场景本地造不出来。
+5. **老用户是否真能拿到新 bundle**：规则要求升缓存名、已升（`nav-v69`），但不能断言送达——需对着已部署的源刷一次。
+
+### 下一步
+
+1. **发布**（本轮未提交）：`scripts/release.sh`；`public/` 有改动，pre-flight 第一条命令就会要求确认 `CACHE`（已提前升到 `nav-v69`）。`package.json` / `version.json` / `CHANGELOG.json` 三处版本号需同步。
+2. `memo-mockup.html` 是否保留待定（与 `docs/mockup-*.html` 同类，不进发布包）。
+
+## 上一轮：修「首页加载、模块区出现时卡一下」（修复提交 `2c1211e`，发布为 v1.10.5）
 
 用户原话：「首页加载，模块展示的时候会有卡顿感，动画不够流畅」。
 

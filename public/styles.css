@@ -3109,6 +3109,91 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-panel-detail dt { color: var(--text-muted); font-size: 11px; }
 .module-panel-detail dd { color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 
+/* ===== 备忘录模块 ===== */
+/* 卡片内：同步状态行 + 摘要行。配色档与 .module-card-status 同值。 */
+.memo-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.memo-status-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; cursor: pointer; }
+.memo-spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: memo-spin 700ms linear infinite; }
+@keyframes memo-spin { to { transform: rotate(360deg); } }
+
+.memo-rows { display: flex; flex-direction: column; gap: 2px; }
+.memo-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 7px; cursor: pointer; transition: transform 90ms, box-shadow 90ms, background 110ms; }
+.memo-row:hover { background: var(--bg-hover); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.memo-row svg { flex: 0 0 auto; color: var(--accent); }
+.memo-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+.memo-row-time { flex: 0 0 auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-empty-card { padding: 8px 6px; color: var(--text-muted); font-size: 11px; text-align: center; }
+
+/* 管理面板：弹性布局，列表区独立滚动，头尾固定 */
+.memo-panel { display: flex; flex-direction: column; overflow: hidden; }
+.memo-dialog-header { display: flex; align-items: center; gap: 10px; padding: 15px 18px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.memo-dialog-header h2 { margin-right: auto; }
+.memo-dialog-header .memo-status-row { margin: 0; }
+.memo-search { padding: 12px 18px 4px; }
+.memo-search input { width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit; color: var(--text); background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; outline: none; }
+.memo-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+.memo-search input::placeholder { color: var(--text-muted); }
+.memo-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 8px 18px 12px; }
+.memo-section-title { margin: 12px 0 6px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.memo-row-lg { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; transition: background 110ms; }
+.memo-row-lg:hover { background: var(--bg-hover); }
+.memo-pin-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; transition: color 110ms, background 110ms, transform 110ms; }
+.memo-pin-btn:hover { background: var(--bg-hover); color: var(--accent); }
+.memo-pin-btn[aria-pressed="true"] { color: var(--accent); }
+.memo-pin-btn:active { transform: scale(.92); }
+.memo-row-main { flex: 1; min-width: 0; cursor: pointer; }
+.memo-row-lg .memo-row-title { font-size: 13px; }
+.memo-row-snippet { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.memo-row-lg .memo-row-time { font-size: 10px; }
+.memo-pend-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: #a2762c; vertical-align: 2px; }
+.memo-row-actions { flex: 0 0 auto; display: flex; gap: 6px; opacity: 0; transition: opacity 110ms; }
+.memo-row-lg:hover .memo-row-actions, .memo-row-lg:focus-within .memo-row-actions { opacity: 1; }
+.memo-del-confirm { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a44c46; flex-wrap: wrap; }
+.memo-del-confirm span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memo-none { padding: 26px 0; text-align: center; color: var(--text-muted); font-size: 12px; }
+.memo-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.memo-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* 编辑表单 */
+.memo-form { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 14px 18px; display: flex; flex-direction: column; gap: 8px; }
+.memo-form label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-top: 6px; }
+.memo-form input, .memo-form textarea { width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit; color: var(--text); background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; outline: none; resize: vertical; }
+.memo-form input:focus, .memo-form textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+.memo-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* 行内小按钮（编辑 / 删除），与 .module-panel-close 同族 */
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 30px; padding: 0 7px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(170deg, var(--control-top), var(--control-bottom)); color: var(--text); font-size: 12px; box-shadow: inset 0 1px rgba(255,255,255,.48), 0 1px 3px rgba(67,51,39,.06); transition: transform 110ms, background 140ms; }
+.icon-btn:hover { transform: translateY(-1px); background: linear-gradient(170deg, var(--control-hover-top), var(--control-hover-bottom)); }
+.icon-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+.icon-btn.danger { color: #a44c46; }
+.icon-btn.danger:hover { background: rgba(164,76,70,.11); }
+
+/* 深色下警示色与「待同步」圆点要提亮（与 .module-card-status 同值） */
+:root[data-theme="dark"] .memo-pend-dot { background: #e0bd7a; }
+:root[data-theme="dark"] .memo-del-confirm { color: #e9a69d; }
+:root[data-theme="dark"] .icon-btn.danger { color: #e9a69d; }
+:root[data-theme="dark"] .icon-btn.danger:hover { background: rgba(233,166,157,.13); }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .memo-pend-dot { background: #e0bd7a; }
+    :root:not([data-theme="light"]) .memo-del-confirm { color: #e9a69d; }
+    :root:not([data-theme="light"]) .icon-btn.danger { color: #e9a69d; }
+    :root:not([data-theme="light"]) .icon-btn.danger:hover { background: rgba(233,166,157,.13); }
+}
+
+/* 窄屏：触控目标抬到 44px 下限（与仓库既有做法一致），行内操作常显。
+   桌面端 ✎/✕ 靠 hover 显形，触摸设备没有 hover——不常显就永远看不见。 */
+@media (max-width: 1023px) {
+    .memo-pin-btn, .memo-panel .icon-btn { min-width: 44px; min-height: 44px; }
+    .memo-panel .btn { min-height: 44px; }
+    .memo-row-lg .memo-row-actions { opacity: 1; }
+}
+/* 宽视口下的触控设备（平板）：同一件事，按能力问而不是按宽度问。
+   注意 headless 里 (hover: none) 恒为 false，这条本地验证不到。 */
+@media (hover: none) {
+    .memo-row-lg .memo-row-actions { opacity: 1; }
+}
+
 /* 降级：prefers-reduced-transparency 下模块面板退回不透明底色，
    与 .backboard / .utility-dock 的同一处理。 */
 @media (prefers-reduced-transparency: reduce) {

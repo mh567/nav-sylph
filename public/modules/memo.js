@@ -1,0 +1,638 @@
+/**
+ * 备忘录模块。
+ *
+ * 登录后可用——模块区整体由登录门控（app.js 的 syncModuleVisibility），
+ * 这里不重复判断。数据在服务端 SQLite memos 表：服务器是多端同步的
+ * 唯一真相源。本模块按 pollInterval 轮询（挂载拉一次 → 定时拉 →
+ * 切回前台立即补拉一次）；写操作在断网时暂存 localStorage，
+ * 下次拉取成功后自动补传，卡片显示「N 条待同步」。
+ *
+ * 冲突策略：last-write-wins（单管理员工具，两端同刻编辑同一条的概率
+ * 极低）；固定是即时状态变更，不进离线暂存。
+ */
+(() => {
+    'use strict';
+
+    const DEFAULT_POLL_MS = 15000;
+    const DRAFTS_KEY = 'nav-sylph-memo-drafts';
+    const TITLE_MAX = 60;
+    const BODY_MAX = 10240;
+    /** 卡片上最多展示几条摘要 */
+    const PREVIEW_ROWS = 3;
+
+    const PIN_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+    const PIN_SVG_BIG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+
+    function esc(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function hm(ts) {
+        const d = new Date(ts);
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function relTime(ts) {
+        const s = (Date.now() - ts) / 1000;
+        if (s < 60) return '刚刚';
+        if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+        if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+        const d = new Date(ts), y = new Date(Date.now() - 86400e3);
+        if (d.toDateString() === y.toDateString()) return '昨天 ' + hm(ts);
+        return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + hm(ts);
+    }
+
+    // ================= 模块级状态 =================
+
+    let pollTimer = null;
+    let inFlight = false;
+    let pollMs = DEFAULT_POLL_MS;
+    let visibilityHandler = null;
+
+    /** 服务器返回的列表（已按 pinned DESC, updated_at DESC 排序） */
+    let memos = [];
+    let syncState = 'synced'; // syncing | synced | failed
+    let lastSync = null;
+    /**
+     * 平台注入的 API 对象（mountWidget 的 state.api）。
+     *
+     * ⚠️ 不能写裸 `API`：它是 app.js IIFE 内部的 const，不是全局——
+     * 那样写 node --check 过得去、源码里也真有个 API 字样，只有在
+     * 浏览器里跑起来才会以 `ReferenceError: API is not defined` 现形
+     * （实测：卡片渲染出来了，同步一路失败）。
+     */
+    let api = null;
+    /** 当前挂载的卡片 body（本模块只有一张卡片） */
+    let cardBody = null;
+
+    /** 打开的对话框：{ overlay, panelEl, close } */
+    let panel = null;
+    let panelView = 'list'; // list | edit
+    let editingId = null;   // 备忘录 id 或 'new'
+    let confirmDeleteId = null;
+    let search = '';
+    /** 面板上次渲染时的数据指纹：数据没变就不重渲染（保住搜索框焦点） */
+    let lastPanelKey = '';
+
+    // ================= 离线草稿 =================
+
+    function loadDrafts() {
+        try {
+            const list = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '[]');
+            return Array.isArray(list) ? list : [];
+        } catch {
+            return [];
+        }
+    }
+
+    let drafts = loadDrafts();
+
+    function persistDrafts() {
+        try {
+            if (drafts.length) localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+            else localStorage.removeItem(DRAFTS_KEY);
+        } catch {
+            // 写不进去就只剩内存态：本次会话内暂存仍然有效
+        }
+    }
+
+    function sortMemos() {
+        // 与服务端 ORDER BY pinned DESC, updated_at DESC 一致
+        memos.sort((a, b) => (b.pinned - a.pinned) || (b.updatedAt - a.updatedAt));
+    }
+
+    function applyMemo(memo) {
+        const i = memos.findIndex(m => m.id === memo.id);
+        if (i >= 0) memos[i] = memo;
+        else memos.push(memo);
+        sortMemos();
+    }
+
+    // ================= 同步 =================
+
+    function setSyncState(next) {
+        syncState = next;
+        renderCard();
+        renderPanelMaybe();
+    }
+
+    async function poll() {
+        if (inFlight) return;
+        inFlight = true;
+        setSyncState('syncing');
+        try {
+            const data = await api.get('/api/memos');
+            if (!data || !Array.isArray(data.memos)) throw new Error('bad payload');
+            memos = data.memos;
+            sortMemos();
+            lastSync = Date.now();
+            // 服务端回当前生效的周期：后台改过之后不必刷新页面
+            if (Number.isFinite(data.pollInterval) && data.pollInterval * 1000 !== pollMs) {
+                pollMs = data.pollInterval * 1000;
+                if (pollTimer) {
+                    clearInterval(pollTimer);
+                    pollTimer = setInterval(poll, pollMs);
+                }
+            }
+            setSyncState('synced');
+            // 拉取成功说明网络已恢复：补传离线暂存的编辑
+            flushDrafts();
+        } catch (e) {
+            console.error('Memo poll failed:', e);
+            setSyncState('failed');
+        } finally {
+            inFlight = false;
+        }
+    }
+
+    /**
+     * 轮询成功后补传草稿：成功一条删一条。
+     * 上一轮拉取刚成功，这里再返回 error 说明草稿本身被拒绝
+     * （多半是对应备忘录已在别处删除）——作废，不无限重试。
+     * 只有网络异常（fetch 抛错）才保留，等下次拉取。
+     */
+    async function flushDrafts() {
+        if (!drafts.length) return;
+        const remaining = [];
+        for (const d of drafts) {
+            try {
+                const data = d.id
+                    ? await api.post(`/api/memos/${encodeURIComponent(d.id)}`, { title: d.title, body: d.body })
+                    : await api.post('/api/memos', { title: d.title, body: d.body });
+                if (data && data.error) {
+                    console.warn('Memo draft rejected:', d.id, data.error);
+                    continue;
+                }
+                if (data && data.memo) applyMemo(data.memo);
+            } catch (e) {
+                remaining.push(d);
+            }
+        }
+        if (remaining.length !== drafts.length) {
+            drafts = remaining;
+            persistDrafts();
+            renderCard();
+            renderPanelMaybe();
+        }
+    }
+
+    function startPolling() {
+        stopPolling();
+        poll();
+        pollTimer = setInterval(poll, pollMs);
+
+        // 页面不可见时停表：后台 tab 继续轮询只会白耗请求配额；
+        // 切回前台时立即补拉一次——手机切回来就能看到另一台设备的新备忘。
+        // ⚠️ 重排表必须用可变的 pollMs，写死 15 秒会悄悄打回用户设置的周期。
+        visibilityHandler = () => {
+            if (document.hidden) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            } else if (!pollTimer) {
+                poll();
+                pollTimer = setInterval(poll, pollMs);
+            }
+        };
+        document.addEventListener('visibilitychange', visibilityHandler);
+    }
+
+    function stopPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
+        if (visibilityHandler) {
+            document.removeEventListener('visibilitychange', visibilityHandler);
+            visibilityHandler = null;
+        }
+    }
+
+    // ================= 写操作 =================
+
+    /** 保存（新建或编辑）。返回 true 表示已落库；false 为服务端拒绝或已暂存。 */
+    async function saveMemo(id, title, body) {
+        try {
+            const data = id
+                ? await api.post(`/api/memos/${encodeURIComponent(id)}`, { title, body })
+                : await api.post('/api/memos', { title, body });
+            if (data && data.error) {
+                window.app?.showToast(data.error, 'error');
+                return false;
+            }
+            if (data && data.memo) applyMemo(data.memo);
+            if (id) {
+                drafts = drafts.filter(d => d.id !== id);
+                persistDrafts();
+            }
+            lastSync = Date.now();
+            setSyncState('synced');
+            return true;
+        } catch (e) {
+            // 断网：暂存到 localStorage，恢复后随轮询自动补传
+            if (id) drafts = drafts.filter(d => d.id !== id);
+            drafts.push({ id: id || null, title, body, ts: Date.now() });
+            persistDrafts();
+            renderCard();
+            renderPanelMaybe();
+            window.app?.showToast('已暂存，恢复网络后自动同步', 'error', 4000);
+            return false;
+        }
+    }
+
+    async function togglePin(memo) {
+        // 乐观更新，失败回滚。固定是状态变更，不进离线暂存。
+        memo.pinned = !memo.pinned;
+        sortMemos();
+        renderCard();
+        renderPanelMaybe();
+        try {
+            const data = await api.post(`/api/memos/${encodeURIComponent(memo.id)}/pin`, { pinned: memo.pinned });
+            if (data && data.error) throw new Error(data.error);
+            window.app?.showToast(memo.pinned ? '已固定到最前' : '已取消固定');
+        } catch (e) {
+            memo.pinned = !memo.pinned;
+            sortMemos();
+            renderCard();
+            renderPanelMaybe();
+            window.app?.showToast('固定状态保存失败', 'error');
+        }
+    }
+
+    async function deleteMemo(memo) {
+        let res, data;
+        try {
+            ({ res, data } = await api.request(`/api/memos/${encodeURIComponent(memo.id)}`, { method: 'DELETE' }));
+        } catch (e) {
+            window.app?.showToast('网络异常，删除失败', 'error');
+            return;
+        }
+        if (!res.ok || (data && data.error)) {
+            window.app?.showToast((data && data.error) || '删除失败', 'error');
+            return;
+        }
+        memos = memos.filter(m => m.id !== memo.id);
+        drafts = drafts.filter(d => d.id !== memo.id);
+        persistDrafts();
+        confirmDeleteId = null;
+        renderCard();
+        renderPanelMaybe();
+        window.app?.showToast('已删除');
+    }
+
+    // ================= 首页卡片 =================
+
+    function statusPillHTML() {
+        if (syncState === 'syncing') {
+            return '<span class="module-card-status" data-kind="pending"><span class="memo-spinner"></span>同步中</span>';
+        }
+        if (syncState === 'failed') {
+            return '<span class="module-card-status" data-kind="alert">同步失败</span>' +
+                   '<button class="memo-retry" type="button" data-action="retry">重试</button>';
+        }
+        return '<span class="module-card-status" data-kind="ready">已同步</span>' +
+               (lastSync ? `<span class="memo-status-time">${hm(lastSync)}</span>` : '');
+    }
+
+    function pendingPillHTML() {
+        const n = drafts.length;
+        return n > 0 ? `<span class="module-card-status" data-kind="pending">待同步 ${n}</span>` : '';
+    }
+
+    function renderCard() {
+        if (!cardBody) return;
+        const rows = memos.slice(0, PREVIEW_ROWS).map(m =>
+            `<div class="memo-row" data-action="open">` +
+            `${m.pinned ? PIN_SVG : ''}` +
+            `<span class="memo-row-title">${esc(m.title)}</span>` +
+            `<span class="memo-row-time">${relTime(m.updatedAt)}</span>` +
+            `</div>`).join('');
+        cardBody.innerHTML =
+            `<div class="memo-status-row">${statusPillHTML()}${pendingPillHTML()}</div>` +
+            (memos.length
+                ? `<div class="memo-rows">${rows}</div>`
+                : '<div class="memo-empty-card">还没有备忘录</div>') +
+            `<div class="module-card-hint">共 ${memos.length} 条 · 点击管理</div>`;
+        // 卡片高度随内容变化（0 条与 3 条差一截），宽屏的纵向偏移按实测高度排
+        if (typeof window.app?.stackWidgetsByHeight === 'function') {
+            window.app.stackWidgetsByHeight();
+        }
+    }
+
+    function mountWidget(shell, state) {
+        api = (state && state.api) || null;
+        if (!api) {
+            // 平台契约变化要让它在界面上可见，而不是退化成一连串同步失败
+            const box = document.createElement('div');
+            box.className = 'module-widget-error';
+            box.textContent = '模块未拿到 API（平台接口变化）';
+            return [box];
+        }
+
+        const card = document.createElement('section');
+        card.className = 'module-card';
+        // 布局键是稳定域 id，不是数组下标（平台约定）
+        card.dataset.instanceId = 'memo:main';
+
+        const head = document.createElement('div');
+        head.className = 'module-widget-head';
+
+        const label = document.createElement('span');
+        label.className = 'module-widget-title';
+        label.textContent = '备忘录';
+
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'module-drag-handle';
+        handle.title = '拖拽调整位置';
+        handle.setAttribute('aria-label', '拖拽调整备忘录的位置');
+        // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
+
+        const expand = document.createElement('button');
+        expand.type = 'button';
+        expand.className = 'module-widget-expand';
+        expand.title = '管理备忘录';
+        expand.setAttribute('aria-label', '打开备忘录管理');
+        expand.textContent = '管理';
+
+        head.append(label, handle, expand);
+
+        const body = document.createElement('div');
+        body.className = 'module-widget-body';
+        // 事件委托：摘要行点击打开管理；失败态的「重试」也在这一层
+        body.addEventListener('click', event => {
+            const t = event.target.closest('[data-action]');
+            if (!t) return;
+            if (t.dataset.action === 'open') openPanel();
+            else if (t.dataset.action === 'retry') poll();
+        });
+
+        card.append(head, body);
+        cardBody = body;
+
+        expand.addEventListener('click', event => {
+            event.stopPropagation();
+            openPanel();
+        });
+
+        startPolling();
+        renderCard();
+        return [card];
+    }
+
+    // ================= 管理对话框 =================
+
+    function openPanel() {
+        const overlay = document.createElement('div');
+        overlay.className = 'module-overlay';
+
+        const panelEl = document.createElement('div');
+        panelEl.className = 'module-panel memo-panel';
+        panelEl.setAttribute('role', 'dialog');
+        panelEl.setAttribute('aria-modal', 'true');
+        panelEl.setAttribute('aria-label', '备忘录');
+
+        overlay.appendChild(panelEl);
+        document.body.appendChild(overlay);
+
+        panelView = 'list';
+        editingId = null;
+        confirmDeleteId = null;
+        panel = { overlay, panelEl, close: null };
+
+        const closePanel = () => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+            panel = null;
+        };
+        panel.close = closePanel;
+        const onKey = event => { if (event.key === 'Escape') closePanel(); };
+        document.addEventListener('keydown', onKey);
+        // 点空白关面板，但**编辑中不关**：表单里可能有没保存的内容，
+        // 一次误点就把刚写的备忘丢掉。取消有显式的「取消/← 返回」。
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay && panelView !== 'edit') closePanel();
+        });
+
+        // 点击与 input 都委托在面板根上：内部重渲染不会丢掉监听
+        panelEl.addEventListener('click', event => {
+            const t = event.target.closest('[data-action]');
+            if (!t) return;
+            const action = t.dataset.action;
+            const id = t.dataset.id;
+            switch (action) {
+                case 'close':
+                    closePanel();
+                    break;
+                case 'sync':
+                case 'retry':
+                    if (!inFlight) poll();
+                    break;
+                case 'add':
+                    panelView = 'edit';
+                    editingId = 'new';
+                    renderPanel();
+                    break;
+                case 'edit':
+                    panelView = 'edit';
+                    editingId = id;
+                    confirmDeleteId = null;
+                    renderPanel();
+                    break;
+                case 'back':
+                    panelView = 'list';
+                    editingId = null;
+                    renderPanel();
+                    break;
+                case 'save':
+                    doSave();
+                    break;
+                case 'pin': {
+                    const m = memos.find(x => x.id === id);
+                    if (m) togglePin(m);
+                    break;
+                }
+                case 'ask-del':
+                    confirmDeleteId = id;
+                    renderPanel();
+                    break;
+                case 'cancel-del':
+                    confirmDeleteId = null;
+                    renderPanel();
+                    break;
+                case 'confirm-del': {
+                    const m = memos.find(x => x.id === id);
+                    if (m) deleteMemo(m);
+                    break;
+                }
+            }
+        });
+        panelEl.addEventListener('input', event => {
+            if (event.target.id === 'memoSearch') {
+                search = event.target.value;
+                // 只重渲染列表区：输入框本身不动，焦点与光标自然保留
+                const listEl = panelEl.querySelector('#memoList');
+                if (listEl) listEl.innerHTML = memoListHTML();
+            } else if (event.target.id === 'memoTitle' || event.target.id === 'memoBody') {
+                syncFormCounts(panelEl);
+            }
+        });
+
+        renderPanel();
+        return overlay;
+    }
+
+    function renderPanel() {
+        if (!panel) return;
+        // 编辑中的表单可能带着未保存内容：引用的备忘录若已不在
+        // （比如刚被删除），退回列表而不是渲染空表单
+        if (panelView === 'edit' && editingId !== 'new' && !memos.some(m => m.id === editingId)) {
+            panelView = 'list';
+            editingId = null;
+        }
+        panel.panelEl.innerHTML = panelView === 'edit' ? editFormHTML() : panelHTML();
+        lastPanelKey = panelKey();
+        if (panelView === 'edit') {
+            const title = panel.panelEl.querySelector('#memoTitle');
+            if (title) {
+                title.focus();
+                title.setSelectionRange(title.value.length, title.value.length);
+            }
+        }
+    }
+
+    /**
+     * 轮询/写操作后的面板刷新。数据指纹没变就不动 DOM——
+     * 否则每 15 秒的轮询会把用户正在输入的搜索框整块换掉。
+     * 编辑态直接跳过：表单里的未保存内容比后台数据更优先。
+     */
+    function renderPanelMaybe() {
+        if (!panel || panelView === 'edit') return;
+        const key = panelKey();
+        if (key === lastPanelKey) {
+            // 数据没变：仅就地刷新同步时间
+            const t = panel.panelEl.querySelector('.memo-status-time');
+            if (t && syncState === 'synced' && lastSync) t.textContent = hm(lastSync);
+            return;
+        }
+        renderPanel();
+    }
+
+    function panelKey() {
+        return [syncState, drafts.length, memos.map(m => `${m.id}:${m.pinned}:${m.updatedAt}`).join('|')].join('>');
+    }
+
+    function panelHTML() {
+        return `
+            <div class="memo-dialog-header">
+                <h2>备忘录</h2>
+                <span class="memo-status-row">${statusPillHTML()}${pendingPillHTML()}</span>
+                <button class="btn" type="button" data-action="sync">同步</button>
+                <button class="module-panel-close" type="button" data-action="close" aria-label="关闭">×</button>
+            </div>
+            <div class="memo-search">
+                <input id="memoSearch" type="search" placeholder="搜索标题或正文" value="${esc(search)}">
+            </div>
+            <div class="memo-list" id="memoList">${memoListHTML()}</div>
+            <div class="memo-dialog-footer">
+                <span class="memo-count">共 ${memos.length} / 200 条</span>
+                <button class="btn btn-primary" type="button" data-action="add">＋ 添加备忘录</button>
+            </div>`;
+    }
+
+    function memoListHTML() {
+        const q = search.trim().toLowerCase();
+        const match = m => !q || m.title.toLowerCase().includes(q) || m.body.toLowerCase().includes(q);
+        const pinned = memos.filter(m => m.pinned && match(m));
+        const recent = memos.filter(m => !m.pinned && match(m));
+        // 有离线编辑的备忘录标小圆点（按 id 匹配；新建草稿没有 id）
+        const pendingIds = new Set(drafts.filter(d => d.id).map(d => d.id));
+
+        const rowHTML = m => {
+            if (confirmDeleteId === m.id) {
+                return `<div class="memo-row-lg"><div class="memo-del-confirm">` +
+                    `<span>删除「${esc(m.title)}」？</span>` +
+                    `<button class="btn" type="button" data-action="confirm-del" data-id="${m.id}">删除</button>` +
+                    `<button class="btn" type="button" data-action="cancel-del">取消</button>` +
+                    `</div></div>`;
+            }
+            const dot = pendingIds.has(m.id) ? '<span class="memo-pend-dot" title="离线编辑，待同步"></span>' : '';
+            return `<div class="memo-row-lg">` +
+                `<button class="memo-pin-btn" type="button" data-action="pin" data-id="${m.id}" aria-pressed="${m.pinned}" title="${m.pinned ? '取消固定' : '固定到最前'}">${PIN_SVG_BIG}</button>` +
+                `<div class="memo-row-main" data-action="edit" data-id="${m.id}">` +
+                    `<div class="memo-row-title">${esc(m.title)}${dot}</div>` +
+                    `<div class="memo-row-snippet">${esc(m.body)}</div>` +
+                `</div>` +
+                `<span class="memo-row-time">${relTime(m.updatedAt)}</span>` +
+                `<div class="memo-row-actions">` +
+                    `<button class="icon-btn" type="button" data-action="edit" data-id="${m.id}" title="编辑">✎</button>` +
+                    `<button class="icon-btn danger" type="button" data-action="ask-del" data-id="${m.id}" title="删除">✕</button>` +
+                `</div>` +
+            `</div>`;
+        };
+
+        if (q) {
+            const all = [...pinned, ...recent];
+            return `<div class="memo-section-title">搜索「${esc(search.trim())}」</div>` +
+                (all.length ? all.map(rowHTML).join('') : '<div class="memo-none">无匹配</div>');
+        }
+        let list = '';
+        if (pinned.length) list += `<div class="memo-section-title">已固定</div>` + pinned.map(rowHTML).join('');
+        if (recent.length) list += `<div class="memo-section-title">最近更新</div>` + recent.map(rowHTML).join('');
+        if (!list) list = '<div class="memo-none">还没有备忘录，点下方「添加备忘录」开始</div>';
+        return list;
+    }
+
+    function editFormHTML() {
+        const isNew = editingId === 'new';
+        const m = isNew ? { title: '', body: '' } : memos.find(x => x.id === editingId);
+        return `
+            <div class="memo-dialog-header">
+                <button class="btn" type="button" data-action="back">← 返回</button>
+                <h2>${isNew ? '添加备忘录' : '编辑备忘录'}</h2>
+                <button class="module-panel-close" type="button" data-action="close" aria-label="关闭">×</button>
+            </div>
+            <div class="memo-form">
+                <label>标题 <span class="memo-count" id="memoTitleCount">${m.title.length} / ${TITLE_MAX}</span></label>
+                <input id="memoTitle" maxlength="${TITLE_MAX}" value="${esc(m.title)}" placeholder="一句话说明这条备忘">
+                <label>正文 <span class="memo-count" id="memoBodyCount">${m.body.length} / ${BODY_MAX}</span></label>
+                <textarea id="memoBody" rows="8" maxlength="${BODY_MAX}" placeholder="纯文本，可换行">${esc(m.body)}</textarea>
+                <div class="memo-form-actions">
+                    <button class="btn" type="button" data-action="back">取消</button>
+                    <button class="btn btn-primary" type="button" data-action="save" id="memoSave"${m.title.trim() ? '' : ' disabled'}>保存</button>
+                </div>
+            </div>`;
+    }
+
+    function syncFormCounts(root) {
+        const title = root.querySelector('#memoTitle');
+        const body = root.querySelector('#memoBody');
+        const save = root.querySelector('#memoSave');
+        if (!title || !body || !save) return;
+        root.querySelector('#memoTitleCount').textContent = `${title.value.length} / ${TITLE_MAX}`;
+        root.querySelector('#memoBodyCount').textContent = `${body.value.length} / ${BODY_MAX}`;
+        save.disabled = !title.value.trim();
+    }
+
+    async function doSave() {
+        if (!panel) return;
+        const title = panel.panelEl.querySelector('#memoTitle').value.trim();
+        const body = panel.panelEl.querySelector('#memoBody').value;
+        if (!title) return;
+        const id = editingId === 'new' ? null : editingId;
+        const ok = await saveMemo(id, title, body);
+        if (ok) {
+            panelView = 'list';
+            editingId = null;
+            renderPanel();
+            window.app?.showToast('已保存');
+        }
+        // 失败且已暂存：留在表单——内容还在，返回列表后这条会带「待同步」圆点
+    }
+
+    window.app.registerModule({
+        id: 'memo',
+        title: '备忘录',
+        // 说明文字由后台模块列表渲染在名称下方
+        summary: '登录后可用 · 多端自动同步',
+        mountWidget,
+        openPanel
+    });
+})();

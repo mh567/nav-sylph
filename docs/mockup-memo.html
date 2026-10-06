@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>备忘录模块 · 仿真样例</title>
+<style>
+/* ===== sylph 设计令牌（取自 public/styles.css 的材质层，两套成对） ===== */
+:root {
+    color-scheme: light;
+    --bg: #efede8; --bg-card: #faf8f4; --bg-hover: #f2ece5;
+    --text: #302b27; --text-secondary: #655e57; --text-muted: #817970;
+    --border: rgba(92,76,64,.18);
+    --accent: #945e4a; --accent-hover: #79503f;
+    --focus: rgba(148,94,74,.58);
+    --glass: rgba(252,250,246,.66); --glass-strong: rgba(252,250,246,.91);
+    --card-bottom: #f0ede7;
+    --control-top: #fcfaf6; --control-bottom: #eee9e1;
+    --control-hover-top: #fffdf9; --control-hover-bottom: #f4eee6;
+    --control-pressed-top: #e9e2d9; --control-pressed-bottom: #f1ece5;
+    --glint: rgba(179,111,73,.34);
+    --shadow: 0 1px 3px rgba(60,45,32,.11), 0 4px 10px rgba(60,45,32,.07);
+    --shadow-lg: 0 4px 10px rgba(60,45,32,.10), 0 14px 30px rgba(60,45,32,.15);
+    --press-shadow: inset 0 2px 5px rgba(91,70,55,.20), inset 0 -1px rgba(255,255,255,.55);
+    --radius: 10px;
+    --danger: #a44c46; --danger-bg: rgba(164,76,70,.11);
+    --pending: #a2762c; --alert: #a44c46;
+}
+[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #211f1c; --bg-card: #3a3530; --bg-hover: #4a4139;
+    --text: #f3eee8; --text-secondary: #c9beb3; --text-muted: #a89c90;
+    --border: rgba(222,203,185,.18);
+    --accent: #c28d70; --accent-hover: #d4a181;
+    --focus: rgba(223,169,140,.68);
+    --glass: rgba(65,58,51,.70); --glass-strong: rgba(57,51,46,.93);
+    --card-bottom: #2c2925;
+    --control-top: #625951; --control-bottom: #3c3630;
+    --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
+    --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
+    --glint: rgba(243,180,135,.28);
+    --shadow: 0 2px 4px rgba(0,0,0,.12), 0 10px 28px rgba(0,0,0,.20);
+    --shadow-lg: 0 5px 10px rgba(0,0,0,.18), 0 18px 34px rgba(0,0,0,.35);
+    --press-shadow: inset 0 3px 7px rgba(0,0,0,.45), inset 0 -1px rgba(255,255,255,.08);
+    --danger: #e9a69d; --danger-bg: rgba(233,166,157,.13);
+    --pending: #e0bd7a; --alert: #e9a69d;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding-top: 118px; /* 给固定工具栏让位 */
+    transition: background 160ms, color 160ms;
+}
+button { font-family: inherit; cursor: pointer; }
+
+/* ===== 工具栏：强制各种状态 ===== */
+.toolbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1100;
+    display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    padding: 10px 16px;
+    background: var(--glass-strong);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(23px) saturate(118%);
+    -webkit-backdrop-filter: blur(23px) saturate(118%);
+    box-shadow: inset 0 1px rgba(255,255,255,.4), var(--shadow);
+}
+.toolbar-title { font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--text-secondary); margin-right: 6px; }
+.ctl { display: inline-flex; align-items: center; gap: 6px; }
+.ctl-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 999px; background: var(--glass); }
+.seg button {
+    border: 0; border-radius: 999px; padding: 3px 10px;
+    background: transparent; color: var(--text-secondary); font-size: 11px; line-height: 1.4;
+    transition: background 110ms, color 110ms;
+}
+.seg button:hover { background: var(--bg-hover); color: var(--text); }
+.seg button.on { background: var(--control-pressed-top); color: var(--text); box-shadow: var(--press-shadow); font-weight: 600; }
+
+/* ===== 舞台与设备框 ===== */
+.stage { padding: 26px 18px 60px; }
+.device { width: 100%; margin: 0 auto; }
+.device.framed {
+    position: relative;
+    border: 1px solid var(--border); border-radius: 34px;
+    padding: 14px; background: var(--bg-card);
+    box-shadow: var(--shadow-lg);
+}
+.device.framed::before { /* 状态栏 */
+    content: ''; display: block; height: 20px; margin: 0 8px 8px;
+    border-radius: 999px; background: var(--bg-hover);
+}
+.stage-body { display: flex; gap: 20px; align-items: flex-start; justify-content: center; }
+.gutter { flex: 0 0 200px; display: flex; flex-direction: column; gap: 18px; }
+.board { flex: 0 1 936px; min-width: 0; }
+/* 两侧放不下时退回下方横滑（对应 .module-zone[data-dock="below"]） */
+.stage-body.below { display: block; }
+.stage-body.below .gutter { display: none; }
+.dock-row {
+    display: flex; gap: 12px; overflow-x: auto;
+    padding: 20px 4px 8px; margin-top: 20px;
+    border-top: 1px solid var(--border);
+    scroll-snap-type: x proximity;
+    mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%);
+}
+.dock-row .module-widget { flex: 0 0 190px; scroll-snap-align: start; }
+.dock-row .module-widget[data-side] { width: 190px; }
+
+/* ===== 首页背板（装饰，给模块卡一个真实的家） ===== */
+.sim-search {
+    display: flex; align-items: center; gap: 8px;
+    max-width: 560px; margin: 0 auto 26px; padding: 6px 8px 6px 12px;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--glass); box-shadow: var(--shadow);
+    backdrop-filter: blur(22px) saturate(150%);
+    color: var(--text-muted); font-size: 13px;
+}
+.sim-search .sim-mode { font-size: 12px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
+.sim-cat { margin: 0 0 18px; }
+.sim-cat-title { font-size: 12px; font-weight: 600; letter-spacing: .06em; color: var(--text-secondary); margin-bottom: 8px; }
+.sim-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.sim-chip {
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--glass); color: var(--text); font-size: 12px; font-weight: 600;
+    box-shadow: inset 0 1px rgba(255,255,255,.5), var(--shadow);
+    pointer-events: none; user-select: none;
+}
+
+/* ===== 模块卡（module-widget，样式对齐 styles.css:2929） ===== */
+.module-widget {
+    padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--glass); box-shadow: var(--shadow);
+    backdrop-filter: blur(23px) saturate(118%);
+    -webkit-backdrop-filter: blur(23px) saturate(118%);
+}
+.module-widget-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.module-drag-handle { display: none; min-width: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 13px; line-height: 1; cursor: grab; }
+.module-drag-handle::before { content: '⠿'; }
+.module-drag-handle:hover { background: var(--bg-hover); color: var(--accent); }
+.module-zone.is-editing .module-drag-handle { display: block; }
+.module-zone.is-editing .module-widget-expand { display: none; }
+.module-widget-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }
+.module-widget-expand { min-height: 26px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; transition: color 110ms, background 110ms; }
+.module-widget-expand:hover { background: var(--bg-hover); color: var(--accent); }
+
+/* 同步状态行 */
+.memo-status-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.module-card-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 0 6px; border: 1px solid currentColor; border-radius: 999px;
+    font-size: 9px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+}
+.module-card-status[data-kind="ready"] { color: var(--accent); }
+.module-card-status[data-kind="pending"] { color: var(--pending); }
+.module-card-status[data-kind="alert"] { color: var(--alert); }
+.memo-status-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; cursor: pointer; }
+.spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: spin 700ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 卡片内的备忘行 */
+.memo-rows { display: flex; flex-direction: column; gap: 2px; }
+.memo-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 6px; border-radius: 7px; cursor: pointer;
+    transition: transform 90ms, box-shadow 90ms, background 110ms;
+}
+.memo-row:hover { background: var(--bg-hover); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.memo-row svg { flex: 0 0 auto; color: var(--accent); }
+.memo-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+.memo-row-time { flex: 0 0 auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-row.is-pressed { /* 按压态（工具栏强制，截图可见） */
+    transform: translateY(1px) scale(.975);
+    background: linear-gradient(180deg, var(--control-pressed-top), var(--control-pressed-bottom));
+    box-shadow: var(--press-shadow);
+}
+.module-card-hint { margin-top: 8px; color: var(--text-muted); font-size: 10px; text-align: right; }
+.memo-empty-card { padding: 8px 6px; color: var(--text-muted); font-size: 11px; text-align: center; }
+
+/* 监控上下文卡（装饰） */
+.sim-metric { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sim-metric b { font-weight: 600; color: var(--text); }
+
+/* 未登录占位 */
+.login-gate-note { max-width: 560px; margin: 40px auto; padding: 16px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; line-height: 1.8; text-align: center; }
+
+/* ===== 管理对话框 ===== */
+.modal-sim { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.modal-sim[hidden] { display: none; }
+.device.framed .modal-sim { position: absolute; }
+.modal-backdrop-sim { position: absolute; inset: 0; background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+.modal-content-sim {
+    position: relative; width: 92%; max-width: 560px; max-height: 82vh;
+    display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--glass-strong);
+    box-shadow: inset 0 1px rgba(255,255,255,.57), 0 20px 48px rgba(35,27,21,.21);
+    backdrop-filter: blur(23px) saturate(118%);
+    -webkit-backdrop-filter: blur(23px) saturate(118%);
+    animation: slideUp .22s ease;
+    overflow: hidden;
+}
+.device.framed .modal-content-sim { width: 100%; max-width: none; max-height: none; height: 100%; border-radius: 22px; }
+@keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+.memo-dialog-header { display: flex; align-items: center; gap: 10px; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.memo-dialog-header h2 { font-size: 15px; font-weight: 600; letter-spacing: .02em; margin-right: auto; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 30px; padding: 0 7px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(170deg, var(--control-top), var(--control-bottom)); color: var(--text); font-size: 12px; box-shadow: inset 0 1px rgba(255,255,255,.48), 0 1px 3px rgba(67,51,39,.06); transition: transform 110ms, background 140ms; }
+.icon-btn:hover { transform: translateY(-1px); background: linear-gradient(170deg, var(--control-hover-top), var(--control-hover-bottom)); }
+.icon-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+.icon-btn.danger { color: var(--danger); }
+.icon-btn.danger:hover { background: var(--danger-bg); }
+
+.btn { border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(170deg, var(--control-top), var(--control-bottom)); color: var(--text); font-size: 12px; padding: 7px 14px; box-shadow: inset 0 1px rgba(255,255,255,.48), 0 1px 3px rgba(67,51,39,.06); transition: transform 110ms, border-color 140ms, background 140ms; }
+.btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg, var(--control-hover-top), var(--control-hover-bottom)); }
+.btn:active:not(:disabled) { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { border-color: var(--accent); background: var(--accent); color: #fffaf5; }
+.btn-primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); color: #fffaf5; }
+[data-theme="dark"] .btn-primary, [data-theme="dark"] .btn-primary:hover:not(:disabled) { color: #271e18; }
+
+.memo-search { padding: 12px 16px 4px; }
+.memo-search input {
+    width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit;
+    color: var(--text); background: var(--bg-card);
+    border: 1px solid var(--border); border-radius: 8px; outline: none;
+}
+.memo-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+.memo-search input::placeholder { color: var(--text-muted); }
+
+.memo-list { flex: 1; overflow-y: auto; padding: 8px 16px 12px; }
+.memo-section-title { margin: 12px 0 6px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.memo-row-lg { display: flex; align-items: center; gap: 10px; padding: 8px 8px; border-radius: 8px; transition: background 110ms; }
+.memo-row-lg:hover { background: var(--bg-hover); }
+.memo-pin-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; transition: color 110ms, background 110ms, transform 110ms; }
+.memo-pin-btn:hover { background: var(--bg-hover); color: var(--accent); }
+.memo-pin-btn[aria-pressed="true"] { color: var(--accent); }
+.memo-pin-btn:active { transform: scale(.92); }
+.memo-row-main { flex: 1; min-width: 0; }
+.memo-row-lg .memo-row-title { font-size: 13px; }
+.memo-row-snippet { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.memo-row-lg .memo-row-time { font-size: 10px; }
+.memo-pend-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--pending); vertical-align: 2px; }
+.memo-row-actions { flex: 0 0 auto; display: flex; gap: 6px; opacity: 0; transition: opacity 110ms; }
+.memo-row-lg:hover .memo-row-actions, .memo-row-lg:focus-within .memo-row-actions { opacity: 1; }
+.memo-del-confirm { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--danger); flex-wrap: wrap; }
+.memo-del-confirm span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memo-none { padding: 26px 0; text-align: center; color: var(--text-muted); font-size: 12px; }
+
+.memo-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.memo-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* 编辑表单 */
+.memo-form { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.memo-form label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-top: 6px; }
+.memo-form input, .memo-form textarea {
+    width: 100%; padding: 9px 12px; font-size: 13px; font-family: inherit;
+    color: var(--text); background: var(--bg-card);
+    border: 1px solid var(--border); border-radius: 8px; outline: none; resize: vertical;
+}
+.memo-form input:focus, .memo-form textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus); }
+.memo-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+/* ===== Toast ===== */
+.toast-sim {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(8px);
+    z-index: 1200; padding: 9px 18px; border-radius: 999px;
+    background: var(--glass-strong); color: var(--text); font-size: 12px;
+    border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+    backdrop-filter: blur(23px) saturate(118%);
+    opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms;
+}
+.toast-sim.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ===== 图例 ===== */
+.legend { max-width: 720px; margin: 0 auto; padding: 0 20px 60px; color: var(--text-muted); font-size: 11px; line-height: 2; }
+.legend b { color: var(--text-secondary); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="toolbar" id="toolbar">
+    <span class="toolbar-title">备忘录模块 · 仿真样例</span>
+    <!-- 分段控件由 JS 生成 -->
+</div>
+
+<div class="stage">
+    <div class="device" id="device">
+        <div class="stage-body" id="stageBody">
+            <div class="gutter" id="gutterLeft"></div>
+            <div class="board" id="board">
+                <div class="sim-search">
+                    <span class="sim-mode">网页</span>
+                    <span style="flex:1">搜索、粘贴内容，或输入 &gt; 分享</span>
+                    <span class="sim-mode" style="border-color:var(--accent);color:var(--accent)">搜索</span>
+                </div>
+                <div class="sim-cat">
+                    <div class="sim-cat-title">常用</div>
+                    <div class="sim-chips">
+                        <span class="sim-chip">GitHub</span><span class="sim-chip">MDN</span>
+                        <span class="sim-chip">Canvas 文档</span><span class="sim-chip">内网监控</span>
+                        <span class="sim-chip">邮箱</span><span class="sim-chip">设计规范</span>
+                    </div>
+                </div>
+                <div class="sim-cat">
+                    <div class="sim-cat-title">工具</div>
+                    <div class="sim-chips">
+                        <span class="sim-chip">后台管理</span><span class="sim-chip">WebDAV 备份</span>
+                        <span class="sim-chip">服务状态</span>
+                    </div>
+                </div>
+            </div>
+            <div class="gutter" id="gutterRight"></div>
+        </div>
+        <div class="dock-row" id="dockRow" hidden></div>
+
+        <div class="login-gate-note" id="loginGate" hidden>
+            未登录：模块区整体隐藏（对应 app.js:288-292 的现成机制）<br>
+            备忘录模块不下载、不渲染——「只有登录后才能用」由此免费获得
+        </div>
+
+        <!-- 管理对话框：全宽时 fixed 覆盖视口，设备框内时 absolute 覆盖设备 -->
+        <div class="modal-sim" id="modal" hidden>
+            <div class="modal-backdrop-sim" id="modalBackdrop"></div>
+            <div class="modal-content-sim" id="modalContent"></div>
+        </div>
+    </div>
+</div>
+
+<div class="toast-sim" id="toast"></div>
+
+<div class="legend">
+    <b>悬停效果（截图不可见，请用鼠标划过）：</b>卡片内备忘行悬停抬升 2px 并带影子跟随；对话框内行悬停变色；按钮悬停抬升 1px。
+    <b>按压态：</b>工具栏「置顶按压」强制所有置顶行呈现按下外观（ otherwise 只有真实按下瞬间才出现）。
+    <b>模拟说明：</b>本样例无真实网络——「同步」按钮模拟 0.9s 往返；真实实现会在标签页重新可见时立即拉取（visibilitychange），此处无法演示。
+</div>
+
+<script>
+'use strict';
+/* ================= 状态 ================= */
+const now = Date.now();
+const state = {
+    theme: 'dark',
+    loggedIn: true,
+    panelOpen: false,
+    sync: 'synced',          // synced | syncing | failed
+    pending: 0,              // 离线暂存、待上传的编辑数
+    viewport: 'full',        // full | 1280 | 844 | 390
+    editMode: false,
+    pinPress: false,
+    search: '',
+    view: 'list',            // list | edit
+    editingId: null,         // 备忘录 id 或 'new'
+    confirmDeleteId: null,
+    lastSync: now - 5 * 60e3,
+    seq: 100,
+    memos: [
+        { id: 'm1', title: '周末爬山装备清单', body: '登山鞋、护膝、2L 水袋、防晒、头灯（含备用电池）、能量胶两枚', pinned: true,  updatedAt: now - 12 * 60e3 },
+        { id: 'm2', title: 'v1.10.5 发版检查', body: 'SW 缓存已升 nav-v69；package.json / version.json / CHANGELOG.json 三处版本号一致；release.sh 跑通后再打 tag', pinned: true, updatedAt: now - 65 * 60e3 },
+        { id: 'm3', title: '牙医复诊提醒', body: '下周三 14:00，带上上次拍的片子，提前 10 分钟到', pinned: false, updatedAt: now - 3 * 3600e3 },
+        { id: 'm4', title: '读书笔记：设计中的设计', body: '原研哉 —— 重新审视「空」的语义，留白不是浪费而是容器', pinned: false, updatedAt: now - 26 * 3600e3 },
+        { id: 'm5', title: 'WebDAV 备份验证', body: '上月备份可恢复，token 未轮换，下次轮换记得更新两处配置', pinned: false, updatedAt: now - 2 * 86400e3 },
+        { id: 'm6', title: '快递取件码', body: '菜鸟驿站 A-3-2076，周日前取', pinned: false, updatedAt: now - 3 * 86400e3 },
+    ],
+};
+
+/* ================= 工具 ================= */
+const $ = (s, r) => (r || document).querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const PIN_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+const PIN_SVG_BIG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+
+function hm(ts) {
+    const d = new Date(ts);
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+function relTime(ts) {
+    const s = (Date.now() - ts) / 1000;
+    if (s < 60) return '刚刚';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    const d = new Date(ts), y = new Date(Date.now() - 86400e3);
+    if (d.toDateString() === y.toDateString()) return '昨天 ' + hm(ts);
+    return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + hm(ts);
+}
+function sortedMemos() {
+    return [...state.memos].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+/* 待同步的 N 条：按更新时间最新的 N 条标记小圆点 */
+function pendingIds() {
+    return new Set(sortedMemos().slice(0, state.pending).map(m => m.id));
+}
+function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+/* ================= 工具栏 ================= */
+const CONTROLS = [
+    { key: 'theme',    label: '主题',    options: [['dark', '深色'], ['light', '浅色']] },
+    { key: 'loggedIn', label: '登录',    options: [[true, '已登录'], [false, '未登录']] },
+    { key: 'panelOpen', label: '面板',   options: [[false, '关闭'], [true, '打开']] },
+    { key: 'sync',     label: '同步',    options: [['synced', '已同步'], ['syncing', '同步中'], ['failed', '失败']] },
+    { key: 'pending',  label: '待同步',  options: [[0, '0'], [1, '1'], [3, '3']] },
+    { key: 'viewport', label: '视口',    options: [['full', '自适应'], ['1280', '1280'], ['844', '844'], ['390', '390']] },
+    { key: 'editMode', label: '编辑模式', options: [[false, '关'], [true, '开']] },
+    { key: 'pinPress', label: '置顶按压', options: [[false, '关'], [true, '开']] },
+];
+function buildToolbar() {
+    const bar = $('#toolbar');
+    for (const ctl of CONTROLS) {
+        const wrap = document.createElement('span');
+        wrap.className = 'ctl';
+        const lab = document.createElement('span');
+        lab.className = 'ctl-label';
+        lab.textContent = ctl.label;
+        wrap.appendChild(lab);
+        const seg = document.createElement('span');
+        seg.className = 'seg';
+        seg.dataset.key = ctl.key;
+        for (const [v, label] of ctl.options) {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.dataset.v = String(v);
+            b.addEventListener('click', () => {
+                let val = v;
+                if (v === 'true' || v === 'false') val = v === 'true';
+                else if (/^\d+$/.test(v)) val = Number(v);
+                state[ctl.key] = val;
+                if (ctl.key === 'loggedIn' && !val) state.panelOpen = false;
+                renderAll();
+            });
+            seg.appendChild(b);
+        }
+        wrap.appendChild(seg);
+        bar.appendChild(wrap);
+    }
+}
+function renderToolbar() {
+    for (const seg of document.querySelectorAll('.seg')) {
+        const cur = String(state[seg.dataset.key]);
+        for (const b of seg.querySelectorAll('button')) {
+            b.classList.toggle('on', b.dataset.v === cur);
+        }
+    }
+}
+
+/* ================= 舞台 ================= */
+function statusPillHTML() {
+    if (state.sync === 'syncing') {
+        return '<span class="module-card-status" data-kind="pending"><span class="spinner"></span>同步中</span>';
+    }
+    if (state.sync === 'failed') {
+        return '<span class="module-card-status" data-kind="alert">同步失败</span>' +
+               '<button class="memo-retry" data-action="retry">重试</button>';
+    }
+    return '<span class="module-card-status" data-kind="ready">已同步</span>' +
+           '<span class="memo-status-time">' + hm(state.lastSync) + '</span>';
+}
+function pendingPillHTML() {
+    return state.pending > 0
+        ? '<span class="module-card-status" data-kind="pending">待同步 ' + state.pending + '</span>'
+        : '';
+}
+
+function memoCardHTML() {
+    const ordered = sortedMemos();
+    const rows = ordered.slice(0, 3).map(m => {
+        const pressed = m.pinned && state.pinPress ? ' is-pressed' : '';
+        const pin = m.pinned ? PIN_SVG : '';
+        return '<div class="memo-row' + pressed + '" data-action="open" data-id="' + m.id + '">' +
+            pin +
+            '<span class="memo-row-title">' + esc(m.title) + '</span>' +
+            '<span class="memo-row-time">' + relTime(m.updatedAt) + '</span>' +
+        '</div>';
+    }).join('');
+    return '<section class="module-widget module-zone-member" data-side="left">' +
+        '<div class="module-widget-head">' +
+            '<button class="module-drag-handle" aria-label="拖拽排序"></button>' +
+            '<span class="module-widget-title">备忘录</span>' +
+            '<button class="module-widget-expand" data-action="open">管理</button>' +
+        '</div>' +
+        '<div class="memo-status-row">' + statusPillHTML() + pendingPillHTML() + '</div>' +
+        (ordered.length
+            ? '<div class="memo-rows">' + rows + '</div>'
+            : '<div class="memo-empty-card">还没有备忘录</div>') +
+        '<div class="module-card-hint">共 ' + state.memos.length + ' 条 · 点击管理</div>' +
+    '</section>';
+}
+
+function monitorCardHTML() {
+    return '<section class="module-widget module-zone-member" data-side="right">' +
+        '<div class="module-widget-head">' +
+            '<button class="module-drag-handle" aria-label="拖拽排序"></button>' +
+            '<span class="module-widget-title">服务器监控</span>' +
+            '<button class="module-widget-expand" data-action="demo">管理</button>' +
+        '</div>' +
+        '<div class="memo-status-row"><span class="module-card-status" data-kind="ready">就绪</span></div>' +
+        '<div class="sim-metric"><span>本机 CPU</span><b>12%</b></div>' +
+        '<div class="sim-metric"><span>内存</span><b>9.4 GB</b></div>' +
+        '<div class="module-card-hint">15 秒前更新</div>' +
+    '</section>';
+}
+
+function renderStage() {
+    document.documentElement.dataset.theme = state.theme;
+    const device = $('#device'), body = $('#stageBody'), dock = $('#dockRow');
+    const framed = state.viewport !== 'full';
+    device.classList.toggle('framed', framed);
+    device.style.width = framed ? state.viewport + 'px' : '';
+    const below = state.viewport === '844' || state.viewport === '390';
+    body.classList.toggle('below', below);
+    dock.hidden = !below;
+
+    const zoneHTML = '<div class="module-zone' + (state.editMode ? ' is-editing' : '') + '">' +
+        (below ? '' : '') + memoCardHTML() + '</div>';
+    if (below) {
+        dock.innerHTML = '<div class="module-zone' + (state.editMode ? ' is-editing' : '') + '" style="display:contents">' +
+            memoCardHTML() + monitorCardHTML() + '</div>';
+        $('#gutterLeft').innerHTML = '';
+        $('#gutterRight').innerHTML = '';
+    } else {
+        $('#gutterLeft').innerHTML = zoneHTML;
+        $('#gutterRight').innerHTML = '<div class="module-zone' + (state.editMode ? ' is-editing' : '') + '">' + monitorCardHTML() + '</div>';
+        dock.innerHTML = '';
+    }
+    $('#loginGate').hidden = state.loggedIn;
+    $('#board').style.opacity = state.loggedIn ? '' : '.35';
+    if (!state.loggedIn) { $('#gutterLeft').innerHTML = ''; $('#gutterRight').innerHTML = ''; dock.innerHTML = ''; }
+    renderDialog();
+}
+
+/* ================= 管理对话框 ================= */
+function renderDialog() {
+    const modal = $('#modal'), content = $('#modalContent');
+    if (!state.panelOpen || !state.loggedIn) { modal.hidden = true; return; }
+    modal.hidden = false;
+
+    if (state.view === 'edit') { content.innerHTML = editFormHTML(); bindEditForm(); return; }
+
+    const pids = pendingIds();
+    const q = state.search.trim().toLowerCase();
+    const match = m => !q || m.title.toLowerCase().includes(q) || m.body.toLowerCase().includes(q);
+    const pinned = sortedMemos().filter(m => m.pinned && match(m));
+    const recent = sortedMemos().filter(m => !m.pinned && match(m));
+
+    const rowHTML = m => {
+        if (state.confirmDeleteId === m.id) {
+            return '<div class="memo-row-lg"><div class="memo-del-confirm">' +
+                '<span>删除「' + esc(m.title) + '」？</span>' +
+                '<button class="btn" data-action="confirm-del" data-id="' + m.id + '" style="border-color:var(--danger);color:var(--danger)">删除</button>' +
+                '<button class="btn" data-action="cancel-del">取消</button>' +
+            '</div></div>';
+        }
+        const dot = pids.has(m.id) ? '<span class="memo-pend-dot" title="离线编辑，待同步"></span>' : '';
+        return '<div class="memo-row-lg">' +
+            '<button class="memo-pin-btn" data-action="pin" data-id="' + m.id + '" aria-pressed="' + m.pinned + '" title="' + (m.pinned ? '取消固定' : '固定到最前') + '">' + PIN_SVG_BIG + '</button>' +
+            '<div class="memo-row-main" data-action="edit" data-id="' + m.id + '" style="cursor:pointer">' +
+                '<div class="memo-row-title">' + esc(m.title) + dot + '</div>' +
+                '<div class="memo-row-snippet">' + esc(m.body) + '</div>' +
+            '</div>' +
+            '<span class="memo-row-time">' + relTime(m.updatedAt) + '</span>' +
+            '<div class="memo-row-actions">' +
+                '<button class="icon-btn" data-action="edit" data-id="' + m.id + '" title="编辑">✎</button>' +
+                '<button class="icon-btn danger" data-action="ask-del" data-id="' + m.id + '" title="删除">✕</button>' +
+            '</div>' +
+        '</div>';
+    };
+
+    let list = '';
+    if (q) {
+        list = '<div class="memo-section-title">搜索「' + esc(state.search.trim()) + '」</div>' +
+            (pinned.length + recent.length
+                ? [...pinned, ...recent].map(rowHTML).join('')
+                : '<div class="memo-none">无匹配</div>');
+    } else {
+        if (pinned.length) list += '<div class="memo-section-title">已固定</div>' + pinned.map(rowHTML).join('');
+        if (recent.length) list += '<div class="memo-section-title">最近更新</div>' + recent.map(rowHTML).join('');
+        if (!list) list = '<div class="memo-none">还没有备忘录，点下方「添加备忘录」开始</div>';
+    }
+
+    content.innerHTML =
+        '<div class="memo-dialog-header">' +
+            '<h2>备忘录</h2>' +
+            '<span class="memo-status-row" style="margin:0">' + statusPillHTML() + pendingPillHTML() + '</span>' +
+            '<button class="btn" data-action="sync">同步</button>' +
+            '<button class="icon-btn" data-action="close" title="关闭">✕</button>' +
+        '</div>' +
+        '<div class="memo-search"><input id="memoSearch" type="search" placeholder="搜索标题或正文" value="' + esc(state.search) + '"></div>' +
+        '<div class="memo-list" id="memoList">' + list + '</div>' +
+        '<div class="memo-dialog-footer">' +
+            '<span class="memo-count">共 ' + state.memos.length + ' / 200 条</span>' +
+            '<button class="btn btn-primary" data-action="add">＋ 添加备忘录</button>' +
+        '</div>';
+
+    const input = $('#memoSearch');
+    input.addEventListener('input', () => { state.search = input.value; renderMemoListOnly(); });
+}
+
+/* 搜索输入时只重渲染列表区，保留输入焦点 */
+function renderMemoListOnly() {
+    const listEl = $('#memoList');
+    if (!listEl) return;
+    const keep = state.view;
+    state.view = 'list';
+    // 复用 renderDialog 的列表逻辑，但不动 header/footer
+    const html = $('#modalContent').innerHTML;
+    renderDialog();
+    const newInput = $('#memoSearch');
+    if (newInput && state.search) {
+        newInput.focus();
+        newInput.setSelectionRange(state.search.length, state.search.length);
+    }
+    state.view = keep;
+}
+
+function editFormHTML() {
+    const isNew = state.editingId === 'new';
+    const m = isNew ? { title: '', body: '' } : state.memos.find(x => x.id === state.editingId);
+    if (!m) { state.view = 'list'; return ''; }
+    return '<div class="memo-dialog-header">' +
+        '<button class="btn" data-action="back">← 返回</button>' +
+        '<h2>' + (isNew ? '添加备忘录' : '编辑备忘录') + '</h2>' +
+        '<button class="icon-btn" data-action="close" title="关闭">✕</button>' +
+    '</div>' +
+    '<div class="memo-form">' +
+        '<label>标题 <span class="memo-count" id="titleCount">' + m.title.length + ' / 60</span></label>' +
+        '<input id="fTitle" maxlength="60" value="' + esc(m.title) + '" placeholder="一句话说明这条备忘">' +
+        '<label>正文 <span class="memo-count" id="bodyCount">' + m.body.length + ' / 10240</span></label>' +
+        '<textarea id="fBody" rows="8" maxlength="10240" placeholder="纯文本，可换行">' + esc(m.body) + '</textarea>' +
+        '<div class="memo-form-actions">' +
+            '<button class="btn" data-action="back">取消</button>' +
+            '<button class="btn btn-primary" data-action="save" id="saveBtn"' + (m.title.trim() ? '' : ' disabled') + '>保存</button>' +
+        '</div>' +
+    '</div>';
+}
+function bindEditForm() {
+    const title = $('#fTitle'), body = $('#fBody'), save = $('#saveBtn');
+    if (!title) return;
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+    const syncCounts = () => {
+        $('#titleCount').textContent = title.value.length + ' / 60';
+        $('#bodyCount').textContent = body.value.length + ' / 10240';
+        save.disabled = !title.value.trim();
+    };
+    title.addEventListener('input', syncCounts);
+    body.addEventListener('input', syncCounts);
+}
+
+function saveEdit() {
+    const title = $('#fTitle').value.trim();
+    const body = $('#fBody').value;
+    if (!title) return;
+    if (state.editingId === 'new') {
+        state.memos.push({ id: 'm' + (++state.seq), title, body, pinned: false, updatedAt: Date.now() });
+    } else {
+        const m = state.memos.find(x => x.id === state.editingId);
+        if (m) { m.title = title; m.body = body; m.updatedAt = Date.now(); }
+    }
+    state.view = 'list';
+    toast('已保存');
+    renderAll();
+}
+
+/* ================= 同步 ================= */
+function doSync() {
+    if (state.sync === 'syncing') return;
+    state.sync = 'syncing';
+    renderAll();
+    setTimeout(() => {
+        state.sync = 'synced';
+        state.lastSync = Date.now();
+        state.pending = 0; // 离线暂存的编辑随同步上传
+        renderAll();
+        toast('已同步');
+    }, 900);
+}
+
+/* ================= 事件委托 ================= */
+document.addEventListener('click', e => {
+    const t = e.target.closest('[data-action]');
+    if (!t) return;
+    const action = t.dataset.action, id = t.dataset.id;
+    switch (action) {
+        case 'open':
+            if (state.loggedIn) { state.panelOpen = true; state.view = 'list'; renderAll(); }
+            break;
+        case 'close':
+            state.panelOpen = false; state.view = 'list'; state.confirmDeleteId = null; renderAll();
+            break;
+        case 'sync': case 'retry': doSync(); break;
+        case 'add': state.view = 'edit'; state.editingId = 'new'; renderDialog(); break;
+        case 'edit': state.view = 'edit'; state.editingId = id; state.confirmDeleteId = null; renderDialog(); break;
+        case 'back': state.view = 'list'; state.editingId = null; renderDialog(); break;
+        case 'save': saveEdit(); break;
+        case 'pin': {
+            const m = state.memos.find(x => x.id === id);
+            if (m) { m.pinned = !m.pinned; toast(m.pinned ? '已固定到最前' : '已取消固定'); renderAll(); }
+            break;
+        }
+        case 'ask-del': state.confirmDeleteId = id; renderDialog(); break;
+        case 'cancel-del': state.confirmDeleteId = null; renderDialog(); break;
+        case 'confirm-del': {
+            state.memos = state.memos.filter(x => x.id !== id);
+            state.confirmDeleteId = null;
+            toast('已删除');
+            renderAll();
+            break;
+        }
+        case 'demo': toast('样例未实现：监控卡片的管理面板'); break;
+    }
+});
+$('#modalBackdrop').addEventListener('click', () => {
+    state.panelOpen = false; state.view = 'list'; renderAll();
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && state.panelOpen) {
+        state.panelOpen = false; state.view = 'list'; renderAll();
+    }
+});
+
+/* ================= 启动 ================= */
+function renderAll() {
+    renderToolbar();
+    renderStage();
+}
+buildToolbar();
+renderAll();
+</script>
+</body>
+</html>

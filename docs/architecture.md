@@ -27,7 +27,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码、agent token、推送凭据共用 |
 | `agent/` | 部署在**被监控目标机**上的只读采集程序。**Go 静态二进制，零第三方依赖**（`go.mod` 无 `require`）：`main.go`（协议、HTTPS、注册、推送、`upgrade`）+ 平台桩（`mem_darwin.go` / `mem_other.go` / `readcpu_darwin.go` / `readcpu_other.go` / `disk_other.go` / `disk_unsupported.go`）、`install.sh`（一键 `curl \| bash`）、`README.md` |
 | `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
-| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（当前 `server-monitor.js`） |
+| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`） |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
 | `tests/` | 备份隐私、移动书签、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
@@ -52,6 +52,12 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 **模块配置不共用 `#saveBtn`。** 它只保存 `config.json`；模块配置走独立端点、独立保存按钮，也不参与 `beginConfigEdit()` 的脏检查——否则用户改了个服务器名点「取消」会被「你有未保存的修改」拦住。模块分区首次进入时才拉 `/api/modules/config`，每次 `renderAdminPanel()` 都预取会累积撞上限流。
 
 **新增模块的落点**：定义放 `public/modules/<id>.js`，id 加入 `App.KNOWN_MODULES`，配置项加入 `normalizeModulesConfig()` 的白名单。需要增长或查询的数据（条目、缓存）在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不预建空表。新增 `public/` 文件必须同步 `sw.js` 的 `ASSETS` 与 `CACHE`——延后加载的文件若不预缓存，回访用户每次打开模块都要走一次网络，与延后加载的初衷相反。
+
+**已按这条落地的第二个模块：备忘录（`memo.js`）**，它是目前唯一有自己数据表的模块——`MIGRATIONS` 尾部 v4 加 `memos`（`id` 主键 + `title` + `body` + `pinned` + `created_at` + `updated_at`），五条路由全部 `rateLimit, requireAdmin`（另有自己的 `memoLimit` 桶并入 60 秒 sweep）。三条与平台约定相关的实现纪律：
+
+1. **模块不得引用 `app.js` 内部的标识符。** `API` 是 `app.js` IIFE 的 `const`，不是全局；平台通过 `mountWidget(shell, { api })` 注入。写裸 `API` 时 `node --check` 与源码形状断言都过得去，只有真在浏览器里跑起来才以 `ReferenceError` 现形。
+2. **模块自己的元素 id 必须带模块前缀。** 与管理端弹窗撞名（如 `#saveBtn`，`app.js:1037`）会让 `querySelector('#saveBtn')` 命中那个隐藏的按钮，点击落到遮罩上——看起来像「保存没反应」，实际是面板被关掉、内容丢失。
+3. **同步的失败态不能清空已显示的数据。** 拉取失败只把状态位转成「同步失败 + 重试」，上一条已知列表留在卡片上；恢复后由下一次轮询自动回「已同步」。
 
 ## 凭据加密
 
@@ -202,7 +208,8 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 写入 SQLite 新表 `agent_metrics`（`server_id` 主键 + `payload` + `received_at`），**与 `module_cache` 分开**：
 
 - `module_cache` 是单键 `'local'`，存「本次聚合采集的结果」（含聚合后的 `servers` 数组）；`agent_metrics` 按 `server_id` 一行一行存「某台机器的单份上报」。两者生命周期不同，**共用一个 key 会让一次推送覆写掉本机和其它拉取机器的结果**。
-- 进 SQLite 而非 JSON：`nav-sylph.db` 已在 `PRIVATE_FILES` 里、已是 0600、已被 WebDAV 备份覆盖、随发布包打包。复用它意味着不需要新的文件权限管理、新的备份条目，也不需要改 `sylph.sh` 的备份/恢复列表。
+- 进 SQLite 而非 JSON：`nav-sylph.db` 已在 `PRIVATE_FILES` 里、已是 0600、随发布包打包，且**在 `sylph.sh` 的升级备份里**（更新前整库拷走、替换文件后放回）。复用它意味着不需要新的文件权限管理、新的备份条目，也不需要改 `sylph.sh` 的备份/恢复列表。
+  - ⚠️ 它**不在 WebDAV 跨设备备份集内**——`createBackup(configData, favoritesData, appVersion, generateBookmarkHtml, modulesData)` 只收三个数据文件（`config.json` / `favorites.json` / `.modules.json`），数据库不在其中。所以会话与模块私有数据（`memos`）跨设备靠服务器本身，不是靠这份备份。这句早先写成「已被 WebDAV 备份覆盖」，与代码不符，已按实际改写。
 - **必须入库而不是只驻内存**：服务器重启后 agent 下一次推送（≤ pollInterval）即可自愈。
 
 ### agent 侧
