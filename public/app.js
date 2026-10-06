@@ -120,11 +120,17 @@
         light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.1"/><path d="M12 2.7v2.1M12 19.2v2.1M2.7 12h2.1M19.2 12h2.1M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></svg>',
         dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.4 14.7A8.6 8.6 0 0 1 9.3 3.6a8.6 8.6 0 1 0 11.1 11.1Z"/></svg>'
     };
+    /** 三态循环的下一格（深色之后回绕到自动）。 */
+    const nextTheme = current => APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(current) + 1) % APPEARANCE_ORDER.length];
 
     class App {
         constructor() {
             this.config = null;
             this.authenticated = false;
+            // 本会话的外观覆盖。正常情况下这份状态在 localStorage 里，
+            // 只有它写不进去（隐私模式 / 禁用站点数据）时才落到这个字段，
+            // 让那一次点击仍然生效，而不是看起来「按钮坏了」。
+            this.themeOverride = null;
             // 当前会话是否被信任（可信=30 天，否则 24 小时）
             this.sessionTrusted = false;
             this.dragData = null;
@@ -660,6 +666,10 @@
             try {
                 this.config = await (window.__navSylphConfigPromise || API.get('/api/config'));
                 this.migrateConfig();
+                // 用户配置一到就先把外观定下来，**不等**下面那趟 server-flags：
+                // 服务端强制了主题（theme 不是 auto）时，全靠这一步把首屏的
+                // 系统色纠正过来，多压一个往返就多闪一帧。
+                this.applyTheme();
                 // 自签标记住在**服务配置**里（server-config.json），
                 // 而 this.config 是**用户公开配置**（config.json）——
                 // 两个文件、两套字段，所以它必须单独取。
@@ -673,7 +683,6 @@
                     console.warn('读取服务配置标志失败，自签标记按「否」处理:', e);
                     this.selfSignedCert = false;
                 }
-                this.applyTheme();
                 this.render();
                 this.bind();
                 $('#loader').remove();
@@ -720,12 +729,15 @@
         }
 
         /**
-         * 当前生效的外观。本机覆盖优先：未登录访客在首页点过「外观」时，
-         * 选择存在 localStorage；登录成功后那个键会被清掉
-         * （见 restoreSession 与 setTheme），所以已登录时读到的
-         * 一定是服务端的站点主题——两处不会各说各话。
+         * 当前生效的外观。优先级：本会话内存覆盖 → 本机 localStorage →
+         * 服务端站点主题 → auto。
+         *
+         * 第一级只在 localStorage 写不进去时才有值（见 setTheme）；
+         * 第二级在登录成功时会被清掉（见 adoptServerTheme），所以已登录
+         * 时读到的一定是服务端值，两处不会各说各话。
          */
         resolveTheme() {
+            if (APPEARANCE_ORDER.includes(this.themeOverride)) return this.themeOverride;
             try {
                 const stored = localStorage.getItem(THEME_STORAGE_KEY);
                 if (APPEARANCE_ORDER.includes(stored)) return stored;
@@ -753,8 +765,7 @@
             const icon = $('#appearanceIcon');
             if (!btn || !icon) return;
             icon.innerHTML = APPEARANCE_ICONS[theme] || APPEARANCE_ICONS.auto;
-            const next = APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(theme) + 1) % APPEARANCE_ORDER.length];
-            const label = `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[next]}`;
+            const label = `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
             btn.title = label;
             btn.setAttribute('aria-label', label);
         }
@@ -767,6 +778,7 @@
          * tests/api-boundary.test.js 里有枚举断言钉住。
          */
         adoptServerTheme() {
+            this.themeOverride = null;
             try {
                 localStorage.removeItem(THEME_STORAGE_KEY);
             } catch (e) {}
@@ -774,9 +786,7 @@
         }
 
         cycleTheme() {
-            const current = this.resolveTheme();
-            const next = APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(current) + 1) % APPEARANCE_ORDER.length];
-            return this.setTheme(next);
+            return this.setTheme(nextTheme(this.resolveTheme()));
         }
 
         /**
@@ -788,20 +798,32 @@
             if (!this.authenticated) {
                 try {
                     localStorage.setItem(THEME_STORAGE_KEY, theme);
-                } catch (e) {}
+                    this.themeOverride = null;
+                } catch (e) {
+                    // 存不住（隐私模式 / 禁用站点数据）：本会话先按内存值生效，
+                    // 并说明刷新后会丢。静默吞掉会让这次点击看起来毫无反应。
+                    this.themeOverride = theme;
+                    this.showToast('这台设备无法保存外观选择，刷新后会恢复', 'error');
+                }
                 this.applyTheme();
                 return;
             }
 
-            // 已登录时以服务端为准：本机覆盖必须先清掉，否则它每次加载都会
-            // 压过刚写下的值（这也是 resolveTheme 那条优先级成立的前提）。
-            try {
-                localStorage.removeItem(THEME_STORAGE_KEY);
-            } catch (e) {}
+            // 登录态下这次调用会**整份**提交 config，等于替用户按下「保存编辑」：
+            // 编辑中未保存的布局草稿会一起写进服务器，而按下的那个按钮只说
+            // 「外观」。不可逆的动作不能藏在一个附带控件后面，所以先问一句。
+            if (this.editLayout) {
+                const ok = await this.confirmAction(
+                    '正在编辑首页导航，切换外观会连同未保存的改动一起保存到服务器。',
+                    '保存并切换'
+                );
+                if (!ok) return;
+            }
 
             const previous = this.config.theme;
             this.config.theme = theme;
-            this.applyTheme();
+            // 复用登录收尾：清本机覆盖 + 应用外观（removeItem 只此一处）
+            this.adoptServerTheme();
             // 管理面板若开着，让下拉框跟上——两处是同一份状态
             const select = $('#themeModeSelect');
             if (select) select.value = theme;

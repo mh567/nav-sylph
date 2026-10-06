@@ -525,6 +525,16 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 **原生 `<select>` 展开后的列表由 UA 绘制，应用层控制不了，只能靠 `option` 的 `background-color` 上色。** 收起的下拉框由 `admin.css` 那条 `background: linear-gradient(...)` 撑着，看起来一直正常；`option` 此前完全透明（`rgba(0,0,0,0)`），于是展开后回落到 UA 默认的白画布，深色下文字看不清。修法是新增 `--admin-field-canvas`（浅色引用既有 `--control-top`，深色 `#2a2521`），**必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次**，与本文件 `:51`、`:78` 记的同类 token 规矩一致。规则写成 `:is(.modal, .fav-dialog, .ui-dialog) select option`，一处覆盖全部三个下拉框（管理面板两个 + 书签弹窗的 `favCategorySelect`），不必逐个再写。
 
+**外观三态（自动 / 浅色 / 深色）的取值优先级不能颠倒**：本会话内存覆盖 → 本机 `localStorage`（键 `nav-sylph-theme`）→ 服务端 `config.json` 的 `theme` → `auto`（`app.js` 的 `resolveTheme()`）。
+
+- **未登录访客**点右下角「外观」按钮只写本机——写站点主题要管理员（`POST /api/config`），`localStorage` 不需要。内存那一级只在 `localStorage` 写不进去时才有值（隐私模式 / 禁用站点数据）；没有它，那次点击会毫无反馈，看起来像按钮坏了。
+- **已登录**点它等同于改站点主题，写服务端，与后台「主题模式」下拉框是同一份状态。每一处把 `authenticated` 置为 `true` 的地方都必须调 `adoptServerTheme()` 清掉本机覆盖，否则本机旧值会一直压过刚写下的站点值——`tests/api-boundary.test.js` 用枚举断言钉住那两处（首屏探测与页面内登录）。
+- **登录态下这次点击会整份提交 `config`**。编辑模式里有未保存的布局草稿（`editSession` 是深拷贝快照，`this.config` 就地改），直接提交等于替用户按下「保存编辑」，所以 `setTheme` 在编辑态先弹确认。不可逆的服务端动作不能藏在一个只说「外观」的控件后面。
+
+**首屏不闪是有条件的，别当成已经普遍成立。** `index.html` 的 head 内联脚本抢在 `styles.css` 之前应用**本机覆盖**（键名与 `app.js` 的 `THEME_STORAGE_KEY` 是跨文件契约，有断言钉住），这一条零延迟、完全成立。但**服务端强制主题做不到零延迟**：它要等 `/api/config` 回来，此前只能按系统色画。`init()` 里 `applyTheme()` 必须排在 `server-flags` 那趟请求**之前**（曾经排在它之后，白白多压一个往返），这是把窗口压到最短的唯一手段。要彻底消除只有让服务端把主题注入 HTML 一途，当前静态 `index.html` 做不到。
+
+按钮与旁边 `.fab` **同高 44px、宽收窄到 40px**。高度不缩水是有意的（32–36px 的圆低于触摸目标下限，手机上一按就误触紧邻的「管理」）；宽 40px 仍低于 44px 的建议值，是「小一点」这条需求下的取舍，已知未消。
+
 **`background` 简写会把 `background-color` 重置为 `transparent`，因此不透明底色必须写在 `background:` 之后。** 顺序反了底色当场失效且不报错，深色下又变回白底；浏览器实测两种顺序读回分别是 `rgba(0,0,0,0)` 与 `rgb(42,37,33)`。`tests/homepage-material.test.js` 断言了这个相对顺序——只断言「有这条声明」会被同特异性的另一种写法蒙过去。
 
 进入管理页的 `openAdmin()` 里，全量书签与 `privacyMode` 两个请求互不依赖，必须放进同一个 `Promise.all` 并发发出：服务端每个带密码的请求都要跑一次 `bcrypt.compare`（实测各约 55ms，不带密码约 1ms），串行等待等于把两次叠加成约 130ms。**`loadPrivacyMode()` 不能删**——`defaultConfig` 里没有 `privacyMode` 键只说明它有默认值（`migrateConfig` 填 `false`），用户在管理面板保存过一次后该键就会写入 `config.json` 并正常往返；删掉请求会让已开启隐私模式的用户丢失该状态。

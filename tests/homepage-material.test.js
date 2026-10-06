@@ -1564,9 +1564,13 @@ test('三态循环：自动 → 浅色 → 深色 → 自动（取模回绕）',
         order[1].split(',').map(s => s.trim().replace(/'/g, '')),
         ['auto', 'light', 'dark']
     );
+    // 取模回绕只在 nextTheme 里写一次（循环与按钮文案共用它）
+    assert.match(appCode,
+        /const nextTheme = current => APPEARANCE_ORDER\[\(APPEARANCE_ORDER\.indexOf\(current\) \+ 1\) % APPEARANCE_ORDER\.length\]/,
+        'nextTheme 取模回绕——少了它深色之后就不再变（或越界成 undefined）');
     const cycle = methodBodyOf(appCode, 'cycleTheme() {');
-    assert.match(cycle, /% APPEARANCE_ORDER\.length/,
-        '取模回绕——少了它深色之后就不再变（或越界成 undefined）');
+    assert.match(cycle, /this\.setTheme\(nextTheme\(this\.resolveTheme\(\)\)\)/,
+        '循环走共用的那格计算，不自己再算一遍');
 });
 
 test('未登录只写本机，登录后改的是服务端站点主题', () => {
@@ -1577,12 +1581,58 @@ test('未登录只写本机，登录后改的是服务端站点主题', () => {
     assert.match(guest, /localStorage\.setItem\(THEME_STORAGE_KEY, theme\)/, '未登录写本机');
     assert.doesNotMatch(guest, /api\/config/, '未登录不发保存请求（服务端也会 401）');
 
-    // 登录分支：先清本机覆盖再写服务端 —— 顺序反了的话，本机旧值会一直压过刚写下的值
-    const clearAt = body.indexOf('localStorage.removeItem(THEME_STORAGE_KEY)');
+    // 登录分支：先走登录收尾（清本机覆盖）再写服务端 —— 顺序反了的话，
+    // 本机旧值会一直压过刚写下的值。
+    const clearAt = body.indexOf('this.adoptServerTheme()');
     const saveAt = body.indexOf("API.post('/api/config'");
-    assert.ok(clearAt > guestStart && saveAt > clearAt, '先清本机覆盖，再保存服务端');
+    assert.ok(clearAt > guestStart && saveAt > clearAt, '先交回服务端（清本机覆盖），再保存');
+    assert.doesNotMatch(body, /localStorage\.removeItem/,
+        '清本机覆盖只写在 adoptServerTheme 一处，别在两个调用点各写一遍');
     assert.match(body, /this\.config\.theme = previous[\s\S]*?this\.applyTheme\(\)/,
         '保存失败要还原，不能把界面停在一个没存住的档位上');
+});
+
+test('编辑态下切换外观要先确认——它会连同未保存的草稿一起提交', () => {
+    // setTheme 的登录分支是整份 POST config，而编辑模式里有未保存的布局草稿
+    // （editSession 是深拷贝快照）。不拦一下，一个只写着「外观」的按钮
+    // 就替用户按下了「保存编辑」，而且不可逆。
+    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
+    const confirmAt = body.indexOf('this.editLayout');
+    const mutateAt = body.indexOf('this.config.theme = theme');
+    const saveAt = body.indexOf("API.post('/api/config'");
+    assert.ok(confirmAt > 0 && confirmAt < mutateAt && mutateAt < saveAt,
+        '确认必须排在改内存与提交之前，否则拦不住');
+    assert.match(body, /await this\.confirmAction\(/);
+    assert.match(body, /if \(!ok\) return;/, '用户取消就什么都不做');
+});
+
+test('localStorage 写不进去时给出提示，并让这次点击仍然生效', () => {
+    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
+    const guest = body.slice(body.indexOf('if (!this.authenticated) {'));
+    assert.match(guest, /this\.themeOverride = theme/,
+        '内存兜底——没有它，隐私模式下点击后画面纹丝不动');
+    assert.match(guest, /this\.showToast\([^)]*无法保存外观选择/,
+        '静默吞掉会让用户以为按钮坏了');
+    // 写侧兜底了，读侧也得认，否则写了没人读
+    assert.match(methodBodyOf(appCode, 'resolveTheme() {'), /includes\(this\.themeOverride\)/);
+});
+
+test('applyTheme 排在 server-flags 之前——服务端主题不该多等一个往返', () => {
+    const init = methodBodyOf(appCode, 'async init() {');
+    const themeAt = init.indexOf('this.applyTheme()');
+    const flagsAt = init.indexOf("API.get('/api/server-flags')");
+    assert.ok(themeAt > 0 && flagsAt > 0, '两处都能定位');
+    assert.ok(themeAt < flagsAt,
+        'config 一到就应用外观；排在 server-flags 之后等于白白多闪一帧');
+});
+
+test('架构文档记录了外观三态的优先级与首屏那条顺序约束', () => {
+    // 这三条是本轮的稳定约束，只写在逐轮交接文档里会被下一轮冲掉
+    const arch = fs.readFileSync(path.join(__dirname, '..', 'docs/architecture.md'), 'utf8');
+    assert.match(arch, /nav-sylph-theme/, '记下本机键名');
+    assert.match(arch, /adoptServerTheme/, '记下登录后要清本机覆盖');
+    assert.match(arch, /applyTheme`\(\) 必须排在 `server-flags`|applyTheme\(\)` 必须排在 `server-flags/,
+        '记下首屏那条顺序约束');
 });
 
 test('按钮的图标与无障碍文案跟着当前态走', () => {
