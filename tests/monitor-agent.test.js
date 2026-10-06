@@ -701,6 +701,47 @@ test('未注册且证书是自签时如实报告，而不是抛异常杀掉进�
         });
         assert.equal(b.ok, true, '传对了证书就应拉得到指标');
         assert.equal(b.metrics.memoryPercent, 0.5);
+
+        // 场景 C：证书 SAN 里没有我们访问用的那个地址，也应当连得上。
+        // agent 的证书是按它自己的主机名签的（SAN 通常只有 127.0.0.1/::1），
+        // 而服务端是拿这台机器的 IP 去连的。修复前报的正是用户看到的那句：
+        //   Hostname/IP does not match certificate's altnames:
+        //   IP: x.x.x.x is not in the cert's list: 127.0.0.1, ::1
+        const otherCert = path.join(tmp, 'other-cert.pem');
+        const otherKey = path.join(tmp, 'other-key.pem');
+        execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            '-keyout', otherKey, '-out', otherCert, '-days', '1',
+            '-subj', '/CN=nav-agent', '-addext', 'subjectAltName=DNS:nav-agent',
+        ], { stdio: 'ignore' });
+        const otherServer = https.createServer({
+            cert: fs.readFileSync(otherCert),
+            key: fs.readFileSync(otherKey)
+        }, (req, res) => {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ version: 1, cpu: 0.1, memoryPercent: 0.5 }));
+        });
+        await new Promise(resolve => otherServer.listen(0, '127.0.0.1', resolve));
+        const otherPort = otherServer.address().port;
+        try {
+            const c = await fetchRemoteMetrics({
+                url: `https://127.0.0.1:${otherPort}`, token: 'x',
+                certPem: fs.readFileSync(otherCert, 'utf8')
+            });
+            assert.equal(c.ok, true,
+                'SAN 里没有访问用的地址不该成为拒绝理由——信任已锚定到这张证书本身');
+
+            // 场景 D：换成**另一张**证书当锚点时必须失败。
+            // 这条防的是「为了修 C 干脆把校验关掉」：跳过 hostname 校验
+            // 不等于不校验证书，pin 仍然是真正的信任锚。
+            const d = await fetchRemoteMetrics({
+                url: `https://127.0.0.1:${otherPort}`, token: 'x',
+                certPem: fs.readFileSync(certFile, 'utf8')
+            });
+            assert.equal(d.ok, false,
+                '拿别的证书当锚点必须连不上——否则修 C 就变成了关掉校验');
+        } finally {
+            otherServer.close();
+        }
     } finally {
         server.close();
         fs.rmSync(tmp, { recursive: true, force: true });
@@ -2783,11 +2824,22 @@ test('拉取用 https.request 并透传 ca，才能验自签证书', () => {
     const code = stripComments(monitorSource);
     // 实测（Node 22）：checkServerIdentity 在证书链无效时根本不会被调用，
     // OpenSSL 先抛 DEPTH_ZERO_SELF_SIGNED_CERT。所以「自定义指纹比对」不可行，
-    // 唯一可行的是把该机器的证书作为可信锚点传进 ca。
+    // 信任只能靠把该机器的证书作为可信锚点传进 ca。
     assert.match(code, /https\.request\(/, '走 node:https 而不是内置 fetch');
     assert.match(code, /ca,/, '把 ca 透传给请求');
-    assert.doesNotMatch(code, /checkServerIdentity/,
-        '不依赖 checkServerIdentity（实测在自签证书场景下不会被调用）');
+
+    // ⚠️ 这条断言原先写的是「不得出现 checkServerIdentity」，前提是「自签场景下
+    // 它不会被调用」——那个前提只在**链不受信**时成立。链已靠 ca 验过之后，
+    // Node 仍会拿 URL 的 host 去比 SAN，而 agent 的证书是按自己的主机名签的，
+    // 于是报「IP: x is not in the cert's list: 127.0.0.1, ::1」。所以现在它只
+    // 承担一个职责：配对过之后跳过 hostname 比对，且**只在配对过时**装上去。
+    assert.match(code, /if \(server\.certPem\) options\.checkServerIdentity = \(\) => undefined;/,
+        '只在配对过之后跳过 hostname 校验（没有 certPem 时跳过等于放行任意证书）');
+    // Node 只接受函数或缺席：传 undefined 会抛
+    // 「The "options.checkServerIdentity" property must be of type function」，
+    // 结果是每一次拉取都失败——比原来那条 hostname 报错更糟。
+    assert.doesNotMatch(code, /checkServerIdentity:\s*undefined/,
+        '不能传 undefined，Node 会抛「must be of type function」');
 });
 test('两条写路径都补回已配对的证书，改个名字不会抹掉它', () => {
     // 症状隐蔽：配对好好的机器，用户改了个名字，采集又报「证书未受信任」，
