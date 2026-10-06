@@ -2,7 +2,42 @@
 
 核对日期：2026-10-06。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：修「接入新主机报证书 altnames 不匹配」（v1.10.2）
+## 最新一轮：修「升级 agent 后后台仍催升级」（v1.10.3）
+
+用户原话：「在后台点击检测按钮，提示 agent 版本为 1.10.1 可升级为 1.10.2，我在主机侧执行了升级命令后主机侧显示是 1.10.2 了，但服务端后台还是提示需要升级」。
+
+### 根因：upgrade 只换文件，不重启进程
+
+`agentVersion()` 是构建期用 `-ldflags -X` 注入的**常量**——**正在运行的那个进程**会一直自报旧版本。而后台「可升级」正是拿 `/health` 的 `agentVersion` 判断的，于是：主机侧 `nav-agent version`（新进程读新文件）已经是 1.10.2，服务里跑的旧进程仍报 1.10.1，后台就一直催。
+
+`install.sh` 的部署路径早就做对了这件事（**停旧 → 装新 → enroll → restart**），而 `cmdUpgrade` 只做了中间的「装新」，最后一步仅**打印**一句「若它是 systemd 服务，重启后生效：systemctl restart nav-agent」。那行字太容易被当成可选项——用户确实照命令做完了、也确认了版本，界面却毫无变化。这与本仓库反复记录过的「只 warn 不做事 = 静默失败」是同一形状（install.sh 里「写死 serve 导致 push 模式启动即退出」那条注释就是同一个教训）。
+
+### 修法
+
+`cmdUpgrade` 替换成功后调用新增的 `restartAgentService()`：直接试 `systemctl restart nav-agent`，再用 `is-active` 确认它没「启动即退出」（install.sh 的同一课：systemd 对启动即退出照样返回 0）。重启不了就把**具体**手动步骤交给用户（systemd 一条、手动运行一条），而不是笼统的「重启后生效」。
+
+不预设「这台机器一定有 systemd」——直接试、失败就报。macOS 上开发、容器里、`--no-systemd` 装的机器都会因此拿到准确提示。
+
+三处文案同步改口：`upgrade` 的输出、`agent/README.md` 的升级段、后台命令面板第 2 步的 note（原先写着「执行完若 agent 是 systemd 服务，还需 systemctl restart nav-agent」）。
+
+### 顺带修掉一个被测试暴露的真缺陷
+
+`enrollClient` 里 `caPath := args.str("server-ca", "NAV_AGENT_SERVER_CA")` —— `str(name, def)` 的第二参数是**字面默认值**，不是环境变量名（同文件 `--server` 那处写的是 `os.Getenv("NAV_AGENT_SERVER")`，是对的）。于是**不传** `--server-ca` 时，每次 `enroll` / `upgrade` 都会白打一行
+`读取 --server-ca 失败：open NAV_AGENT_SERVER_CA: no such file or directory`。
+功能没坏（随后回落 `http.DefaultClient`），但那行字会让人以为配置错了。已改为 `os.Getenv`。
+
+### 验证
+
+- `node --test tests/*.test.js`：**448/448**。
+- 新增一条**行为**用例：临时目录里现编一个版本号不同的副本（`-ldflags -X main.buildVersion=0.0.1`），`systemctl` 与「提供新版二进制的服务端」都是桩，真跑一次 `upgrade`——断言它调了 `restart nav-agent`、输出说「已重启」；systemctl 失败时断言给出两条手动命令。同一条用例天然不传 `--server-ca`，顺带钉住上面那个缺陷。
+- 红绿：把 `restartAgentService()` 调用改成恒假 → 用例红；把 `os.Getenv` 改回字面量 → 用例红。
+- 写这条用例踩了两个自己的坑：**`spawnSync` 会阻塞本进程的事件循环**，而提供下载的 http 服务跑在同一进程里——下载永远等不到响应，卡满 30 秒且 stub 一次都没被调用（改异步 `spawn` 才对）；以及一条**既有断言打偏**——它用 `dialog.indexOf('note:')` 当作第 3 步的 note 起点，实际从第 1 步就开始切，我给第 2 步加的「自动」二字落进了它的 push 切片，于是「push 不得许诺自动翻牌」误报（起点已改锚 `note: mode ===`）。
+
+### 仍未验证
+
+**真机 systemd 的重启路径没跑过**：本机是 macOS，`systemctl` 是桩。桩能证明「参数传对了、失败分支走了」，证明不了「systemd 真的把服务拉起来了」——需要在真实 Linux 机器上跑一次 `upgrade`。
+
+## 上一轮：修「接入新主机报证书 altnames 不匹配」（v1.10.2）
 
 用户原话：「接入监控新的主机时，报错“Hostname/IP does not match certificate's altnames: IP: 103.11.78.39 is not in the cert's list: 127.0.0.1, ::1”」。
 
