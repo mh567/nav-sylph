@@ -2,7 +2,39 @@
 
 核对日期：2026-10-06。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：「收藏管理」升格为独立「收藏夹」标签页 + 全产品线换名（v1.9.0，工作树未提交）
+## 最新一轮：WebDAV 备份时间与北京时间差 8 小时（v1.9.1，提交 `f665633`，随 v1.9.1 发布）
+
+用户原话：「webdav备份和恢复备份的显示时间和北京时间不一致」。
+
+### 根因
+
+两处时间来自不同来源，只有一处做了时区转换：
+
+- 「上次备份」用 `lastBackupTime`，是 `toISOString()` 的带 `Z` 串，前端 `new Date(...)` 解析后按本地时区渲染 → 正确。
+- 「管理备份」列表用文件名里的 `YYYYMMDD-HHMMSS`（同样由 `toISOString()` 生成，**UTC**），前端只做了一次纯字符串格式化，把它当本地时间直接显示 → 比北京时间早 8 小时。
+
+实测（TZ=Asia/Shanghai）：文件名 `20261006-020027`，列表显示 `02:00:27`，而同一时刻的「上次备份」显示 `10:00:27`。
+
+### 改动
+
+1. `lib/webdav-backup.js`：`listBackups()` 为每个分组补一个 `createdAt`，把文件名时间戳还原成带 `Z` 的 ISO（`2026-10-06T02:00:27Z`）。文件名与 `timestamp` 字段**不动**——它是分组主键，改成本地时间会让新旧文件混用两个时区。
+2. `public/app.js`：新增 `formatBackupTime(iso)`，统一按浏览器本地时区渲染成 `YYYY-MM-DD HH:mm:ss`；「上次备份」与恢复列表（渲染 + 删除确认）三处都走它，`data-timestamp` → `data-created-at`。
+
+显示格式保持既有的 `YYYY-MM-DD HH:mm:ss`（等宽、可排序），只把值修正。
+
+### 验证
+
+- `node --test tests/*.test.js`：**435/435 通过**（新增 3 条，已 grep 确认参与全量运行）。
+- 新增守卫（`tests/backup-privacy.test.js`）：列表返回带 `Z` 的 UTC 时刻（config / bookmarks / modules / legacy 四种文件名都覆盖）；`formatBackupTime` 在子进程固定 `TZ=Asia/Shanghai` 下把 `2026-10-06T02:00:27Z` 渲染成 `2026-10-06 10:00:27`、非法输入返回空串；恢复对话框与状态区都走同一格式化，不再出现 `dataset.timestamp` / `toLocaleString()`。
+- 红绿：backend / utc / wiring 三处变异各只让对应用例变红，破坏与恢复都有 before/after 校验。
+- 语法：改动文件 `node --check` OK，`git diff --check` 干净。
+- 发布：SW 缓存 `nav-v63 → nav-v64`（`public/` 在发布包内），三处版本号同为 `1.9.1`，走 `scripts/release.sh`。
+
+### 仍未验证 / 下一步
+
+1. **真实 WebDAV + 浏览器端到端未跑**：`listBackups()` 用桩 client 验证、前端格式化用子进程固定时区验证，但没有连真实 WebDAV 服务器，也没在浏览器里打开恢复对话框看渲染结果。
+
+## 上一轮：「收藏管理」升格为独立「收藏夹」标签页 + 全产品线换名（v1.9.0，提交 `4770c15`，已发布）
 
 用户原话：「现在其实把原来的书签管理变成了首页导航管理，原来的收藏管理应该提升为一个大的 tab 模块，并改名为收藏夹，里面管理的是书签（名字上与一般浏览器的书签叫法相同）」。先按约定做了 `docs/mockup-fav-tab.html` 仿真页（含宽/窄视口对照），批准后才落生产代码。
 
