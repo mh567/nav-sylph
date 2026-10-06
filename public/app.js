@@ -3443,15 +3443,48 @@
 
             // 开关与它那一行的「已启用/未启用」文字必须同步，
             // 否则文字会与实际状态相反——它紧贴开关，反而不一致时最刺眼。
+            //
+            // ⚠️ 这里曾经**只改文字、从不发请求**（自 `ada60c6` 模块平台上线起
+            // 就如此），而下面那句注释还断言「开关有自己的即时保存路径」——
+            // 于是后台把开关拨成「已启用」、`.modules.json` 一个字没变，用户
+            // 报的就是「备忘录模块无法启用」。用户原话：「更新后，备忘录模块
+            // 无法启用」。上一轮 449→465 条测试全绿、源码形状守卫也在绿，
+            // 因为那条守卫只断言了「存在一个 change 监听」。
+            // 保存路径照抄同一文件里「显示/隐藏」那个开关（POST + toast +
+            // 重渲染模块区 + 失败回滚）：模块开关与它是同一件事。
             for (const box of host.querySelectorAll('[data-module-toggle]')) {
                 const state = box.closest('.module-setting-toggle')
                     ?.querySelector('.module-setting-state');
-                box.addEventListener('change', () => {
-                    if (state) state.textContent = box.checked ? '已启用' : '未启用';
+                box.addEventListener('change', async () => {
+                    const id = box.dataset.moduleToggle;
+                    const on = box.checked;
+                    const before = config.enabledModules.slice();
+                    const next = on
+                        ? [...new Set([...before, id])]
+                        : before.filter(x => x !== id);
+                    try {
+                        await API.post('/api/modules/config', {
+                            enabledModules: next,
+                            widgets: config.widgets,
+                            servers: config.servers
+                        });
+                        config.enabledModules = next;
+                        if (state) state.textContent = on ? '已启用' : '未启用';
+                        const title = this.getModule(id)?.title || id;
+                        this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
+                        await this.renderModuleZone();
+                    } catch (err) {
+                        console.error('Save module toggle failed:', err);
+                        // 失败要把开关与文字一起拨回去，否则界面显示的是一个
+                        // 没落盘的状态（本轮修的就是这个形状的谎）
+                        box.checked = !on;
+                        if (state) state.textContent = !on ? '已启用' : '未启用';
+                        this.showToast('保存失败，请重试', 'error');
+                    }
                 });
             }
 
-            // 模块开关有自己的即时保存路径（在 toggle 的 change 处理器里），
+            // 模块开关的保存路径就在上面那个 change 处理器里，
             // 所以这里**不需要**一个总的「保存模块配置」按钮。
             // 曾有过一个，而它与右上角的「保存」职责重叠、用户分不清
             // 哪个才是真的生效——实际两者写的都是同一份 .modules.json。

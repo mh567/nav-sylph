@@ -1199,11 +1199,10 @@ test('后台模块页：没有总的保存按钮，本机排第一且不可删',
     assert.doesNotMatch(code, /saveModulesBtn|modulesSaveStatus/,
         '模块页不再有总的保存按钮与它的状态位');
 
-    // 模块开关仍要即时落盘——删掉按钮之后，这条路径就是唯一的
-    const toggle = code.slice(code.indexOf("for (const box of host.querySelectorAll('[data-module-toggle]'))"));
-    assert.ok(toggle.length > 100, '切出开关绑定');
-    assert.match(toggle.slice(0, 600), /addEventListener\('change'/,
-        '模块开关仍走 change 即时保存，不是靠那个按钮');
+    // 模块开关的落盘路径见下一条用例（它把真实的处理器跑一遍）。
+    // ⚠️ 这里曾只断言「存在一个 change 监听」——**绿着放过了开关从不发请求
+    // 的缺陷**（用户报「备忘录模块无法启用」）。那句断言在形状上成立、
+    // 语义上什么也没证明，已移走。
 
     // 本机卡片：永远第一、无部署/编辑/删除
     const local = /renderLocalServerCard\(config\) \{[\s\S]*?\n        \}/.exec(code);
@@ -1232,6 +1231,88 @@ test('后台模块页：没有总的保存按钮，本机排第一且不可删',
             new RegExp(`const \\w+ = row\\.querySelector\\('${sel.replace('.', '\\.')}'\\);\\s*\\n\\s*if \\(\\w+\\)`),
             `${sel} 的绑定带存在性判断（本机卡片没有它）`);
     }
+});
+
+test('后台模块开关真的落盘：跑一遍真实处理器，成功与失败两条路径', async () => {
+    // 用户原话：「更新后，备忘录模块无法启用」。根因是这枚开关自模块平台
+    // 上线（`ada60c6`）起**只改界面的字、从不发请求**：拨成「已启用」、
+    // `.modules.json` 一个字没变。而当时的守卫只断言「存在一个 change 监听」，
+    // 绿着就把缺陷放过了——形状成立、语义上什么也没证明。
+    // 所以这里不再是形状断言：把源码里那段真实循环体放进函数里跑一遍，
+    // 断言它请求了什么、失败时回滚了什么。
+    const code = stripComments(appSource);
+    const method = methodBodyOf(code, 'renderModulesEditorContent');
+    assert.ok(method.length > 200, `切出模块编辑器方法体（${method.length}）`);
+
+    const start = method.indexOf("for (const box of host.querySelectorAll('[data-module-toggle]'))");
+    assert.ok(start >= 0, '找到开关绑定循环');
+    const open = method.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < method.length; i++) {
+        if (method[i] === '{') depth++;
+        else if (method[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    assert.ok(end > open, '循环切片闭合');
+    const loop = method.slice(start, end);
+    // 切片太短说明配对提前收口，断言会在空窗口里「通过」
+    assert.ok(loop.length > 200, `循环切片长度合理（${loop.length}）`);
+
+    /** 用假 host / box / API 跑那段真实循环，返回它到底做了什么。 */
+    const runToggle = ({ checked, enabled = [], fail = false }) => {
+        const calls = [];
+        const toasts = [];
+        const rendered = [];
+        let handler = null;
+        const stateEl = { textContent: '' };
+        const box = {
+            dataset: { moduleToggle: 'memo' },
+            checked,
+            closest: () => ({ querySelector: () => stateEl }),
+            addEventListener: (type, fn) => { if (type === 'change') handler = fn; }
+        };
+        const config = { enabledModules: enabled.slice(), widgets: [], servers: [] };
+        const API = {
+            post: async (url, payload) => {
+                calls.push({ url, payload });
+                if (fail) throw new Error('boom');
+                return { success: true };
+            }
+        };
+        const app = {
+            getModule: id => ({ id, title: '备忘录' }),
+            showToast: (msg, kind) => toasts.push({ msg, kind }),
+            renderModuleZone: async () => { rendered.push(1); }
+        };
+        // 循环体里写的是 this.xxx，所以按方法调用来跑：
+        // `new Function` 的函数体非严格，this 就是 .call 的接收者。
+        const bind = new Function('host', 'config', 'API', loop);
+        bind.call(app, { querySelectorAll: () => [box] }, config, API);
+        assert.ok(handler, '循环注册了 change 监听');
+        return handler().then(() => ({ calls, toasts, rendered, config, box, stateEl }));
+    };
+
+    const on = await runToggle({ checked: true });
+    assert.equal(on.calls.length, 1, '开关必须真的发一次请求——这正是本轮修的缺陷');
+    assert.equal(on.calls[0].url, '/api/modules/config');
+    assert.deepEqual([...on.calls[0].payload.enabledModules], ['memo'], '写下去的是新的启用列表');
+    assert.deepEqual([...on.config.enabledModules], ['memo'], '内存里的列表同步更新');
+    assert.equal(on.stateEl.textContent, '已启用');
+    assert.equal(on.rendered.length, 1, '启用后要重渲染模块区，否则关掉面板看不到卡片');
+    assert.match(on.toasts[0].msg, /已启用「备忘录」/, '给出反馈（用户才知道自己刚做了什么）');
+
+    const off = await runToggle({ checked: false, enabled: ['memo', 'server-monitor'] });
+    assert.equal(off.calls.length, 1);
+    assert.deepEqual([...off.calls[0].payload.enabledModules], ['server-monitor'],
+        '关闭时只移除自己，不动别的模块');
+    assert.equal(off.stateEl.textContent, '未启用');
+
+    const bad = await runToggle({ checked: true, fail: true });
+    assert.equal(bad.box.checked, false, '保存失败必须把开关拨回去');
+    assert.equal(bad.stateEl.textContent, '未启用', '文字也要跟着拨回去');
+    assert.deepEqual([...bad.config.enabledModules], [], '失败时内存里的列表不得改动');
+    assert.equal(bad.rendered.length, 0, '失败不该重渲染出卡片');
+    assert.match(bad.toasts[0].msg, /保存失败/);
 });
 
 test('改更新周期会让采集缓存失效，否则「改完不生效」', () => {
