@@ -1,6 +1,28 @@
 {
   "versions": [
     {
+      "version": "1.8.0",
+      "date": "2026-10-05",
+      "summary": "触摸端也能拖了",
+      "highlights": [
+        "手机上长按 400ms 再拖，就能拖动书签和导航分类",
+        "桌面端不受影响，仍是原来的拖拽方式",
+        "取消拖拽或拖到空白处松手后，不再留下压暗残留"
+      ],
+      "changes": {
+        "improve": [
+          "触摸端拖拽：新增 bindTouchGridDrag——长按 400ms 激活、容忍 25px 漂移的 pointer 事件路径，与桌面端原生 DnD 按 pointerType 互斥，排序复用同一对 moveCategory/moveBookmark",
+          "触摸端不写 touch-action: none（写了首页网格就滚不动），改在编辑态关掉文字选中与 iOS 长按菜单",
+          "拖拽落点改用 elementFromPoint 实时计算，不用会随重排失效的坐标几何"
+        ],
+        "fix": [
+          "长按满 400ms 却一直不动时松手，不再把元素挪到用户没指过的地方（原 drag.moved 标志是死代码，已删）",
+          "分类拖拽取消后，整块分类上的压暗不再残留（原收尾按分类头去 remove，压暗却加在 section 上）",
+          "系统中断手势（pointercancel）能正确清掉长按状态（原 hold 未记录 pointerId，比较恒为假）"
+        ]
+      }
+    },
+    {
       "version": "1.7.2",
       "date": "2026-10-05",
       "summary": "首页编辑模式下分类与模块终于能拖动了",
