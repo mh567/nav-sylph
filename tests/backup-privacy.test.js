@@ -348,6 +348,83 @@ test('改密码时推送凭据哈希原样保留（它不派生自管理员密�
         '再把同一份对象写回——未触碰的字段随之保留');
 });
 
+// ========== 备份时间的时区 ==========
+//
+// 文件名里的时间戳由 createBackup 用 toISOString() 生成，是 UTC。
+// 修复前恢复列表把这个字符串按本地时间直接渲染：UTC 02:00 显示成 02:00，
+// 而同一时刻的「上次备份」经 Date 解析后显示 10:00（北京时间），两处差 8 小时。
+
+const { execFileSync } = require('node:child_process');
+const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+
+test('备份列表返回带 Z 的 UTC 创建时间，而不是裸的文件名时间戳', async () => {
+    const entries = [
+        { type: 'file', basename: 'nav-sylph-config-20261006-020027.json', size: 10, lastmod: 'ignored' },
+        { type: 'file', basename: 'nav-sylph-bookmarks-20261006-020027.html', size: 10, lastmod: 'ignored' },
+        { type: 'file', basename: 'nav-sylph-modules-20261006-020027.json', size: 10, lastmod: 'ignored' },
+        { type: 'file', basename: 'nav-sylph-backup-20250101-120000.json', size: 10, lastmod: 'ignored' }
+    ];
+    const backup = new WebDAVBackup('/unused', 'unused');
+    backup.config = { remotePath: '/backups/' };
+    backup.createClient = () => ({ getDirectoryContents: async () => entries });
+
+    const { backups } = await backup.listBackups();
+    assert.equal(backups.length, 2);
+    assert.equal(backups[0].createdAt, '2026-10-06T02:00:27Z');
+    assert.equal(backups[1].createdAt, '2025-01-01T12:00:00Z');
+    assert.equal(new Date(backups[0].createdAt).getTime(), Date.UTC(2026, 9, 6, 2, 0, 27),
+        '解析出来是 UTC 02:00:27——少了 Z 就会被当成本地时间，早 8 小时');
+});
+
+test('前端把 UTC 时刻渲染成本地时间（固定 TZ=Asia/Shanghai，UTC 02:00 → 10:00）', () => {
+    // 子进程里固定 TZ，否则断言会随测试机时区变化。
+    const script = [
+        "const fs = require('fs');",
+        `const code = fs.readFileSync(${JSON.stringify(path.join(__dirname, '..', 'public', 'app.js'))}, 'utf8');`,
+        "const start = code.indexOf('formatBackupTime(iso) {');",
+        "if (start < 0) throw new Error('formatBackupTime 不存在');",
+        "const open = code.indexOf('{', start);",
+        "let depth = 0, end = -1;",
+        "for (let i = open; i < code.length; i++) {",
+        "  if (code[i] === '{') depth++;",
+        "  else if (code[i] === '}') { depth--; if (depth === 0) { end = i; break; } }",
+        "}",
+        "const fn = new Function('iso', code.slice(open + 1, end));",
+        "process.stdout.write(JSON.stringify([fn('2026-10-06T02:00:27Z'), fn('not-a-date')]));"
+    ].join('\n');
+
+    const stdout = execFileSync(process.execPath, ['-e', script], {
+        env: { ...process.env, TZ: 'Asia/Shanghai' },
+        encoding: 'utf8'
+    });
+
+    // 若把 UTC 的时分秒原样输出，这里会是 02:00:27 —— 正是修复前的现象
+    assert.deepEqual(JSON.parse(stdout), ['2026-10-06 10:00:27', '']);
+});
+
+test('恢复列表不再直接展示文件名时间戳，两处时间共用一个格式化', () => {
+    const code = stripComments(appSource);
+
+    // 用**带参数的定义**做结束锚点：方法体内还有一次 this.showRestoreOptionsDialog({
+    // 调用，用 'showRestoreOptionsDialog(' 会把删除确认那段切到窗口外。
+    const start = code.indexOf('async showWebDAVRestoreDialog() {');
+    const end = code.indexOf('showRestoreOptionsDialog(backup, parentDialog)');
+    assert.ok(start >= 0 && end > start, '恢复对话框方法体边界可定位');
+    const dialogFn = code.slice(start, end);
+    assert.ok(dialogFn.length > 500, '切片覆盖整个恢复对话框');
+    assert.match(dialogFn, /this\.formatBackupTime\(b\.createdAt\)/, '列表用服务端的 createdAt');
+    assert.match(dialogFn, /this\.formatBackupTime\(item\.dataset\.createdAt\)/, '删除确认走同一格式化');
+    assert.doesNotMatch(dialogFn, /b\.timestamp|dataset\.timestamp/, '不再直接读文件名时间戳');
+
+    const start2 = code.indexOf('renderWebDAVSection() {');
+    const end2 = code.indexOf('async saveWebDAVConfig()');
+    assert.ok(start2 >= 0 && end2 > start2, 'WebDAV 状态区边界可定位');
+    const renderFn = code.slice(start2, end2);
+    assert.match(renderFn, /this\.formatBackupTime\(cfg\.lastBackupTime\)/, '「上次备份」走同一格式化');
+    assert.doesNotMatch(renderFn, /toLocaleString\(\)/,
+        '不再用 toLocaleString——它的输出格式与列表对不上');
+});
+
 test('模块配置的 token 字段不被归一化接受（明文不入盘）', () => {
     // normalizeServer 的白名单里没有 token：提交明文 token 会被丢弃，
     // 必须走服务端的加密路径。

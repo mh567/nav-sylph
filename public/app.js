@@ -4313,6 +4313,20 @@
 
         // ========== WebDAV 远程备份 ==========
 
+        /**
+         * 备份时间统一按浏览器本地时区渲染。
+         * 服务端给的都是带 Z 的 ISO 串（UTC）；此前列表把文件名里的
+         * UTC 时间戳直接当本地时间显示，比北京时间早 8 小时，
+         * 与上面的「上次备份」对不上。
+         */
+        formatBackupTime(iso) {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return '';
+            const pad = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+                + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
         async loadWebDAVConfig() {
             const container = $('#webdavSection');
             try {
@@ -4348,7 +4362,7 @@
 
             const cfg = this.webdavConfig;
             const lastBackup = cfg.lastBackupTime
-                ? new Date(cfg.lastBackupTime).toLocaleString()
+                ? this.formatBackupTime(cfg.lastBackupTime)
                 : '从未备份';
 
             container.innerHTML = `
@@ -4504,7 +4518,7 @@
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
                                     const hasModules = !!b.modulesFile;
-                                    const displayName = b.timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
+                                    const displayName = this.formatBackupTime(b.createdAt);
                                     const files = [];
                                     if (isLegacy) files.push('旧版备份');
                                     if (hasConfig) files.push('配置');
@@ -4516,7 +4530,7 @@
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
                                          data-modules="${this.esc(b.modulesFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
-                                         data-timestamp="${this.esc(b.timestamp)}">
+                                         data-created-at="${this.esc(b.createdAt || '')}">
                                         <div class="webdav-backup-info">
                                             <div class="webdav-backup-name">${displayName}</div>
                                             <div class="webdav-backup-meta">
@@ -4567,8 +4581,7 @@
                         const bookmarksFile = item.dataset.bookmarks;
                         const modulesFile = item.dataset.modules;
                         const legacyFile = item.dataset.legacy;
-                        const timestamp = item.dataset.timestamp;
-                        const displayName = timestamp.replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6');
+                        const displayName = this.formatBackupTime(item.dataset.createdAt);
 
                         if (!await this.confirmAction(`确定删除备份 ${displayName}？`, '删除备份', true)) return;
 
