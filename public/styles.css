@@ -3024,13 +3024,38 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    否则拖拽时卡片会浮起来，落点判断跟着偏。
    ⚠️ 必须连 :active / .is-pressed 一起中和：bindBookmarkPress 在 pointerdown
    就加 .is-pressed 并保留 135ms，只压 :hover 的话松手后的那一小段里
-   抬升+缩放照旧出现——正是这里要避免的「卡片浮起来」。 */
-.grid.is-editing .bookmark { cursor: grab; }
-.grid.is-editing .bookmark:hover { transform: none; }
-.grid.is-editing .bookmark:active, .grid.is-editing .bookmark.is-pressed { transform: none; }
+   抬升+缩放照旧出现——正是这里要避免的「卡片浮起来」。
+
+   触摸端的长按拖拽靠 JS（bindTouchGridDrag），它还需要两件桌面端不需要的东西：
+   1. user-select: none —— 否则长按会先选中卡片里的文字，拖拽根本起不来。
+      只在**编辑态**关：常态首页仍要能选中文字。
+   2. -webkit-touch-callout: none —— 关掉 iOS 长按弹出的「拷贝/查找/共享」菜单，
+      否则长按 400ms 激活拖拽时菜单同时弹出，两者互相打断。
+   ⚠️ 不要写 touch-action: none：书签网格在首页常常需要滚动浏览，写了就滚不动。
+   激活判据是「长按 400ms」，滚动交给浏览器——这与模块把手的
+   touch-action: none（那里没有滚动需求）是有意的不一致。 */
+.grid.is-editing .bookmark,
+.grid.is-editing .category-header {
+    cursor: grab;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+.grid.is-editing .bookmark:hover,
+.grid.is-editing .bookmark:active,
+.grid.is-editing .bookmark.is-pressed,
 .grid.is-editing .bookmark-add:hover { transform: none; }
 .grid.is-editing .bookmark.is-dragging { opacity: .4; }
 .category.is-dragging { opacity: .55; }
+
+/* 长按满 400ms、尚未移动时给一点反馈：否则用户以为没反应。
+   激活后 .is-dragging 接管，这层提示随之退场。
+   ⚠️ 状态选择器是**独立**的一条，不并进上面那条：并进去就等于
+   `.grid.is-editing .bookmark` 被声明两次，而本仓库的守卫要求
+   每个选择器在 .grid.is-editing 下只声明一次（同优先级后者胜，
+   尾部覆盖栽过两次）。 */
+.grid.is-editing .bookmark.is-arming,
+.grid.is-editing .category-header.is-arming { opacity: .7; }
 /* 分类落点提示：与 .category.is-dragging 配对（拖到谁头上谁就压暗）。
    这条规则此前不存在——分类拖拽整个不可用，也就没人写过它。 */
 .grid.is-editing .category.drop-target { opacity: .55; }

@@ -338,6 +338,28 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 **拖拽残留的清理要覆盖 `dragend`，不能只靠 `drop`。** `drop` 只在松手点位于 `#grid` 内才触发（监听挂在 grid 上），拖到页头或留白处松手走不到它；`.drop-target` 与 `.is-dragging` 视觉完全相同（同为 `opacity: .55`），漏清会让用户以为「卡住了」。同理 `exitEditLayout` 的注释声称清掉「全部拖拽残留」，就必须同时覆盖 `#grid` 与 `#moduleZone`，且 class 名要对（那里曾写着样式表里根本不存在的 `.drop-active`，整行是空转）。
 
+### 触摸端与桌面端是两条判据，不是同一手势的两份实现
+
+**原生 DnD 在触摸端不发任何事件。** MDN 写明 drag events **继承自 mouse events**（"drag events inherited from mouse events"），触摸没有 mouse 事件链。这是继承关系决定的，不是兼容性不足——CSS 的 `touch-action` 补不了，它只决定浏览器是否接管手势。模块卡片不受影响，因为它一开始走的就是 pointer 事件。
+
+于是书签与分类有两条输入路径，**按 `pointerType` 互斥**：
+
+| | 桌面（mouse / pen） | 触摸（touch） |
+| --- | --- | --- |
+| 机制 | 原生 DnD（`dragstart` / `dragover` / `drop`） | `pointerdown/move/up/cancel`（`bindTouchGridDrag`） |
+| 激活 | 按下即起拖 | **长按 400ms**，容忍 25px 漂移 |
+| 排序 | `moveCategory` / `moveBookmark` | 同一对函数 |
+
+互斥是刻意的：桌面端若也进触摸路径，就要额外处理「一按就拖 vs 选中文字」——那是对已验证路径的回归风险。**排序逻辑只有一份**（`moveCategory` / `moveBookmark`），任何一侧自己 `splice` 就变成两个真值。
+
+**为什么必须长按，而不是「一按就拖」或「位移阈值」**：书签网格在首页常常需要滚动浏览，一按就拖会把滚动抢走；纯位移阈值则会在滑页途中误判成拖拽。长按期间手指不动，浏览器不会开始滚动，于是两件事可以共存。这也是 `@dragdroptouch` 的 `pressHoldDelayMS` / `pressHoldMargin` 与 iOS 长按菜单的同量级取值。
+
+**⚠️ 因此书签网格与分类头不写 `touch-action: none`**，这与 `.module-drag-handle` 是有意的不一致：模块把手在窄屏是横滑列表，没有纵向滚动需求；首页网格有滚动需求，写了就滚不动。触摸端要有东西，是 `user-select: none`（否则长按先选中文字）与 `-webkit-touch-callout: none`（否则 iOS 长按菜单与拖拽互相打断），两者都只在编辑态生效。
+
+**「压暗谁」必须与「复原谁」是同一个元素。** 分类拖拽压暗的是整块 `.category`（CSS 就是 `.category.is-dragging`），而书签压暗的是卡片本身。收尾时若一律按 `node` 去 `remove`，section 上那层永远清不掉——提交时因为 `renderGrid` 重建 DOM 而被掩盖，但取消或落点无效时压暗就留在页面上。所以承载 class 的元素记进 `drag.tinted`，激活与收尾都读它。
+
+**触摸端的落点用 `elementFromPoint`，不用坐标几何。** 网格会随拖拽重排，实时几何与缓存中线都可能失效（模块那条路径踩过这个坑，见 `reorderWhileDragging` 的注释）。
+
 ### 拖拽落点的守卫要排在解引用之前
 
 `closest('.category')` 在「＋ 添加分类」按钮与网格间隙上返回 `null`。写 `this.config.categories[toCat]` 之前必须先判 `toCat < 0` 并**清掉 `dragKind`/`dragFrom`**——异常从事件监听器抛出时，监听器末尾的清理代码不会执行，拖拽状态就此卡住，下一次 `dragover` 仍认为在拖拽。
@@ -348,8 +370,8 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ### 尚未实现
 
-- **触摸设备的 DnD 不可靠**。这是选 HTML5 DnD 时就接受的取舍——书签与分类的拖拽走原生 DnD，触摸端多数浏览器不触发 `dragstart`（模块卡片那边是自建 pointer 事件，不受此限）。
-- **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。
+- **触摸端已实现，但只在本机用合成 pointer 事件验证过**。真实触摸的手势语义（长按是否会先触发滚动、iOS 长按菜单是否真被压掉、`pointercancel` 何时到来）**没有在真机或真实触摸设备上验证过**——headless Chrome 不产生真实触摸。见 `current-work.md` 的「只在真机能确认」清单。
+- **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。已确认本轮不改（触摸端真正难按的是 ✎/✕，但改动会让编辑态头部变宽，另行决定）。
 
 ## 数据与请求路径
 

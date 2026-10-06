@@ -1260,6 +1260,191 @@
                 if (!card || card.classList.contains('bookmark-add')) return;
                 card.focus();
             });
+
+            this.bindTouchGridDrag();
+        }
+
+        /**
+         * 触摸端的长按拖拽（书签 / 分类）。
+         *
+         * 为什么不能靠原生 DnD：MDN 写明 drag events **继承自 mouse events**
+         * （"drag events inherited from mouse events"），而触摸没有 mouse 事件链，
+         * 所以 iOS Safari / Android Chrome 上按了也不发 dragstart——实测层级的
+         * 事实，不是兼容性不足。CSS 的 touch-action 管不了这个，它只决定浏览器
+         * 是否接管手势。模块卡片那边不受影响是因为它走的是 pointer 事件。
+         *
+         * 所以触摸端单独一条 pointer 路径，与模块拖拽同一套机制
+         * （pointer capture + window 上的终止监听），排序则复用桌面端
+         * 同一个 moveCategory / moveBookmark——两套排序实现就会有两个真值。
+         *
+         * 激活判据是**长按 400ms、容忍 25px 漂移**（iOS 长按菜单与
+         * @dragdroptouch 的 pressHoldDelayMS / pressHoldMargin 同量级）。
+         * 不用「一按就拖」：书签网格在首页常常要滚动浏览，抢走手势就没法滚了；
+         * 也不用纯位移阈值：滑动页面途中就判成拖拽，误触成本高。
+         * ⚠️ 因此**不写 touch-action: none**（与 .module-drag-handle 有意不同）。
+         *
+         * 落点用 elementFromPoint 判定，而不是坐标几何：网格会随拖拽重排，
+         * 实时几何与缓存中线都可能失效（模块那条路径踩过这个坑，
+         * 见 reorderWhileDragging 的注释）。
+         */
+        bindTouchGridDrag() {
+            const grid = $('#grid');
+            if (!grid) return;
+            const HOLD_MS = 400;
+            const HOLD_TOLERANCE = 25;
+            // 激活后的拖拽状态；未激活时 hold 为 null
+            let hold = null;
+            let drag = null;
+
+            const catIndexOf = node => {
+                const section = node.closest('.category');
+                return section ? +section.dataset.cat : -1;
+            };
+
+            const clearHold = () => {
+                if (!hold) return;
+                clearTimeout(hold.timer);
+                hold.node.classList.remove('is-arming');
+                hold = null;
+            };
+
+            // 按落点算出「分类 / 书签」的哪一条，统一返回 {kind, cat, bm, node}
+            const resolveTarget = (x, y) => {
+                const el = document.elementFromPoint(x, y);
+                if (!el) return null;
+                const add = el.closest('.bookmark-add, .category-add');
+                // ＋ 卡片是新增入口，不参与排序
+                if (add) return null;
+                const card = el.closest('.bookmark');
+                const section = el.closest('.category');
+                const toCat = section ? +section.dataset.cat : -1;
+                if (toCat < 0) return null;
+                const toBm = card && card.dataset.bm !== undefined
+                    ? +card.dataset.bm
+                    : this.config.categories[toCat].bookmarks.length;
+                return { card: !!card, cat: toCat, bm: toBm, section };
+            };
+
+            grid.addEventListener('pointerdown', event => {
+                // 只接触摸。鼠标走已验证的原生 DnD，两条路径**互不重叠**：
+                // 桌面端若也进这条路径，就要额外处理「一按就拖 vs 选文字」。
+                if (event.pointerType !== 'touch' || event.button !== 0) return;
+                if (!this.editLayout) return;
+                // ✎/✕ 上按下不拖（同 pointerdown 的排除，见 bindGridEdit）
+                if (event.target.closest('.category-action:not(.category-drag)')) return;
+
+                const header = event.target.closest('.category-header');
+                const card = event.target.closest('.bookmark');
+                const node = header || (card && !card.classList.contains('bookmark-add') ? card : null);
+                if (!node) return;
+
+                const source = {
+                    node,
+                    kind: header ? 'cat' : 'bm',
+                    from: header
+                        ? catIndexOf(header)
+                        : { cat: catIndexOf(card), bm: +card.dataset.bm }
+                };
+                clearHold();
+                hold = {
+                    ...source,
+                    // pointerId 必须存下来：settle 用它判断「这次松手是不是
+                    // 这一根手指」。早先没存，settle 里 `hold.pointerId` 恒为
+                    // undefined，与任何 pointerId 都不相等——于是那一道守卫
+                    // 只能靠 `!event` 兜底，pointercancel 路径上 hold 清不掉。
+                    pointerId: event.pointerId,
+                    x: event.clientX,
+                    y: event.clientY,
+                    timer: setTimeout(() => activate(event.pointerId), HOLD_MS)
+                };
+                node.classList.add('is-arming');
+
+                function activate(pointerId) {
+                    if (!hold) return;
+                    const { node: n, kind, from } = hold;
+                    clearHold();
+                    // ⚠️ 「压暗谁」必须与「复原谁」是同一个元素。分类拖拽压暗的是
+                    // **整块 section**（CSS 就是 .category.is-dragging），
+                    // 而收尾时若按 node（分类头）去 remove，section 上那层永远清不掉——
+                    // 只要这次拖拽没提交（取消、落点无效），压暗就会一直留着。
+                    // 所以把承载 class 的元素记进 drag，两边都读它。
+                    const tinted = kind === 'cat' ? (n.closest('.category') || n) : n;
+                    drag = { id: pointerId, node: n, tinted, kind, from, to: null };
+                    tinted.classList.add('is-dragging');
+                    // 拖拽期间接管后续手势，并阻止滚动/缩放被浏览器抢走。
+                    // touch-action 在 CSS 里**不能**这么写（会把滚动永久禁掉），
+                    // 只能在激活这一刻取消。
+                    try { n.setPointerCapture(pointerId); } catch (e) {}
+                    // 长按激活后必须压掉随后的 click，否则松手会顺带打开编辑框。
+                    // 桌面端靠 DnD 规范自动抑制 click，触摸端没有这个保证。
+                    suppressNextClick(n);
+                }
+            });
+
+            const move = event => {
+                if (hold) {
+                    // 长按期间的漂移超过容忍 = 用户在滚动，不是想拖
+                    const dx = event.clientX - hold.x;
+                    const dy = event.clientY - hold.y;
+                    if (Math.hypot(dx, dy) > HOLD_TOLERANCE) {
+                        clearHold();
+                        return;
+                    }
+                    return;
+                }
+                if (!drag || event.pointerId !== drag.id) return;
+                event.preventDefault();
+                const target = resolveTarget(event.clientX, event.clientY);
+                if (!target) {
+                    $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
+                    drag.to = null;
+                    return;
+                }
+                drag.to = target;
+                // 分类拖拽给出落点提示；书签拖拽靠 .is-dragging 半透明表达
+                $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
+                if (drag.kind === 'cat' && target.section && target.cat !== drag.from) {
+                    target.section.classList.add('drop-target');
+                }
+            };
+
+            const settle = event => {
+                if (hold && (!event || event.pointerId === hold.pointerId)) clearHold();
+                if (!drag || (event && event.pointerId !== drag.id)) return;
+                const { node, tinted, kind, from, to, id } = drag;
+                drag = null;
+                try { node.releasePointerCapture(id); } catch (e) {}
+                tinted.classList.remove('is-dragging');
+                $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
+                // to 只在 move 里被设过。长按满 400ms 却一直没动时它是 null——
+                // 不看这一条，松手就会把元素挪到一个用户没指过的地方。
+                // （一个曾经存在的 `moved` 标志被删掉了：它与 `!to` 等价，
+                //   变异验证显示删掉它没有任何用例转红，即它是死代码。）
+                if (!to) return;
+                if (kind === 'cat') {
+                    if (to.cat !== from) this.moveCategory(from, to.cat);
+                } else if (to.cat !== from.cat || to.bm !== from.bm) {
+                    this.moveBookmark(from.cat, from.bm, to.cat, to.bm);
+                }
+            };
+
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', settle);
+            window.addEventListener('pointercancel', settle);
+
+            // 激活后抑制一次 click：长按松手会顺带触发 click，
+            // 而 click 分支会打开编辑框 / 新建对话框——用户只想挪个位置。
+            function suppressNextClick(node) {
+                const swallow = event => {
+                    if (!(node === event.target || node.contains(event.target))) return;
+                    event.stopPropagation();
+                    event.preventDefault();
+                };
+                grid.addEventListener('click', swallow, { capture: true, once: true });
+                // 万一这次没有 click（例如手指在激活后滑走），兜底移除，
+                // 否则监听会一直留着，下一次真实点击被吞掉。
+                setTimeout(() => grid.removeEventListener('click', swallow, true), 600);
+            }
         }
 
         /** 书签字段校验：标题非空、URL 必须是 http/https。 */

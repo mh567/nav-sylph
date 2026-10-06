@@ -699,11 +699,23 @@ test('编辑态下按下与松手的形变都被中和', () => {
     // bindBookmarkPress 在 pointerdown 就加 .is-pressed 并保留 135ms。
     // 只中和 :hover 的话，松手后的那一小段里抬升+缩放照旧出现——
     // 而「卡片在拖拽时浮起来」正是这条规则要避免的。
+    // ⚠️ 钉「每个状态都被覆盖」而不是某一条规则的写法：触摸端那轮把这几个
+    // 选择器并进了一条共享规则（少一条重复声明），断言硬钉原来的
+    // 「:active 与 .is-pressed 同在一个 {}」就会把正确改动判红。
     const code = stripComments(stylesCss);
-    const rule = /\.grid\.is-editing \.bookmark:active\s*,\s*\.grid\.is-editing \.bookmark\.is-pressed\s*\{([^}]*)\}/
-        .exec(code);
-    assert.ok(rule, '编辑态同时中和 :active 与 .is-pressed');
-    assert.match(rule[1], /transform:\s*none/, '两者都置 transform: none');
+    // ⚠️ 必须**枚举全部**匹配再挑，不能取第一个：`.grid.is-editing .bookmark`
+    // 的第一个匹配是基础态那条（cursor / user-select），变换中和在第二条。
+    // 用单次 exec 拿到基础态，断言读起来像「代码没中和」。
+    const rules = [...code.matchAll(/\.grid\.is-editing [^{]*\.bookmark[^{]*\{([^}]*)\}/g)]
+        .map(m => ({ selector: m[0].slice(0, m[0].indexOf('{')).trim(), body: m[1] }));
+    assert.ok(rules.length >= 2, `编辑态书签卡有多条规则（实际 ${rules.length}）`);
+    // 逐个状态找：要求 hover、:active、.is-pressed 都被某条规则覆盖，且那条置 none
+    for (const state of ['.bookmark:hover', '.bookmark:active', '.bookmark.is-pressed']) {
+        const owner = rules.find(r => r.selector.includes(state));
+        assert.ok(owner, `${state} 在编辑态有规则`);
+        assert.match(owner.body, /transform:\s*none/,
+            `${state} 必须置 transform: none（否则拖动时卡片浮起来）`);
+    }
 });
 
 test('＋占位卡不保留真实卡的实体投影', () => {

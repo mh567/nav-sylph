@@ -838,9 +838,12 @@ test('编辑态的拖拽反馈样式不被覆盖成死规则', () => {
     assert.doesNotMatch(code, /\.grid\.is-editing [^{]*\{[^}]*(?:^|[;{\s])display:\s*none/,
         '编辑态控件不得被 display:none 接管（显隐只由 .grid.is-editing 门控）');
     // 书签卡在编辑态必须中和 hover 抬升，否则拖动时卡片浮起来、落点判断跟着偏。
-    // 钉住「有这条规则」而不是它的排版：多一个空格不该让用例变红。
-    assert.match(code, /\.grid\.is-editing\s+\.bookmark:hover\s*\{[^}]*transform:\s*none/,
-        '编辑态书签卡取消 hover 抬升');
+    // ⚠️ 钉「hover 被置成 transform: none」这个事实，而不是「它单独占一条规则」：
+    // 触摸端那轮把 hover / :active / .is-pressed 并进了一条共享规则
+    // （为了少一次重复声明），硬钉单条规则会把正确改动判红。
+    const hover = /\.grid\.is-editing [^{]*\.bookmark:hover[^{]*\{([^}]*)\}/.exec(code);
+    assert.ok(hover, '编辑态书签卡的 hover 规则存在');
+    assert.match(hover[1], /transform:\s*none/, '编辑态书签卡取消 hover 抬升');
 });
 
 /**
@@ -882,7 +885,10 @@ function mountGridEdit(editLayout = true) {
         config,
         moveCategory: (from, to) => calls.push(['cat', from, to]),
         moveBookmark: (fc, fb, tc, tb) => calls.push(['bm', fc, fb, tc, tb]),
-        renderGrid() {}, markConfigDirty() {}
+        renderGrid() {}, markConfigDirty() {},
+        // bindGridEdit 末尾会调它；触摸路径另有自己的用例，不在这里展开。
+        // 少了这个桩，方法体会抛「is not a function」，读起来像产品代码炸了。
+        bindTouchGridDrag() {}
     };
     // 方法体通过文件级 $ 拿 grid；这里让它返回能记录监听的桩。
     // ⚠️ 监听必须**全部**留存成数组：bindGridEdit 对 pointerdown 注册了两次
@@ -1018,6 +1024,342 @@ test('落点与自己相同时分类不动', () => {
     grid.dragstart(grid.header(0));
     grid.drop(grid.header(0));
     assert.deepEqual(grid.calls, [], '落回自身不应算一次移动');
+});
+
+/**
+ * 最小假 DOM：带**真实父子链**的节点树 + 按选择器向上查找的 closest。
+ *
+ * 为什么不能只给每个节点塞一个「按选择器查表」的假 closest：
+ * bindTouchGridDrag 会用 `closest('.category-header')` 找拖拽宿主、
+ * `closest('.category')` 找所属分类、`closest('.category-action:not(.category-drag)')`
+ * 排除 ✎/✕——查表式 closest 少一条就返回 null，处理器在守卫处早退，
+ * 测试报「没调用 moveCategory」，读起来像产品缺陷，其实是桩太薄。
+ */
+function makeDom() {
+    const matches = (node, sel) => sel.split(',').map(s => s.trim()).some(part => {
+        const neg = part.match(/^\.([\w-]+):not\(\.([\w-]+)\)$/);
+        if (neg) return node.hasClass(neg[1]) && !node.hasClass(neg[2]);
+        const classes = part.replace(/^\./, '').split('.').filter(Boolean);
+        return classes.length > 0 && classes.every(c => node.hasClass(c));
+    });
+    const walk = (node, out) => { out.push(node); node.children.forEach(c => walk(c, out)); return out; };
+
+    const el = (className, dataset = {}, children = []) => {
+        const classes = new Set(className.split(/\s+/).filter(Boolean));
+        const node = {
+            className, dataset, children, parent: null, tag: 'DIV',
+            classes,
+            hasClass: c => classes.has(c),
+            classList: {
+                add: c => classes.add(c),
+                remove: c => classes.delete(c),
+                toggle: c => (classes.has(c) ? classes.delete(c) : classes.add(c)),
+                contains: c => classes.has(c)
+            },
+            closest(sel) {
+                for (let n = node; n; n = n.parent) if (matches(n, sel)) return n;
+                return null;
+            },
+            querySelectorAll() { return []; },
+            contains(other) {
+                for (let n = other; n; n = n.parent) if (n === node) return true;
+                return false;
+            },
+            setPointerCapture() {}, releasePointerCapture() {}
+        };
+        children.forEach(c => { c.parent = node; });
+        return node;
+    };
+
+    const tree = {};
+    tree.sections = [0, 1].map(i => {
+        const title = el('category-title');
+        const dragHandle = el('category-action category-drag');
+        const editBtn = el('category-action category-edit');
+        // 用 el() 的 children 参数（它负责设 parent），不要建完再 push：
+        // 手工 push 不会设 parent，closest 往上走就断链，
+        // 于是「在 ✎ 上按下」找不到分类头，守卫看起来生效其实没走到。
+        const header = el('category-header', {}, [title, dragHandle, editBtn]);
+        const cards = el('bookmarks', {}, [el('bookmark', { cat: String(i), bm: '0' }, [el('bookmark-title')])]);
+        const section = el('category', { cat: String(i) }, [header, cards]);
+        return { section, header, title, dragHandle, editBtn, cards, card: cards.children[0] };
+    });
+    const all = [];
+    tree.sections.forEach(s => walk(s.section, all));
+    // grid 的 querySelectorAll 按已存在的 class 过滤（$$ 用它清 drop-target）
+    tree.grid = {
+        nodes: all,
+        querySelectorAll(sel) { return all.filter(n => matches(n, sel)); }
+    };
+    tree.matches = matches;
+    return tree;
+}
+
+/**
+ * 把 bindTouchGridDrag 的真实方法体摘出来执行。
+ *
+ * 触摸路径的判据全在**时序**里（长按 400ms、容忍 25px），所以桩必须能
+ * 推进定时器——否则「长按满 400ms 才激活」这条永远验不到，测试只能退化成
+ * 读源码文本。elementFromPoint 也由桩注入，让落点可精确指定。
+ */
+function mountTouchDrag({ editLayout = true, hit: initialHit } = {}) {
+    const calls = [];
+    // 落点可改：一个用例里往往要「先按在这里、再拖到那里」
+    let hit = initialHit;
+    const config = {
+        categories: [
+            { name: 'A', bookmarks: [{ title: 'a1' }, { title: 'a2' }] },
+            { name: 'B', bookmarks: [] }
+        ]
+    };
+    const dom = makeDom();
+
+    const gridListeners = {};
+    const windowListeners = {};
+    // grid 用真实节点树：$$('.category.drop-target', grid) 要能查到刚加上的 class
+    const grid = {
+        nodes: dom.grid.nodes,
+        querySelectorAll: sel => dom.grid.querySelectorAll(sel),
+        addEventListener: (t, f, o) => { (gridListeners[t] ||= []).push({ fn: f, o }); },
+        removeEventListener: (t, f) => {
+            if (!gridListeners[t]) return;
+            gridListeners[t] = gridListeners[t].filter(x => x.fn !== f);
+        }
+    };
+
+    // 可推进的定时器：记录 pending，长按推进时才真正触发
+    let now = 0;
+    const timers = [];
+    let nextId = 1;
+    const setTimeoutStub = (fn, ms) => {
+        const id = nextId++;
+        timers.push({ id, fn, at: now + ms });
+        return id;
+    };
+    const clearTimeoutStub = id => {
+        const i = timers.findIndex(t => t.id === id);
+        if (i >= 0) timers.splice(i, 1);
+    };
+
+    const app = {
+        editLayout,
+        config,
+        moveCategory: (from, to) => calls.push(['cat', from, to]),
+        moveBookmark: (fc, fb, tc, tb) => calls.push(['bm', fc, fb, tc, tb]),
+        renderGrid() {}, markConfigDirty() {}
+    };
+
+    const mount = vm.runInNewContext(`(function (deps) {
+        const $ = () => deps.grid;
+        const $$ = (sel, root) => (root || deps.grid).querySelectorAll(sel);
+        const document = deps.document;
+        const setTimeout = deps.setTimeout;
+        const clearTimeout = deps.clearTimeout;
+        const window = deps.window;
+        ${methodBody(appSource, 'bindTouchGridDrag')}
+    })`);
+    mount.call(app, {
+        grid, document: { elementFromPoint: () => hit },
+        setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
+        window: {
+            addEventListener: (t, f) => { (windowListeners[t] ||= []).push(f); },
+            removeEventListener: (t, f) => {
+                if (!windowListeners[t]) return;
+                windowListeners[t] = windowListeners[t].filter(x => x !== f);
+            }
+        }
+    });
+
+    const fireWindow = (type, event) =>
+        (windowListeners[type] || []).forEach(fn => fn(event));
+
+    // 真实 PointerEvent 都有这几个字段/方法，桩必须一起给：
+    //  · button: 0 —— 处理器第一行就是 `event.button !== 0` 早退，
+    //    漏掉它所有「不该动」的用例会**空过**（因为处理器压根没跑），
+    //    读起来像守卫有效，其实什么都没验。
+    //  · preventDefault / stopPropagation —— move 的第一行就会调，
+    //    缺了整个处理器直接抛异常。
+    const evt = opts => ({
+        pointerType: 'touch', pointerId: 1, button: 0,
+        clientX: 0, clientY: 0,
+        preventDefault() {}, stopPropagation() {},
+        ...opts
+    });
+
+    return {
+        calls, config, grid, timers, gridListeners,
+        sections: dom.sections,
+        setHit: node => { hit = node; },
+        // 推进定时器：只触发到期的
+        advance: ms => {
+            now += ms;
+            const due = timers.filter(t => t.at <= now);
+            for (const t of due) {
+                clearTimeoutStub(t.id);
+                const i = timers.indexOf(t);
+                if (i >= 0) timers.splice(i, 1);
+                t.fn();
+            }
+        },
+        pendingTimers: () => timers.length,
+        down: (target, opts = {}) => (gridListeners.pointerdown || []).forEach(
+            x => x.fn(evt({ ...opts, target }))),
+        move: (opts = {}) => fireWindow('pointermove', evt(opts)),
+        up: (opts = {}) => fireWindow('pointerup', evt(opts)),
+        cancel: (opts = {}) => fireWindow('pointercancel', evt(opts))
+    };
+}
+
+test('触摸拖拽必须长按满 400ms 才激活，且期间漂移超过 25px 即取消', () => {
+    // 判据是触摸端唯一真正的难点：一按就拖会抢走滚动，纯位移阈值会在
+    // 滑页途中误判。所以「长按 400ms + 容忍 25px」这两个数就是要验的东西。
+    const body = stripComments(methodBody(appSource, 'bindTouchGridDrag'));
+    assert.match(body, /HOLD_MS = 400/, '长按阈值 400ms');
+    assert.match(body, /HOLD_TOLERANCE = 25/, '漂移容忍 25px');
+    // 不写 touch-action: none —— 写了书签网格就滚不动了
+    const css = stripComments(stylesCss);
+    const editBlock = /\.grid\.is-editing \.bookmark\s*,\s*\.grid\.is-editing \.category-header\s*\{([^}]*)\}/
+        .exec(css);
+    assert.ok(editBlock, '编辑态书签卡与分类头有共享规则');
+    assert.doesNotMatch(editBlock[1], /touch-action\s*:\s*none/,
+        '书签网格不能写 touch-action: none —— 那会让首页滚不动');
+    assert.match(editBlock[1], /user-select\s*:\s*none/, '编辑态关掉文字选中，否则长按先选中文字');
+    assert.match(editBlock[1], /-webkit-touch-callout\s*:\s*none/, '关掉 iOS 长按菜单');
+});
+
+test('触摸拖拽只接触摸，鼠标仍走已验证的原生 DnD', () => {
+    // 两条路径必须互不重叠：桌面端若也进触摸路径，就要额外处理
+    // 「一按就拖 vs 选文字」，那是对已验证路径的回归风险。
+    const body = stripComments(methodBody(appSource, 'bindTouchGridDrag'));
+    const guard = body.indexOf("event.pointerType !== 'touch'");
+    assert.ok(guard >= 0, '触摸路径必须按 pointerType 过滤');
+    // 守卫要在建 hold 之前
+    const hold = body.indexOf('hold = {');
+    assert.ok(hold > guard, '过滤早于建立长按状态');
+});
+
+test('长按未满就松手不算一次拖拽', () => {
+    const t = mountTouchDrag();
+    t.down(t.sections[0].header);
+    // ⚠️ 先证明处理器**真的跑到了**：桩若漏字段（例如 button），
+    // 处理器第一行就早退，calls 空——这条用例会空过并假装守卫有效。
+    assert.equal(t.pendingTimers(), 1, '按下后必须挂起一个长按定时器');
+    t.advance(200);          // 只按住 200ms
+    t.up();
+    assert.deepEqual(t.calls, [], '未满 400ms 就松手不该移动任何东西');
+});
+
+test('长按期间漂移超过容忍 = 用户在滚动，不激活', () => {
+    const t = mountTouchDrag();
+    t.down(t.sections[0].header);
+    assert.equal(t.pendingTimers(), 1, '按下后必须挂起一个长按定时器');
+    t.advance(100);
+    t.move({ clientX: 30, clientY: 0 });   // 漂移 30px > 25px
+    assert.equal(t.pendingTimers(), 0, '漂移超过容忍必须取消长按');
+    t.advance(1000);                        // 再等多久也不该激活
+    t.up();
+    assert.deepEqual(t.calls, [], '漂移超过容忍后即使再按住也不该拖');
+});
+
+test('长按满 400ms 但一直没动 = 长按，不是拖拽', () => {
+    // 只按键不动：drag.to 仍是 null，不该把元素挪到任何地方。
+    // 这条与「按满就提交」的写法只差一个 moved 判断，而那正是要钉的。
+    const t = mountTouchDrag();
+    t.down(t.sections[0].header);
+    assert.equal(t.pendingTimers(), 1, '按下后必须挂起一个长按定时器');
+    t.advance(400);          // 激活
+    // is-dragging 加在**整块分类**上（CSS 就是 .category.is-dragging，
+    // 拖动时整个分类压暗），不是加在分类头那个把手元素上。
+    assert.ok(t.sections[0].section.hasClass('is-dragging'), '满 400ms 确实激活了');
+    assert.ok(t.sections[0].header.hasClass('is-arming') === false, '激活后长按提示退场');
+    t.up();
+    assert.deepEqual(t.calls, [], '长按不动不该产生任何移动');
+});
+
+test('在 ✎ 上长按不起拖，在 ⠿ 上才起拖', () => {
+    // 分类头是拖拽宿主，✎/✕ 在它里面。触摸端必须与桌面端同样排除 ✎/✕，
+    // 否则长按按钮会起拖并抑制随后的 click，重命名/删除对话框打不开。
+    // ⠿ 是不同的东西：它是拖拽把手，本来就该能起拖。
+    const t = mountTouchDrag();
+    const edit = t.sections[0].editBtn;
+    const handle = t.sections[0].header.children.find(c => c.hasClass('category-drag'));
+
+    t.down(edit);
+    // ⚠️ 用「有没有挂起长按定时器」而不是只看 calls：排除发生在建定时器**之前**，
+    // 若桩的 closest 太薄导致 node 找不到，也会得出空 calls——两者必须分得开。
+    assert.equal(t.pendingTimers(), 0, '✎ 上按下不该挂起长按定时器');
+    t.advance(1000);
+    t.up();
+
+    t.down(handle);
+    assert.equal(t.pendingTimers(), 1, '⠿ 把手上按下要挂起长按定时器');
+    t.advance(400);
+    assert.ok(t.sections[0].section.hasClass('is-dragging'), '⠿ 上长按确实激活了');
+    t.up();
+
+    assert.deepEqual(t.calls, [], '无论哪条路径，没移动就不该提交');
+});
+
+test('取消的触摸拖拽不留压暗：压暗谁就要复原谁', () => {
+    // ⚠️ 这条抓的是一个真实泄漏：分类拖拽压暗的是**整块 section**
+    // （CSS 就是 .category.is-dragging），而收尾若是按分类头去 remove，
+    // section 上那层永远清不掉。提交时因为 renderGrid 重建 DOM 而被掩盖，
+    // 但取消（落点无效 / 漂移后松手）时压暗就留在页面上。
+    const t = mountTouchDrag();
+    const src = t.sections[0];
+    t.down(src.header);
+    t.advance(400);
+    assert.ok(src.section.hasClass('is-dragging'), '激活后整块分类被压暗');
+    // 不移动就直接松手：落点为 null → 不提交 → 走取消路径
+    t.up();
+    assert.equal(src.section.hasClass('is-dragging'), false,
+        '取消后 section 上的压暗必须清掉（压暗谁就要复原谁）');
+    assert.deepEqual(t.calls, [], '没有落点就不该提交');
+
+    // 书签路径同样要有始有终
+    const t2 = mountTouchDrag();
+    const card = t2.sections[0].card;
+    t2.down(card);
+    t2.advance(400);
+    assert.ok(card.hasClass('is-dragging'), '激活后书签卡被压暗');
+    t2.up();
+    assert.equal(card.hasClass('is-dragging'), false, '取消后书签卡的压暗也要清');
+});
+
+test('长按满 400ms 后拖到另一分类，提交 moveCategory', () => {
+    // 端到端跑真实方法体：按下 → 等满 400ms → 移动 → 松手。
+    // 这是触摸路径唯一真正为真的部分（时序 + 落点），桩只提供时钟与命中点。
+    const t = mountTouchDrag();
+    const source = t.sections[0].header;
+    t.setHit(t.sections[1].header);
+    t.down(source, { pointerId: 5 });
+    t.advance(399);
+    assert.deepEqual(t.calls, [], '399ms 还没满，不该动');
+    t.advance(1);                            // 满 400ms → 激活
+    t.move({ pointerId: 5, clientX: 100, clientY: 100 });
+    t.up({ pointerId: 5 });
+    assert.deepEqual(t.calls, [['cat', 0, 1]],
+        '长按激活后拖到第二个分类必须调用 moveCategory(0, 1)');
+});
+
+test('触摸路径复用桌面的 moveBookmark，不另写一套排序', () => {
+    // 两套排序实现就有两个真值，两边拖出不同结果时无从判断该信哪个
+    const body = methodBody(appSource, 'bindTouchGridDrag');
+    assert.match(body, /this\.moveCategory\(/, '分类排序走同一个 moveCategory');
+    assert.match(body, /this\.moveBookmark\(/, '书签排序走同一个 moveBookmark');
+    assert.doesNotMatch(body, /splice\(/,
+        '触摸路径不得直接改数组 —— 那样就是第二套排序实现');
+});
+
+test('触摸路径的残留清理与桌面路径对称', () => {
+    // 三样都要清：长按提示、拖拽态、落点高亮。少一样就是「看起来卡住了」。
+    const body = methodBody(appSource, 'bindTouchGridDrag');
+    assert.match(body, /classList\.remove\('is-arming'\)/, '清长按提示');
+    assert.match(body, /classList\.remove\('is-dragging'\)/, '清拖拽态');
+    assert.match(body, /\.category\.drop-target/, '清落点高亮');
+    // pointercancel 必须与 pointerup 同等待遇：系统中断手势只走 cancel
+    assert.match(body, /addEventListener\('pointercancel', settle\)/,
+        'pointercancel 也走 settle，否则系统中断手势会卡住状态');
 });
 
 test('后台彻底没有书签分类分区，书签只在首页编辑', () => {
