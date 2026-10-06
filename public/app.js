@@ -3930,10 +3930,10 @@
                             // （浏览器实测确认，同 richIntro 的那条约束）。
                             note: '下面这条只替换 agent 程序本身，不重新注册：'
                                 + '凭据、证书都不动，token 不会变。'
-                                + '本服务出新版本后在目标机执行它即可。'
+                                + '本服务出新版本后在目标机执行它即可，'
+                                + '结束时它会自动重启服务，无需再手动 systemctl restart。'
                                 + '（上一条部署命令也能升级，但会顺便换掉 token，'
-                                + '没必要。）'
-                                + '执行完若 agent 是 systemd 服务，还需 systemctl restart nav-agent',
+                                + '没必要。）',
                             code: upgradeCommand
                         },
                         {

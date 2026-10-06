@@ -197,11 +197,19 @@ nav-agent upgrade --server https://nav.example.com --server-ca /etc/ssl/certs/�
 **架构自动选择**（`amd64` / `arm64` / `armv7`）。`GOARCH=arm` 一律按 `armv7` 处理——
 v7 的二进制能在 v5/v6 上跑，反过来不行，所以这是安全的一侧。
 
-**升级后重启才生效**（systemd 服务）：
+**升级会自动重启服务。** `upgrade` 结束时自己执行 `systemctl restart nav-agent`，
+新版本即刻生效。若它重启不了（这台机器没有 systemctl、或 agent 不是 systemd
+管的），命令会打印手动步骤，而不是笼统地说「重启后生效」：
 
 ```bash
-systemctl restart nav-agent
+systemctl restart nav-agent   # systemd 服务
+pkill -x nav-agent            # 手动运行的：停掉后按原样再起
 ```
+
+⚠️ **不重启等于没升级**。`agentVersion` 是构建时用 `-ldflags` 注入的常量，
+**跑着的那个进程**会一直自报旧版本——而服务端后台正是拿 `/health` 的这个字段
+提示「可升级」，于是界面会一直催，用户却已经在主机侧确认过 `nav-agent version`
+是新版了。实测踩过这个坑：仅替换二进制文件不足以让新版本生效。
 
 ## 协议版本与软件版本
 

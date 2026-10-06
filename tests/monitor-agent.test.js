@@ -1449,6 +1449,87 @@ test('agent 能自升级，且三道校验都在替换之前', (t) => {
     assert.match(up[0], /os\.Remove\(backup\)/, '成功后清掉备份');
 });
 
+test('upgrade 结束后自动重启服务，而不是只打印一句提示', async (t) => {
+    // 用户实测踩过：在主机侧执行升级命令、`nav-agent version` 已是新版，
+    // 服务端后台却仍在催「可升级」——因为 agentVersion 是构建期注入的**常量**，
+    // **跑着的那个进程**会一直自报旧版本，仅替换二进制文件不足以让它生效。
+    // 修法是 upgrade 结束时自己 restart。这条真跑一次 upgrade：systemctl 是桩。
+    const src = localAgentBinary();
+    if (!src) { t.skip('未构建 agent 二进制'); return; }
+    try { execFileSync('go', ['version'], { stdio: 'ignore' }); }
+    catch { t.skip('没有 go，现编不出一个版本不同的副本'); return; }
+
+    const http = require('http');
+    const os = require('os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nav-upgrade-'));
+
+    // 「旧版」副本：现编一个版本号不同的，upgrade 跑在它身上（换掉的也是它）
+    const template = path.join(tmp, 'nav-agent-template');
+    execFileSync('go', ['build', '-trimpath',
+        '-ldflags', '-X main.buildVersion=0.0.1', '-o', template, '.'],
+        { cwd: path.join(ROOT, 'agent') });
+
+    // 服务端桩：不管什么路径都返回「新版」二进制的字节
+    const payload = fs.readFileSync(src);
+    const server = http.createServer((req, res) => {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.end(payload);
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    // systemctl 桩：记录被怎么调用，并按用例决定成败
+    const callsFile = path.join(tmp, 'calls.txt');
+    const stubDir = path.join(tmp, 'stub-bin');
+    fs.mkdirSync(stubDir);
+    const writeStub = code => fs.writeFileSync(path.join(stubDir, 'systemctl'),
+        `#!/bin/sh\necho "$@" >> "${callsFile}"\nexit ${code}\n`, { mode: 0o755 });
+
+    // ⚠️ 必须用**异步** spawn：spawnSync 会阻塞本进程的事件循环，而提供
+    // 「新版」二进制的 http 服务就跑在这个进程里——下载永远等不到响应，
+    // 只会等到超时（实测：卡满 30 秒且 stub 一次都没被调用）。
+    const runUpgrade = () => new Promise(resolve => {
+        fs.rmSync(callsFile, { force: true });
+        const self = path.join(tmp, 'nav-agent');
+        fs.copyFileSync(template, self);   // 每次一份新的「旧版」——上一轮会把 self 换掉
+        const child = require('child_process').spawn(self,
+            ['upgrade', '--server', `http://127.0.0.1:${port}`],
+            { env: { ...process.env, PATH: stubDir + ':' + process.env.PATH } });
+        let stdout = '', stderr = '';
+        child.stdout.on('data', d => { stdout += d; });
+        child.stderr.on('data', d => { stderr += d; });
+        const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+        child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+
+    try {
+        // A. systemctl 成功 → 真的去重启，并如实说已经生效
+        writeStub(0);
+        const ok = await runUpgrade();
+        const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8') : '';
+        assert.match(calls, /restart nav-agent/,
+            'upgrade 结束必须自己重启服务——只打印提示的话，旧进程会一直自报旧版本');
+        assert.match(ok.stdout, /已重启/, '并告诉用户新版本已生效');
+        assert.doesNotMatch(ok.stdout, /若它是 systemd 服务，重启后生效/,
+            '不该再把重启留给用户');
+        // 这里本就**不传** --server-ca，顺带钉住那个把环境变量名当默认值的写法：
+        // 它会让每次 enroll / upgrade 都白打一行「读取 --server-ca 失败」。
+        assert.doesNotMatch(ok.stderr, /读取 --server-ca 失败/,
+            '不传 --server-ca 时不该去读一个叫 NAV_AGENT_SERVER_CA 的文件');
+        assert.doesNotMatch(ok.stderr, /NAV_AGENT_SERVER_CA/);
+
+        // B. systemctl 失败 → 给出手动步骤，而不是笼统的「重启后生效」
+        writeStub(1);
+        const bad = await runUpgrade();
+        assert.match(bad.stdout + bad.stderr, /未能自动重启/, '失败要说出来，不能静默');
+        assert.match(bad.stdout, /systemctl restart nav-agent/, '给 systemd 的手动命令');
+        assert.match(bad.stdout, /pkill -x nav-agent/, '也给手动运行场景的命令');
+    } finally {
+        server.close();
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+});
+
 test('agent 的版本解析来自受控输出，不解析人类可读那行', () => {
     const fn = /func probeBinaryVersion\(path string\) \(string, error\) \{[\s\S]*?\n\}/.exec(goSource);
     assert.ok(fn, '找到 probeBinaryVersion');
@@ -1596,8 +1677,11 @@ test('部署面板给出独立的升级命令，且路径与脚本一致', () =>
     // 会不会动他的凭据。
     assert.match(dialog[0], /不重新注册/,
         '说明升级不重新注册');
-    assert.match(dialog[0], /systemctl restart nav-agent/,
-        '提醒升级后要重启服务');
+    // ⚠️ 这条断言原先要求「提醒用户升级后手动 restart」。用户实测照做之后
+    // 后台仍在催升级——因为 upgrade 只换文件不重启进程，而那句提醒太容易被
+    // 当成可选项。现在 upgrade 自己 restart，面板要说的是这件事。
+    assert.match(dialog[0], /自动重启服务/,
+        '说明升级会自动重启服务，而不是把这个步骤留给用户');
 });
 
 test('enrollTokenIp 已彻底移除（含作废时的删除循环）', () => {
@@ -1852,7 +1936,11 @@ test('部署面板第 3 步不给看不见的入口，且按模式分开说', ()
     // 整段 slice 含两个分支，pull 的「自动变成已就绪」是合法文案，
     // 直接 doesNotMatch(/自动/) 会红在正确代码上（同一个边界坑）。
     assert.match(dialog, /note: mode === 'push'/, 'note 也按模式分支');
-    const noteSlice = dialog.slice(dialog.indexOf('note:'), dialog.indexOf('plain:'));
+    // ⚠️ 起点必须锚在**第 3 步那条** note（`note: mode === 'push'`），
+    // 不能用 `indexOf('note:')`——那会从第 1 步的 note 开始切，把上面两步的
+    // 文案一并卷进来。实测踩过：给第 2 步的说明加了一句含「自动」的话，
+    // 落进了下面 pushNote 的切片里，于是「push 不得许诺自动翻牌」误报。
+    const noteSlice = dialog.slice(dialog.indexOf('note: mode ==='), dialog.indexOf('plain:'));
     assert.ok(noteSlice.length > 80, `切出 note（${noteSlice.length}）`);
     const nqAt = noteSlice.indexOf('?');
     const ncAt = noteSlice.indexOf(':', nqAt + 1);

@@ -155,6 +155,7 @@ func usage() {
   nav-agent upgrade --server <地址> [--server-ca <PEM>]
       从本服务下载并替换自己。自动按本机架构选产物
       （amd64 / arm64 / armv7）；配置与凭据不动。
+      结束时自动重启 nav-agent 服务（systemd）；重启不了会打印手动步骤。
   nav-agent version      版本（软件版本 + 协议版本）
 
 说明：
@@ -573,7 +574,13 @@ func envOr(key, def string) string {
 // 证书不是用户能自己生成的东西（它本来就是本服务签发的），所以这里给的是
 // 文件路径而不是 PEM 字符串——命令行传 PEM 会出现在 ps 输出里。
 func enrollClient(args options) *http.Client {
-	caPath := args.str("server-ca", "NAV_AGENT_SERVER_CA")
+	// ⚠️ 第二参数是**字面默认值**，不是环境变量名（`str(name, def)`）。
+	// 早先写成 args.str("server-ca", "NAV_AGENT_SERVER_CA")，于是**不传该参数**
+	// 时 caPath 是字符串 "NAV_AGENT_SERVER_CA"，去读这个文件当然失败，每次
+	// enroll / upgrade 都白打一行「读取 --server-ca 失败：open NAV_AGENT_SERVER_CA…」。
+	// 功能没坏（随后回落 http.DefaultClient），但那行字会让人以为配置错了。
+	// 与 --server 那处（`os.Getenv("NAV_AGENT_SERVER")`）保持一致。
+	caPath := args.str("server-ca", os.Getenv("NAV_AGENT_SERVER_CA"))
 	if caPath == "" {
 		return http.DefaultClient
 	}
@@ -1298,7 +1305,49 @@ func cmdUpgrade(args options) error {
 	os.Remove(backup)
 	fmt.Printf("已升级到 %s。\n", newVersion)
 	fmt.Println("配置与凭据未改动（在 " + configDir + "）。")
-	fmt.Println("若它是 systemd 服务，重启后生效：systemctl restart nav-agent")
+	// 替换文件只是把新的放在那里，**还在跑的仍是旧进程**——不重启等于没升级。
+	if err := restartAgentService(); err != nil {
+		fmt.Printf("⚠️ 未能自动重启（%v）。\n", err)
+		fmt.Println("   新版本要重启后才生效：")
+		fmt.Println("     sudo systemctl restart nav-agent    # systemd 服务")
+		fmt.Println("     sudo pkill -x nav-agent             # 手动运行的：停掉后按原样再起")
+	} else {
+		fmt.Println("已重启 nav-agent 服务，新版本即刻生效。")
+	}
+	return nil
+}
+
+// restartAgentService 让刚落地的二进制真正跑起来。
+//
+// ⚠️ 只替换文件是不够的：agentVersion() 是构建时用 -ldflags 注入的**常量**，
+// 正在运行的那个进程会一直自报旧版本。而后台正是拿 /health 的 agentVersion
+// 提示「可升级」——用户升级完仍看到同一个提示，只有重启才会消失。
+// 实测踩过：主机侧 `nav-agent version` 已经是新版，后台却还在催升级，
+// 用户按升级命令做完、主机侧也确认了版本，界面却毫无变化。
+//
+// 这不是新问题，只是升级这条路漏了 install.sh 早就做对的那一步：
+// 部署是「停旧 → 装新 → 注册 → restart」，升级只做了中间的「装新」，
+// 并且此前仅**打印**一句「重启后生效」——本仓库反复记录过
+// 「只 warn 不做事」等于静默失败，这里是同一形状。
+//
+// 不预设「这台机器一定有 systemd」：直接试，失败就把手动命令交给用户，
+// 而不是笼统地说「重启后生效」（他还得自己猜该重启什么）。
+func restartAgentService() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return errors.New("这台机器上没有 systemctl")
+	}
+	if out, err := exec.Command("systemctl", "restart", "nav-agent").CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return errors.New(msg)
+	}
+	// 起来了不等于能用——systemd 对「启动即退出」照样返回 0（install.sh 的同一课）。
+	time.Sleep(2 * time.Second)
+	if err := exec.Command("systemctl", "is-active", "--quiet", "nav-agent").Run(); err != nil {
+		return errors.New("重启后服务没有保持运行，请查 journalctl -u nav-agent")
+	}
 	return nil
 }
 
