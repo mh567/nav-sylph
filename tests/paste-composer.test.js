@@ -122,6 +122,8 @@ function createComposerDom() {
         '#helpBtn': el('button'),
         // 模块平台（app.js bind() 会挂布局按钮的 onclick 与 Esc 监听）
         '#layoutBtn': el('button'),
+        '#appearanceBtn': el('button'),
+        '#appearanceIcon': el('span'),
         '#moduleZone': el('section'),
         '#modal .modal-content': modalContent,
         '.ui-dialog-overlay, .fav-dialog-overlay': uiOverlay,

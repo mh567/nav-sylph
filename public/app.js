@@ -108,6 +108,19 @@
         }
     };
 
+    // 外观三态，与后台「主题模式」下拉框同一套取值。
+    // 未登录访客的选择存在本机；这个键名在 index.html 的内联脚本里也出现
+    // （那里要抢在样式表之前把它应用上，避免首屏闪一下系统色），
+    // 两处必须一致——tests 里有跨文件断言钉住。
+    const THEME_STORAGE_KEY = 'nav-sylph-theme';
+    const APPEARANCE_ORDER = ['auto', 'light', 'dark'];
+    const APPEARANCE_TEXT = { auto: '自动（跟随系统）', light: '浅色模式', dark: '深色模式' };
+    const APPEARANCE_ICONS = {
+        auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 3.7a8.3 8.3 0 0 1 0 16.6Z" fill="currentColor" stroke="none"/></svg>',
+        light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.1"/><path d="M12 2.7v2.1M12 19.2v2.1M2.7 12h2.1M19.2 12h2.1M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></svg>',
+        dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.4 14.7A8.6 8.6 0 0 1 9.3 3.6a8.6 8.6 0 1 0 11.1 11.1Z"/></svg>'
+    };
+
     class App {
         constructor() {
             this.config = null;
@@ -706,8 +719,22 @@
             }
         }
 
+        /**
+         * 当前生效的外观。本机覆盖优先：未登录访客在首页点过「外观」时，
+         * 选择存在 localStorage；登录成功后那个键会被清掉
+         * （见 restoreSession 与 setTheme），所以已登录时读到的
+         * 一定是服务端的站点主题——两处不会各说各话。
+         */
+        resolveTheme() {
+            try {
+                const stored = localStorage.getItem(THEME_STORAGE_KEY);
+                if (APPEARANCE_ORDER.includes(stored)) return stored;
+            } catch (e) {}
+            return this.config.theme || 'auto';
+        }
+
         applyTheme() {
-            const theme = this.config.theme || 'auto';
+            const theme = this.resolveTheme();
             const root = document.documentElement;
 
             if (theme === 'auto') {
@@ -716,6 +743,76 @@
             } else {
                 // 强制指定主题
                 root.setAttribute('data-theme', theme);
+            }
+            this.renderAppearanceButton(theme);
+        }
+
+        /** 右下角按钮的图标与无障碍文案跟着当前态走。 */
+        renderAppearanceButton(theme) {
+            const btn = $('#appearanceBtn');
+            const icon = $('#appearanceIcon');
+            if (!btn || !icon) return;
+            icon.innerHTML = APPEARANCE_ICONS[theme] || APPEARANCE_ICONS.auto;
+            const next = APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(theme) + 1) % APPEARANCE_ORDER.length];
+            const label = `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[next]}`;
+            btn.title = label;
+            btn.setAttribute('aria-label', label);
+        }
+
+        /**
+         * 登录态确立时的统一收尾：外观交回服务端那份。
+         * 未登录访客的选择存在本机，登录后必须让位——否则本机旧值会一直
+         * 压过站点主题（这正是 resolveTheme 那条优先级成立的前提）。
+         * 每一处把 authenticated 置为 true 的地方都要调它；
+         * tests/api-boundary.test.js 里有枚举断言钉住。
+         */
+        adoptServerTheme() {
+            try {
+                localStorage.removeItem(THEME_STORAGE_KEY);
+            } catch (e) {}
+            this.applyTheme();
+        }
+
+        cycleTheme() {
+            const current = this.resolveTheme();
+            const next = APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(current) + 1) % APPEARANCE_ORDER.length];
+            return this.setTheme(next);
+        }
+
+        /**
+         * 首页的「外观」按钮。未登录访客只能改本机——写站点主题要管理员，
+         * 写 localStorage 不需要；登录后点它就等同于改站点主题，
+         * 与后台「主题模式」下拉框是同一份状态。
+         */
+        async setTheme(theme) {
+            if (!this.authenticated) {
+                try {
+                    localStorage.setItem(THEME_STORAGE_KEY, theme);
+                } catch (e) {}
+                this.applyTheme();
+                return;
+            }
+
+            // 已登录时以服务端为准：本机覆盖必须先清掉，否则它每次加载都会
+            // 压过刚写下的值（这也是 resolveTheme 那条优先级成立的前提）。
+            try {
+                localStorage.removeItem(THEME_STORAGE_KEY);
+            } catch (e) {}
+
+            const previous = this.config.theme;
+            this.config.theme = theme;
+            this.applyTheme();
+            // 管理面板若开着，让下拉框跟上——两处是同一份状态
+            const select = $('#themeModeSelect');
+            if (select) select.value = theme;
+            try {
+                const res = await API.post('/api/config', this.config);
+                if (!res.success) throw new Error(res.error || '保存失败');
+            } catch (e) {
+                this.config.theme = previous;
+                this.applyTheme();
+                if (select) select.value = previous;
+                this.showToast('外观保存失败，已还原', 'error');
             }
         }
 
@@ -864,6 +961,8 @@
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
+            // 外观切换不需要登录：未登录时写本机，登录后写服务端（见 setTheme）
+            $('#appearanceBtn').onclick = () => this.cycleTheme();
             // Esc 放弃编辑。放在 window 而非按钮上：编辑态下焦点可能在
             // 任何 widget 或书签内部，按钮收不到冒泡不到的路径。
             document.addEventListener('keydown', event => {
@@ -1837,6 +1936,7 @@
                 .then(session => {
                     if (session.authenticated) {
                         this.authenticated = true;
+                        this.adoptServerTheme();
                         // 记录当前会话是否被信任，管理面板里的开关要反映真实状态
                         this.sessionTrusted = !!session.trusted;
                         this.loadPrivacyMode().then(privacyMode => {
@@ -2777,6 +2877,7 @@
                     return;
                 }
                 this.authenticated = true;
+                this.adoptServerTheme();
                 // 重新登录后必须复位这个标志，否则本轮会话再遇到环境变化时
                 // 提示会被静默吞掉——用户只看到自己被登出，却没有任何说明。
                 API.envChangeNotified = false;

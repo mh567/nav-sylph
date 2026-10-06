@@ -1472,3 +1472,135 @@ test('首页第一屏没有因为编辑模式变重', () => {
     assert.ok(!precached.some(p => /edit/i.test(p)),
         '预缓存清单里没有新增的编辑模式文件');
 });
+
+// ========== 右下角「外观」三态按钮 ==========
+//
+// 把后台的「主题模式」搬到前台，未登录也可见。未登录访客写不了服务端配置
+// （POST /api/config 要管理员），所以选择只能存本机 localStorage；
+// 登录后点它则等同于改站点主题，与后台下拉框是同一份状态。
+
+const appCode = stripComments(appSource);
+const indexCode = stripComments(indexHtml);
+
+/** 按大括号配对取出一个方法的完整方法体（含首尾大括号）。 */
+function methodBodyOf(src, signature) {
+    const start = src.indexOf(signature);
+    assert.ok(start >= 0, `${signature} 存在`);
+    const open = start + signature.length - 1;
+    assert.equal(src[open], '{', `${signature} 的签名以 { 收尾`);
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) return src.slice(open, i + 1);
+        }
+    }
+    throw new Error(`${signature} 方法体未闭合`);
+}
+
+test('外观按钮在右下角 dock 内、排在「编辑」与「管理」之间，且不随登录态隐藏', () => {
+    const dockStart = indexCode.indexOf('class="utility-dock"');
+    assert.ok(dockStart > 0, '首页仍有 dock');
+    const dock = indexCode.slice(dockStart, indexCode.indexOf('</nav>', dockStart));
+    assert.ok(dock.length > 100, '取到 dock 区块');
+
+    const order = ['id="helpBtn"', 'id="layoutBtn"', 'id="appearanceBtn"', 'id="adminBtn"']
+        .map(id => dock.indexOf(id));
+    assert.ok(order.every(i => i >= 0), '四个按钮都在 dock 内');
+    assert.deepEqual(order, [...order].sort((a, b) => a - b), '顺序：说明 → 编辑 → 外观 → 管理');
+
+    // 「编辑」靠 hidden 控制登录可见性；外观按钮带上 hidden 未登录就看不到，
+    // 而这正是本次要求「未登录也可见」的那一半。
+    const btnTag = indexCode.match(/<button[^>]*id="appearanceBtn"[^>]*>/)[0];
+    assert.doesNotMatch(btnTag, /\bhidden\b/, '外观按钮不随登录态隐藏');
+    assert.doesNotMatch(appCode, /appearanceBtn'\)\.hidden\s*=/, 'JS 里也不隐藏它');
+});
+
+test('本机主题的键名在 index.html 与 app.js 两处一致', () => {
+    const keyInApp = appCode.match(/const THEME_STORAGE_KEY = '([^']+)'/);
+    const keyInHtml = indexCode.match(/localStorage\.getItem\('([^']+)'\)/);
+    assert.ok(keyInApp, 'app.js 定义了 THEME_STORAGE_KEY');
+    assert.ok(keyInHtml, 'index.html 内联脚本读了本机主题');
+    // 两处不一致的话，内联脚本永远读不到访客的选择，首屏就会先按系统色画一遍
+    assert.equal(keyInHtml[1], keyInApp[1], '跨文件的键名必须一致');
+});
+
+test('本机主题抢在样式表之前应用，首屏不闪系统色', () => {
+    const applyAt = indexHtml.indexOf("localStorage.getItem('nav-sylph-theme')");
+    const cssAt = indexHtml.indexOf('<link rel="stylesheet" href="styles.css">');
+    assert.ok(applyAt > 0 && cssAt > 0, '两处都能定位');
+    assert.ok(applyAt < cssAt, '读本机主题必须在 styles.css 之前');
+    assert.match(indexCode, /setAttribute\('data-theme', storedTheme\)/);
+    // 只认同明确的两种强制态；'auto' 要留给 prefers-color-scheme
+    assert.match(indexCode, /storedTheme === 'light' \|\| storedTheme === 'dark'/,
+        'auto 不写死，交给 CSS 的媒体查询');
+});
+
+test('resolveTheme：本机覆盖优先，其次服务端站点主题，最后默认自动', () => {
+    const key = appCode.match(/const THEME_STORAGE_KEY = '([^']+)'/)[1];
+    const body = methodBodyOf(appCode, 'resolveTheme() {');
+    const sandbox = {
+        localStorage: { getItem: k => (k === key ? 'dark' : null) },
+        THEME_STORAGE_KEY: key,
+        APPEARANCE_ORDER: ['auto', 'light', 'dark']
+    };
+    const resolveTheme = vm.runInNewContext(`(function () ${body})`, sandbox);
+    const ctx = { config: { theme: 'light' } };
+
+    assert.equal(resolveTheme.call(ctx), 'dark', '本机选过就用本机');
+    sandbox.localStorage.getItem = () => null;
+    assert.equal(resolveTheme.call(ctx), 'light', '本机没选过才用服务端的站点主题');
+    assert.equal(resolveTheme.call({ config: {} }), 'auto', '两者都没有时默认跟随系统');
+    // 本机存了不可识别的值（旧版本残留、被手改）不能变成「无主题」
+    sandbox.localStorage.getItem = () => 'purple';
+    assert.equal(resolveTheme.call(ctx), 'light', '非法值忽略，回落到服务端值');
+});
+
+test('三态循环：自动 → 浅色 → 深色 → 自动（取模回绕）', () => {
+    const order = appCode.match(/const APPEARANCE_ORDER = \[([^\]]+)\]/);
+    assert.ok(order, '定义了循环顺序');
+    assert.deepEqual(
+        order[1].split(',').map(s => s.trim().replace(/'/g, '')),
+        ['auto', 'light', 'dark']
+    );
+    const cycle = methodBodyOf(appCode, 'cycleTheme() {');
+    assert.match(cycle, /% APPEARANCE_ORDER\.length/,
+        '取模回绕——少了它深色之后就不再变（或越界成 undefined）');
+});
+
+test('未登录只写本机，登录后改的是服务端站点主题', () => {
+    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
+    const guestStart = body.indexOf('if (!this.authenticated) {');
+    assert.ok(guestStart >= 0, '有未登录分支');
+    const guest = body.slice(guestStart, body.indexOf('return;', guestStart));
+    assert.match(guest, /localStorage\.setItem\(THEME_STORAGE_KEY, theme\)/, '未登录写本机');
+    assert.doesNotMatch(guest, /api\/config/, '未登录不发保存请求（服务端也会 401）');
+
+    // 登录分支：先清本机覆盖再写服务端 —— 顺序反了的话，本机旧值会一直压过刚写下的值
+    const clearAt = body.indexOf('localStorage.removeItem(THEME_STORAGE_KEY)');
+    const saveAt = body.indexOf("API.post('/api/config'");
+    assert.ok(clearAt > guestStart && saveAt > clearAt, '先清本机覆盖，再保存服务端');
+    assert.match(body, /this\.config\.theme = previous[\s\S]*?this\.applyTheme\(\)/,
+        '保存失败要还原，不能把界面停在一个没存住的档位上');
+});
+
+test('按钮的图标与无障碍文案跟着当前态走', () => {
+    const fn = methodBodyOf(appCode, 'renderAppearanceButton(theme) {');
+    assert.match(fn, /icon\.innerHTML = APPEARANCE_ICONS\[theme\]/, '图标随状态更换');
+    // 图标是纯视觉，aria-label 才是读屏用户拿到的唯一信息，必须同源
+    assert.match(fn, /btn\.setAttribute\('aria-label', label\)/, 'aria-label 同步更新');
+    const icons = appCode.match(/const APPEARANCE_ICONS = \{([\s\S]*?)\n    \};/);
+    assert.ok(icons, '图标表存在');
+    ['auto', 'light', 'dark'].forEach(k =>
+        assert.ok(new RegExp(`(^|\\s)${k}:`).test(icons[1]), `${k} 态有图标`));
+});
+
+test('外观按钮与旁边按钮同高、只收窄宽度，触摸目标不缩水', () => {
+    const rule = code.match(/\.utility-dock \.appearance-btn \{([^}]*)\}/);
+    assert.ok(rule, '材质层有 .utility-dock .appearance-btn 规则');
+    assert.match(rule[1], /width:\s*40px/, '宽度收窄成图标按钮');
+    assert.match(rule[1], /min-height:\s*44px/,
+        '高度不缩水——32–36px 低于触摸目标底线，手机上会误触紧邻的「管理」');
+    assert.match(fullCode, /\.appearance-btn:focus-visible/, '键盘可达');
+});

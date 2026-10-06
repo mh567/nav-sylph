@@ -465,8 +465,12 @@ test('每一处写入登录态的地方都同步模块区的显隐', () => {
         if (m) hits.push({ line: i + 1, value: m[1] });
     });
 
-    // constructor 的初始值不算「登录态变化」，其余每一处都必须同步显隐
-    const transitions = hits.filter(h => h.line > 120);
+    // constructor 的初始值不算「登录态变化」，其余每一处都必须同步显隐。
+    // 按「第一条」而不是行号阈值来排除：类字段每加一行，constructor 就往下
+    // 漂一行，写死的 >120 会被直接跨过去（加 13 行外观常量后它从 L114 到 L127，
+    // 于是 constructor 被误算成第 5 处切换点）。顺序才是这里的语义。
+    assert.equal(hits[0]?.value, 'false', '第一条是 constructor 里的初始值');
+    const transitions = hits.slice(1);
     assert.equal(transitions.length, 4,
         `登录态切换应恰好 4 处（首屏探测 / 页面内登录 / 登出 / 改密后失效），实际 ${transitions.length}：`
         + transitions.map(h => `L${h.line}=${h.value}`).join(', '));
@@ -476,6 +480,18 @@ test('每一处写入登录态的地方都同步模块区的显隐', () => {
         const after = lines.slice(t.line - 1, t.line + 30).join('\n');
         assert.match(after, /syncModuleVisibility\(\)/,
             `L${t.line} 写入 authenticated = ${t.value} 后必须同步模块区显隐`);
+    }
+
+    // 登录成功那两处还要把外观交回服务端。未登录访客的选择存在本机
+    // （localStorage，见 resolveTheme 的优先级），登录后它必须让位，
+    // 否则「本机覆盖」会一直压过站点主题——同样是这类「一处写了、
+    // 另一处忘了」的缺陷，所以按枚举断言而不是搜一下有没有调用。
+    const logins = transitions.filter(t => t.value === 'true');
+    assert.equal(logins.length, 2, '写入 true 的地方是两处（首屏探测 / 页面内登录）');
+    for (const t of logins) {
+        const after = lines.slice(t.line - 1, t.line + 30).join('\n');
+        assert.match(after, /adoptServerTheme\(\)/,
+            `L${t.line} 登录成功后必须把外观交回服务端（清掉本机覆盖）`);
     }
 });
 

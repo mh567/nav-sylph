@@ -15,6 +15,16 @@
             return response.json();
         });
         window.__navSylphConfigPromise.catch(() => {});
+
+        // 未登录访客在首页点过「外观」的话，选择存在本机。这里先于样式表
+        // 把它应用上，否则首屏会先按系统色画一遍再跳成选区色。
+        // 键名必须与 app.js 的 THEME_STORAGE_KEY 一致（有测试钉住这一点）。
+        try {
+            const storedTheme = localStorage.getItem('nav-sylph-theme');
+            if (storedTheme === 'light' || storedTheme === 'dark') {
+                document.documentElement.setAttribute('data-theme', storedTheme);
+            }
+        } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="apple-touch-icon" href="icon.svg">
@@ -23,8 +33,10 @@
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#efede8;min-height:100vh;min-height:100dvh}
         @media(prefers-color-scheme:dark){body{background:#211f1c}}
+        :root[data-theme="dark"] body{background:#211f1c}
         .loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:32px;height:32px;border:2px solid rgba(92,76,64,.18);border-top-color:#945e4a;border-radius:50%;animation:spin .6s linear infinite}
         @media(prefers-color-scheme:dark){.loader{border-color:rgba(222,203,185,.18);border-top-color:#c28d70}}
+        :root[data-theme="dark"] .loader{border-color:rgba(222,203,185,.18);border-top-color:#c28d70}
         @keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
     </style>
     <link rel="stylesheet" href="styles.css">
@@ -71,6 +83,11 @@
         <nav class="utility-dock" aria-label="页面操作">
             <button class="fab fab-help" id="helpBtn" title="帮助">说明</button>
             <button class="fab" id="layoutBtn" title="编辑首页导航" aria-pressed="false" hidden>编辑</button>
+            <!-- 外观三态按钮：未登录也可见（主题要写服务端才需要管理员，
+                 本机切换不需要）。图标与 title 由 applyTheme 按当前态渲染。 -->
+            <button class="appearance-btn" id="appearanceBtn" type="button" title="外观" aria-label="外观">
+                <span class="appearance-icon" id="appearanceIcon" aria-hidden="true"></span>
+            </button>
             <button class="fab" id="adminBtn" title="管理 (Alt+A)">管理</button>
         </nav>
     </div>

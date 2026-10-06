@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-effective="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>仿真样例：右下角外观切换按钮</title>
+<!--
+  独立仿真样例（不依赖项目任何文件）。页内工具栏强制展示本次要讨论的状态，
+  不用改代码即可 A/B：
+
+    · 按钮形态   —— 三种候选尺寸/形态（A 32 圆 / B 36 圆 / C 32 高文字胶囊）
+    · 登录态     —— 未登录（说明 · 外观 · 管理）／已登录（多一个「编辑」）
+    · 模拟系统深浅 —— 「自动」模式下跟随的系统偏好，两种都能量出来
+    · 视口宽度   —— PC 1280 ／ 窄屏 390（窄屏时 dock 与按钮一起缩小）
+    · 当前模式   —— 点右下角「外观」按钮即可三态循环，整页真实换色
+
+  悬停浮起、按下行程等效果只有真实浏览器里看得到，截图不可见。
+  真实项目里 auto 态走 prefers-color-scheme；这里为了能两种都演示，
+  改用工具栏的「模拟系统深/浅」开关驱动。
+-->
+<style>
+:root {
+    --bg: #efede8; --bg-card: #faf8f4; --bg-hover: #f2ece5;
+    --text: #302b27; --text-secondary: #655e57; --text-muted: #817970;
+    --border: rgba(92,76,64,.18); --divider-rgb: 92,76,64;
+    --accent: #945e4a; --accent-hover: #7d4e3d; --focus: rgba(148,94,74,.58);
+    --glass: rgba(252,250,246,.66); --glass-strong: rgba(252,250,246,.91);
+    --control-top: #fcfaf6; --control-bottom: #eee9e1;
+    --control-pressed-top: #e9e2d9; --control-pressed-bottom: #f1ece5;
+    --inner-light: rgba(255,255,255,.69);
+    --shadow: 0 2px 4px rgba(0,0,0,.12), 0 10px 28px rgba(0,0,0,.20);
+    --shadow-lg: 0 5px 10px rgba(0,0,0,.18), 0 18px 34px rgba(0,0,0,.35);
+    --press-shadow: inset 0 2px 5px rgba(0,0,0,.14), inset 0 0 0 1px rgba(0,0,0,.03);
+    color-scheme: light;
+}
+:root[data-effective="dark"] {
+    --bg: #211f1c; --bg-card: #3a3530; --bg-hover: #4a4139;
+    --text: #f3eee8; --text-secondary: #c9beb3; --text-muted: #a89c90;
+    --border: rgba(222,203,185,.18); --divider-rgb: 222,203,185;
+    --accent: #c28d70; --accent-hover: #d3a184; --focus: rgba(223,169,140,.68);
+    --glass: rgba(65,58,51,.70); --glass-strong: rgba(57,51,46,.93);
+    --control-top: #625951; --control-bottom: #3c3630;
+    --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
+    --inner-light: rgba(255,255,255,.09);
+    --shadow: 0 2px 4px rgba(0,0,0,.34), 0 10px 28px rgba(0,0,0,.46);
+    --shadow-lg: 0 5px 10px rgba(0,0,0,.44), 0 18px 34px rgba(0,0,0,.60);
+    --press-shadow: inset 0 2px 6px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.04);
+    color-scheme: dark;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #191713; color: #e8dfd4; line-height: 1.5;
+    min-height: 100vh; overflow-x: hidden;
+}
+
+/* ===== 工具栏（不属于应用，仅为样例对比控件） ===== */
+.toolbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+    display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center;
+    padding: 9px 18px; background: #26221e; color: #e8dfd4;
+    font-size: 12px; box-shadow: 0 4px 18px rgba(0,0,0,.35);
+}
+.toolbar .group { display: flex; align-items: center; gap: 6px; }
+.toolbar .glabel { color: #9a8d7e; white-space: nowrap; }
+.toolbar button {
+    border: 1px solid rgba(232,223,212,.22); background: rgba(232,223,212,.08);
+    color: #e8dfd4; border-radius: 7px; padding: 5px 11px; font-size: 12px;
+    font-family: inherit; cursor: pointer; min-height: 30px;
+}
+.toolbar button[aria-pressed="true"] { background: #c28d70; border-color: #c28d70; color: #26221e; font-weight: 600; }
+.toolbar .sep { width: 1px; height: 20px; background: rgba(232,223,212,.2); }
+.toolbar .note { color: #9a8d7e; }
+.toolbar .note b { color: #e8dfd4; font-weight: 600; }
+
+/* ===== 预览舞台：模拟一个 1280 / 390 宽的「视口」 ===== */
+.stage-wrap { padding: 58px 0 40px; display: flex; justify-content: center; }
+.stage {
+    position: relative; width: 1280px; height: 720px; overflow: hidden;
+    transform-origin: top center;
+    background: var(--bg); color: var(--text);
+    transition: background 200ms ease, color 200ms ease;
+    border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.stage.is-narrow { width: 390px; height: 720px; }
+
+/* 首页大致还原：搜索框 + 一行书签，给按钮一个真实的比例参照 */
+.stage-inner { padding: 54px 24px 0; }
+.search {
+    display: flex; align-items: center; gap: 8px; max-width: 620px; margin: 0 auto;
+    height: 52px; padding: 0 12px; border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--glass);
+    box-shadow: inset 0 1px var(--inner-light), var(--shadow);
+    backdrop-filter: blur(22px) saturate(150%);
+}
+.search .mode, .search .eng {
+    height: 34px; padding: 0 14px; border-radius: 999px; border: 0;
+    background: linear-gradient(170deg, var(--control-top), var(--control-bottom));
+    color: var(--text); font-size: 12px; font-weight: 600; box-shadow: inset 0 1px var(--inner-light);
+}
+.search .field { flex: 1; color: var(--text-muted); font-size: 13px; }
+.search .go {
+    height: 34px; padding: 0 16px; border-radius: 999px; border: 0;
+    background: var(--accent); color: #fffaf5; font-size: 12px; font-weight: 600;
+}
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 620px; margin: 26px auto 0; }
+.stage.is-narrow .grid { grid-template-columns: repeat(2, 1fr); }
+.card {
+    height: 62px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--glass-strong); box-shadow: inset 0 1px var(--inner-light), var(--shadow);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; color: var(--text-secondary);
+}
+
+/* ===== 右下角 dock（照抄 styles.css 的 .utility-dock 与 .fab） ===== */
+.utility-dock {
+    position: absolute; right: 21px; bottom: 19px; z-index: 100;
+    display: flex; gap: 3px; padding: 4px;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--glass);
+    box-shadow: inset 0 1px var(--inner-light), var(--shadow-lg);
+    backdrop-filter: blur(22px) saturate(150%);
+    transition: background 200ms ease, border-color 200ms ease;
+}
+.utility-dock .fab {
+    position: relative; inset: auto; width: auto; min-width: 52px; min-height: 44px;
+    padding: 0 15px; border: 0; border-radius: 999px; background: transparent;
+    color: var(--text); box-shadow: none; font-size: 12px; font-weight: 500;
+    font-family: inherit; cursor: pointer;
+    transition: transform 90ms, background 110ms, box-shadow 110ms, color 110ms;
+}
+.utility-dock .fab:hover { background: rgba(148,94,74,.12); box-shadow: inset 0 1px var(--inner-light); }
+.utility-dock .fab:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+.utility-dock .fab:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.stage.is-narrow .utility-dock { right: 16px; bottom: 16px; }
+.stage.is-narrow .utility-dock .fab { min-width: 44px; min-height: 38px; padding: 0 11px; font-size: 11px; }
+
+/* ===== 本次要讨论的新按钮：三种候选形态 ===== */
+.appearance-btn {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 999px; cursor: pointer; font-family: inherit;
+    background: transparent; color: var(--text); padding: 0;
+    transition: transform 90ms, background 110ms, box-shadow 110ms, color 110ms;
+}
+.appearance-btn:hover { background: rgba(148,94,74,.12); box-shadow: inset 0 1px var(--inner-light); }
+.appearance-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+.appearance-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.appearance-btn svg { width: 17px; height: 17px; display: block; }
+.appearance-btn .mode-text { font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+
+/* A：32×32 圆 */
+.appearance-btn.v-a { width: 32px; height: 32px; }
+/* B：36×36 圆 */
+.appearance-btn.v-b { width: 36px; height: 36px; }
+.appearance-btn.v-b svg { width: 18px; height: 18px; }
+/* C：32 高的文字胶囊 */
+.appearance-btn.v-c { min-width: 54px; height: 32px; padding: 0 11px; }
+/* D：与旁边 .fab 同高（44px）、只把宽度收窄成图标按钮 */
+.appearance-btn.v-d { width: 40px; height: 44px; }
+
+/* 三态各自的小标记：自动态在图标右下角点一个小点，便于一眼区分「跟随系统」 */
+.appearance-btn .auto-dot {
+    position: absolute; right: 3px; bottom: 3px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--accent); display: none;
+}
+:root[data-mode="auto"] .appearance-btn .auto-dot { display: block; }
+
+.stage.is-narrow .appearance-btn.v-a { width: 30px; height: 30px; }
+.stage.is-narrow .appearance-btn.v-b { width: 32px; height: 32px; }
+.stage.is-narrow .appearance-btn.v-c { min-width: 46px; height: 30px; padding: 0 9px; font-size: 10px; }
+.stage.is-narrow .appearance-btn.v-d { width: 34px; height: 38px; }
+
+/* 测量辅助：给按钮加 1px 描边，便于比较尺寸与对齐 */
+.stage.show-outline .appearance-btn { outline: 1px dashed var(--accent); outline-offset: 1px; }
+
+.hint { text-align: center; color: #9a8d7e; font-size: 12px; padding: 0 20px 30px; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <div class="group">
+        <span class="glabel">按钮形态</span>
+        <button data-variant="A" aria-pressed="true">A · 32 圆</button>
+        <button data-variant="B" aria-pressed="false">B · 36 圆</button>
+        <button data-variant="C" aria-pressed="false">C · 32 文字胶囊</button>
+        <button data-variant="D" aria-pressed="false">D · 44 高图标</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+        <span class="glabel">登录态</span>
+        <button data-auth="out" aria-pressed="true">未登录</button>
+        <button data-auth="in" aria-pressed="false">已登录</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+        <span class="glabel">模拟系统偏好</span>
+        <button data-sys="light" aria-pressed="true">浅</button>
+        <button data-sys="dark" aria-pressed="false">深</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+        <span class="glabel">视口</span>
+        <button data-vp="pc" aria-pressed="true">PC 1280</button>
+        <button data-vp="narrow" aria-pressed="false">窄屏 390</button>
+    </div>
+    <div class="sep"></div>
+    <div class="group">
+        <span class="glabel">描边</span>
+        <button data-outline="off" aria-pressed="true">关</button>
+        <button data-outline="on" aria-pressed="false">开</button>
+    </div>
+    <div class="sep"></div>
+    <span class="note">当前模式 <b id="modeLabel">自动</b>　·　点右下角「外观」按钮循环：自动 → 浅色 → 深色 → 自动</span>
+</div>
+
+<div class="stage-wrap">
+    <div class="stage" id="stage">
+        <div class="stage-inner">
+            <div class="search">
+                <button class="mode">网页</button>
+                <span class="field">搜索网页或书签</span>
+                <button class="eng">Google</button>
+                <button class="go">搜索</button>
+            </div>
+            <div class="grid">
+                <div class="card">知乎</div><div class="card">GitHub</div><div class="card">B 站</div>
+                <div class="card">掘金</div><div class="card">MDN</div><div class="card">豆瓣</div>
+            </div>
+        </div>
+
+        <nav class="utility-dock" aria-label="页面操作">
+            <button class="fab">说明</button>
+            <button class="fab" id="editBtn" hidden>编辑</button>
+            <button class="appearance-btn v-a" id="appearanceBtn"
+                    title="外观：跟随系统（点击切换到浅色模式）"
+                    aria-label="外观：跟随系统，点击切换到浅色模式">
+                <span class="icon-slot"></span>
+                <span class="auto-dot" aria-hidden="true"></span>
+            </button>
+            <button class="fab">管理</button>
+        </nav>
+    </div>
+</div>
+
+<p class="hint">点右下角的「外观」按钮看三态循环与整页换色。切到窄屏后，dock 与按钮会一起缩小。</p>
+
+<script>
+(function () {
+    var ORDER = ['auto', 'light', 'dark'];
+    var TEXT = { auto: '自动', light: '浅色', dark: '深色' };
+    var ICONS = {
+        fixedLight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">'
+            + '<circle cx="12" cy="12" r="4.1"/>'
+            + '<path d="M12 2.7v2.1M12 19.2v2.1M2.7 12h2.1M19.2 12h2.1M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></svg>',
+        fixedDark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+            + '<path d="M20.4 14.7A8.6 8.6 0 0 1 9.3 3.6a8.6 8.6 0 1 0 11.1 11.1Z"/></svg>',
+        auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">'
+            + '<circle cx="12" cy="12" r="8.3"/>'
+            + '<path d="M12 3.7a8.3 8.3 0 0 1 0 16.6Z" fill="currentColor" stroke="none"/></svg>'
+    };
+
+    var state = { mode: 'auto', system: 'light', auth: 'out', variant: 'A' };
+
+    var root = document.documentElement;
+    var stage = document.getElementById('stage');
+    var btn = document.getElementById('appearanceBtn');
+    var editBtn = document.getElementById('editBtn');
+    var modeLabel = document.getElementById('modeLabel');
+
+    function render() {
+        root.dataset.mode = state.mode;
+        root.dataset.effective = state.mode === 'auto' ? state.system : state.mode;
+        btn.className = 'appearance-btn v-' + state.variant.toLowerCase();
+        var next = ORDER[(ORDER.indexOf(state.mode) + 1) % ORDER.length];
+        var label = '外观：' + TEXT[state.mode] + (state.mode === 'auto' ? '（跟随系统）' : '模式')
+            + '，点击切换到' + TEXT[next] + (next === 'auto' ? '（跟随系统）' : '模式');
+        btn.title = label;
+        btn.setAttribute('aria-label', label);
+        btn.querySelector('.icon-slot').innerHTML =
+            state.mode === 'auto' ? ICONS.auto : (state.mode === 'light' ? ICONS.fixedLight : ICONS.fixedDark);
+        btn.querySelector('.mode-text') && (btn.querySelector('.mode-text').textContent = TEXT[state.mode]);
+        modeLabel.textContent = TEXT[state.mode];
+        editBtn.hidden = state.auth !== 'in';
+    }
+
+    btn.addEventListener('click', function () {
+        state.mode = ORDER[(ORDER.indexOf(state.mode) + 1) % ORDER.length];
+        render();
+    });
+
+    document.querySelectorAll('[data-variant]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            state.variant = el.dataset.variant;
+            document.querySelectorAll('[data-variant]').forEach(function (x) {
+                x.setAttribute('aria-pressed', String(x === el));
+            });
+            if (state.variant === 'C') {
+                btn.innerHTML = '<span class="mode-text"></span><span class="auto-dot" aria-hidden="true"></span>';
+            } else if (!btn.querySelector('.icon-slot')) {
+                btn.innerHTML = '<span class="icon-slot"></span><span class="auto-dot" aria-hidden="true"></span>';
+            }
+            render();
+        });
+    });
+    document.querySelectorAll('[data-auth]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            state.auth = el.dataset.auth;
+            document.querySelectorAll('[data-auth]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === el)); });
+            render();
+        });
+    });
+    document.querySelectorAll('[data-sys]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            state.system = el.dataset.sys;
+            document.querySelectorAll('[data-sys]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === el)); });
+            render();
+        });
+    });
+    document.querySelectorAll('[data-vp]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            stage.classList.toggle('is-narrow', el.dataset.vp === 'narrow');
+            document.querySelectorAll('[data-vp]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === el)); });
+            fit();
+        });
+    });
+    document.querySelectorAll('[data-outline]').forEach(function (el) {
+        el.addEventListener('click', function () {
+            stage.classList.toggle('show-outline', el.dataset.outline === 'on');
+            document.querySelectorAll('[data-outline]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === el)); });
+        });
+    });
+
+    function fit() {
+        var w = stage.classList.contains('is-narrow') ? 390 : 1280;
+        var scale = Math.min(1, (window.innerWidth - 48) / w);
+        stage.style.transform = 'scale(' + scale + ')';
+        stage.parentElement.style.height = (720 * scale + 8) + 'px';
+    }
+    window.addEventListener('resize', fit);
+
+    render();
+    fit();
+})();
+</script>
+</body>
+</html>
