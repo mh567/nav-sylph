@@ -524,7 +524,7 @@ test('Enter on a merging category opens one confirmation despite input blur', as
     app.favManagerCurrentCategory = '';
     app.showToast = () => {};
     app.saveFavorites = async () => true;
-    app.showFavManager = () => {};
+    app.renderFavManager = () => {};
 
     const classes = new Set();
     const nameSpan = { classList: {

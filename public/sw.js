@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v63：后台「收藏夹」成为独立 tab——原「账户与备份」里的收藏
+// 分区整区迁入，收藏管理器改渲染进 tab 内的 #favManagerHost（不再整块
+// 替换 #modalBody，「← 返回」由 tab 栏取代）；全产品线换名：
+// 收藏→书签、首页网格的书签→导航。改了 app.js、index.html、server.js。
 // nav-v62：触摸端也能拖了——新增 bindTouchGridDrag（长按 400ms 激活的 pointer 路径），
 // 桌面端仍走原生 DnD。分类头/书签卡在编辑态关掉文字选中与 iOS 长按菜单。
 // 改了 app.js、styles.css。
@@ -81,7 +85,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v62';
+const CACHE = 'nav-v63';
 const ASSETS = [
     '/',
     '/index.html',

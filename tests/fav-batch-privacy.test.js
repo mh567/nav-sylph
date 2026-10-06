@@ -67,7 +67,7 @@ function runBatch(app, { selected, favorites, choices, saveOk = true }) {
     app.favManagerSelected = new Set(selected);
     const toasts = [];
     app.showToast = (message, state) => toasts.push({ message, state });
-    app.showFavManager = () => {};
+    app.renderFavManager = () => {};
     app.saveFavorites = async () => saveOk;
     app.showUiDialog = async () => choices ? { values: [], choices } : null;
     return app.privacySelectedFavorites().then(() => toasts);
@@ -107,7 +107,7 @@ test('批量设为公开：全部置为公开', async () => {
     assert.deepEqual(list.map(f => f.private), [false, false]);
 });
 
-test('批量隐私只作用于选中项，未选中的收藏保持原状', async () => {
+test('批量隐私只作用于选中项，未选中的书签保持原状', async () => {
     const app = loadApp();
     const list = favs(3, [false, false, true]);
     await runBatch(app, { selected: ['f0', 'f2'], favorites: list, choices: { privacy: 'private' } });
@@ -115,7 +115,7 @@ test('批量隐私只作用于选中项，未选中的收藏保持原状', async
     assert.deepEqual(list.map(f => f.private), [true, false, true]);
 });
 
-test('取消弹窗不改动任何收藏', async () => {
+test('取消弹窗不改动任何书签', async () => {
     const app = loadApp();
     const list = favs(2, [false, true]);
     await runBatch(app, { selected: ['f0', 'f1'], favorites: list, choices: null });
@@ -150,7 +150,7 @@ test('混选时默认预选「设为私密」，全部已私密才预选「设�
     assert.doesNotMatch(privateOption[0], /hint:/, '收紧方向不需要风险提示');
 });
 
-test('收藏管理列表复用首页的私密标签样式，紧跟分类标签', () => {
+test('书签列表复用首页的私密标签样式，紧跟分类标签', () => {
     // 用户选定的是「复用首页已有的 .fav-private-label，在分类标签旁显示」。
     // 不新建近似的类名，否则视觉规范会有两份来源。
     assert.match(source, /\$\{fav\.private \? '<span class="fav-private-label">私密<\/span>' : ''\}/);

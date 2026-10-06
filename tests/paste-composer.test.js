@@ -496,7 +496,7 @@ test('leaving share mode restores the search row', () => {
     assert.equal(dom.nodes.exitLabel.hidden, true);
     assert.equal(dom.nodes.modeBtn.getAttribute('aria-label'), '切换搜索模式，当前为网页');
     assert.equal(dom.nodes.searchBtn.textContent, '搜索');
-    assert.equal(dom.nodes.input.placeholder, '搜索网页或收藏');
+    assert.equal(dom.nodes.input.placeholder, '搜索网页或书签');
 });
 
 test('Enter searches in both modes, and modifiers insert a newline', () => {

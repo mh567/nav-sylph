@@ -45,21 +45,21 @@
                 <form class="search" id="searchForm">
                     <button type="button" class="search-mode" id="modeBtn" aria-label="切换搜索模式，当前为网页" aria-pressed="false">
                         <span class="mode-label" data-label="web">网页</span>
-                        <span class="mode-label" data-label="fav" hidden>收藏</span>
+                        <span class="mode-label" data-label="fav" hidden>书签</span>
                         <span class="mode-label" data-label="exit" hidden>退出</span>
                     </button>
                     <button type="button" class="search-engine" id="engineBtn" title="切换搜索引擎" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineDropdown">
                         <span class="engine-name" id="engineName">Google</span>
                         <svg class="engine-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页或收藏" aria-label="搜索网页或收藏" autocomplete="off" spellcheck="false"></textarea>
+                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页或书签" aria-label="搜索网页或书签" autocomplete="off" spellcheck="false"></textarea>
                     <button type="submit" class="search-btn" title="搜索">搜索</button>
                 </form>
                 <div class="engine-dropdown" id="engineDropdown" role="listbox" aria-label="搜索引擎" hidden></div>
             </div>
         </header>
         <div class="search-caption" aria-hidden="true">
-            <span><kbd>/</kbd> 查收藏</span>
+            <span><kbd>/</kbd> 查书签</span>
             <span><kbd>&gt;</kbd> 分享文本</span>
         </div>
         <main class="grid" id="grid"></main>
@@ -70,7 +70,7 @@
         <section class="module-zone" id="moduleZone" aria-label="模块" hidden></section>
         <nav class="utility-dock" aria-label="页面操作">
             <button class="fab fab-help" id="helpBtn" title="帮助">说明</button>
-            <button class="fab" id="layoutBtn" title="编辑首页布局与书签" aria-pressed="false" hidden>编辑</button>
+            <button class="fab" id="layoutBtn" title="编辑首页导航" aria-pressed="false" hidden>编辑</button>
             <button class="fab" id="adminBtn" title="管理 (Alt+A)">管理</button>
         </nav>
     </div>

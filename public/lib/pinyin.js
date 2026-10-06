@@ -63,7 +63,7 @@
             // 分类/标签相关
             '分fen,类lei,标biao,签qian,文wen,件jian,夹jia,目mu,录lu,路lu,径jing,根gen,父fu,子zi,兄xiong,弟di,节jie,点dian,叶ye,树shu',
             '图tu,表biao,列lie,网wang,格ge,卡ka,片pian,瀑pu,布bu,流liu,时shi,间jian,轴zhou,日ri,历li,周zhou,月yue,年nian,季ji,度du',
-            // 收藏/书签相关
+            // 书签相关
             '收shou,藏cang,书shu,签qian,喜xi,欢huan,关guan,注zhu,订ding,阅yue,历li,史shi,最zui,近jin,常chang,用yong,热re,门men,推tui,荐jian',
             '新xin,闻wen,资zi,讯xun,博bo,客ke,论lun,坛tan,社she,区qu,问wen,答da,百bai,科ke,词ci,典dian,翻fan,译yi,地di,图tu',
             '导dao,航hang,天tian,气qi,日ri,历li,计ji,算suan,器qi,笔bi,记ji,便bian,签qian,提ti,醒xing,闹nao,钟zhong,秒miao,表biao,倒dao,计ji',

@@ -10,10 +10,10 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const begin = server.indexOf('function toPublicConfig(');
 assert.ok(begin >= 0, 'public view helpers are present');
 
-// toPublicConfig 到「获取收藏书签」这一段里，公开视图与模块平台的
+// toPublicConfig 到「获取收藏夹里的书签」这一段里，公开视图与模块平台的
 // 归一化/合并助手都在内（模块平台配置段紧接在公开视图之后），
 // 所以单次切片即可，不需要第二段——两段会因重复声明而 SyntaxError。
-const modulesEnd = server.indexOf('// 获取收藏书签', begin);
+const modulesEnd = server.indexOf('// 获取收藏夹里的书签', begin);
 assert.ok(modulesEnd > begin, 'projection and merge helpers are present');
 
 const { toPublicConfig, toPublicFavorites, mergeFavorites, mergeConfig,
@@ -776,8 +776,9 @@ test('模块区拖拽：宽屏下松手即改 order 后立即重排', () => {
 });
 
 test('管理分区记住当前分区，重渲染后恢复而不是弹回第一个', () => {
-    // 收藏管理器整块替换 #modalBody，它内部的「← 返回」调 renderAdminPanel()。
-    // 那里若固定选中第一个 tab，从「账户与备份」进收藏、点返回就会被弹到「首页导航」。
+    // 后台分区切换：收藏管理器现在渲染在「收藏夹」tab 内的 #favManagerHost，
+    // 不再整块替换 #modalBody。那里若固定选中第一个 tab，从别的分区切回
+    // 收藏夹就会被弹到「首页导航」。
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
     assert.match(appSource, /selectAdminTab\(panel\)\s*\{[\s\S]*?this\.adminTab\s*=\s*panel/,
         'selectAdminTab 必须记住当前分区');

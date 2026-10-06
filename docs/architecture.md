@@ -12,12 +12,12 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 | 位置 | 职责 |
 | --- | --- |
-| `server.js` | Express 服务、静态资源、配置与收藏接口、管理密码、分享页面和 WebDAV 接口 |
+| `server.js` | Express 服务、静态资源、配置与书签接口、管理密码、分享页面和 WebDAV 接口 |
 | `server-config/` | 服务配置默认值、文件与环境变量的加载及校验 |
-| `public/index.html`、`public/app.js` | 首页结构、搜索、收藏、管理界面及浏览器状态；管理密码存在时按需取回完整配置与收藏 |
+| `public/index.html`、`public/app.js` | 首页结构、搜索、书签、管理界面及浏览器状态；管理密码存在时按需取回完整配置与书签 |
 | `public/styles.css`、`public/admin.css` | 首页与管理界面样式。`admin.css` 经 `media="print" onload` 非阻塞加载（首屏渲染不等它）——它不止样式化管理面板，还样式化站内对话框 `showUiDialog()` 与错误 toast（见 :145），故必须在用户交互前就位、不能按需加载；`.search.paste-mode`（分享编辑器）只在该文件「Paste 分享模式」区块定义一处，勿在尾段的新版样式区块重复声明 |
 | `public/sw.js` | 同源静态资源白名单缓存；动态接口和分享页不在缓存范围内 |
-| `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载；拼音（收藏加载时）与二维码（首次分享时）经 `app.js` 的 `loadScript` 延迟加载，仍列入 sw.js 的 `ASSETS` 预缓存（离线可用） |
+| `public/lib/` | 本地提供的搜索、拼音、二维码（`qrcode.js`）与代码高亮（`highlight.min.js`）脚本；高亮仅供分享接收页按需加载；拼音（书签加载时）与二维码（首次分享时）经 `app.js` 的 `loadScript` 延迟加载，仍列入 sw.js 的 `ASSETS` 预缓存（离线可用） |
 | `lib/webdav-backup.js` | WebDAV 配置加密、备份、恢复和校验 |
 | `lib/session.js` | 管理端会话：设备指纹加权、地理绑定、Cookie 读写；存储后端可注入（缺省内存） |
 | `lib/session-sqlite.js` | 会话的 SQLite 存储后端（实现 SessionStore 的 6 方法接口） |
@@ -29,7 +29,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
 | `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（当前 `server-monitor.js`） |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
-| `tests/` | 备份隐私、移动收藏、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
+| `tests/` | 备份隐私、移动书签、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
 服务使用 Node.js、Express 和原生浏览器代码。`package.json` 的 `start` 命令运行 `server.js`，`dev` 命令使用 nodemon。测试目前通过 `node --test tests/*.test.js` 运行。
 
@@ -43,7 +43,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 
 **归一化不得补默认值。** `normalizeModulesConfig()` 对缺席的键保持 `undefined`（而非空数组），`mergeModulesConfig()` 才能区分「显式清空」与「没提交」。拖拽排序只提交 `widgets`；若归一化补了空数组，一次排序就会清空 `servers` 与 `symbols`。这条是真实服务端到端才发现的——单元测试当时直接调 `merge` 绕过了归一化，于是恒绿。
 
-**首页模块区在分类网格之后**（首屏视觉重心留给搜索框与收藏），未登录时 `hidden` 且不发起任何模块请求。显隐有三个钩子必须齐全：`restoreSession()` 成功分支、`#logoutBtn` 处理器、`API.notifyEnvChanged()`（环境变化自动登出）——少一个就会出现「登出后入口还亮着」。
+**首页模块区在分类网格之后**（首屏视觉重心留给搜索框与书签），未登录时 `hidden` 且不发起任何模块请求。显隐有三个钩子必须齐全：`restoreSession()` 成功分支、`#logoutBtn` 处理器、`API.notifyEnvChanged()`（环境变化自动登出）——少一个就会出现「登出后入口还亮着」。
 
 **编辑模式是显式开关，不是默认拖拽。** widget 卡片本身可点击（点开全屏面板），默认态开拖拽会劫持点击；且 `bookmark` 卡片已是拖拽排序的宿主（`moveBookmark`），两种拖拽语义混在一页会互相干扰。入口是右下角 `.utility-dock` 的「布局」按钮，仅登录后可见。拖拽用 Pointer Events，**终止监听挂 `window` 且同时处理 `pointerup` 与 `pointercancel`**，指针 capture 只是双保险——挂在元素上用 `{ once:true }` 会在指针于元素外释放时永久卡住状态（分享编辑器的 auto-grow 曾这样冻结整个会话）。排序是持久化状态，**拖完立即落盘、失败整体回滚并 render 出错误**，不做乐观更新。换边仅宽屏可用：窄屏模块区是横滑列表，横向拖拽会与横滑抢同一个手势。
 
@@ -299,7 +299,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **模块区**：既有能力，行为从「松手即存」改为草稿。`commitWidgetDrag` 不再调 `saveWidgetLayout`，只按新 `order` 重排一次。
 - **书签网格**：分类之间、分类之内都可拖；每类末尾一个「＋」卡新增该类书签；网格末尾一个「＋ 添加分类」；点书签卡弹窗改标题/URL；点分类头的 ⠿/✎/✕ 分别拖拽/重命名/删除。
 - **只覆盖 `config.json` 的 `categories[].bookmarks[]`**（`{id, title, url}`）。**这块数据现在只有一个编辑入口**——首页的编辑模式。后台原先还有一个「书签分类」分区（`#catsEditor` / `renderCatsEditor` / `bindEditorDrag`），已删除，改为一行指向首页的提示文案；重复的第二个入口意味着同一份数据有两个真相来源。
-- **别与后台「管理收藏」混淆。** `favorites.json` 的平铺收藏（多 `description`/`category`/`tags`/`private`）由收藏管理器编辑，**不在首页编辑模式范围内**。两者的分类结构长得像但不是一回事：前者是首页网格的分类，后者是收藏管理器左侧的树（含重命名、拖拽归类、批量隐私）。
+- **别与后台「收藏夹」混淆。** `favorites.json` 的平铺书签（多 `description`/`category`/`tags`/`private`）由后台「收藏夹」tab 里的收藏管理器编辑，**不在首页编辑模式范围内**。两者的分类结构长得像但不是一回事：前者是首页网格的分类，后者是收藏管理器左侧的树（含重命名、拖拽归类、批量隐私）。
 
 ### 三条必须保持的性质
 
@@ -373,15 +373,37 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **触摸端已实现，但只在本机用合成 pointer 事件验证过**。真实触摸的手势语义（长按是否会先触发滚动、iOS 长按菜单是否真被压掉、`pointercancel` 何时到来）**没有在真机或真实触摸设备上验证过**——headless Chrome 不产生真实触摸。见 `current-work.md` 的「只在真机能确认」清单。
 - **分类操作按钮 26×26px 低于 `--ctl-h: 44px` 的触摸下限**，同为鼠标/长按操作的设计取舍。已确认本轮不改（触摸端真正难按的是 ✎/✕，但改动会让编辑态头部变宽，另行决定）。
 
+## 后台管理分区
+
+管理面板是**四个分区（标签页）**，宽屏为左侧常驻侧栏、`≤899px` 退化为顶部横向标签条：
+
+| 顺序 | 分区 | 内容 |
+| --- | --- | --- |
+| 1 | 首页导航 | 界面设置（主题 / 默认引擎 / 隐私模式）、搜索引擎编辑器 |
+| 2 | 收藏夹 | `favorites.json` 的书签：导入 / 导出 / 添加 + 收藏管理器（分类树、列表、批量隐私 / 删除） |
+| 3 | 模块 | 模块平台配置（独立保存，不随「保存」按钮提交） |
+| 4 | 账户与备份 | 登录安全（信任此设备）、远程备份、退出登录 |
+
+**命名表**——同一份数据在两处出现时用词必须区分，不要混称：
+
+| 数据 | 存放 | 界面用词 |
+| --- | --- | --- |
+| 首页网格的分类与链接 | `config.json` 的 `categories[].bookmarks[]` | 首页**导航**（「编辑首页导航」「添加导航」「删除导航」） |
+| 平铺书签 | `favorites.json` 的 `favorites[]` | 后台「**收藏夹**」里的**书签**（「导入书签」「全部书签」「搜索书签」） |
+
+**分区切换与懒渲染。** `selectAdminTab(panel)` 记住当前分区（`this.adminTab`），`renderAdminPanel()` 每次重建面板 DOM 后据此恢复——不复位会让「切走再切回」弹回第一个分区。模块分区与收藏夹分区都**只在首次进入时渲染**（`modulesEditorRendered` / `favManagerRendered`），两个标记都必须在 `renderAdminPanel()` 里复位；否则面板 DOM 重建后该分区会跳过渲染，停在模板里的「加载中...」。
+
+**收藏管理器渲染进 `#favManagerHost`，不整块替换 `#modalBody`。** 各编辑路径（添加 / 编辑 / 删除 / 批量隐私 / 分类重命名 / 拖拽归类）都即时 `saveFavorites()` 并调用 `renderFavManager()` 原地重绘，因此不再需要旧实现里的「← 返回」——它只是一次兜底保存。管理器只重绘宿主容器，而**头部「共 N 个书签」不在宿主内**，由 `updateFavStat()` 在每次数据变化后单独刷新：这两行从前分处两个分区、看不出来，同屏后就变成「删了书签头部不动」的缺陷。
+
 ## 数据与请求路径
 
 `server-config/index.js` 合并默认配置、可选的 `server-config.json`、`.env` 和环境变量。
 
-⚠️ **`server-config.json` 会遮蔽 `server-config/` 目录**，这不是本项目的选择而是 Node 的解析顺序（`.js` → `.json` → `.node` → 目录）：该文件一旦存在于安装目录根下，`require('./server-config')` 返回的就是它的原文，`server-config/index.js` 一行都不执行，defaults 与 `rootDir` 全部落空。**因此 `server.js` 必须写成显式路径 `require('./server-config/index.js')`** —— 这是唯一让遮蔽不发生的方式；`rootDir` 不在 `defaults.js` 里（由 `index.js` 用 `__dirname` 推导后赋值），所以「把配置写全」补不出它。用户那份文件由后台「自签证书」开关写出（`POST /api/server-flags`，首次保存只写 `security` 一段），因此这条路径不是边缘情况。`server.js` 另在 `require` 之后调用 `assertConfigUsable(config)` 兜底：缺 `rootDir`/`server`/`paths`/`security` 或 `validate` 时直接报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 `ERR_INVALID_ARG_TYPE`。`tests/config-shadowing.test.js` 用真实启动钉住「残片存在时服务照常起来、且残片仍被应用」，另有一条钉住显式路径与 Node 的解析顺序。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载收藏及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
+⚠️ **`server-config.json` 会遮蔽 `server-config/` 目录**，这不是本项目的选择而是 Node 的解析顺序（`.js` → `.json` → `.node` → 目录）：该文件一旦存在于安装目录根下，`require('./server-config')` 返回的就是它的原文，`server-config/index.js` 一行都不执行，defaults 与 `rootDir` 全部落空。**因此 `server.js` 必须写成显式路径 `require('./server-config/index.js')`** —— 这是唯一让遮蔽不发生的方式；`rootDir` 不在 `defaults.js` 里（由 `index.js` 用 `__dirname` 推导后赋值），所以「把配置写全」补不出它。用户那份文件由后台「自签证书」开关写出（`POST /api/server-flags`，首次保存只写 `security` 一段），因此这条路径不是边缘情况。`server.js` 另在 `require` 之后调用 `assertConfigUsable(config)` 兜底：缺 `rootDir`/`server`/`paths`/`security` 或 `validate` 时直接报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 `ERR_INVALID_ARG_TYPE`。`tests/config-shadowing.test.js` 用真实启动钉住「残片存在时服务照常起来、且残片仍被应用」，另有一条钉住显式路径与 Node 的解析顺序。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载书签及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存收藏，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
-`GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图，只含首页需要渲染的部分：收藏过滤掉 `private` 条目并剥离 `private` 字段本身，配置剔除 `privacyMode`。带上正确的 `X-Admin-Password` 时才返回完整数据，供管理面板和私密检索使用。写入路径相应地按 id 合并而不是整份覆盖：`POST /api/favorites` 中既有的私密条目在请求体缺席时保留，`POST /api/config` 以现有文件为基底合并，因此公开视图未携带的 `privacyMode` 不会被保存动作抹掉。浏览器中的私密收藏筛选只是显示逻辑，服务端不再依赖它承担隔离职责。新增私有资产字段时，应先确认它是否应当进入公开视图。
+`GET /api/config` 和 `GET /api/favorites` 在没有管理密码时返回公开视图，只含首页需要渲染的部分：书签过滤掉 `private` 条目并剥离 `private` 字段本身，配置剔除 `privacyMode`。带上正确的 `X-Admin-Password` 时才返回完整数据，供管理面板和私密检索使用。写入路径相应地按 id 合并而不是整份覆盖：`POST /api/favorites` 中既有的私密条目在请求体缺席时保留，`POST /api/config` 以现有文件为基底合并，因此公开视图未携带的 `privacyMode` 不会被保存动作抹掉。浏览器中的私密书签筛选只是显示逻辑，服务端不再依赖它承担隔离职责。新增私有资产字段时，应先确认它是否应当进入公开视图。
 
 管理端登录采用服务端会话：登录成功后签发 32 字节 CSPRNG 令牌（OWASP 要求 ≥128 位），用 `HttpOnly` Cookie 下发。**会话持久化在 SQLite（`nav-sylph.db`）中，不随进程重启或版本升级失效**——此前存在进程内 `Map` 里，`./sylph.sh update` 重启进程即把所有人登出。浏览器仍不保存明文密码：`X-Admin-Password` 只在登录那一次请求里出现，验证通过后改由 Cookie 承载；该头作为兜底保留，已打开的旧页面仍可用。
 
@@ -389,7 +411,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 会话在每次请求上滑动续期都会写一行，所以用 WAL（`journal_mode=WAL`，回滚日志下并发读写会互相阻塞）。库文件含令牌，`openDatabase()` 在打开后把主文件与 `-wal`/`-shm` 边车收紧到 0600，与 `.admin-password.json` 同级。**令牌落盘确实扩大了「磁盘可读即可窃取会话」的面**，缓解手段是文件权限、TTL 到期、以及改密码即 `destroyAll()`；这与「密码哈希本就落盘」属同一威胁级别。`server.js` 在 `init()` 内开库并据此构造 `sessionStore`（`requireAdmin` 等路由闭包与 60 秒清扫定时器都在其后才读它），`gracefulShutdown` 关库时 WAL 自动 checkpoint，因此升级与备份只需处理主文件。
 
-配置、收藏与密码仍是 JSON，本次未迁移。
+配置、书签与密码仍是 JSON，本次未迁移。
 
 `lib/session.js` 负责设备绑定与 Cookie 读写。要点：
 
@@ -456,9 +478,9 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 分享编辑器在首页搜索框内完成。触发字符仍是 `>`（或全角 `》`），编辑区为 `<textarea>`——单行 `<input>` 在 HTML 规范上无法换行，也撑不开多行内容。搜索态保持单行（`min-height: 44px`，不写 inline height；44px 同时是触摸目标下限，同排的三个按钮同为 44px）；分享态下 `min-height: 96px` 起、`max-height: 60vh` 封顶。JS 的 `autoGrowPasteInput()` 在 `input` 事件中按 `scrollHeight` 写入 inline height 使其随内容增删同步伸缩并 clamp 到上限；进入分享态的首帧不测量，此时由 `min-height` 兜底。用户拖动右下角把手后置 `pasteUserResized`，此后不再自动跟随。回车发送、`Shift`/`Ctrl`/`Cmd`+回车换行，Esc 或左侧「退出」按钮返回搜索态（移动端无 Esc 键，退出按钮是主路径；两条路径共用 `exitPasteMode()`，复位逻辑只此一处）。搜索引擎按钮在分享态由 `.search.paste-mode #engineBtn` 隐藏，不用内联 `display`，否则无法参与过渡且会盖过样式表。
 
-搜索栏三个按钮共用一套拟物结构，只在色相与明度上分层：`--mode-hue`（网页/收藏，青灰）、`--engine-hue`（引擎，琥珀）、`--submit-hue`（搜索，陶土）。各自的 `--HUE` 是底色、光感与按压阴影的唯一来源（`styles.css:2607`），因此三者共享同一条光感规则而不会走样。三个锚点必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次（`styles.css:2607`/`2661`/`2715`），漏掉任一处则手动深色与系统深色表现分叉——`tests/homepage-material.test.js` 断言了三处计数与深色块的逐字一致。
+搜索栏三个按钮共用一套拟物结构，只在色相与明度上分层：`--mode-hue`（网页/书签，青灰）、`--engine-hue`（引擎，琥珀）、`--submit-hue`（搜索，陶土）。各自的 `--HUE` 是底色、光感与按压阴影的唯一来源（`styles.css:2607`），因此三者共享同一条光感规则而不会走样。三个锚点必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次（`styles.css:2607`/`2661`/`2715`），漏掉任一处则手动深色与系统深色表现分叉——`tests/homepage-material.test.js` 断言了三处计数与深色块的逐字一致。
 
-按压语义分两级，不可混用同一视觉语言。**点击凹陷**是 `inset 0 4px 9px`（`--ctl-press-shadow`，过渡 28ms），比书签的 `inset 0 3px 6px` 更深更快；**模式按钮的选中态**（`[aria-pressed="true"]`，`styles.css:2780`）刻意做成「点亮」——外投影 + 更实的底色，不含整段 inset。若选中态也用 inset 阴影，用户无法区分「已切换到收藏」与「正在按下」。实心陶土按钮的凹陷另需加深填充才能读出效果，实心深底会盖住 inset 阴影。
+按压语义分两级，不可混用同一视觉语言。**点击凹陷**是 `inset 0 4px 9px`（`--ctl-press-shadow`，过渡 28ms），比书签的 `inset 0 3px 6px` 更深更快；**模式按钮的选中态**（`[aria-pressed="true"]`，`styles.css:2780`）刻意做成「点亮」——外投影 + 更实的底色，不含整段 inset。若选中态也用 inset 阴影，用户无法区分「已切换到书签」与「正在按下」。实心陶土按钮的凹陷另需加深填充才能读出效果，实心深底会盖住 inset 阴影。
 
 三个按钮的**高度统一为 44px**（`--ctl-h`），与仿真的 40px 有意不同：44px 是触摸目标下限，改回 40px 等于重新引入此前列为 P1 的缺陷。
 
@@ -479,15 +501,15 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **`:active` 必须显式写 `border-color`**。指针按下时仍停在按钮上，`:hover` 依然命中；实心按钮若不在 `:active` 里重写描边色，悬停时的浅色边会留在深色实心底上，凹陷读不出来。
 - **`.engine-arrow` 是引擎按钮可点开的唯一视觉线索**。它曾整块丢失：标记里没有 `<svg>`，而旧样式还留着两条 `.engine-arrow` 规则，样式落在一个不存在的元素上成为死代码。现在的定义只在材质层一处，旧的那条 `.search-engine.active .engine-arrow` 已删除——**不是因为不命中**（`app.js` 确实会设 `.active` 类），而是同一状态有 `.active` 与 `aria-expanded` 两个钩子，保留两条规则会各自旋转一次；统一只认语义化的 `[aria-expanded="true"]`。副作用：`engineBtn` 上的 `.active` 类目前没有 CSS 消费者。
 
-首页顶部不再有站点标识。快捷键说明行（`.search-caption`）是桌面专属的提示，`≤600px` 隐藏。内容只讲两个**触发符**——`/` 查收藏、`>` 分享文本；方向键选择与 Enter 打开属于次要操作，留给「说明」弹窗，不在这行挤占注意力。间距由说明行自己给（`margin: 10px 0 26px`：贴搜索框、与下方收藏区拉开），`.header` 的 `margin-bottom` 因此归零，`≤600px` 该行隐藏时再把间距还给 `.header`。它的**基础规则必须排在 `≤600px` 块之前**，否则同特异性下后写的 `display:flex` 会把块里的 `display:none` 压掉，表现为手机上说明行照样显示。
+首页顶部不再有站点标识。快捷键说明行（`.search-caption`）是桌面专属的提示，`≤600px` 隐藏。内容只讲两个**触发符**——`/` 查书签、`>` 分享文本；方向键选择与 Enter 打开属于次要操作，留给「说明」弹窗，不在这行挤占注意力。间距由说明行自己给（`margin: 10px 0 26px`：贴搜索框、与下方书签区拉开），`.header` 的 `margin-bottom` 因此归零，`≤600px` 该行隐藏时再把间距还给 `.header`。它的**基础规则必须排在 `≤600px` 块之前**，否则同特异性下后写的 `display:flex` 会把块里的 `display:none` 压掉，表现为手机上说明行照样显示。
 
-宽屏背板（`.backboard`）把搜索区与收藏网格收进一块 936px 的居中玻璃面，边缘发丝线复用分类分割线那套 `--divider-rgb` 渐变语法。它只在 `≥1024px` 生效：`≤1023px` 的兜底把宽、圆角、内边距、背景、投影、模糊全部清零，两个伪元素 `display:none`，等于退回改动前的布局。该兜底块只能有一条——两条以上时后写的会静默覆盖前一条。
+宽屏背板（`.backboard`）把搜索区与书签网格收进一块 936px 的居中玻璃面，边缘发丝线复用分类分割线那套 `--divider-rgb` 渐变语法。它只在 `≥1024px` 生效：`≤1023px` 的兜底把宽、圆角、内边距、背景、投影、模糊全部清零，两个伪元素 `display:none`，等于退回改动前的布局。该兜底块只能有一条——两条以上时后写的会静默覆盖前一条。
 
 **悬浮光感必须是双层**：中性白高光（`--glint-white`）压在一层色相光晕（`--glint` / `--search-glint`）之上，`.search::after` 与 `.bookmark::before` 同构。缺了白色那层，两层色相光晕叠在一起偏灰发糊——这是「说不上哪里不精致」的主要来源，只能靠数值钉住。`--glint-white` 与另两个变量一样，必须在三处主题块各定义一次。
 
 书签的尺寸（96×42、`min-height` 42px、圆角 7px）由「尺寸维持现状」这条需求钉死，不可为了追仿真而改动。**光晕强度 `--bookmark-glow-opacity: .32` 不可上调**：仿真用双层颜色（`--glint-white` + `--glint`）本身就是 `.32`，把它提到 `.46` 来补观感是方向反了——该换的是颜色而不是透明度。深色维持 `.8`，深色背景上再加强会过曝。
 
-引擎下拉（`.engine-dropdown`）在几何上对齐到引擎按钮左缘（`left: 58px` = 1px 表单边框 + 5px 内边距 + 48px 模式按钮 + 4px 间距；模式按钮三个标签都是两字，`min-width: 48px` 稳定生效），`≤370px` 另有独立偏移。它**不带开合动画**，材质与收藏下拉是两套（圆角 10 vs 13、阴影不同），因此两条规则分开写、不合并。选中项用主色文字加粗表示，**不铺底色**——底色留给 `:hover`，两者若都用底色就分不清「当前引擎」和「鼠标停在这项」；这里的 `background: transparent` 必须显式写，否则旧样式那条同特异性的 `.engine-option.active { background: var(--bg-hover) }` 会留一层米色底把信号淹掉。
+引擎下拉（`.engine-dropdown`）在几何上对齐到引擎按钮左缘（`left: 58px` = 1px 表单边框 + 5px 内边距 + 48px 模式按钮 + 4px 间距；模式按钮三个标签都是两字，`min-width: 48px` 稳定生效），`≤370px` 另有独立偏移。它**不带开合动画**，材质与书签下拉是两套（圆角 10 vs 13、阴影不同），因此两条规则分开写、不合并。选中项用主色文字加粗表示，**不铺底色**——底色留给 `:hover`，两者若都用底色就分不清「当前引擎」和「鼠标停在这项」；这里的 `background: transparent` 必须显式写，否则旧样式那条同特异性的 `.engine-option.active { background: var(--bg-hover) }` 会留一层米色底把信号淹掉。
 
 **展开态只有一个真相来源**：`aria-expanded`。此前 JS 还并行 `toggle` 一个 `.active` 类，而 `.search-engine.active` 的 CSS 规则已删，类名成了无消费者的死状态，两个真相来源会各自驱动。`app.js` 里那四处 `engineBtn.classList` 已全部移除。
 
@@ -501,11 +523,11 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 `vh` 与 `dvh` 都不跟随软键盘收缩，只有 `visualViewport` 能反映键盘弹出后的真实可视高度；`.ui-dialog` 与分享编辑器当前仍按 `dvh` 定高，键盘弹出时可能被顶出视口，这一点尚未处理。
 
-**原生 `<select>` 展开后的列表由 UA 绘制，应用层控制不了，只能靠 `option` 的 `background-color` 上色。** 收起的下拉框由 `admin.css` 那条 `background: linear-gradient(...)` 撑着，看起来一直正常；`option` 此前完全透明（`rgba(0,0,0,0)`），于是展开后回落到 UA 默认的白画布，深色下文字看不清。修法是新增 `--admin-field-canvas`（浅色引用既有 `--control-top`，深色 `#2a2521`），**必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次**，与本文件 `:51`、`:78` 记的同类 token 规矩一致。规则写成 `:is(.modal, .fav-dialog, .ui-dialog) select option`，一处覆盖全部三个下拉框（管理面板两个 + 收藏弹窗的 `favCategorySelect`），不必逐个再写。
+**原生 `<select>` 展开后的列表由 UA 绘制，应用层控制不了，只能靠 `option` 的 `background-color` 上色。** 收起的下拉框由 `admin.css` 那条 `background: linear-gradient(...)` 撑着，看起来一直正常；`option` 此前完全透明（`rgba(0,0,0,0)`），于是展开后回落到 UA 默认的白画布，深色下文字看不清。修法是新增 `--admin-field-canvas`（浅色引用既有 `--control-top`，深色 `#2a2521`），**必须在 `:root`、`@media (prefers-color-scheme: dark)`、`:root[data-theme="dark"]` 三处各定义一次**，与本文件 `:51`、`:78` 记的同类 token 规矩一致。规则写成 `:is(.modal, .fav-dialog, .ui-dialog) select option`，一处覆盖全部三个下拉框（管理面板两个 + 书签弹窗的 `favCategorySelect`），不必逐个再写。
 
 **`background` 简写会把 `background-color` 重置为 `transparent`，因此不透明底色必须写在 `background:` 之后。** 顺序反了底色当场失效且不报错，深色下又变回白底；浏览器实测两种顺序读回分别是 `rgba(0,0,0,0)` 与 `rgb(42,37,33)`。`tests/homepage-material.test.js` 断言了这个相对顺序——只断言「有这条声明」会被同特异性的另一种写法蒙过去。
 
-进入管理页的 `openAdmin()` 里，全量收藏与 `privacyMode` 两个请求互不依赖，必须放进同一个 `Promise.all` 并发发出：服务端每个带密码的请求都要跑一次 `bcrypt.compare`（实测各约 55ms，不带密码约 1ms），串行等待等于把两次叠加成约 130ms。**`loadPrivacyMode()` 不能删**——`defaultConfig` 里没有 `privacyMode` 键只说明它有默认值（`migrateConfig` 填 `false`），用户在管理面板保存过一次后该键就会写入 `config.json` 并正常往返；删掉请求会让已开启隐私模式的用户丢失该状态。
+进入管理页的 `openAdmin()` 里，全量书签与 `privacyMode` 两个请求互不依赖，必须放进同一个 `Promise.all` 并发发出：服务端每个带密码的请求都要跑一次 `bcrypt.compare`（实测各约 55ms，不带密码约 1ms），串行等待等于把两次叠加成约 130ms。**`loadPrivacyMode()` 不能删**——`defaultConfig` 里没有 `privacyMode` 键只说明它有默认值（`migrateConfig` 填 `false`），用户在管理面板保存过一次后该键就会写入 `config.json` 并正常往返；删掉请求会让已开启隐私模式的用户丢失该状态。
 
 ## 开发与验收边界
 

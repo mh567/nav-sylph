@@ -314,7 +314,7 @@
    **不要把 .fav-dialog-overlay 合并进这条简写**：它在 styles.css 的
    ≤768px 块里有一条四边吃安全区的规则（`styles.css` 里那是它的唯一定义处），
    而本文件后加载、特异性相同，写在这里的简写会把那四边整个覆盖掉——
-   收藏弹窗在 iPhone 上就丢掉 top/right/left 的安全区了。 */
+   书签弹窗在 iPhone 上就丢掉 top/right/left 的安全区了。 */
 .ui-dialog-overlay {
     padding: 12px 12px calc(12px + var(--kb-inset, 0px) + env(safe-area-inset-bottom));
 }
@@ -509,7 +509,7 @@
     .config-save-status { display: none; }
     .modal-body { padding: 16px 14px calc(24px + env(safe-area-inset-bottom)); }
 
-    /* 收藏区四个按钮：横排时每个仅约 52px 宽。改两列网格，每格 ≥44px 高
+    /* 收藏夹三个按钮：横排时每个仅约 52px 宽。改两列网格，每格 ≥44px 高
        （触摸目标下限）。原先 styles.css 里的 grid 声明会被本文件
        .modal .fav-actions 的高特异性覆盖，故在此一并声明。 */
     .modal .fav-actions {

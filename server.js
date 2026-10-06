@@ -724,7 +724,7 @@ const defaultModulesConfig = {
  *
  * 不依赖 sylph.sh 的 chmod：`.admin-password.json` 等文件是**应用**在首次启动时才创建的，
  * 脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，等于空操作——实测全新安装后密码哈希
- * 与私密收藏都是 644，反而是本次新增的会话库为 600。
+ * 与私密书签都是 644，反而是本次新增的会话库为 600。
  */
 const PRIVATE_FILES = [CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE, MODULES_FILE];
 
@@ -1321,7 +1321,7 @@ function escapeHtml(str) {
 }
 
 // ========== 公开视图 ==========
-// 匿名请求只返回首页需要渲染的部分。管理端设置和私密收藏不下发，
+// 匿名请求只返回首页需要渲染的部分。管理端设置和私密书签不下发，
 // 浏览器端的隐藏状态不构成访问控制。
 
 function toPublicConfig(cfg) {
@@ -1339,7 +1339,7 @@ function toPublicFavorites(data) {
     };
 }
 
-// 按 id 合并收藏写入。客户端可能只持有公开子集（私密条目不下发），
+// 按 id 合并书签写入。客户端可能只持有公开子集（私密条目不下发），
 // 因此既有的私密条目在请求体缺席时必须保留，不能当作删除。
 function mergeFavorites(existing, incoming) {
     const current = Array.isArray(existing?.favorites) ? existing.favorites : [];
@@ -1554,7 +1554,7 @@ function mergeModulesConfig(existing, incoming) {
     };
 }
 
-// 获取收藏书签
+// 获取收藏夹里的书签
 app.get('/api/favorites', publicReadLimit, async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
@@ -1571,12 +1571,12 @@ app.get('/api/favorites', publicReadLimit, async (req, res) => {
         noteEnvChanged(res, access.reason);
         res.json(toPublicFavorites(data));
     } catch (err) {
-        console.error('读取收藏失败:', err);
-        res.status(500).json({ error: '读取收藏失败' });
+        console.error('读取书签失败:', err);
+        res.status(500).json({ error: '读取书签失败' });
     }
 });
 
-// 保存收藏书签
+// 保存收藏夹里的书签
 app.post('/api/favorites', rateLimit, requireAdmin, async (req, res) => {
     try {
         const { favorites } = req.body;
@@ -1596,8 +1596,8 @@ app.post('/api/favorites', rateLimit, requireAdmin, async (req, res) => {
             privatePreserved: merged.filter(fav => fav.private === true).length
         });
     } catch (err) {
-        console.error('保存收藏失败:', err);
-        res.status(500).json({ error: '保存收藏失败' });
+        console.error('保存书签失败:', err);
+        res.status(500).json({ error: '保存书签失败' });
     }
 });
 
@@ -1748,7 +1748,7 @@ app.post('/api/webdav/backup', rateLimit, requireAdmin, async (req, res) => {
             favoritesData = await readJSON(FAVORITES_FILE);
         } catch {}
         // 模块平台配置。丢了它，监控目标、每台的 token、顺序与显示开关全部重来，
-        // 所以它必须跟配置、收藏一起进备份。文件不存在时（旧版本）跳过。
+        // 所以它必须跟配置、书签一起进备份。文件不存在时（旧版本）跳过。
         let modulesData = null;
         try {
             modulesData = await readJSON(MODULES_FILE);

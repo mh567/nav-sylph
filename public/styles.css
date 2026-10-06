@@ -1083,7 +1083,7 @@ body {
     }
 }
 
-/* ========== 收藏书签模糊检索 ========== */
+/* ========== 书签模糊检索 ========== */
 
 /* 检索模式样式 */
 .search.fav-search-mode {
@@ -1091,9 +1091,9 @@ body {
 }
 
 /* 原本这里有一条 `.search.fav-search-mode .search-btn { background:#f59e0b }`：
-   收藏态的「打开」按钮是琥珀色。它是旧按钮的配色，材质层改成实心陶土后
+   书签态的「打开」按钮是琥珀色。它是旧按钮的配色，材质层改成实心陶土后
    它以 (0,3,0) 的特异性压过 (0,1,0) 的 .search-btn，实心底被换成琥珀底。
-   主操作在网页态与收藏态应是同一种材质，删除而非覆盖。 */
+   主操作在网页态与书签态应是同一种材质，删除而非覆盖。 */
 
 /* 检索下拉 */
 .fav-dropdown {
@@ -1208,7 +1208,7 @@ body {
     font-size: 14px;
 }
 
-/* 管理面板收藏区域 */
+/* 管理面板收藏夹区域 */
 .fav-stats {
     font-size: 14px;
     color: var(--text-secondary);
@@ -2541,7 +2541,7 @@ body {
     --radius: 10px;
     /* 搜索栏三按钮的色相锚点：同族拟物，仅色相微偏以区分功能。
        深浅两套必须成对改，见下方两个深色块。 */
-    --mode-hue: 106,124,132;      /* 网页/收藏：青灰 */
+    --mode-hue: 106,124,132;      /* 网页/书签：青灰 */
     --engine-hue: 168,128,78;     /* 引擎：琥珀 */
     --submit-hue: 148,94,74;      /* 搜索：陶土 */
     --ctl-h: 44px;                /* 触摸目标下限，不可下调 */
@@ -2744,11 +2744,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .search-input { position: relative; z-index: 1; min-height: 44px; padding: 0 10px; font-size: 16px; font-family: inherit; line-height: 44px; border: 0; background: transparent; color: var(--text); resize: none; overflow-y: auto; }
 .search-input:focus-visible { outline: none; }
 .search.fav-search-mode { border-color: var(--focus); }
-/* 收藏态下按钮文字换成「打开」但材质不变：这里原本会把实心陶土压回
+/* 书签态下按钮文字换成「打开」但材质不变：这里原本会把实心陶土压回
    浅色渐变 + 陶土文字，那是旧按钮的配色，套在实心底上会看不清。
    主操作在两种模式下都应是同一个视觉重量。 */
-/* 引擎下拉与收藏下拉在仿真里本就是两套材质（引擎 10px 圆角 + 轻阴影，
-   收藏是 13px + --shadow-hover），不再共用一条规则。
+/* 引擎下拉与书签下拉在仿真里本就是两套材质（引擎 10px 圆角 + 轻阴影，
+   书签是 13px + --shadow-hover），不再共用一条规则。
    原先合写时改一处会连带改动另一处。 */
 .fav-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 13px; box-shadow: 0 4px 8px rgba(67,51,39,.055),0 16px 30px rgba(67,51,39,.12); backdrop-filter: blur(25px) saturate(150%); -webkit-backdrop-filter: blur(25px) saturate(150%); }
 .engine-dropdown { background: var(--glass-strong); border-color: var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(67,51,39,.13),inset 0 1px rgba(255,255,255,.66); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
@@ -2772,7 +2772,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .help-close:active { background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
 .help-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* 引擎选项的选中态不再铺底色（见上方 .engine-option.active），
-   所以这里只保留 hover 与收藏项的两态。 */
+   所以这里只保留 hover 与书签项的两态。 */
 .engine-option:hover,.fav-item:hover,.fav-item.selected { background: rgba(148,94,74,.11); }
 .fav-item { border-bottom-color: var(--border); }
 .fav-private-label { padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; color: var(--accent); font-size: 10px; }
@@ -2824,7 +2824,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 @media (hover: none) and (pointer: coarse) { .search-mode,.search-engine,.search-btn,.bookmark,.bookmark-text-only,.engine-option,.fab,.fab-help { -webkit-tap-highlight-color: transparent; } }
 /* 快捷键说明行：只桌面显示。
    移动端的 display:none 唯一写在下面那条 ≤600px 块里。
-   说明行贴着搜索框、与下方收藏区拉开：间距由它自己给，
+   说明行贴着搜索框、与下方书签区拉开：间距由它自己给，
    所以 .header 的 margin-bottom 归零（≤600px 该行隐藏，那里再把间距还给 .header）。
    两个 span 的间距 20px——只有两项且都很短，14px 显得挤。 */
 .search-caption { display: flex; justify-content: center; gap: 20px; margin: 10px 0 26px; color: var(--text-muted); font-size: 11px; }
@@ -2861,7 +2861,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .backboard::before,.backboard::after { display: none; } }
 
 /* ========== 模块平台 ==========
-   登录后才出现的 widget 区。位置在分类网格之后，首屏视觉重心留给搜索框与收藏。
+   登录后才出现的 widget 区。位置在分类网格之后，首屏视觉重心留给搜索框与书签。
 
    纪律（同本文件既有）：
    - 本区块不重声明任何既有选择器。此前尾段重声明过 .search.paste-mode

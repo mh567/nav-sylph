@@ -117,7 +117,7 @@
             this.dragData = null;
             this.pasteMode = false;
             this.pasteUserResized = false;
-            // 收藏检索
+            // 书签检索
             this.favorites = [];
             this.favoritesLoading = true;
             this.favoritesLoadError = false;
@@ -127,7 +127,7 @@
             this.toastTimer = null;
             this.favSearchMode = false;
             this.privacySearchActive = false;
-            this.adminFavorites = null;  // 带密码取回的全量收藏，私密检索与管理面板使用
+            this.adminFavorites = null;  // 带密码取回的全量书签，私密检索与管理面板使用
             this.adminFavoritesLoading = false;
             this.uf = null;  // uFuzzy 实例
             this.favHaystack = [];  // 搜索索引数组
@@ -519,7 +519,7 @@
             const editing = this.editLayout;
             if (btn) {
                 btn.textContent = editing ? '保存编辑' : '编辑';
-                btn.title = editing ? '保存全部改动并退出编辑' : '编辑首页布局与书签';
+                btn.title = editing ? '保存全部改动并退出编辑' : '编辑首页导航';
                 btn.setAttribute('aria-pressed', String(editing));
                 btn.classList.toggle('is-active', editing);
             }
@@ -665,7 +665,7 @@
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
-                // 首页先显示，收藏索引、版本信息与会话状态随后加载。
+                // 首页先显示，书签索引、版本信息与会话状态随后加载。
                 // 会话状态放在首屏之后查，不为它增加首屏的往返等待。
                 requestAnimationFrame(() => {
                     this.restoreSession();
@@ -773,7 +773,7 @@
                     bms.appendChild(this.createBookmark(bm, catIdx, bmIdx));
                 });
                 if (editing) {
-                    bms.appendChild(html(`<button type="button" class="bookmark bookmark-add" data-add-cat="${catIdx}" title="为「${this.esc(cat.name)}」添加书签" aria-label="为 ${this.esc(cat.name)} 添加书签">＋</button>`));
+                    bms.appendChild(html(`<button type="button" class="bookmark bookmark-add" data-add-cat="${catIdx}" title="为「${this.esc(cat.name)}」添加导航" aria-label="为 ${this.esc(cat.name)} 添加导航">＋</button>`));
                 }
                 fragment.appendChild(section);
             });
@@ -791,7 +791,7 @@
             // 删除按钮压在卡的右上角：整张卡是拖拽宿主，按钮必须自己
             // stopPropagation，否则拖拽起手会把它一起带走。
             const del = editing
-                ? `<button type="button" class="bookmark-del" data-del-bm="${bmIdx}" title="删除书签" aria-label="删除书签 ${this.esc(bm.title)}">✕</button>`
+                ? `<button type="button" class="bookmark-del" data-del-bm="${bmIdx}" title="删除导航" aria-label="删除导航 ${this.esc(bm.title)}">✕</button>`
                 : '';
             return html(`
                 <a class="bookmark bookmark-text-only"${attrs} href="${this.esc(bm.url)}" target="_blank" rel="noopener" title="${this.esc(bm.title)}">
@@ -805,7 +805,7 @@
                 const input = $('#searchInput');
                 const value = input.value;
                 if (this.pasteMode) {
-                    // 分享态下该按钮是「退出」：只回到搜索态并清空，不跳去收藏检索
+                    // 分享态下该按钮是「退出」：只回到搜索态并清空，不跳去书签检索
                     this.exitPasteMode();
                     return;
                 }
@@ -951,7 +951,7 @@
             $('#searchInput').onfocus = reopenFavDropdown;
 
             document.onkeydown = (e) => {
-                // 收藏检索模式的键盘导航
+                // 书签检索模式的键盘导航
                 if (this.favSearchMode && this.handleFavKeydown(e)) {
                     return;
                 }
@@ -1462,7 +1462,7 @@
             const cat = this.config.categories[catIdx];
             if (!cat) return;
             const result = await this.showUiDialog({
-                title: `为「${cat.name}」添加书签`,
+                title: `为「${cat.name}」添加导航`,
                 fields: [{ label: '标题' }, { label: '网址', placeholder: 'https://' }],
                 confirmText: '添加',
                 validate: (values, choices) => this.bookmarkFieldError(values)
@@ -1472,14 +1472,14 @@
             cat.bookmarks.push({ id: uid(), title: title.trim(), url: url.trim() });
             this.renderGrid();
             this.markConfigDirty();
-            this.showToast('书签已添加，点「保存编辑」生效');
+            this.showToast('导航已添加，点「保存编辑」生效');
         }
 
         async editHomeBookmark(catIdx, bmIdx) {
             const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
             if (!bm) return;
             const result = await this.showUiDialog({
-                title: '编辑书签',
+                title: '编辑导航',
                 message: `所属分类：${this.config.categories[catIdx].name}`,
                 fields: [{ label: '标题', value: bm.title }, { label: '网址', value: bm.url }],
                 confirmText: '保存',
@@ -1496,7 +1496,7 @@
         async deleteHomeBookmark(catIdx, bmIdx) {
             const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
             if (!bm) return;
-            if (!await this.confirmAction(`删除书签「${bm.title}」？`, '删除书签', true)) return;
+            if (!await this.confirmAction(`删除导航「${bm.title}」？`, '删除导航', true)) return;
             this.config.categories[catIdx].bookmarks.splice(bmIdx, 1);
             this.renderGrid();
             this.markConfigDirty();
@@ -1532,7 +1532,7 @@
             const cat = this.config.categories[catIdx];
             if (!cat) return;
             const message = cat.bookmarks.length
-                ? `删除分类「${cat.name}」及其中的 ${cat.bookmarks.length} 个书签？`
+                ? `删除分类「${cat.name}」及其中的 ${cat.bookmarks.length} 个导航？`
                 : `删除分类「${cat.name}」？`;
             if (!await this.confirmAction(message, '删除分类', true)) return;
             this.config.categories.splice(catIdx, 1);
@@ -1548,7 +1548,7 @@
             $('#searchInput').value = '';
         }
 
-        // ========== 收藏模糊检索 ==========
+        // ========== 书签模糊检索 ==========
 
         async loadFavorites() {
             this.favoritesLoading = true;
@@ -1557,7 +1557,7 @@
                 const data = await API.get('/api/favorites');
                 this.favorites = data.favorites || [];
                 // 拼音库只在构建搜索索引时才需要，按需加载，不阻塞首屏。
-                // 加载失败则索引不含拼音（普通搜索仍可用），不阻断收藏加载。
+                // 加载失败则索引不含拼音（普通搜索仍可用），不阻断书签加载。
                 await this.loadScript('lib/pinyin.js').catch(() => {});
                 this.buildSearchIndex();
             } catch (e) {
@@ -1566,9 +1566,8 @@
                 this.favoritesLoadError = true;
             } finally {
                 this.favoritesLoading = false;
-                const count = $('.fav-stats strong');
-                if (count) count.textContent = this.favorites.length;
-                ['importFavBtn', 'exportFavBtn', 'addFavBtn', 'manageFavBtn'].forEach(id => {
+                this.updateFavStat();
+                ['importFavBtn', 'exportFavBtn', 'addFavBtn'].forEach(id => {
                     const button = $(`#${id}`);
                     if (button) button.disabled = false;
                 });
@@ -1832,7 +1831,7 @@
         //
         // 保留 promise 供检索分支 await：首屏与本次查询之间有一个窗口，
         // 期间 authenticated 仍是 false。此时输入 // 会被当成普通搜索词，
-        // 私密收藏「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
+                // 私密书签「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
             const probe = this.sessionProbe = this.loadSession()
                 .then(session => {
@@ -1938,7 +1937,7 @@
             return this.loadAdminFavorites();
         }
 
-        // 获取当前可搜索的收藏列表（仅用于搜索结果过滤，分类树视图不使用此方法）
+        // 获取当前可搜索的书签列表（仅用于搜索结果过滤，分类树视图不使用此方法）
         getSearchableFavorites() {
             if (this.privacySearchActive && this.adminFavorites) {
                 return this.adminFavorites;
@@ -2100,7 +2099,7 @@
             }, 50);
         }
 
-        // 左侧按钮有三种身份：网页 / 收藏 / 退出（分享态）。
+        // 左侧按钮有三种身份：网页 / 书签 / 退出（分享态）。
         // 三个状态都要切换它，所以文案集中在这里，各模式只决定自己那个
         // 标签的显隐。绝不能写 textContent —— 那会把 span 子节点整个删掉，
         // 此后本方法再也找不到它们，切换分享态时就会抛错。
@@ -2120,18 +2119,18 @@
             const modeBtn = $('#modeBtn');
             this.showModeLabel(enabled ? 'fav' : 'web');
             modeBtn.setAttribute('aria-pressed', String(enabled));
-            modeBtn.setAttribute('aria-label', `切换搜索模式，当前为${enabled ? '收藏' : '网页'}`);
+            modeBtn.setAttribute('aria-label', `切换搜索模式，当前为${enabled ? '书签' : '网页'}`);
 
             if (enabled) {
-                input.placeholder = '搜索收藏...';
+                input.placeholder = '搜索书签...';
                 $('#engineBtn').style.display = 'none';
                 $('#engineDropdown').hidden = true;
                 $('#engineBtn').setAttribute('aria-expanded', 'false');
                 searchBtn.textContent = '打开';
-                searchBtn.title = '收藏检索';
+                searchBtn.title = '书签检索';
                 this.showFavDropdown();
             } else {
-                input.placeholder = '搜索网页或收藏';
+                input.placeholder = '搜索网页或书签';
                 $('#engineBtn').style.display = '';
                 searchBtn.textContent = '搜索';
                 searchBtn.title = '搜索';
@@ -2149,7 +2148,7 @@
             this.favSelectedIdx = 0;
 
             if (this.favoritesLoading) {
-                dropdown.innerHTML = '<div class="fav-empty">收藏加载中...</div>';
+                dropdown.innerHTML = '<div class="fav-empty">书签加载中...</div>';
                 return;
             }
 
@@ -2172,9 +2171,9 @@
             const isPrivacyMode = this.privacySearchActive;
             const favList = this.getSearchableFavorites();
 
-            // 如果没有收藏，显示提示
+            // 如果没有书签，显示提示
             if (favList.length === 0) {
-                dropdown.innerHTML = `<div class="fav-empty">${this.favoritesLoading ? '收藏加载中...' : this.favoritesLoadError ? '收藏加载失败，请刷新页面' : '无收藏，请在管理面板中导入'}</div>`;
+                dropdown.innerHTML = `<div class="fav-empty">${this.favoritesLoading ? '书签加载中...' : this.favoritesLoadError ? '书签加载失败，请刷新页面' : '无书签，请在管理面板中导入'}</div>`;
                 return;
             }
 
@@ -2227,7 +2226,7 @@
             if (!dropdown) return;
 
             if (favs.length === 0) {
-                dropdown.innerHTML = '<div class="fav-empty">无收藏，请在管理面板中导入</div>';
+                dropdown.innerHTML = '<div class="fav-empty">无书签，请在管理面板中导入</div>';
                 return;
             }
 
@@ -2360,14 +2359,14 @@
         handleSearchInput(e) {
             const value = (e.target ?? e).value;
 
-            // 检查收藏检索模式（/ 或 //）
+            // 检查书签检索模式（/ 或 //）
             const isFavMode = value.length > 0 && this.isFavSearchTrigger(value[0]);
 
             // 检测是否为隐私模式触发（//）
             const isPrivacyTrigger = isFavMode && value.length >= 2 && this.isFavSearchTrigger(value[1]);
 
             // 首屏与 /api/session 返回之间存在一个窗口，期间 authenticated 仍是 false，
-            // 若此时判定「// 未生效」，它会被永久当成普通搜索词，私密收藏再也回不来。
+            // 若此时判定「// 未生效」，它会被永久当成普通搜索词，私密书签再也回不来。
             // 窗口内改为等会话结果出来再判定；已确定的状态不额外等待。
             if (isPrivacyTrigger && !this.authenticated && this.sessionProbe) {
                 e.preventDefault?.();
@@ -2403,7 +2402,7 @@
                 });
             }
 
-            // 如果在收藏检索模式，执行防抖搜索
+            // 如果在书签检索模式，执行防抖搜索
             if (this.favSearchMode) {
                 const favoritesDropdown = $('#favDropdown');
                 if (favoritesDropdown?.hidden) favoritesDropdown.hidden = false;
@@ -2462,7 +2461,7 @@
             dropdown.hidden = true;
             engineBtn.setAttribute('aria-expanded', 'false');
 
-            // 左侧按钮在分享态下变为「退出」，与收藏模式共用同一套标签切换
+            // 左侧按钮在分享态下变为「退出」，与书签模式共用同一套标签切换
             const modeBtn = $('#modeBtn');
             this.showModeLabel(enabled ? 'exit' : 'web');
             modeBtn.setAttribute('aria-label', enabled ? '退出文本分享' : '切换搜索模式，当前为网页');
@@ -2470,7 +2469,7 @@
             if (enabled) {
                 input.placeholder = '输入要分享的文本，回车发送，Shift+回车换行...';
                 // aria-label 优先于 placeholder 播报，不同步的话读屏用户会
-                // 听到「搜索网页或收藏」却在里面写分享文本
+                // 听到「搜索网页或书签」却在里面写分享文本
                 input.setAttribute('aria-label', '要分享的文本');
                 // 重置上次拖拽留下的大小，否则会以旧高度进入
                 input.style.height = '';
@@ -2478,8 +2477,8 @@
                 searchBtn.textContent = '发送';
                 searchBtn.title = '发送分享';
             } else {
-                input.placeholder = '搜索网页或收藏';
-                input.setAttribute('aria-label', '搜索网页或收藏');
+                input.placeholder = '搜索网页或书签';
+                input.setAttribute('aria-label', '搜索网页或书签');
                 input.style.height = '';
                 this.pasteUserResized = false;
                 searchBtn.textContent = '搜索';
@@ -2490,7 +2489,7 @@
         async handleSearch() {
             const value = $('#searchInput').value;
 
-            // 收藏检索模式：回车打开选中结果
+            // 书签检索模式：回车打开选中结果
             if (value.length > 0 && this.isFavSearchTrigger(value[0])) {
                 const selected = $('.fav-item.selected');
                 if (selected) {
@@ -2689,8 +2688,8 @@
                         <h3 id="helpTitle">Nav Sylph${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
-                            <strong>收藏检索</strong>
-                            <p>点击“网页”切换到收藏，或输入 <code>/</code> + 关键词</p>
+                            <strong>书签检索</strong>
+                            <p>点击“网页”切换到书签，或输入 <code>/</code> + 关键词</p>
                             <p class="help-tip">支持标题、网址、分类、描述模糊匹配</p>
                             <p class="help-tip">↑↓ 选择，Enter 打开，Esc 退出</p>
                         </div>
@@ -2702,7 +2701,7 @@
                             <p class="help-tip">点「退出」或按 <code>Esc</code> 返回搜索</p>
                         </div>
                         <div class="help-section">
-                            <strong>管理收藏</strong>
+                            <strong>管理书签</strong>
                             <p>点击右下角“管理”进入管理面板</p>
                             <p class="help-tip">支持导入/导出浏览器书签</p>
                             <p class="help-tip">兼容 Chrome、Edge、Firefox、Safari</p>
@@ -3078,6 +3077,12 @@
             // 「加载中...」——面板 DOM 是新的，而配置已在内存里，于是什么都不做。
             if (panel === 'modules' && !this.modulesEditorRendered) {
                 this.renderModulesEditor();
+            }
+            // 「收藏夹」同理：管理器只在首次进入分区时渲染，
+            // 之后切走切回保留现场（当前分类、搜索词、勾选都在）。
+            if (panel === 'fav' && !this.favManagerRendered) {
+                this.renderFavManager();
+                this.favManagerRendered = true;
             }
         }
 
@@ -4092,11 +4097,12 @@
 
         renderAdminPanel() {
             const body = $('#modalBody');
-            // 三个分区：宽屏左侧常驻侧栏，≤899px 退化为顶部横向标签条。
+            // 四个分区：宽屏左侧常驻侧栏，≤899px 退化为顶部横向标签条。
             // tab 三件套（tablist / tab / tabpanel）是本项目首次引入的交互模式。
             body.innerHTML = `
                 <div class="admin-tabs" role="tablist" aria-label="管理分区">
                     <button type="button" class="admin-tab" role="tab" id="adminTabSite" aria-controls="adminPanelSite" aria-selected="false" tabindex="-1" data-panel="site">首页导航</button>
+                    <button type="button" class="admin-tab" role="tab" id="adminTabFav" aria-controls="adminPanelFav" aria-selected="false" tabindex="-1" data-panel="fav">收藏夹</button>
                     <button type="button" class="admin-tab" role="tab" id="adminTabModules" aria-controls="adminPanelModules" aria-selected="false" tabindex="-1" data-panel="modules">模块</button>
                     <button type="button" class="admin-tab" role="tab" id="adminTabAccount" aria-controls="adminPanelAccount" aria-selected="false" tabindex="-1" data-panel="account">账户与备份</button>
                 </div>
@@ -4145,6 +4151,23 @@
                     </div>
                 </div>
                 </div>
+                <div class="admin-panel" role="tabpanel" id="adminPanelFav" aria-labelledby="adminTabFav" hidden>
+                <div class="section">
+                    <div class="section-title">收藏夹</div>
+                    <div class="fav-stats">
+                        共 <strong>${this.favoritesLoading ? '加载中' : this.favorites.length}</strong> 个书签
+                        <span class="fav-hint">（搜索框输入 <code>/</code> 快速检索）</span>
+                    </div>
+                    <div class="fav-actions">
+                        <button class="btn" id="importFavBtn">导入书签</button>
+                        <button class="btn" id="exportFavBtn">导出书签</button>
+                        <button class="btn" id="addFavBtn">添加书签</button>
+                    </div>
+                    <input type="file" id="favFileInput" accept=".html,.htm" hidden>
+                </div>
+                <!-- 收藏管理器：渲染进本容器（见 renderFavManager） -->
+                <div id="favManagerHost"></div>
+                </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelModules" aria-labelledby="adminTabModules" hidden>
                 <div class="section">
                     <div class="section-title">模块</div>
@@ -4167,20 +4190,6 @@
                         </label>
                     </div>
                     <p class="fav-hint" id="trustDeviceHint"></p>
-                </div>
-                <div class="section">
-                    <div class="section-title">收藏</div>
-                    <div class="fav-stats">
-                        共 <strong>${this.favoritesLoading ? '加载中' : this.favorites.length}</strong> 个收藏
-                        <span class="fav-hint">（搜索框输入 <code>/</code> 快速检索）</span>
-                    </div>
-                    <div class="fav-actions">
-                        <button class="btn" id="importFavBtn">导入收藏</button>
-                        <button class="btn" id="exportFavBtn">导出收藏</button>
-                        <button class="btn" id="addFavBtn">添加收藏</button>
-                        <button class="btn" id="manageFavBtn">管理收藏</button>
-                    </div>
-                    <input type="file" id="favFileInput" accept=".html,.htm" hidden>
                 </div>
                 <div class="section section-collapsible">
                     <button type="button" class="section-header" aria-expanded="false" aria-controls="webdavSection" onclick="app.toggleSection('webdav')">
@@ -4205,10 +4214,12 @@
             // 面板 DOM 每次 openAdmin 都是新的，模块分区的容器也是；
             // 不复位的话，上一会话渲染过就会让本分区跳过加载（停在「加载中...」）。
             this.modulesEditorRendered = false;
+            // 收藏管理器同理：面板 DOM 每次都是新的，
+            // 不复位的话上一会话渲染过就会让本分区跳过加载。
+            this.favManagerRendered = false;
             // 回到上次停留的分区，而不是每次都弹回第一个。
-            // 收藏管理器就整块替换了 #modalBody，它内部的「← 返回」调的是
-            // renderAdminPanel()——早先这里固定选中站点，于是从
-            // 「账户与备份」点进收藏、点返回，会被弹到「首页导航」。
+            // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
+            // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
             this.selectAdminTab(this.adminTab || 'site');
 
             $('#themeModeSelect').onchange = (e) => {
@@ -4229,14 +4240,13 @@
                 this.markConfigDirty();
             };
 
-            // 收藏相关绑定（favorites.json 那套平铺收藏，与首页书签分类不同）
+            // 收藏夹相关绑定（favorites.json 那套平铺书签，与首页导航分类不同）
             $('#importFavBtn').onclick = () => $('#favFileInput').click();
             $('#favFileInput').onchange = (e) => this.handleFavImport(e);
             $('#addFavBtn').onclick = () => this.showAddFavDialog();
-            $('#manageFavBtn').onclick = () => this.showFavManager();
             $('#exportFavBtn').onclick = () => this.exportFavorites();
             if (this.favoritesLoading) {
-                ['importFavBtn', 'exportFavBtn', 'addFavBtn', 'manageFavBtn'].forEach(id => { $(`#${id}`).disabled = true; });
+                ['importFavBtn', 'exportFavBtn', 'addFavBtn'].forEach(id => { $(`#${id}`).disabled = true; });
             }
 
             // 隐私模式开关
@@ -4441,7 +4451,7 @@
                 const res = await API.post('/api/webdav/backup', {});
                 if (res.success) {
                     if (res.noChanges) {
-                        msgEl.textContent = res.message || '配置和收藏没有变化，无需备份';
+                        msgEl.textContent = res.message || '配置和书签没有变化，无需备份';
                         msgEl.className = 'webdav-message';
                     } else {
                         const files = [res.configFilename, res.bookmarksFilename, res.modulesFilename].filter(Boolean);
@@ -4498,7 +4508,7 @@
                                     const files = [];
                                     if (isLegacy) files.push('旧版备份');
                                     if (hasConfig) files.push('配置');
-                                    if (hasBookmarks) files.push('收藏');
+                                    if (hasBookmarks) files.push('书签');
                                     if (hasModules) files.push('模块');
                                     return `
                                     <div class="webdav-backup-item"
@@ -4606,7 +4616,7 @@
                             ${hasConfig && hasBookmarks ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="all" checked>
-                                <span>同时恢复配置和收藏${hasModules ? '（含模块设置）' : ''}</span>
+                                <span>同时恢复配置和书签${hasModules ? '（含模块设置）' : ''}</span>
                             </label>
                             ` : ''}
                             ${hasConfig ? `
@@ -4618,7 +4628,7 @@
                             ${hasBookmarks ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="bookmarks" ${hasConfig ? '' : 'checked'}>
-                                <span>只恢复收藏</span>
+                                <span>只恢复书签</span>
                             </label>
                             ` : ''}
                             ${hasModules ? `
@@ -4768,7 +4778,7 @@
             }
         }
 
-        // ========== 收藏管理 ==========
+        // ========== 收藏夹 ==========
 
         async handleFavImport(e) {
             const file = e.target.files[0];
@@ -4779,7 +4789,7 @@
             try {
                 const res = await API.post('/api/favorites/import', { html: htmlContent, merge: true });
                 if (res.success) {
-                    this.showToast(`导入成功，新增 ${res.imported} 个收藏${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
+                    this.showToast(`导入成功，新增 ${res.imported} 个书签${res.duplicates ? `，跳过 ${res.duplicates} 个重复` : ''}`);
                     await this.loadFavorites();
                     this.renderAdminPanel();
                 } else {
@@ -4825,7 +4835,7 @@
             const dialog = html(`
                 <div class="fav-dialog-overlay" id="favDialog">
                     <div class="fav-dialog">
-                        <h3>添加收藏</h3>
+                        <h3>添加书签</h3>
                         <div class="fav-form">
                             <label class="field-label">标题<input type="text" id="favTitle" required></label>
                             <label class="field-label">URL<input type="url" id="favUrl" required></label>
@@ -4918,7 +4928,7 @@
                 const res = await API.post('/api/favorites', { favorites: this.favorites });
                 if (res.success) {
                     this.buildSearchIndex();
-                    this.showToast('收藏已保存到服务器');
+                    this.showToast('书签已保存到服务器');
                     return true;
                 } else {
                     this.showToast(res.error || '保存失败', 'error');
@@ -4929,8 +4939,24 @@
             return false;
         }
 
-        showFavManager() {
-            const body = $('#modalBody');
+        /** 收藏夹分区头部的「共 N 个书签」。
+         *  管理器只重绘 #favManagerHost，头部不在其中，所以每次数据变化后
+         *  都必须主动刷新：否则在 tab 内删除/导入后，这一行会停在旧值
+         *  （从前它与列表分处两个 tab，看不出来）。 */
+        updateFavStat() {
+            const count = $('.fav-stats strong');
+            if (count) count.textContent = this.favoritesLoading ? '加载中' : this.favorites.length;
+        }
+
+        // 收藏管理器：渲染进后台「收藏夹」tab 的 #favManagerHost。
+        // 各编辑路径（添加/编辑/删除/批量隐私/分类/拖拽）都即时
+        // 落盘并调用 renderFavManager() 原地重绘——不再整块替换
+        // #modalBody。「← 返回」随之移除：分区切换交给 tab 栏，
+        // 原返回按钮里的 saveFavorites() 兜底因所有路径都已即时
+        // 保存而成为死代码。
+        renderFavManager() {
+            const host = $('#favManagerHost');
+            if (!host) return;
             this.favManagerPage = 0;
             // Preserve filter if already set, otherwise reset
             if (!this.favManagerCurrentCategory) {
@@ -4954,7 +4980,7 @@
             // 构建树状分类结构
             const categoryTree = this.buildCategoryTree(categoryStats);
 
-            body.innerHTML = `
+            host.innerHTML = `
                 <div class="fav-manager fav-manager-split">
                     <div class="fav-manager-sidebar" id="categorySidebar">
                         <div class="sidebar-header">
@@ -4965,9 +4991,9 @@
                             <div class="category-tree-item ${!this.favManagerCurrentCategory ? 'active' : ''}"
                                  data-category="" data-drop-target="true">
                                 <span class="tree-toggle-placeholder" aria-hidden="true"></span>
-                                <button class="category-tree-select" type="button" aria-label="全部收藏" aria-current="${!this.favManagerCurrentCategory ? 'true' : 'false'}">
+                                <button class="category-tree-select" type="button" aria-label="全部书签" aria-current="${!this.favManagerCurrentCategory ? 'true' : 'false'}">
                                     <span class="tree-item-icon" aria-hidden="true">▦</span>
-                                    <span class="tree-item-name">全部收藏</span>
+                                    <span class="tree-item-name">全部书签</span>
                                 </button>
                                 <span class="tree-item-count">${this.favorites.length}</span>
                             </div>
@@ -4983,8 +5009,7 @@
                     </div>
                     <div class="fav-manager-main">
                         <div class="fav-manager-header">
-                            <button class="btn" id="backToAdmin">← 返回</button>
-                            <input type="text" id="favManagerSearch" placeholder="搜索收藏（支持拼音）..." class="fav-manager-search">
+                            <input type="text" id="favManagerSearch" placeholder="搜索书签（支持拼音）..." class="fav-manager-search">
                         </div>
                         <div class="fav-batch-bar" id="favBatchBar">
                             <label class="fav-select-all">
@@ -5003,11 +5028,6 @@
             `;
 
             // 绑定事件
-            $('#backToAdmin').onclick = async () => {
-                await this.saveFavorites();
-                this.favManagerCurrentCategory = '';
-                this.renderAdminPanel();
-            };
             $('#favManagerSearch').oninput = (e) => this.debouncedFilterFavManager(e.target.value, this.favManagerCurrentCategory);
             $('#addCategoryBtn').onclick = () => this.promptNewCategory();
 
@@ -5025,6 +5045,8 @@
             } else {
                 this.renderFavManagerList(this.favorites);
             }
+            // 头部计数不在 #favManagerHost 内，得单独刷新
+            this.updateFavStat();
         }
 
         // 构建树状分类结构
@@ -5132,7 +5154,7 @@
                 // 如果有选中的书签，询问是否移动到该分类
                 if (this.favManagerSelected && this.favManagerSelected.size > 0 && category) {
                     const count = this.favManagerSelected.size;
-                    if (await this.confirmAction(`是否将选中的 ${count} 个书签移动到「${category || '未分类'}」？`, '移动收藏')) {
+                    if (await this.confirmAction(`是否将选中的 ${count} 个书签移动到「${category || '未分类'}」？`, '移动书签')) {
                         this.favorites.forEach(f => {
                             if (this.favManagerSelected.has(f.id)) {
                                 f.category = category;
@@ -5141,7 +5163,7 @@
                         });
                         this.favManagerSelected.clear();
                         await this.saveFavorites();
-                        this.showFavManager();
+                        this.renderFavManager();
                         return;
                     }
                 }
@@ -5189,7 +5211,7 @@
                     fav.category = newCategory;
                     fav.updatedAt = Date.now();
                     await this.saveFavorites();
-                    this.showFavManager();
+                    this.renderFavManager();
                 }
             };
         }
@@ -5293,7 +5315,7 @@
                         } else if (this.favManagerCurrentCategory?.startsWith(fullPath + '/')) {
                             this.favManagerCurrentCategory = newFullPath + this.favManagerCurrentCategory.slice(fullPath.length);
                         }
-                        this.showFavManager();
+                        this.renderFavManager();
                     } else {
                         cleanup();
                     }
@@ -5343,7 +5365,7 @@
 
             // 设置当前分类并刷新
             this.favManagerCurrentCategory = categoryName;
-            this.showFavManager();
+            this.renderFavManager();
         }
 
         bindCategoryDropZones() {
@@ -5393,14 +5415,14 @@
             const allPrivate = targets.every(f => f.private);
             const result = await this.showUiDialog({
                 title: '批量设置隐私状态',
-                message: `已选中 ${targets.length} 个收藏`,
+                message: `已选中 ${targets.length} 个书签`,
                 options: [
                     { name: 'privacy', kind: 'radio', value: 'private', label: '设为私密', checked: !allPrivate },
                     {
                         name: 'privacy', kind: 'radio', value: 'public', label: '设为公开', checked: allPrivate,
                         // 两个方向的风险不对称：设为私密只是收紧可见性，
                         // 设为公开等于对未登录访客披露。只在同一弹窗里给披露方向加提示。
-                        hint: '公开后，未登录的访客也能看到这些收藏'
+                        hint: '公开后，未登录的访客也能看到这些书签'
                     }
                 ],
                 confirmText: '应用'
@@ -5419,18 +5441,18 @@
 
             if (!await this.saveFavorites()) {
                 targets.forEach((f, i) => Object.assign(f, previous[i]));
-                this.showFavManager();
+                this.renderFavManager();
                 return;
             }
-            this.showFavManager();
-            this.showToast(`已更新 ${targets.length} 个收藏的隐私状态`, 'success');
+            this.renderFavManager();
+            this.showToast(`已更新 ${targets.length} 个书签的隐私状态`, 'success');
         }
 
         async deleteSelectedFavorites() {
             const count = this.favManagerSelected.size;
             if (count === 0) return;
 
-            if (!await this.confirmAction(`确定删除选中的 ${count} 个收藏？`, '批量删除', true)) return;
+            if (!await this.confirmAction(`确定删除选中的 ${count} 个书签？`, '批量删除', true)) return;
 
             this.favorites = this.favorites.filter(f => !this.favManagerSelected.has(f.id));
             await this.saveFavorites();
@@ -5445,7 +5467,7 @@
                     this.favManagerCurrentCategory = '';
                 }
             }
-            this.showFavManager();
+            this.renderFavManager();
         }
 
         debouncedFilterFavManager(query, category) {
@@ -5609,7 +5631,7 @@
                     }
                     this.updateBatchBar();
                 } else if (e.target.classList.contains('del-fav')) {
-                    if (await this.confirmAction('确定删除此收藏？', '删除收藏', true)) {
+                    if (await this.confirmAction('确定删除此书签？', '删除书签', true)) {
                         this.favorites = this.favorites.filter(f => f.id !== id);
                         await this.saveFavorites();
                         this.favManagerSelected.delete(id);
@@ -5624,7 +5646,7 @@
                             }
                         }
                         // 刷新整个管理界面（包括分类树，以便空分类自动消失）
-                        this.showFavManager();
+                        this.renderFavManager();
                     }
                 } else if (e.target.classList.contains('edit-fav')) {
                     this.editFavorite(id);
@@ -5653,7 +5675,7 @@
             const dialog = html(`
                 <div class="fav-dialog-overlay" id="favEditDialog">
                     <div class="fav-dialog">
-                        <h3>编辑收藏</h3>
+                        <h3>编辑书签</h3>
                         <div class="fav-form">
                             <label class="field-label">标题<input type="text" id="editFavTitle" value="${this.esc(fav.title)}" required></label>
                             <label class="field-label">URL<input type="url" id="editFavUrl" value="${this.esc(fav.url)}" required></label>
@@ -5696,7 +5718,7 @@
                     return;
                 }
                 this.closeLayer(dialog);
-                this.showFavManager();
+                this.renderFavManager();
             };
         }
 
