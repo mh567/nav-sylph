@@ -1,6 +1,28 @@
 {
   "versions": [
     {
+      "version": "1.11.4",
+      "date": "2026-10-06",
+      "summary": "优化首页模块的加载与显示，并降低登录状态下的客户端开销",
+      "highlights": [
+        "首页模块卡片加载更快，出现时即为最终布局，数据到达时不再整体位移",
+        "内容未变化的轮询不再重建卡片，登录状态下的客户端开销随之降低"
+      ],
+      "changes": {
+        "improve": [
+          "模块脚本从串行改为并发加载：`renderModuleZone` 原来逐个 `await mountModule`，第二个模块要等前一个的脚本下载**加**挂载都完成。实测 `memo.js` 53→56ms 结束后 `server-monitor.js` 才在 58ms 起请求；改后两者同在 50ms 起",
+          "新增「首轮数据就绪」信号（模块通过 `state.whenReady(promise)` 交回）与 `App.FIRST_ROUND_TIMEOUT_MS = 1500`，模块区等首轮数据到手再首次布局。此前卡片先以「无数据」的高度出生（98px），数据落地时把下面的卡片整体下推 54px，伴随一次 `margin-top` 过渡与三次 layout-shift；改后 0 位移、0 过渡。超时后照常布局，退化成改动前的行为",
+          "`zone.hidden = false` 推迟到首轮之后：`dock=below` 时模块区自带一条上边框与内边距，先亮出来会凭空留一个空盒子",
+          "`stackWidgetsByHeight` 改为「先读完所有高度、再统一写 `--stack-top`」，并对值未变的节点跳过写入；新增 `requestWidgetStack` 用 `requestAnimationFrame` 把同一帧内的多次请求合并成一次。`applyWidgetLayout` 与 `compensateStackShift` 仍走同步版（前者要先摆位再强制重排，后者要写完立刻读回）",
+          "两个模块的卡片按内容指纹跳过重建：`server-monitor` 的 `bodyKeyOf(entry)`、`memo` 的 `cardKey()` / `renderCardStatus()`。时间那一项取**渲染出来的文案**而非自造分钟档——两者取整方式不一致时（floor vs round，最多差 30 秒），显示值会比指纹早一个档变化，卡上那行停在旧值上",
+          "实测未变动的一轮：模块区 DOM 变更 48 → 15，强制重排 12 → 4；数据真的变了照常重建并重排",
+          "提交前的两轴代码审查撤回了一处越界的改动：曾把「自动轮询不显示「同步中」」一并改掉并用断言钉成契约——那既超出所选范围，又与备忘录既定的「反馈同步状态」相抵触，已恢复为自动与手动都照常提示",
+          "另修三处：两份逐字节相同的重排转发函数改为平台注入 `state.requestStack`（模块不再去摸 `window.app` 上的平台方法）；`renderCardStatus` 改完请求一次重排（`.memo-status-row` 是 `flex-wrap: wrap`，失败态多一个「重试」按钮后会折行变高）；三条实际不成立的测试守卫（`_stackFrame` 的构造函数初始化、`poll({manual:true})` 的存在性断言、`renderCardStatus` 的写入本身）已按符号重新锚定并在变异中各自转红",
+          "`sw.js` 缓存名 `nav-v70 → nav-v71`"
+        ]
+      }
+    },
+    {
       "version": "1.11.3",
       "date": "2026-10-06",
       "summary": "更新说明的措辞改为正式书面表述，并写入写法约定",
