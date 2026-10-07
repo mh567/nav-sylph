@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v73：拉取模式的卡片右下角不再显示单次请求耗时（`Nms`）——那个数含
+// agent 固定 200ms 的 CPU 采样等待，读起来像网络延迟。改为与推送模式同一句
+// 「最后更新 N 分钟前」：推送取机器上报时刻，拉取取本服务取到它的时刻。
+// 本机卡片不发这一行（产品取舍：它就是你在用的那台机器）。
+// 改了 modules/server-monitor.js；styles.css 只动了一句注释。
 // nav-v72：备忘录卡片的状态胶囊从「独占正文第一行」挪进**卡片头**
 // （标题右侧），「管理」因此从头里下移到右下角那行小字——最窄的一档卡片
 // （132px）装不下「标题 + 胶囊 + 管理」，标题会被截断；省下的那一行还给内容。
@@ -120,7 +125,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v72';
+const CACHE = 'nav-v73';
 const ASSETS = [
     '/',
     '/index.html',

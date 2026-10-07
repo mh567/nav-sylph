@@ -2581,7 +2581,7 @@ test('部署面板的层级高于管理面板，否则点开却看不见', () =>
 });
 
 test('宽屏卡片按实测高度堆叠，不按固定步进', () => {
-    // 卡片高度随内容变：在线带延迟提示 174px、在线无提示 152px、离线只有 98px。
+    // 卡片高度随内容变：远端在线带「最后更新」那一行 174px、本机 152px、离线只有 98px。
     // 固定步进 166px 遇上 174px 的卡片就压住下一张——实测重叠 8px，两处。
     //
     // 用 CSS 变量表达「每张卡自己的偏移」做不到，因为偏移依赖前面所有卡的高度和；
@@ -2599,7 +2599,7 @@ test('宽屏卡片按实测高度堆叠，不按固定步进', () => {
     assert.match(appCode, /this\.stackWidgetsByHeight\(\)[\s\S]*?\}/,
         'applyWidgetLayout 里在归位之后调用');
 
-    // 内容变化后必须重排：上线会多出延迟提示、掉线会整张变矮。
+    // 内容变化后必须重排：远端上线会多出「最后更新」那一行、掉线会整张变矮。
     // 重排请求由平台注入（state.requestStack），模块侧不再直接提平台方法名。
     assert.match(moduleSource, /if \(rendered && requestStack\) requestStack\(\)/,
         '模块内容真的变了之后请求重排');
@@ -3404,27 +3404,94 @@ test('卡片按内容指纹跳过重建，纵向重排同一帧内合并成一�
 
     // ⑤ 卡片体按内容指纹跳过重建。每 15 秒整块 replaceChildren 一次会带来
     //    一次强制重排，而绝大多数轮询里数字根本没变。
-    assert.match(mod, /function bodyKeyOf\(entry\)/, '有内容指纹函数');
+    assert.match(mod, /function bodyKeyOf\(entry, collectedAt\)/, '有内容指纹函数');
     // 「最后更新」那一项取**渲染出来的文案**，不是自造的分钟档：两处取整
     // 方式不一致时显示值会比指纹早一个档变化，卡上那行停在旧值上。
-    const keyAt = mod.indexOf('function bodyKeyOf(entry)');
+    // ⚠️ 锚点要跟着签名走，并且先断言它存在——`indexOf` 返回 -1 时
+    // `slice` 会静默切出「从 -1 到末尾」的整段（本项目踩过多次）。
+    const keyAt = mod.indexOf('function bodyKeyOf(entry, collectedAt)');
+    assert.ok(keyAt > 0, '找到 bodyKeyOf');
     const keyFn = mod.slice(keyAt, mod.indexOf('\n    }', keyAt));
     assert.ok(keyFn.length > 200, `切出 bodyKeyOf（${keyFn.length}）`);
-    assert.match(keyFn, /lastUpdatedText\(entry\.pushReceivedAt\)/,
-        '取渲染文案，不自造分钟档');
+    assert.match(keyFn, /hintTextOf\(entry, collectedAt\)/,
+        '指纹与渲染共用同一个文案函数（本机那一档因此不会在内容没变时翻转）');
     const pollStart = mod.indexOf('async function poll(');
     const pollEnd = mod.indexOf('function schedulePolling(');
     assert.ok(pollStart >= 0 && pollEnd > pollStart, `poll 切片两端都在（${pollStart}/${pollEnd}）`);
     const poll = mod.slice(pollStart, pollEnd);
     assert.match(poll, /if \(card\.bodyKey !== key\)/, '指纹相同就跳过重建');
-    assert.match(poll, /renderCardBody\(card\.body, entry\)/, '变了才重建');
+    assert.match(poll, /renderCardBody\(card\.body, entry, payload\.updatedAt\)/, '变了才重建');
     assert.match(poll, /if \(rendered && requestStack\) requestStack\(\)/, '只有真的重建过才重排');
     assert.match(poll, /card\.bodyKey = '!error'/,
         '失败态重置指纹，否则恢复后仍停在错误态');
-    assert.match(mod, /bodyKey: bodyKeyOf\(entry\)/,
+    assert.match(mod, /bodyKey: bodyKeyOf\(entry, null\)/,
         '挂载时记下首轮指纹，否则第一次轮询会白重建一遍');
     // 状态位与名称仍要每轮更新——它们不是卡片体的一部分
     assert.match(poll, /card\.status\.dataset\.kind !== kind/, '状态位照旧每轮比对');
+});
+
+test('卡片右下角显示「最后更新」，不再显示单次请求耗时', () => {
+    // 用户原话：「200多 ms 的这个数值展示没有意义，也改成更新时间吧」。
+    // 那个数含 agent 那边**固定 200ms** 的 CPU 采样等待（agent/main.go 的
+    // cpuSampleGap：累计值必须两次采样做差；实测 nav-agent collect 稳态
+    // 244–264ms，而只启动不采集的 version 是 21ms），所以它读起来像网络延迟、
+    // 实际是采样地板。
+    const mod = stripComments(moduleSource);
+    /**
+     * 按**大括号配对**切出一个函数的完整片段，并先断言两端都真的找到了。
+     * ⚠️ 用「下一个 `function` 定义」当末端锚点不行：`renderPanelBody` 是
+     * 模块里最后一个顶层函数，它后面没有下一个 —— `indexOf` 返回 -1，
+     * `slice(at, -1)` 会静默切到文件末尾，长度断言照样通过，而里面的断言
+     * 就变成「在整份模块里找」，形同虚设。所以这里按配对切。
+     */
+    const sliceFn = (name, min) => {
+        const at = mod.indexOf(`function ${name}(`);
+        assert.ok(at > 0, `找到 ${name}`);
+        const open = mod.indexOf('{', at);
+        assert.ok(open > at, `${name} 有函数体`);
+        let depth = 0, end = -1;
+        for (let i = open; i < mod.length; i++) {
+            if (mod[i] === '{') depth++;
+            else if (mod[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+        }
+        assert.ok(end > open, `${name} 大括号配对成功`);
+        const body = mod.slice(at, end + 1);
+        assert.ok(body.length > min, `切出 ${name}（${body.length}）`);
+        return body;
+    };
+
+    // ① 两种采集方式共用一句话，时间来源由 dataTimeOf 统一取
+    const dt = sliceFn('dataTimeOf', 100);
+    assert.match(dt, /Number\.isFinite\(entry\.pushReceivedAt\)\) return entry\.pushReceivedAt/,
+        '推送取那台机器的上报时刻');
+    assert.match(dt, /Number\.isFinite\(collectedAt\) \? collectedAt : null/,
+        '拉取取本服务取到它的时刻');
+
+    // ② 卡片：右下角是「最后更新」，且不得再出现单次请求耗时
+    const card = sliceFn('renderCardBody', 400);
+    assert.match(card, /hintTextOf\(entry, collectedAt\)/, '右下角走统一的文案函数');
+    assert.doesNotMatch(card, /latencyMs/, '卡片不得再显示每次请求的耗时');
+
+    // ③ 文案函数与指纹共用；本机不发这一行（产品取舍，不是布局限制）
+    const hint = sliceFn('hintTextOf', 80);
+    assert.match(hint, /if \(!entry \|\| entry\.isLocal\) return ''/, '本机不发这一行');
+    const key = sliceFn('bodyKeyOf', 150);
+    assert.match(key, /hintTextOf\(entry, collectedAt\)/,
+        '指纹与渲染共用同一个函数——两处各判一次时本机那档会空翻转指纹');
+
+    // ④ 采集时刻必须真的传下去，否则时间到了卡上那行也不会刷新
+    assert.match(mod, /bodyKeyOf\(entry, collectedAt\)/, '指纹签名收下采集时刻');
+    assert.match(mod, /bodyKeyOf\(entry, null\)/, '挂载时显式传 null（那边确实没有采集时刻）');
+    assert.match(mod, /renderCardBody\(card\.body, entry, payload\.updatedAt\)/, '渲染带上采集时刻');
+    assert.match(mod, /bodyKeyOf\(entry, payload\.updatedAt\)/, '指纹带上采集时刻');
+
+    // ⑤ 详情面板同样是「最后更新」，且不再有「响应时间」
+    const panel = sliceFn('renderPanelBody', 400);
+    assert.match(panel, /add\('最后更新', hintText\)/, '详情页也显示「最后更新」');
+    assert.doesNotMatch(panel, /响应时间/, '详情页不再有「响应时间」这个说法');
+    assert.doesNotMatch(panel, /latencyMs/, '详情页不得再读那个耗时字段');
+    assert.match(panel, /add\('数据来源', '目标机推送'\)/, '推送模式的数据来源仍在');
+    assert.match(panel, /lastPayload && lastPayload\.cached \? '缓存' : '实时采集'/, '拉取模式的数据来源仍在');
 });
 
 test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {

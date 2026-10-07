@@ -166,7 +166,8 @@
     }
 
     /**
-     * 「最后更新 N 前」。推送模式才有——拉取模式是当场拉一次，没有"上次"的概念。
+     * 「最后更新 N 分钟前」。两种采集方式共用一句话——它回答的是同一个问题
+     *（这份数据有多新），只是时间来源不同（见 dataTimeOf）。
      */
     function lastUpdatedText(receivedAt) {
         if (!Number.isFinite(receivedAt)) return null;
@@ -178,7 +179,41 @@
         return `最后更新 ${hours} 小时前`;
     }
 
-    function renderCardBody(body, entry) {
+    /**
+     * 这份数据的时间。两种采集方式各有一个真相来源：
+     *   · 推送：那台机器**上报**的时刻（`pushReceivedAt`，落库时记的是**本服务**时钟）
+     *   · 拉取：本服务**取到它**的时刻（聚合结果的 `updatedAt`，同样是本服务时钟）
+     * 两端都用本服务的时钟，「N 分钟前」因此是在同一个时钟里做差。
+     *
+     * ⚠️ 不要改用 payload 里的 `metrics.sampledAt`：那是**目标机的时钟**
+     *（本机由 `lib/monitor.js` 写、远端由 `agent/main.go` 写，各用各的 `now`），
+     * 与浏览器里的 `Date.now()` 跨机做差会被时钟偏差吃掉——与本仓库记过的
+     * 「两处时间来自不同来源」是同一类缺陷。它也救不了本机那一档（见 hintTextOf）。
+     *
+     * 拿不到（本机、或首轮 payload 还没来）返回 null。
+     */
+    function dataTimeOf(entry, collectedAt) {
+        if (entry && Number.isFinite(entry.pushReceivedAt)) return entry.pushReceivedAt;
+        return Number.isFinite(collectedAt) ? collectedAt : null;
+    }
+
+    /**
+     * 卡片右下角那一行的文案。**渲染与指纹共用这一个函数**——两处各判一次
+     * 必然漂移，本机那一档就是例子：渲染不显示它、指纹却把它算进去，于是
+     * 缓存命中的轮次会凭空空重建一次卡片并请求一次重排。
+     *
+     * 本机不发这一行：它就是你在用的那台机器，数据读出来就是你看到它的时刻，
+     * 「有多新」没有信息量。**这是产品取舍，不是布局限制**——卡片高度本来就
+     * 按实测排（`stackWidgetsByHeight`），多一行也排得下，只是白占一行。
+     * 若日后要一视同仁地显示，改这一处即可，指纹会跟着走。
+     */
+    function hintTextOf(entry, collectedAt) {
+        if (!entry || entry.isLocal) return '';
+        const t = dataTimeOf(entry, collectedAt);
+        return t === null ? '' : (lastUpdatedText(t) || '');
+    }
+
+    function renderCardBody(body, entry, collectedAt) {
         if (!entry || (!entry.online && !entry.metrics)) {
             // 凭据被拒与机器挂掉要给不同的处置：前者去重填 token，后者去查机器。
             // 只给一行文本的话，用户得自己判断是哪一种。
@@ -199,17 +234,17 @@
         // 真的没有 metrics 时才走上面的错误分支。
         if (entry.metrics) {
             const nodes = metricRows(entry.metrics);
-            if (Number.isFinite(entry.latencyMs)) {
+            // ⚠️ 拉取模式早先显示的是单次请求耗时（`${latencyMs}ms`），而那个数
+            // **含 agent 那边固定 200ms 的 CPU 采样等待**（`agent/main.go` 的
+            // `cpuSampleGap`：累计值必须两次采样做差；实测 collect 稳态 244–264ms、
+            // 而只启动不采集的 version 是 21ms），所以它读起来像网络延迟、
+            // 实际是采样地板——用户原话「这个数值展示没有意义」。
+            // 现在右下角只回答一个问题：这份数据有多新（见 hintTextOf）。
+            const hintText = hintTextOf(entry, collectedAt);
+            if (hintText) {
                 const hint = document.createElement('div');
                 hint.className = 'module-card-hint';
-                hint.textContent = `${entry.latencyMs}ms`;
-                nodes.push(hint);
-            }
-            if (Number.isFinite(entry.pushReceivedAt)) {
-                const hint = document.createElement('div');
-                hint.className = 'module-card-hint';
-                hint.dataset.pushStale = entry.pushStale ? '1' : '0';
-                hint.textContent = lastUpdatedText(entry.pushReceivedAt) || '';
+                hint.textContent = hintText;
                 nodes.push(hint);
             }
             body.replaceChildren(...nodes);
@@ -223,20 +258,19 @@
      *
      * 轮询每 15 秒一次，而绝大多数轮询里数字根本没变；整块 replaceChildren
      * 一次会带来一次强制重排。指纹相同就整个跳过重建。
-     * 「最后更新 N 分钟前」那一项直接取**渲染出来的文案**（lastUpdatedText），
-     * 而不是自造一个分钟档：自造档位的取整方式与渲染用的不一致时，显示值
-     * 会比指纹早一个档变化，卡上那行就停在旧值上（实测差 30 秒）。
+     * 「最后更新」那一项取**渲染出来的文案**（与渲染共用 hintTextOf，
+     * 本机那一档因此不会在内容没变时翻转指纹），而不是自造一个分钟档：
+     * 自造档位的取整方式与渲染用的不一致时，显示值会比指纹早/晚一个档变化，
+     * 卡上那行就停在旧值上（实测差 30 秒）。
      */
-    function bodyKeyOf(entry) {
+    function bodyKeyOf(entry, collectedAt) {
         if (!entry || (!entry.online && !entry.metrics)) {
             return `err|${(entry && entry.error) || ''}|${entry && entry.authFailed ? 1 : 0}`;
         }
         const m = entry.metrics || {};
         return [
             m.cpu, m.memoryPercent, m.memoryUsed, m.memoryTotal, m.diskUsed, m.diskTotal,
-            Number.isFinite(entry.latencyMs) ? entry.latencyMs : '',
-            lastUpdatedText(entry.pushReceivedAt) || '',
-            entry.pushStale ? 1 : 0
+            hintTextOf(entry, collectedAt)
         ].join('|');
     }
 
@@ -285,15 +319,16 @@
                     card.status.textContent = statusLabelOf(entry);
                 }
                 // 内容没变就不重建卡片体（见 bodyKeyOf）。重建过才需要重排。
-                const key = bodyKeyOf(entry);
+                // collectedAt 是这一轮聚合结果的采集时刻——拉取模式的时间来源。
+                const key = bodyKeyOf(entry, payload.updatedAt);
                 if (card.bodyKey !== key) {
                     card.bodyKey = key;
-                    renderCardBody(card.body, entry);
+                    renderCardBody(card.body, entry, payload.updatedAt);
                     rendered = true;
                 }
             }
 
-            // 卡片高度随内容变（在线带延迟提示 174px、离线只有 98px），
+            // 卡片高度随内容变（远端在线带「最后更新」那一行 174px、离线只有 98px），
             // 而宽屏的纵向偏移是按实测高度排的——内容真的变了才重排。
             if (rendered && requestStack) requestStack();
 
@@ -405,8 +440,11 @@
 
         // status 也要存进 Map：刷新时要更新它，而那时拿不到 DOM 引用。
         // bodyKey 记下首轮渲染的指纹——poll 的回调据此跳过重复重建。
-        renderCardBody(body, entry);
-        cards.set(entry.id, { card, body, label, status, bodyKey: bodyKeyOf(entry) });
+        // 挂载时还没有聚合结果：entry 是从配置合成的占位（既没有 metrics、也没有
+        // 采集时刻）。第三个参数显式传 `null` 而不是省略——这条路径上是「确实没有」，
+        // 不是「忘了传」。
+        renderCardBody(body, entry, null);
+        cards.set(entry.id, { card, body, label, status, bodyKey: bodyKeyOf(entry, null) });
         return card;
     }
 
@@ -560,14 +598,15 @@
             add('负载（1 / 5 分钟）', `${(m.load1 || 0).toFixed(2)} / ${(m.load5 || 0).toFixed(2)}`);
             add('运行时长', fmtDuration(m.uptime));
             if (m.hostname) add('主机名', m.hostname);
-            if (Number.isFinite(entry.latencyMs)) add('响应时间', `${entry.latencyMs}ms`);
-            // 推送模式：数据来源是"上次上报"，没有响应时间可言
             if (Number.isFinite(entry.pushReceivedAt)) {
                 add('数据来源', '目标机推送');
-                add('最后更新', lastUpdatedText(entry.pushReceivedAt) || '—');
             } else {
                 add('数据来源', lastPayload && lastPayload.cached ? '缓存' : '实时采集');
             }
+            // 与本机卡片同一档取舍：本机不发这一行（见 hintTextOf），
+            // 文案也共用同一个函数，两处不会说不一样的话。
+            const hintText = hintTextOf(entry, lastPayload && lastPayload.updatedAt);
+            if (hintText) add('最后更新', hintText);
             nodes.push(detail);
         }
 

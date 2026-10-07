@@ -2905,7 +2905,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-zone[hidden] { display: none; }
 .module-zone-inner { display: contents; }
 /* 纵向偏移由 JS 实测高度后写入 --stack-top，不是固定步进——
-   卡片高度随内容变化（在线带延迟提示 174px / 无提示 152px / 离线 98px），
+   卡片高度随内容变化（远端在线带「最后更新」那一行 174px / 本机 152px / 离线 98px），
    写死 166px 会让带提示的卡片压住下一张（实测重叠 8px）。 */
 .module-widget[data-side="right"] { position: absolute; top: 0; right: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
 .module-widget[data-side="left"] { position: absolute; top: 0; left: 0; width: clamp(132px, calc((100% - 936px) / 2 - 20px), 220px); margin-top: var(--stack-top, 0px); }
