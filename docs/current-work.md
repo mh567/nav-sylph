@@ -2,7 +2,56 @@
 
 核对日期：2026-10-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：轮询接口不再占用管理端的限流桶（未提交，工作树）
+## 最新一轮：README 全量刷新（v1.11.8）
+
+用户原话：「项目 README 需要更新一下了」。范围选了「全面刷新」。
+
+**README 停留在 v1.6 前后，v1.7～v1.11 加入的三块功能一个字都没有。** 新增三节：服务器监控与 agent（添加机器 → 生成部署命令 → 升级命令、拉取/推送对照）、登录后模块（模块开关、更新周期、服务器监控卡片与备忘录）、首页编辑模式（拖模块、拖书签、分类头、一次保存）。
+
+### 逐项修正（均与代码核对后改）
+
+| 项 | 原状 | 实际 |
+| --- | --- | --- |
+| WebDAV 备份内容 | 两个文件 | 三个（多 `nav-sylph-modules-*.json`）；书签与模块文件仅在对应数据存在时生成 |
+| 配置文件表 | 缺 `.modules.json` | 已补 |
+| 环境变量表 | 8 项 | 13 项（补 `HTTPS_CA_PATH`、`ADMIN_PASSWORD_FILE`、`GEO_DATABASE`、`DB_FILE`、`LOG_DIR`） |
+| 管理面板 | 平铺功能列表 | 四个分区（首页导航 / 收藏夹 / 模块 / 账户与备份） |
+| 目录结构 | 缺 `agent/`、`public/admin.css`、`public/modules/`、`public/lib/`、`lib/monitor.js`、`lib/credentials.js`、`lib/geo/`、`scripts/`、`tests/` | 已补 |
+| 技术栈 | 存储仅登录会话 | 补 Go agent；SQLite 含备忘录与监控指标缓存 |
+| 许可证 | 仅 MIT | 补 4 项第三方（highlight.js BSD-3-Clause、qrcode.js MIT、uFuzzy MIT、ip2region Apache-2.0 OR MIT） |
+| 后台状态位措辞 | 写作合并的「异常」 | 实为「证书异常」「端口被占」；两个状态位是「在线」「部署就绪」 |
+| 模块区位置 | 「分类网格下方」 | 宽屏两侧有空间时停靠在背板左右两侧 |
+
+### 两轴审查（基线 v1.11.7，跑在未提交的工作树上）
+
+**已采纳并修**
+
+1. （规范轴）`DATA_FILE` / `ICON_PATH` / `FAVICON_PATH` 被列成可用配置，但 `config.paths` 下只有 `database` 与 `logs` 有消费者（`server.js:900`、`:881`），页面图标固定引用 `public/` 下的文件。README 改为在表外说明它们不生效。
+2. （需求轴）环境变量表漏了服务端实际读取的 `DB_FILE` 与 `GEO_DATABASE`（`server-config/index.js:58,63`）；后者经 `server.js:910` → `lib/session.js:240` 真正被消费。已补入。
+3. （需求轴）首页编辑模式漏了书签卡上的 ✕ 删除（`public/app.js:1093`，处理器 `:1540`）。
+4. （两轴一致）「模块区位于分类网格下方」只在 `data-dock=below` 成立，宽屏基础规则是绝对定位停靠，与同节「宽屏可拖到左右两侧」自相矛盾。已改写。
+5. （需求轴）「单列为『异常』」不存在这个名字，实际是「证书异常」「端口被占」（`public/app.js:3883,3885`）。
+6. （规范轴）「共三个文件」不总成立：书签文件仅在存在收藏时上传（`lib/webdav-backup.js:243`），模块文件仅在 `modulesData` 存在时（`:254`）。已改为条件措辞。
+7. （规范轴）`.modules.json` 写「凭据加密存储」不准确——agent token 是 AES-256-GCM 密文，推送凭据是 sha256 哈希，不是同一种形态。改为「不以明文存储」。
+
+**经复核后未改（有意保留）**
+
+- 规范轴指 README 记录了 0600、SQLite 里存什么等属 `architecture.md` 的实现细节。这些对自托管用户是操作性信息（文件权限、哪个库承担什么），保留。
+- 规范轴指若干括号旁白违反 `AGENTS.md` 第 9 条。该条的适用范围是 CHANGELOG 的用户可见文案；README 里保留的是事实性限定（如「有改动时会先确认」），只把自嘲式的一句（「诚实降级，不编造数值」）改写成陈述。
+
+### 本轮发现的后续项（不在本次范围）
+
+1. **界面里没有常驻的「修改密码」入口。** 全仓库 grep：`changePassword()` 只被默认密码的提示调用（`public/app.js:3120-3126`），「账户与备份」分区只有信任此设备 / 远程备份 / 退出登录（`:4535-4560`）。README 已按实际改写，未凭空写一个不存在的按钮；要不要补入口需要产品决定。
+2. **`.modules.json` 不在 `sylph.sh` 的升级备份清单里**（`sylph.sh:756-763` 只有 config.json、.admin-password.json、.env、server-config.json、favorites.json、nav-sylph.db）。它当前不会丢，因为升级的 `rm` 清单里没有它；但这属于「靠没被删而幸存」，不是被备份。
+
+### 验证
+
+- `git diff v1.11.7 --name-only` → 仅 `README.md`；`public/` 无改动，因此不 bump `sw.js` 缓存名（保持 `nav-v74`）
+- `git diff --check` 干净；三处版本号重新解析一致（1.11.8），CHANGELOG 形状确认为 `{ versions: [...] }`
+- 本次不含代码改动，未跑 `node --test`（无代码路径受影响）
+- 未做的事：README 是纯文本，没有浏览器渲染路径可看；上面两条后续项没有实现，只记录
+
+## 上一轮：轮询接口不再占用管理端的限流桶（v1.11.7）
 
 用户原话：「更新以后，有时刷新后显示监控数据读取失败模块加载不出来」。
 
