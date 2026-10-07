@@ -3,6 +3,12 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v74：模块轮询接口（GET /api/modules/metrics、GET /api/memos）不再与
+// 管理操作共用 30 次/分钟的限流桶——轮询按标签页数线性增长，正常刷几次页面
+// 就能把桶打满，表现为「模块区渲染不出来」+「监控数据读取失败」两种听起来
+// 无关的症状。改走 modulePollLimit（120/分钟，按轮询周期推导）；备忘录的写
+// 操作仍走原桶。客户端把 429 与「读取失败」分开说，不再混成一句。
+// 改了 server.js、app.js、modules/server-monitor.js。
 // nav-v73：拉取模式的卡片右下角不再显示单次请求耗时（`Nms`）——那个数含
 // agent 固定 200ms 的 CPU 采样等待，读起来像网络延迟。改为与推送模式同一句
 // 「最后更新 N 分钟前」：推送取机器上报时刻，拉取取本服务取到它的时刻。
@@ -125,7 +131,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v73';
+const CACHE = 'nav-v74';
 const ASSETS = [
     '/',
     '/index.html',

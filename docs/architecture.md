@@ -63,6 +63,10 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 
 **首轮由模块自己显式拉取。** 两个模块都把 `startPolling` 拆成 `schedulePolling`（只挂定时器与前后台监听，**不**立即拉取）+ mountWidget 里的一次显式 `poll()`，那次 promise 交给 `state.whenReady`。**别再让挂表函数顺手拉一次**——首轮会因此跑两遍。
 
+**模块加载失败必须先说话。** `renderModuleZone` 里 `modulesError` 的判断要排在 `enabledModuleIds()` 判空**之前**——config 没拿到时那个列表是空的，先判空就会 `hidden` 返回，模块区**静默消失**、屏幕上没有任何线索（用户报的「模块加载不出来」正是这个：他看到的是一块空白，而不是一条错误）。同一段还有一条：轮询失败要**按状态码分开说**——429 是「请求过于频繁，请等一分钟再刷新」，不是「监控数据读取失败」；一个限流伪装成数据故障，会让人去查服务端，而实际只要等一分钟。
+
+**错误态的两个几何前提，缺一个都会把「修好」变成「另一个坏」。** ① `zone.dataset.dock` 必须在错误分支**之前**赋值：`.module-zone` 的基础规则是 `position: absolute; pointer-events: none`，不赋值时错误条横铺在 `y=48..102`，里面的「重试」按钮点不动（实测 `elementFromPoint` 命中 `app`）。② 错误态**一律走 `below`**，不跟着宽屏走 `outside`——`[data-dock="outside"]` **没有自己的 CSS 块**（那个模式靠每张卡片各自绝对定位），错误条是普通 div，按基础规则会铺成全宽的条，实测压住搜索框 19px，而它 `pointer-events: auto`，会挡住搜索框下沿的点击。`.module-zone-error` 还要自己开 `pointer-events`（它是 `.module-zone` 的直接子节点，不在「`.module-zone-inner > .module-widget`」与「`[data-dock=below]`」那两条重新打开指针事件的规则里）。
+
 **模块配置独立存 `.modules.json`，不进 `config.json`。** 两个理由，都是绕开而非修补：`toPublicConfig()` 只剥离 `privacyMode` 一个 key，放进 `config.json` 的任何新字段会**默认公开下发**给匿名用户；`mergeConfig()` 是顶层浅合并，嵌套对象会被客户端旧副本整块覆盖。该文件已在 `PRIVATE_FILES` 名单里，自动获得 `writeJSON()` 的 0600 收紧。
 
 **归一化不得补默认值。** `normalizeModulesConfig()` 对缺席的键保持 `undefined`（而非空数组），`mergeModulesConfig()` 才能区分「显式清空」与「没提交」。拖拽排序只提交 `widgets`；若归一化补了空数组，一次排序就会清空 `servers` 与 `symbols`。这条是真实服务端到端才发现的——单元测试当时直接调 `merge` 绕过了归一化，于是恒绿。
@@ -77,7 +81,7 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 
 **新增模块的落点**：定义放 `public/modules/<id>.js`，id 加入 `App.KNOWN_MODULES`，配置项加入 `normalizeModulesConfig()` 的白名单。需要增长或查询的数据（条目、缓存）在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不预建空表。新增 `public/` 文件必须同步 `sw.js` 的 `ASSETS` 与 `CACHE`——延后加载的文件若不预缓存，回访用户每次打开模块都要走一次网络，与延后加载的初衷相反。
 
-**已按这条落地的第二个模块：备忘录（`memo.js`）**，它是目前唯一有自己数据表的模块——`MIGRATIONS` 尾部 v4 加 `memos`（`id` 主键 + `title` + `body` + `pinned` + `created_at` + `updated_at`），五条路由全部 `rateLimit, requireAdmin`（另有自己的 `memoLimit` 桶并入 60 秒 sweep）。三条与平台约定相关的实现纪律：
+**已按这条落地的第二个模块：备忘录（`memo.js`）**，它是目前唯一有自己数据表的模块——`MIGRATIONS` 尾部 v4 加 `memos`（`id` 主键 + `title` + `body` + `pinned` + `created_at` + `updated_at`）。五条路由的守卫**读与写不同**：读（`GET /api/memos`）是 15 秒一次的轮询，走 `modulePollLimit, requireAdmin`；写（新建 / 编辑 / 固定 / 删除）是用户手动发起的，走 `rateLimit, requireAdmin, memoLimit`。理由见「登录防爆破」一节：轮询按标签页数线性增长，算进管理桶会自己打满。三条与平台约定相关的实现纪律：
 
 1. **模块不得引用 `app.js` 内部的标识符。** `API` 是 `app.js` IIFE 的 `const`，不是全局；平台通过 `mountWidget(shell, { api })` 注入。写裸 `API` 时 `node --check` 与源码形状断言都过得去，只有真在浏览器里跑起来才以 `ReferenceError` 现形。
 2. **模块自己的元素 id 必须带模块前缀。** 与管理端弹窗撞名（如 `#saveBtn`，`app.js:1037`）会让 `querySelector('#saveBtn')` 命中那个隐藏的按钮，点击落到遮罩上——看起来像「保存没反应」，实际是面板被关掉、内容丢失。
@@ -496,6 +500,16 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 `/api/session` 已从 `rateLimit` 改到 `publicReadLimit`：它每次首屏都调，不该挤占登录配额。
 锁定与总量两个 Map 都挂在既有的 60 秒清扫定时器上，不会随访问量无限增长。
+
+**`rateLimit` 是「管理操作」的桶，不是「页面自己按周期打的请求」的桶。** 它同时是 `/api/verify-password` 的第一层防爆破（30 次/分钟/IP），所以任何**按轮询或按首屏自动发出**的请求都不该计在它头上——否则「正常使用」自己就能把桶打满。这条已经处理过两次：`/api/session` 挪到 `publicReadLimit`；`GET /api/modules/metrics` 与 `GET /api/memos` 挪到 `modulePollLimit`（120 次/分钟，按「2 个接口 × 周期下限 6 次/分钟 × 10 个标签页」推导）。
+
+⚠️ 后者不是理论风险：轮询按**标签页数**线性增长，一个标签页空闲就占 8 次/分钟，而一次页面加载另占 3 次——单开一个标签页刷 7~8 次、两个标签页刷 4~5 次即打满。实测（一分钟连刷 12 次）：第 9 秒起 `/api/modules/config` 连续 429，**模块区整个渲染不出来**，`metrics` 同时报「监控数据读取失败」——两条症状同源，看起来却像两个不同的故障。
+
+⚠️ 它的代价要写清：这两条是 `requireAdmin` 门控，无会话时它会跑一次 bcrypt（正常会话命中不走），所以伪造 `X-Admin-Password` 打它们时，可触发的 bcrypt 上限从 30 次/分钟升到 120 次/分钟。仍是有界的，且不必放宽登录那条路径——**提高 `rateLimit` 才是不能做的那个**（等于把暴力破解额度一起放宽 4 倍）。
+
+判据：**这个请求是用户按出来的，还是页面自己按周期重复打的？** 后者一律另开一只桶，并登记进 60 秒清扫定时器（`tests/monitor-agent.test.js` 有一条枚举断言：仓库里每个限流 `*Map` 都必须在那个定时器里，新桶漏掉会直接转红）。
+
+⚠️ **`GET /api/modules/config` 仍在这只管理桶里，是**有意留着的**，不是遗漏。** 它确实是首屏自动发出的（每次登录态加载一次），但**每次加载只有 1 次**、不随标签页数增长——30 次/分钟的额度要 30 次/分钟的加载才打得满，不是现实用量。而且它一旦 429，模块区现在会**把原因与重试按钮渲染出来**（见「登录后模块平台」一节），症状是可读的而不是静默的。真正的判据是**频率是否随用量线性增长**，不是「是不是自动发的」。若哪天它变成按周期打，再挪不迟。
 
 `server.js` 设置 `app.set('trust proxy', 1)`，限流与日志据此使用 `req.ip` 取真实客户端地址。跳数 `1` 表示只信任最右侧一跳——该跳正是 nginx 用 `proxy_add_x_forwarded_for` 追加 `$remote_addr` 的位置，客户端自带的 `X-Forwarded-For` 会因截断而被丢弃。
 

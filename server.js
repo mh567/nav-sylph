@@ -256,6 +256,39 @@ function publicReadLimit(req, res, next) {
     next();
 }
 
+// 后台轮询接口（/api/modules/metrics、/api/memos）的限流。
+//
+// 这两条是**轮询**打的：每个开着的前台标签页每 pollInterval 各打一次，
+// 最短周期 10 秒即 6 次/分钟/接口。它们原先与管理操作共用 rateLimit
+// （30 次/分钟/IP），于是「正常使用」自己就能把桶打满——实测：
+//   · 一次页面加载占 3 次（modules/config + metrics + memos），
+//   · 一个标签页空闲轮询占 8 次/分钟（两个接口各 4 次），
+// 所以单开一个标签页时刷 7~8 次、两个标签页时刷 4~5 次就打满。
+// 实测复现（一分钟连刷 12 次）：第 9 秒起 /api/modules/config 连续 429，
+// 模块区因此渲染不出来；metrics 则显示「监控数据读取失败」——两条症状
+// 同源，而它们看起来像两个不同的故障。
+//
+// 单独计数而**不是**提高 rateLimit：rateLimit 同时是
+// /api/verify-password 的第一层防爆破，放宽它等于把暴力破解的额度一起
+// 放宽 4 倍。这与 publicReadLimit 早先为 /api/session 做过的是同一件事。
+// 阈值按轮询推导：2 个接口 × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 120。
+//
+// 代价：这两条是 requireAdmin 门控，无会话时它会跑一次 bcrypt（正常会话
+// 命中不走）。所以伪造 X-Admin-Password 打这两个接口时，可触发的 bcrypt
+// 上限从 30 次/分钟升到 120 次/分钟；仍是有界的，且不必放宽登录那条路径。
+const modulePollLimitMap = new Map();
+const MODULE_POLL_WINDOW = 60000;
+const MODULE_POLL_MAX = 120;
+
+function modulePollLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const { allowed } = consumeRateLimit(modulePollLimitMap, ip, Date.now(), MODULE_POLL_WINDOW, MODULE_POLL_MAX);
+    if (!allowed) {
+        return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    next();
+}
+
 function isOverPasteCapacity(count, totalBytes) {
     return count >= PASTE_MAX_ENTRIES || totalBytes >= PASTE_MAX_BYTES;
 }
@@ -302,6 +335,8 @@ setInterval(() => {
     // 异常流量同样只增不减。桶定义在下方「备忘录 API」小节，
     // 与注册桶同理：定时器 60 秒后才触发，那时 const 已初始化。
     sweepRateLimitStore(memoRateLimitMap, now, MEMO_LIMIT_WINDOW);
+    // 模块轮询桶：按 IP 计数，不清就会随标签页数量无限增长。
+    sweepRateLimitStore(modulePollLimitMap, now, MODULE_POLL_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
     // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
@@ -2240,7 +2275,8 @@ async function collectAllServers(passwordHash) {
     return results;
 }
 
-app.get('/api/modules/metrics', rateLimit, requireAdmin, async (req, res) => {
+// 轮询接口：走轮询专用桶，不占管理操作的预算（见 modulePollLimit 的注释）。
+app.get('/api/modules/metrics', modulePollLimit, requireAdmin, async (req, res) => {
     try {
         res.setHeader('Cache-Control', 'no-store');
 
@@ -2978,8 +3014,12 @@ app.post('/api/modules/agent-push', pushLimit, async (req, res) => {
 //
 // 登录后的私有数据（SQLite memos 表，v4 迁移——独立于
 // config.json：那里的 key 会经 toPublicConfig 下发给匿名访客）。
-// 每条路由 rateLimit + requireAdmin + memoLimit：共享防爆破桶之外
-// 再按 IP 单列一只桶，15s 轮询只占 4 次/分钟，远低于上限。
+//
+// 写操作（POST / pin / DELETE）在共享防爆破桶之外再按 IP 单列一只桶：
+// 那是**用户手动发起**的动作，频率由人决定，30 次/分钟足够。
+// ⚠️ 读接口（GET /api/memos）**不**在这只桶里——它是 15 秒一次的轮询，
+// 按标签页数线性增长，算进来以后多开几个标签页就会自己打满（8 个标签页
+// × 4 次/分钟 = 32 > 30）。它走 modulePollLimit。
 // 容量与长度在服务端再校验一遍——客户端 maxlength 只是体验不是边界。
 const MEMO_LIMIT_WINDOW = 60000;
 const MEMO_LIMIT_MAX = 30;
@@ -3021,7 +3061,9 @@ const MEMO_SELECT = 'SELECT id, title, body, pinned, created_at, updated_at FROM
 // 单一真相源，客户端不再各自排序。
 const MEMO_LIST_SQL = MEMO_SELECT + ' ORDER BY pinned DESC, updated_at DESC';
 
-app.get('/api/memos', rateLimit, requireAdmin, memoLimit, async (req, res) => {
+// 轮询接口：走轮询专用桶。**不带 memoLimit**——那只桶留给下面的写操作
+//（用户手动增删改），把 15 秒一次的读也算进去会让多标签页用户自己打满它。
+app.get('/api/memos', modulePollLimit, requireAdmin, async (req, res) => {
     try {
         const rows = db.prepare(MEMO_LIST_SQL).all();
         // 与 metrics 路由同理：回当前生效的周期，

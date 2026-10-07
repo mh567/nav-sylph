@@ -286,8 +286,18 @@
                 credentials: 'same-origin',
                 cache: 'no-store'
             });
-            const payload = await res.json();
-            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+            // 解析要容错：反代自己返回 429 时响应体常常是 HTML，`res.json()` 会抛，
+            // 那样状态码就带不出来，429 又会退回「监控数据读取失败」这一句。
+            let payload = null;
+            try { payload = await res.json(); } catch { /* 非 JSON 响应体 */ }
+            if (!res.ok) {
+                // 带上状态码：429 是「你刷太快」，不是「数据读不到」——两者的
+                // 下一步完全不同（等一分钟 vs 去查服务）
+                const err = new Error((payload && payload.error) || `HTTP ${res.status}`);
+                err.status = res.status;
+                throw err;
+            }
+            if (!payload) throw new Error('返回格式不可识别');
             lastPayload = payload;
 
             // 服务端会回当前生效的周期：用户在后台改过之后，
@@ -334,9 +344,12 @@
 
         } catch (e) {
             console.error('Server monitor poll failed:', e);
+            // 429 不能显示成「读取失败」：那会让人去查服务端，而实际只要等一分钟。
+            // 指纹带上这句话，否则先 429 后真失败时，卡上那句会停在旧文案上。
+            const msg = e && e.status === 429 ? '请求过于频繁，稍后自动重试' : '监控数据读取失败';
             for (const card of cards.values()) {
-                card.body.replaceChildren(errorBox('监控数据读取失败'));
-                card.bodyKey = '!error';
+                card.body.replaceChildren(errorBox(msg));
+                card.bodyKey = `!error|${msg}`;
             }
             if (requestStack) requestStack();
         } finally {

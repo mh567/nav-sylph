@@ -220,6 +220,14 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         }
     };
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 每个模块端点各挂哪只桶。默认是管理操作桶 rateLimit；
+    // **轮询端点**（metrics）用自己的 modulePollLimit——它每 pollInterval 就被
+    // 每个标签页打一次，按标签页数线性增长，算进 30 次/分钟的管理桶会让
+    // 「正常刷几次页面」就把桶打满（实测：一分钟刷 12 次即 429，模块区整个
+    // 渲染不出来）。理由写在 server.js 的 modulePollLimit 注释里。
+    const LIMITER_OF = {
+        "app.get('/api/modules/metrics'": 'modulePollLimit'
+    };
     for (const route of moduleRoutes) {
         const exempt = NO_ADMIN_ROUTES[route];
         if (exempt) {
@@ -231,12 +239,17 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
                 `${route} 一旦挂上 requireAdmin，这条链路就废了（${exempt.why}）`);
             continue;
         }
-        assert.match(routes, new RegExp(escapeRe(route) + ', rateLimit, requireAdmin,'),
-            `${route} 必须走 rateLimit + requireAdmin`);
+        const limiter = LIMITER_OF[route] || 'rateLimit';
+        assert.match(routes, new RegExp(escapeRe(route) + `,\\s*${limiter}, requireAdmin,`),
+            `${route} 必须走 ${limiter} + requireAdmin`);
     }
     // 豁免名单里的路由必须真的存在，否则删掉端点后这条会静默通过
     for (const route of Object.keys(NO_ADMIN_ROUTES)) {
         assert.ok(moduleRoutes.includes(route), `豁免的 ${route} 确实存在`);
+    }
+    // 指定了限流桶的路由同理：改回 rateLimit 而这份名单没动时，上面那条会转红
+    for (const route of Object.keys(LIMITER_OF)) {
+        assert.ok(moduleRoutes.includes(route), `指定了限流桶的 ${route} 确实存在`);
     }
 });
 

@@ -50,7 +50,7 @@ test('v4 迁移建出 memos 表，且是在数组尾部追加（不改已发布�
 
 // ========== 路由形状：五条，每条都带守卫 ==========
 
-test('五条 /api/memos 路由全部带 rateLimit, requireAdmin', () => {
+test('五条 /api/memos 路由：读走轮询桶，写走管理桶 + memoLimit', () => {
     const code = stripComments(server);
     const routes = [...code.matchAll(/app\.(get|post|delete)\('(\/api\/memos[^']*)'/g)];
     assert.equal(routes.length, 5, `应有 5 条备忘录路由，实测 ${routes.length}`);
@@ -58,14 +58,28 @@ test('五条 /api/memos 路由全部带 rateLimit, requireAdmin', () => {
     // 正向枚举：逐条断言守卫链，不用负向 lookahead（那种写法是恒真的）。
     // 每条都用自身匹配的 index 取链，不能按路径去 find——同一路径的 GET/POST
     // 会互相取错锚点。
+    //
+    // ⚠️ 读与写用的**不是同一只桶**。GET 是 15 秒一次的轮询，按标签页数线性
+    // 增长：算进 30 次/分钟的管理桶，8 个标签页 × 4 次/分钟就超了——那时
+    // 首页模块区会整个渲染不出来（实测过）。它走 modulePollLimit（120/分钟）；
+    // 写是用户手动发起的，走 rateLimit + memoLimit。
     for (const m of routes) {
         const [, method, route] = m;
         const head = code.slice(m.index);
         const handlerAt = head.indexOf('=>');
         assert.ok(handlerAt > 0, `${method} ${route} 的处理函数可定位`);
         const chain = head.slice(0, handlerAt);
-        assert.ok(chain.includes('rateLimit') && chain.includes('requireAdmin'),
-            `${method} ${route} 必须同时挂 rateLimit 与 requireAdmin，实际：${chain.trim()}`);
+        assert.ok(chain.includes('requireAdmin'),
+            `${method} ${route} 必须挂 requireAdmin，实际：${chain.trim()}`);
+        if (method === 'get') {
+            assert.ok(chain.includes('modulePollLimit'),
+                `GET ${route} 是轮询，必须走 modulePollLimit，实际：${chain.trim()}`);
+            assert.ok(!chain.includes('rateLimit,') && !chain.includes('memoLimit'),
+                `GET ${route} 不得占用管理桶或写桶，实际：${chain.trim()}`);
+        } else {
+            assert.ok(chain.includes('rateLimit') && chain.includes('memoLimit'),
+                `${method} ${route} 写操作必须挂 rateLimit 与 memoLimit，实际：${chain.trim()}`);
+        }
     }
 });
 
@@ -80,8 +94,13 @@ test('备忘录限流桶登记进 60 秒 sweep 定时器（无界 Map 不能只�
 
 /**
  * 抽出 server.js 的「备忘录 API」整节，只替换外部依赖：
- * app 记录路由，rateLimit/requireAdmin 放行（鉴权由下面的 HTTP 边界用例覆盖），
- * db 用临时库（真跑迁移），readPollInterval 固定 15。
+ * app 记录路由，几个限流中间件与 requireAdmin 放行（鉴权与限流本身
+ * 由别处的路由形状断言与 HTTP 边界用例覆盖），db 用临时库（真跑迁移），
+ * readPollInterval 固定 15。
+ *
+ * ⚠️ 三只桶都要桩上：读接口走 modulePollLimit，写接口走 rateLimit + memoLimit。
+ * 少桩一只，`app.get(..., undefined, ...)` 会在注册时抛，表现为一串与本用例
+ * 无关的失败。
  */
 function loadMemoRoutes(db) {
     const begin = server.indexOf('const MEMO_LIMIT_WINDOW');
@@ -90,10 +109,13 @@ function loadMemoRoutes(db) {
 
     const routes = new Map();
     const record = method => (route, ...mw) => routes.set(`${method} ${route}`, mw);
+    const pass = (req, res, next) => next();
     const context = {
         app: { get: record('GET'), post: record('POST'), delete: record('DELETE') },
-        rateLimit: (req, res, next) => next(),
-        requireAdmin: (req, res, next) => next(),
+        rateLimit: pass,
+        modulePollLimit: pass,
+        memoLimit: pass,
+        requireAdmin: pass,
         resolveClientIp: req => req.ip || '127.0.0.1',
         readPollInterval: async () => 15,
         crypto: require('node:crypto'),

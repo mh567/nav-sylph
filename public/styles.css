@@ -3101,7 +3101,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-widget-retry { min-height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-top); color: var(--text-secondary); font-size: 11px; font-family: inherit; cursor: pointer; }
 .module-widget-retry:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .module-widget-retry:disabled { opacity: .5; cursor: default; }
-.module-zone-error { display: flex; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); color: var(--text-muted); font-size: 11px; }
+/* 模块区整体的错误条（配置没拿到时渲染的那一条）。
+   ⚠️ 必须自己开 pointer-events：`.module-zone` 是 `pointer-events: none`，
+   而只有 `.module-zone-inner > .module-widget` 与 `[data-dock="below"]` 两处
+   重新打开——错误条是 `.module-zone` 的**直接子节点**，不在那两条规则里，
+   于是里面那个「重试」按钮点不动（实测命中测试返回的是 app）。 */
+.module-zone-error { pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); color: var(--text-muted); font-size: 11px; }
 
 /* 全屏模块面板 */
 .module-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }

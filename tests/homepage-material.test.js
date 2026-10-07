@@ -277,8 +277,18 @@ test('模块区停靠方式由 JS 按实际余量判定，不靠媒体查询', (
         '判据必须读实际渲染宽度');
     assert.match(appSource, /side\w*\s*>=\s*MIN_SIDE\s*\+\s*GAP/,
         '余量不足最小宽度加间隙时判为放不下');
-    assert.match(appSource, /zone\.dataset\.dock\s*=\s*this\.sideDockAvailable\(\)\s*\?\s*'outside'\s*:\s*'below'/,
-        '两种停靠方式都要有对应的 data-dock 值');
+    // 两种停靠方式都要有对应的 data-dock 值。
+    // ⚠️ 别钉死三元表达式的具体写法：错误态会**强制**走 below（错误条不是模块卡片，
+    // 见 renderModuleZone 的注释——跟着宽屏走 outside 会横铺压住搜索框），
+    // 于是这一行多了个条件。钉「两个值都出现在这条赋值里」，不钉顺序。
+    const dockLine = /zone\.dataset\.dock\s*=\s*[^;]*/.exec(appSource)?.[0] || '';
+    assert.ok(dockLine, '定位到 data-dock 赋值那一行');
+    assert.match(dockLine, /'outside'/, "赋值里要出现 'outside'");
+    assert.match(dockLine, /'below'/, "赋值里要出现 'below'");
+    assert.match(dockLine, /\bsideDock\b/, '余量判定仍是这一行的依据');
+    // 那个变量必须真的来自实测量（别把它换成常量）
+    assert.match(appSource, /const\s+sideDock\s*=\s*this\.sideDockAvailable\(\)/,
+        'sideDock 取自 sideDockAvailable() 的实测量');
     // 跨过阈值要重新摆放，否则窗口拉宽后模块仍挤在下方
     assert.match(appSource, /addEventListener\('resize'[\s\S]*?sideDockAvailable\(\)[\s\S]*?renderModuleZone\(\)/,
         'resize 时要重算并重绘');

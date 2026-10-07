@@ -95,7 +95,12 @@
         },
         async get(url) {
             const { res, data } = await API.request(url);
-            if (!res.ok) throw new Error(res.statusText);
+            // 带上状态码：调用方要能区分「请求过于频繁（429）」与「真的读不到」。
+            // 混成一句话会让用户完全找不到下一步——同一个限流桶曾同时表现为
+            // 「模块加载不出来」与「监控数据读取失败」两种听起来无关的症状。
+            if (!res.ok) {
+                throw Object.assign(new Error(res.statusText || `HTTP ${res.status}`), { status: res.status });
+            }
             return data;
         },
         async post(url, body) {
@@ -255,7 +260,10 @@
                 // 失败必须 render 出来，而不是留一个空白的模块区：
                 // 无声失败过一次（WebDAV 分区永远停在「加载中...」）。
                 console.error('Load modules config failed:', e);
-                this.modulesError = '模块配置加载失败';
+                // 429 要说清楚：掩成「加载失败」用户只会一直刷新，而越刷越久
+                this.modulesError = e && e.status === 429
+                    ? '请求过于频繁，请等一分钟再刷新'
+                    : '模块配置加载失败';
                 return null;
             } finally {
                 this.modulesLoading = false;
@@ -312,17 +320,31 @@
             }
             if (!this.modulesConfig) await this.loadModulesConfig();
 
+            // 停靠方式必须在**错误分支之前**定下来：`.module-zone` 的基础规则是
+            // `position: absolute; pointer-events: none`，不设 data-dock 的话失败时
+            // 错误条会横铺在页面顶部，而且里面的「重试」按钮点不动。
+            //
+            // ⚠️ 但错误态**一律走 below**：`[data-dock="outside"]` 没有自己的 CSS 块
+            // （那个模式靠每张卡片各自绝对定位），错误条是个普通 div，会按基础规则
+            // 铺成 y=48..102 的全宽条——实测压住搜索框 19px，而它是 pointer-events:auto，
+            // 会挡住搜索框下沿的点击。below 是文档流里、分类网格下方的一条横幅。
+            const sideDock = this.sideDockAvailable();
+            zone.dataset.dock = (this.modulesError || !sideDock) ? 'below' : 'outside';
+
+            // ⚠️ 加载失败要**先说话**：config 没拿到时 enabledModuleIds() 是空的，
+            // 若先判空再返回，模块区会静默消失——用户看到的是「模块加载不出来」
+            // 而屏幕上没有任何线索（首次加载时下面那段错误 UI 走不到）。
+            // 本仓库同一条教训：失败的请求必须渲染失败，不能只是跳过成功分支。
+            if (this.modulesError) {
+                zone.hidden = false;
+                zone.replaceChildren(this.renderModuleZoneError());
+                return;
+            }
+
             const ids = this.enabledModuleIds();
             if (!ids.length) {
                 zone.hidden = true;
                 zone.replaceChildren();
-                return;
-            }
-
-            zone.dataset.dock = this.sideDockAvailable() ? 'outside' : 'below';
-            if (this.modulesError) {
-                zone.hidden = false;
-                zone.replaceChildren(this.renderModuleZoneError());
                 return;
             }
 

@@ -3422,8 +3422,7 @@ test('卡片按内容指纹跳过重建，纵向重排同一帧内合并成一�
     assert.match(poll, /if \(card\.bodyKey !== key\)/, '指纹相同就跳过重建');
     assert.match(poll, /renderCardBody\(card\.body, entry, payload\.updatedAt\)/, '变了才重建');
     assert.match(poll, /if \(rendered && requestStack\) requestStack\(\)/, '只有真的重建过才重排');
-    assert.match(poll, /card\.bodyKey = '!error'/,
-        '失败态重置指纹，否则恢复后仍停在错误态');
+    assert.match(poll, /card\.bodyKey = `!error\|/, '失败态重置指纹，否则恢复后仍停在错误态');
     assert.match(mod, /bodyKey: bodyKeyOf\(entry, null\)/,
         '挂载时记下首轮指纹，否则第一次轮询会白重建一遍');
     // 状态位与名称仍要每轮更新——它们不是卡片体的一部分
@@ -3492,6 +3491,104 @@ test('卡片右下角显示「最后更新」，不再显示单次请求耗时',
     assert.doesNotMatch(panel, /latencyMs/, '详情页不得再读那个耗时字段');
     assert.match(panel, /add\('数据来源', '目标机推送'\)/, '推送模式的数据来源仍在');
     assert.match(panel, /lastPayload && lastPayload\.cached \? '缓存' : '实时采集'/, '拉取模式的数据来源仍在');
+});
+
+test('模块轮询接口有自己的限流桶，不占管理操作的额度', () => {
+    // 用户报：「更新以后，有时刷新后显示监控数据读取失败模块加载不出来」。
+    // 复现（一分钟内连刷 12 次）：第 6 秒 /api/memos 429、第 9 秒起
+    // /api/modules/config 连续 5 次 429（模块区因此渲染不出来），metrics
+    // 之后根本没再发。根因是这两条**轮询**接口与管理操作共用
+    // rateLimit（30 次/分钟/IP），而轮询按标签页数线性增长：
+    // 一次加载占 3 次，一个标签页空闲轮询占 8 次/分钟。
+    const code = stripComments(serverSource);
+
+    // ① 桶本身
+    assert.match(code, /const modulePollLimitMap = new Map\(\)/, '轮询桶已声明');
+
+    // ② 阈值必须是**推导**出来的，不是拍脑袋：接口数 × 最短周期次数 × 标签页数
+    const intervals = (/const POLL_INTERVALS = \[([^\]]*)\]/.exec(code)?.[1] || '')
+        .split(',').map(s => Number(s.trim())).filter(Number.isFinite);
+    assert.ok(intervals.length >= 3, `解析出轮询周期白名单（${intervals.join(',')}）`);
+    const perTabPerMin = Math.ceil(60000 / (Math.min(...intervals) * 1000)) * 2;  // 两个轮询接口
+    const max = Number(/const MODULE_POLL_MAX = (\d+)/.exec(code)?.[1]);
+    assert.ok(Number.isFinite(max), '阈值是显式常量');
+    assert.ok(max % perTabPerMin === 0, `阈值 ${max} 应是「每标签页每分钟 ${perTabPerMin} 次」的整数倍`);
+    // ⚠️ 只断言「是整数倍且 ≥2 个标签页」太松：把 120 改成 24（= 2 个标签页）仍然全绿，
+    // 而 24 会让 3 个标签页就复现本轮那个 bug。钉住**文档里那个推导出来的余量**。
+    assert.ok(max >= perTabPerMin * 10,
+        `阈值 ${max} 至少要容得下 10 个标签页（每标签页 ${perTabPerMin} 次/分钟 → 需要 ≥${perTabPerMin * 10}）`);
+
+    // ③ 两条轮询接口用它，且不再占管理桶
+    // ⚠️ 末端锚点也要断言：`indexOf` 返回 -1 时 slice 会静默切到文件末尾，
+    // 那时 chain 是整份 server.js，正向断言反而更容易被满足。
+    const chainOf = route => {
+        const at = code.indexOf(route);
+        assert.ok(at > 0, `找到 ${route}`);
+        const end = code.indexOf('(req, res)', at);
+        assert.ok(end > at, `${route} 的守卫链可切片（${at}/${end}）`);
+        return code.slice(at, end);
+    };
+    for (const route of ["app.get('/api/modules/metrics'", "app.get('/api/memos'"]) {
+        const chain = chainOf(route);
+        assert.match(chain, /modulePollLimit/, `${route} 走轮询桶`);
+        assert.doesNotMatch(chain, /rateLimit,/, `${route} 不得再占管理桶`);
+    }
+
+    // ④ 写操作仍在管理桶 + 写桶里——别把写也一起放出去了
+    for (const route of ["app.post('/api/memos'", "app.post('/api/memos/:id'",
+        "app.post('/api/memos/:id/pin'", "app.delete('/api/memos/:id'"]) {
+        const chain = chainOf(route);
+        assert.match(chain, /rateLimit/, `${route} 仍走管理桶`);
+        assert.match(chain, /memoLimit/, `${route} 仍走写桶`);
+    }
+
+    // ⑤ GET /api/memos 不得再挂写桶：那只桶按标签页数会自己打满（8 × 4 > 30）
+    assert.doesNotMatch(chainOf("app.get('/api/memos'"), /memoLimit/, 'GET /api/memos 不挂写桶');
+
+    // ⑥ 客户端要把 429 与「读取失败」分开说：一个 429 伪装成「监控数据读取失败」，
+    //    正是这次难定位的原因（用户会去查服务端，而实际只要等一分钟）。
+    const mod = stripComments(moduleSource);
+    const appCode = stripComments(appSource);
+    assert.match(mod, /e\.status === 429/, '监控轮询失败时区分 429');
+    assert.match(appCode, /e\.status === 429/, '模块配置加载失败时区分 429');
+    assert.match(appCode, /throw Object\.assign\(new Error\([^)]*\), \{ status: res\.status \}\)/,
+        'API.get 要把状态码带出来，否则调用方无从区分');
+});
+
+test('模块配置加载失败要渲染错误，不能静默收起模块区', () => {
+    // 用户报「模块加载不出来」时，模块区其实是**静默消失**的：config 没拿到时
+    // `enabledModuleIds()` 返回空数组，函数在更早处就 `hidden` 返回了，于是
+    // 下面那段错误 UI 永远走不到（是死代码）。实测把 /api/modules/config 打成
+    // 429 复现：模块区文案为空、也没有重试按钮。
+    const code = stripComments(appSource);
+    const body = methodBodyOf(code, 'renderModuleZone');
+    assert.ok(body.length > 300, `切出 renderModuleZone（${body.length}）`);
+    const errAt = body.indexOf('if (this.modulesError)');
+    const idsAt = body.indexOf('const ids = this.enabledModuleIds()');
+    assert.ok(errAt > 0 && idsAt > 0, `两处都在（err=${errAt} ids=${idsAt}）`);
+    assert.ok(errAt < idsAt, 'modulesError 必须排在「没有已启用模块」判空之前');
+    assert.match(body.slice(errAt, idsAt), /renderModuleZoneError\(\)/,
+        '失败要渲染错误与重试，而不是换个姿势 hidden');
+    // 那条文案本身要能区分 429——否则用户只会一直刷新
+    assert.match(code, /this\.modulesError = e && e\.status === 429/, '429 与普通失败分开说');
+
+    // ⚠️ 光把错误渲染出来不够：停靠方式必须在这之前定下来，否则 `data-dock` 没赋值，
+    // `.module-zone` 保持默认的 `absolute` + `pointer-events: none`——错误条会横铺在
+    // 页面顶部盖住搜索区，**而且里面那个「重试」按钮点不动**。
+    // 实测（冷启动、把 config 打成 429）：document.elementFromPoint 落在按钮中心
+    // 返回的是 app，不是按钮本身。
+    const dockAt = body.indexOf('zone.dataset.dock = (this.modulesError || !sideDock)');
+    assert.ok(dockAt > 0 && dockAt < errAt,
+        `停靠方式必须在错误分支之前（dock=${dockAt} err=${errAt}）`);
+    // 而且错误态必须**一律 below**：`[data-dock="outside"]` 没有自己的 CSS 规则
+    // （那个模式靠每张卡片各自绝对定位），错误条是普通 div，会按 `.module-zone`
+    // 的基础规则横铺在 y=48..102——实测压住搜索框 19px，而它是 pointer-events:auto。
+    assert.match(body.slice(dockAt, errAt), /this\.modulesError \|\| !sideDock/,
+        '错误态走 below，不跟着宽屏走 outside');
+    // 错误条是 `.module-zone` 的**直接子节点**，不在「.module-zone-inner > .module-widget」
+    // 与「[data-dock=below]」那两条重新打开 pointer-events 的规则里，得自己开。
+    assert.match(stripComments(stylesSource), /\.module-zone-error\s*\{[^}]*pointer-events:\s*auto/,
+        '错误条必须自己开 pointer-events，否则「重试」点不动');
 });
 
 test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {
