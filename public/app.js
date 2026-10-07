@@ -213,6 +213,13 @@
          */
         static FIRST_ROUND_TIMEOUT_MS = 1500;
 
+        /**
+         * 模块区首次出现的淡入上浮时长。**必须与 styles.css 里
+         * `moduleEnter` 的 animation-duration 一致**——摘标记的兜底定时器
+         * 按它算，两处漂移会让兜底早于/晚于动画结束（有断言钉住）。
+         */
+        static MODULE_ENTER_MS = 260;
+
         static moduleDefs = new Map();
 
         registerModule(def) {
@@ -294,6 +301,9 @@
         async renderModuleZone() {
             const zone = $('#moduleZone');
             if (!zone) return;
+            // 是否**由隐藏变可见**：只有这一次才播出现动画。主题切换、视口
+            // 变化、模块开关等都会重渲染，那些不该再播一遍。
+            const wasHidden = zone.hidden;
 
             if (!this.authenticated) {
                 zone.hidden = true;
@@ -361,6 +371,41 @@
                 // 动画**永久**失效——它是全局关掉 .module-widget 过渡的。
                 zone.classList.remove('is-laying-out');
             }
+
+            // 摆好位之后再播淡入上浮（同一帧内加类，首帧就是 opacity 0，
+            // 不会先亮一下再暗下去）。
+            if (wasHidden) this.playModuleEntrance(zone);
+        }
+
+        /**
+         * 模块区首次出现时的淡入上浮。
+         *
+         * ⚠️ 动画结束后**必须**把类摘掉：CSS 用的是 `animation-fill-mode: both`，
+         * 最后一帧（`transform: none`）会被一直保留，而拖拽正是靠 inline
+         * `transform` 跟手——留着它，拖拽当场失效。
+         * 摘除有两条路：`animationend`（正常）与定时器兜底（动画没跑时，
+         * 例如标签页在后台、或系统开了「减少动态效果」）。
+         */
+        playModuleEntrance(zone) {
+            const cls = 'is-entering';
+            zone.classList.add(cls);
+            let done = false;
+            const onEnd = ev => {
+                // 只认自己那条动画。子元素上将来若加一条**有限**动画，它的
+                // animationend 会冒泡上来，按名字过滤才不会被别人的动画提前摘掉。
+                // （备忘录那个 spinner 是 infinite，只发 animationiteration，
+                // 不在此列——这里防的是以后的改动，不是现在这个。）
+                if (ev.animationName !== 'moduleEnter') return;
+                finish();
+            };
+            const finish = () => {
+                if (done) return;
+                done = true;
+                zone.classList.remove(cls);
+                zone.removeEventListener('animationend', onEnd);
+            };
+            zone.addEventListener('animationend', onEnd);
+            setTimeout(finish, App.MODULE_ENTER_MS + 150);
         }
 
         /** 加载一个模块并返回它的 DOM 节点；加载失败返回错误卡片而非抛出。

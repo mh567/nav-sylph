@@ -3426,3 +3426,57 @@ test('卡片按内容指纹跳过重建，纵向重排同一帧内合并成一�
     // 状态位与名称仍要每轮更新——它们不是卡片体的一部分
     assert.match(poll, /card\.status\.dataset\.kind !== kind/, '状态位照旧每轮比对');
 });
+
+test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {
+    // 用户原话：「给模块加载增加一个淡入或其他动画效果，现在直接冒出来有些生硬」。
+    const code = stripComments(appSource);
+    const css = stripComments(stylesSource);
+
+    // ① 只在**由隐藏变可见**时播：wasHidden 必须在 hidden=false 之前取，
+    //    否则主题切换、视口变化那些重渲染也会重播一遍。
+    const body = methodBodyOf(code, 'renderModuleZone');
+    assert.ok(body.length > 300, `切出 renderModuleZone（${body.length}）`);
+    const wasAt = body.indexOf('const wasHidden = zone.hidden');
+    const showAt = body.lastIndexOf('zone.hidden = false');
+    assert.ok(wasAt >= 0 && showAt > wasAt, `先记原状态再显形（was=${wasAt} show=${showAt}）`);
+    const callAt = body.indexOf('if (wasHidden) this.playModuleEntrance(zone)');
+    assert.ok(callAt > showAt, '摆好位之后再播');
+
+    // ② 摘类：animationend 按名字过滤 + 定时器兜底 + 真的把类摘掉。
+    //    ⚠️ 不摘的话 `animation-fill-mode: both` 会把最后一帧的
+    //    `transform: none` 一直压着，而拖拽正是靠 inline transform 跟手。
+    const play = methodBodyOf(code, 'playModuleEntrance');
+    assert.ok(play.length > 300, `切出 playModuleEntrance（${play.length}）`);
+    assert.match(play, /zone\.classList\.add\(cls\)/, '加标记');
+    assert.match(play, /zone\.classList\.remove\(cls\)/, '必须摘标记');
+    assert.match(play, /ev\.animationName !== 'moduleEnter'/, '按动画名过滤冒泡上来的 animationend');
+    assert.match(play, /setTimeout\(finish, App\.MODULE_ENTER_MS \+ \d+\)/, '有定时器兜底');
+
+    // ③ CSS 与 JS 常量必须一致——两处漂移会让兜底早于/晚于动画结束
+    const cssMs = Number(/moduleEnter\s+(\d+)ms/.exec(css)?.[1]);
+    const jsMs = Number(/static MODULE_ENTER_MS = (\d+)/.exec(code)?.[1]);
+    assert.ok(Number.isFinite(cssMs) && Number.isFinite(jsMs), `取到两处时长（css=${cssMs} js=${jsMs}）`);
+    assert.equal(cssMs, jsMs, `CSS 时长(${cssMs}ms) 必须等于 JS 常量(${jsMs}ms)`);
+
+    // ④ 只动 opacity / transform——动布局属性会与 --stack-top 的让位动画打架。
+    //    ⚠️ 关键帧必须**按大括号配对**整段切出来：用 `/@keyframes X \{([\s\S]*?)\}/`
+    //    会在第一个 `}`（也就是 `from { … }` 的收尾）就停下，于是只检查了 from 帧，
+    //    往 `to` 帧里塞 margin/padding 仍然绿——实测过。
+    const kfAt = css.indexOf('@keyframes moduleEnter');
+    assert.ok(kfAt > 0, '找到 moduleEnter 关键帧');
+    let depth = 0, kfEnd = -1;
+    for (let i = css.indexOf('{', kfAt); i >= 0 && i < css.length; i++) {
+        if (css[i] === '{') depth++;
+        else if (css[i] === '}') { depth--; if (depth === 0) { kfEnd = i; break; } }
+    }
+    assert.ok(kfEnd > kfAt, `关键帧大括号配对成功（${kfAt}→${kfEnd}）`);
+    const kf = css.slice(kfAt, kfEnd + 1);
+    assert.ok(kf.length > 80, `切出完整关键帧而非只有 from 帧（${kf.length}）`);
+    assert.equal((kf.match(/\{/g) || []).length, 3, 'from / to 两帧都在里面');
+    assert.match(kf, /opacity:\s*0/, '从透明开始');
+    assert.match(kf, /translateY\(8px\)/, '上浮 8px');
+    assert.match(kf, /to\s*\{[^}]*opacity:\s*1/, '结束时完全不透明');
+    assert.doesNotMatch(kf, /margin|height|padding|top:/, '不得动布局属性（两帧都要查）');
+    assert.match(css, /\.module-zone\.is-entering \.module-widget\s*\{[^}]*animation:\s*moduleEnter/,
+        'CSS 里真有这条规则');
+});

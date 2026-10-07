@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>模块卡片 · 状态位置与出现动画 · 仿真样例</title>
+<style>
+/* ===== sylph 设计令牌（取自 public/styles.css 的材质层，两套成对） ===== */
+:root {
+    color-scheme: light;
+    --bg: #efede8; --bg-card: #faf8f4; --bg-hover: #f2ece5;
+    --text: #302b27; --text-secondary: #655e57; --text-muted: #817970;
+    --border: rgba(92,76,64,.18);
+    --accent: #945e4a; --accent-hover: #79503f;
+    --focus: rgba(148,94,74,.58);
+    --glass: rgba(252,250,246,.66); --glass-strong: rgba(252,250,246,.91);
+    --control-top: #fcfaf6; --control-bottom: #eee9e1;
+    --control-hover-top: #fffdf9; --control-hover-bottom: #f4eee6;
+    --control-pressed-top: #e9e2d9; --control-pressed-bottom: #f1ece5;
+    --shadow: 0 1px 3px rgba(60,45,32,.11), 0 4px 10px rgba(60,45,32,.07);
+    --shadow-lg: 0 4px 10px rgba(60,45,32,.10), 0 14px 30px rgba(60,45,32,.15);
+    --press-shadow: inset 0 2px 5px rgba(91,70,55,.20), inset 0 -1px rgba(255,255,255,.55);
+    --radius: 10px;
+    --pending: #a2762c; --alert: #a44c46;
+}
+[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #211f1c; --bg-card: #3a3530; --bg-hover: #4a4139;
+    --text: #f3eee8; --text-secondary: #c9beb3; --text-muted: #a89c90;
+    --border: rgba(222,203,185,.18);
+    --accent: #c28d70; --accent-hover: #d4a181;
+    --focus: rgba(223,169,140,.68);
+    --glass: rgba(65,58,51,.70); --glass-strong: rgba(57,51,46,.93);
+    --control-top: #625951; --control-bottom: #3c3630;
+    --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
+    --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
+    --shadow: 0 2px 4px rgba(0,0,0,.12), 0 10px 28px rgba(0,0,0,.20);
+    --shadow-lg: 0 5px 10px rgba(0,0,0,.18), 0 18px 34px rgba(0,0,0,.35);
+    --press-shadow: inset 0 3px 7px rgba(0,0,0,.45), inset 0 -1px rgba(255,255,255,.08);
+    --pending: #e0bd7a; --alert: #e9a69d;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding-top: 150px;
+    transition: background 160ms, color 160ms;
+}
+button { font-family: inherit; cursor: pointer; }
+
+/* ===== 工具栏 ===== */
+.toolbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1100;
+    display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    padding: 10px 16px;
+    background: var(--glass-strong);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(23px) saturate(118%);
+    -webkit-backdrop-filter: blur(23px) saturate(118%);
+    box-shadow: inset 0 1px rgba(255,255,255,.4), var(--shadow);
+}
+.toolbar-title { font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--text-secondary); margin-right: 6px; }
+.ctl { display: inline-flex; align-items: center; gap: 6px; }
+.ctl-label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: 999px; background: var(--glass); }
+.seg button {
+    border: 0; border-radius: 999px; padding: 3px 10px;
+    background: transparent; color: var(--text-secondary); font-size: 11px; line-height: 1.4;
+    transition: background 110ms, color 110ms;
+}
+.seg button:hover { background: var(--bg-hover); color: var(--text); }
+.seg button.on { background: var(--control-pressed-top); color: var(--text); box-shadow: var(--press-shadow); font-weight: 600; }
+.replay-btn {
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px;
+    background: var(--glass); color: var(--accent); font-size: 11px; font-weight: 600;
+    transition: background 110ms, transform 110ms;
+}
+.replay-btn:hover { background: var(--bg-hover); transform: translateY(-1px); }
+.replay-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
+
+/* ===== 舞台 ===== */
+.stage { padding: 26px 18px 30px; }
+.device { width: 100%; margin: 0 auto; }
+.stage-body { display: flex; gap: 20px; align-items: flex-start; justify-content: center; }
+.gutter { flex: 0 0 220px; display: flex; flex-direction: column; gap: 14px; }
+.board { flex: 0 1 936px; min-width: 0; }
+
+.sim-search {
+    display: flex; align-items: center; gap: 8px;
+    max-width: 560px; margin: 0 auto 22px; padding: 6px 8px 6px 12px;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: var(--glass); box-shadow: var(--shadow);
+    color: var(--text-muted); font-size: 13px;
+}
+.sim-search .sim-mode { font-size: 12px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
+.sim-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.sim-chip { padding: 9px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-card); color: var(--text-secondary); font-size: 12px; }
+.sim-cat { margin-bottom: 18px; }
+.sim-cat-title { margin-bottom: 8px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+
+/* ===== 模块卡片（= public/styles.css 里 .module-widget 的实测值） ===== */
+.module-widget {
+    padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--glass); box-shadow: var(--shadow);
+    width: var(--card-w, 220px);
+}
+.module-widget-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.module-widget-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }
+.module-widget-expand { min-height: 26px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 11px; }
+.module-widget-expand:hover { background: var(--bg-hover); color: var(--accent); }
+.module-drag-handle { width: 14px; height: 18px; border: 0; background: transparent; color: var(--text-muted); font-size: 11px; padding: 0; display: none; }
+/* 拖拽把手只在编辑态显示（= 真实实现的 .module-zone.is-editing .module-drag-handle） */
+.device.editing .module-drag-handle { display: block; }
+.module-drag-handle::before { content: '⠿'; }
+/* 「管理」移到右下角小字里时用的那个按钮 */
+.hint-action { border: 0; padding: 0; background: none; color: var(--text-muted); font-size: 10px; font-family: inherit; }
+.hint-action:hover { color: var(--accent); }
+.module-card-hint { margin-top: 2px; color: var(--text-muted); font-size: 10px; text-align: right; }
+.module-card-status {
+    display: inline-flex; align-items: center; gap: 4px;
+    flex: 0 0 auto; padding: 0 6px;
+    border: 1px solid currentColor; border-radius: 999px;
+    font-size: 9px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+}
+.module-card-status[data-kind="ready"] { color: var(--accent); }
+.module-card-status[data-kind="pending"] { color: var(--pending); }
+.module-card-status[data-kind="alert"] { color: var(--alert); }
+.memo-status-time { flex: 0 0 auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: memo-spin 700ms linear infinite; }
+@keyframes memo-spin { to { transform: rotate(360deg); } }
+.memo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; }
+
+/* 变体一：状态行**独占 body 第一行**（= 现状） */
+.memo-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+/* 变体二：状态并入卡片头，body 里不再有那一行 */
+.module-widget-head .module-card-status, .module-widget-head .memo-status-time { margin-left: 0; }
+
+.memo-rows { display: flex; flex-direction: column; gap: 2px; }
+.memo-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 7px; cursor: pointer; transition: transform 90ms, box-shadow 90ms, background 110ms; }
+.memo-row:hover { background: var(--bg-hover); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.memo-row svg { flex: 0 0 auto; color: var(--accent); }
+.memo-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 600; }
+.memo-row-time { flex: 0 0 auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.sim-metric { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sim-metric b { font-weight: 600; color: var(--text); }
+
+/* ===== 出现动画（可重播） =====
+   只用 opacity / transform —— 两者都由合成器处理，不触发布局，
+   与平台已有的 --stack-top（margin-top）那套互不干扰。 */
+@keyframes moduleFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes moduleRise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes modulePop  { from { opacity: 0; transform: scale(.965); } to { opacity: 1; transform: none; } }
+
+.device[data-anim="fade"] .module-widget.is-entering { animation: moduleFade 220ms ease-out both; }
+.device[data-anim="rise"] .module-widget.is-entering { animation: moduleRise 260ms cubic-bezier(.2,.8,.25,1) both; }
+.device[data-anim="pop"]  .module-widget.is-entering { animation: modulePop 240ms cubic-bezier(.2,.8,.25,1) both; }
+/* 逐张错开：每张晚 70ms 起步 */
+.device[data-anim="stagger"] .module-widget.is-entering { animation: moduleRise 260ms cubic-bezier(.2,.8,.25,1) both; animation-delay: calc(var(--i, 0) * 70ms); }
+/* 尊重系统的「减少动态效果」 */
+@media (prefers-reduced-motion: reduce) {
+    .device[data-anim] .module-widget.is-entering { animation: none; }
+}
+
+/* 窄屏：卡在下方横滑 */
+.stage-body.below { display: block; }
+.stage-body.below .gutter { display: none; }
+.dock-row { display: flex; gap: 12px; overflow-x: auto; padding: 20px 4px 8px; margin-top: 20px; border-top: 1px solid var(--border); }
+.dock-row .module-widget { flex: 0 0 var(--card-w, 220px); }
+
+/* ===== 图例与说明 ===== */
+.legend { max-width: 760px; margin: 0 auto; padding: 6px 20px 60px; color: var(--text-muted); font-size: 11.5px; line-height: 1.9; }
+.legend b { color: var(--text-secondary); font-weight: 600; }
+.legend .cost { display: block; margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--glass); }
+.legend code { font-size: 11px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="toolbar" id="toolbar">
+    <span class="toolbar-title">模块卡片 · 状态位置与出现动画</span>
+    <button class="replay-btn" id="replay">↻ 重播出现动画</button>
+    <span class="ctl-label" id="cardWidthNote"></span>
+</div>
+
+<div class="stage">
+    <div class="device" id="device" data-anim="none">
+        <div class="stage-body" id="stageBody">
+            <div class="gutter" id="gutterLeft"></div>
+            <div class="board" id="board">
+                <div class="sim-search">
+                    <span class="sim-mode">网页</span>
+                    <span style="flex:1">搜索、粘贴内容，或输入 &gt; 分享</span>
+                    <span class="sim-mode" style="border-color:var(--accent);color:var(--accent)">搜索</span>
+                </div>
+                <div class="sim-cat">
+                    <div class="sim-cat-title">常用</div>
+                    <div class="sim-chips">
+                        <span class="sim-chip">GitHub</span><span class="sim-chip">MDN</span>
+                        <span class="sim-chip">Canvas 文档</span><span class="sim-chip">内网监控</span>
+                    </div>
+                </div>
+                <div class="sim-cat">
+                    <div class="sim-cat-title">工具</div>
+                    <div class="sim-chips">
+                        <span class="sim-chip">后台管理</span><span class="sim-chip">WebDAV 备份</span>
+                        <span class="sim-chip">服务状态</span>
+                    </div>
+                </div>
+            </div>
+            <div class="gutter" id="gutterRight"></div>
+        </div>
+        <div class="dock-row" id="dockRow" hidden></div>
+    </div>
+</div>
+
+<div class="legend">
+    <b>这个页面要你拍板三件事</b>（工具栏上一排控件，改动即时生效）：<br>
+    ① <b>状态位置</b>——「现状·独占一行」是状态胶囊独占卡片正文第一行，占掉整整一行；「并入卡片头」把它挪到卡片标题右边（右边那张「本机」卡一直就是这么放的），省下的那一行还给内容，同步时间挪到右下角小字里；「头内·含时间」把头做得更满，时间也放头上——<b>注意看工具栏右上角的「当前卡片宽」</b>，切到「视口 1280」时卡片只有 152px，这一档会挤到标题被截断。<br>
+    ② <b>「同步中」提示</b>——「每次轮询都转」是现状：每 15 秒自动同步时都会转一次圈；「仅手动同步时」只在点「同步 / 重试」时转。失败态两种都照常显示「同步失败 + 重试」。<br>
+    ③ <b>出现动画</b>——卡片从无到有时用什么。四个变体都可点「↻ 重播出现动画」反复看；「逐张错开」在两张卡上也能看出先后。<br>
+    <span class="cost">
+        <b>② 的资源代价（实测，不是估算）</b>：样例里卡片每 15 秒自动同步一次。<br>
+        · <b>每次轮询都转圈</b>：未变动的一轮 <code>+15 次 DOM 变更 / +4 次强制重排</code>（要把状态行整段重写两遍：进「同步中」一次、回「已同步」一次）。<br>
+        · <b>仅手动</b>：同样的一轮 <code>+0 / +0</code>——数据没变就一次 DOM 都不写。<br>
+        （作为对比，改造前那一版是 <code>+48 / +12</code>。所以「仅手动」能把这一项压到零。）
+    </span>
+    <b>悬停效果（截图看不见，请用鼠标划过）</b>：卡片里的备忘行悬停会抬起 2px 并带影子；「管理」按钮悬停变色；工具栏按钮与「重播」都有抬起/按下。<br>
+    <b>模拟说明</b>：本页无真实网络——所有状态都由工具栏强制。真实实现里还有两点本页演示不到：<br>
+    · 动画只在模块区**由隐藏变可见**时播一次；主题切换、窗口缩放等造成的重渲染不会重播（否则会被反复打扰）。<br>
+    · 系统的「减少动态效果」开启时动画自动关闭（本页已按同一条媒体查询实现）。
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+/* ================= 状态 ================= */
+const state = {
+    theme: 'dark',
+    anim: 'none',          // none | fade | rise | pop | stagger
+    statusPos: 'row',      // row（现状） | head（并入卡片头）
+    spinner: 'auto',       // auto（每次轮询） | manual（仅手动）
+    sync: 'synced',        // synced | syncing | failed
+    pending: 0,
+    viewport: 'full',      // full | 1280 | 390
+    editing: false,
+};
+
+const MEMOS = [
+    { id: 'a', title: '备用电源密码', updatedAt: Date.now() - 3 * 60e3, pinned: false },
+    { id: 'b', title: '家庭 NAS 内网地址', updatedAt: Date.now() - 42 * 60e3, pinned: false },
+    { id: 'c', title: '域名续费日期', updatedAt: Date.now() - 26 * 3600e3, pinned: false },
+];
+const PIN_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function hm(ts) { const d = new Date(ts); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+function relTime(ts) {
+    const s = (Date.now() - ts) / 1000;
+    if (s < 60) return '刚刚';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    return String(new Date(ts).getMonth() + 1).padStart(2, '0') + '-' + String(new Date(ts).getDate()).padStart(2, '0') + ' ' + hm(ts);
+}
+
+/* ================= 卡片片段 ================= */
+function statusPillHTML() {
+    if (state.sync === 'syncing') {
+        return '<span class="module-card-status" data-kind="pending">' +
+               (state.spinner === 'auto' ? '<span class="memo-spinner"></span>' : '') + '同步中</span>';
+    }
+    if (state.sync === 'failed') {
+        return '<span class="module-card-status" data-kind="alert">同步失败</span>' +
+               '<button class="memo-retry">重试</button>';
+    }
+    return '<span class="module-card-status" data-kind="ready">已同步</span>';
+}
+function pendingPillHTML() {
+    return state.pending > 0
+        ? '<span class="module-card-status" data-kind="pending">待同步 ' + state.pending + '</span>' : '';
+}
+const timeSpanHTML = () => '<span class="memo-status-time">' + hm(Date.now()) + '</span>';
+
+function memoCardHTML() {
+    const rows = MEMOS.map(m =>
+        '<div class="memo-row">' + (m.pinned ? PIN_SVG : '') +
+        '<span class="memo-row-title">' + esc(m.title) + '</span>' +
+        '<span class="memo-row-time">' + relTime(m.updatedAt) + '</span></div>').join('');
+
+    const pos = state.statusPos;
+    const inHead = pos !== 'row';
+    const manageInHead = pos !== 'headBelow';
+    const head = '<div class="module-widget-head">' +
+        '<span class="module-widget-title">备忘录</span>' +
+        (inHead ? statusPillHTML() + pendingPillHTML() : '') +
+        (pos === 'headTime' ? timeSpanHTML() : '') +
+        '<button class="module-drag-handle" aria-label="拖拽排序"></button>' +
+        (manageInHead ? '<button class="module-widget-expand">管理</button>' : '') +
+    '</div>';
+    const statusRow = inHead ? ''
+        : '<div class="memo-status-row">' + statusPillHTML() + pendingPillHTML() + timeSpanHTML() + '</div>';
+    // 时间不进头时挪进底部小字（信息不丢）；「管理」也可以挪下来，给窄卡片腾出宽度
+    let hint;
+    if (pos === 'head') hint = '共 ' + MEMOS.length + ' 条 · ' + hm(Date.now()) + ' 同步';
+    else if (pos === 'headTime') hint = '共 ' + MEMOS.length + ' 条 · 点击管理';
+    else if (pos === 'headBelow') hint = '共 ' + MEMOS.length + ' 条 · ' + hm(Date.now()) + ' 同步 · <button class="hint-action">管理</button>';
+    else hint = '共 ' + MEMOS.length + ' 条 · 点击管理';
+
+    return '<section class="module-widget is-entering" style="--i:0">' + head + statusRow +
+        '<div class="memo-rows">' + rows + '</div>' +
+        '<div class="module-card-hint">' + hint + '</div></section>';
+}
+
+function monitorCardHTML() {
+    return '<section class="module-widget is-entering" style="--i:1">' +
+        '<div class="module-widget-head">' +
+            '<span class="module-widget-title">本机</span>' +
+            '<span class="module-card-status" data-kind="ready">在线</span>' +
+            '<button class="module-drag-handle" aria-label="拖拽排序"></button>' +
+            '<button class="module-widget-expand">详情</button>' +
+        '</div>' +
+        '<div class="sim-metric"><span>CPU</span><b>12%</b></div>' +
+        '<div class="sim-metric"><span>内存</span><b>9.4 GB</b></div>' +
+        '<div class="sim-metric"><span>存储</span><b>301 GB / 460 GB</b></div>' +
+        '<div class="module-card-hint">本机 · 直读</div>' +
+    '</section>';
+}
+
+/* ================= 渲染 ================= */
+function renderStage() {
+    document.documentElement.dataset.theme = state.theme;
+    const device = $('#device'), body = $('#stageBody'), dock = $('#dockRow');
+    device.dataset.anim = state.anim;
+    const W = state.viewport === 'full' ? 1440 : Number(state.viewport);
+    device.style.width = state.viewport === 'full' ? '' : state.viewport + 'px';
+    const below = W < 1000;
+    body.classList.toggle('below', below);
+    dock.hidden = !below;
+    // 卡片宽度照 CSS 的 clamp(132px, (可用宽度 − 936)/2 − 20px, 220px) 算：
+    // 可用宽度是 .app 的宽度减去模块区两侧各 22px 的留白
+    const w = below ? 190 : Math.max(132, Math.min(220, (W - 44 - 936) / 2 - 20));
+    device.style.setProperty('--card-w', w + 'px');
+
+    $('#gutterLeft').innerHTML = memoCardHTML();
+    $('#gutterRight').innerHTML = monitorCardHTML();
+    dock.innerHTML = below ? memoCardHTML() + monitorCardHTML() : '';
+    device.classList.toggle('editing', !!state.editing);
+
+    // 直接报出「这一档宽度下标题会不会被挤掉」——这是选状态位置时最要紧的一条。
+    // ⚠️ 必须取**可见**的那一份：below 时 gutter 是 display:none，里面的卡量出来全是 0。
+    const card = document.querySelector(below ? '#dockRow .module-widget' : '.gutter .module-widget');
+    const head = card && card.querySelector('.module-widget-head');
+    const cramped = !!(head && head.scrollWidth > head.clientWidth + 1);
+    $('#cardWidthNote').textContent = '卡片宽 ' + Math.round(w) + 'px · 头部可用 ' +
+        (head ? Math.round(head.clientWidth) : 0) + 'px · ' +
+        (cramped ? '⚠ 装不下（标题被截）' : '装得下');
+    replayAppearance();
+}
+
+function replayAppearance() {
+    const cards = document.querySelectorAll('.module-widget');
+    for (const c of cards) c.classList.remove('is-entering');
+    void document.body.offsetHeight;          // 强制重排，让动画能重头跑
+    for (const c of cards) c.classList.add('is-entering');
+    firstPaint = false;
+}
+
+/* ================= 工具栏 ================= */
+const CONTROLS = [
+    { key: 'theme',     label: '主题',      options: [['dark', '深色'], ['light', '浅色']] },
+    { key: 'statusPos', label: '状态位置',  options: [['row', '现状·独占一行'], ['head', '并入卡片头'], ['headTime', '头内·含时间'], ['headBelow', '头内+管理下移']] },
+    { key: 'spinner',   label: '「同步中」', options: [['auto', '每次轮询都转'], ['manual', '仅手动同步时']] },
+    { key: 'sync',      label: '当前状态',  options: [['synced', '已同步'], ['syncing', '同步中'], ['failed', '失败']] },
+    { key: 'pending',   label: '待同步',    options: [[0, '0'], [2, '2']] },
+    { key: 'anim',      label: '出现动画',  options: [['none', '无（现状）'], ['fade', '淡入'], ['rise', '淡入+上浮'], ['pop', '淡入+微缩'], ['stagger', '逐张错开']] },
+    { key: 'viewport',  label: '视口',      options: [['full', '自适应'], ['1280', '1280'], ['390', '390']] },
+    { key: 'editing',   label: '编辑模式',  options: [[false, '关'], [true, '开']] },
+];
+function buildToolbar() {
+    const bar = $('#toolbar');
+    for (const ctl of CONTROLS) {
+        const wrap = document.createElement('span');
+        wrap.className = 'ctl';
+        const lab = document.createElement('span');
+        lab.className = 'ctl-label';
+        lab.textContent = ctl.label;
+        wrap.appendChild(lab);
+        const seg = document.createElement('span');
+        seg.className = 'seg';
+        seg.dataset.key = ctl.key;
+        for (const [v, label] of ctl.options) {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.dataset.v = String(v);
+            b.addEventListener('click', () => {
+                let val = v;
+                if (/^\d+$/.test(v)) val = Number(v);
+                state[ctl.key] = val;
+                renderAll();
+            });
+            seg.appendChild(b);
+        }
+        wrap.appendChild(seg);
+        bar.appendChild(wrap);
+    }
+}
+function renderToolbar() {
+    for (const seg of document.querySelectorAll('.seg')) {
+        const cur = String(state[seg.dataset.key]);
+        for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === cur);
+    }
+}
+function renderAll() { renderStage(); renderToolbar(); }
+
+$('#replay').addEventListener('click', replayAppearance);
+buildToolbar();
+renderAll();
+</script>
+</body>
+</html>

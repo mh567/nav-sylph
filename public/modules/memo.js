@@ -69,6 +69,8 @@
     let requestStack = null;
     /** 当前挂载的卡片 body（本模块只有一张卡片） */
     let cardBody = null;
+    /** 卡片头里的状态区（状态胶囊写在这里，不参与正文的整块重建） */
+    let cardStatus = null;
 
     /** 打开的对话框：{ overlay, panelEl, close } */
     let panel = null;
@@ -125,13 +127,19 @@
         renderPanelMaybe();
     }
 
-    async function poll() {
+    /**
+     * @param {{manual?: boolean}} [opts] manual=true 来自「同步 / 重试」按钮。
+     *
+     * 自动轮询**不**进「同步中」态。用户原话：「不要一直在前台转圈显示刷新，
+     * 一是不美观，二是是否会占用更多终端资源」——实测每次轮询都转圈时，
+     * 未变动的一轮是 **+15 次 DOM 变更 / +4 次强制重排**（状态胶囊在卡片头里，
+     * 翻一次就要把那一行整段换掉）；只在手动同步时提示则是 **+0 / +0**。
+     * 数据、同步时刻与失败态仍然照常更新。
+     */
+    async function poll({ manual = false } = {}) {
         if (inFlight) return;
         inFlight = true;
-        // 自动轮询与手动同步都进「同步中」态——备忘录的既定需求是
-        // 「可通过服务器自动实时同步，并反馈同步状态，手动同步时也反馈同步状态」。
-        // 每轮多出来的那次状态更新由指纹兜住（只重写状态行，不整块重建卡片）。
-        setSyncState('syncing');
+        if (manual) setSyncState('syncing');
         try {
             const data = await api.get('/api/memos');
             if (!data || !Array.isArray(data.memos)) throw new Error('bad payload');
@@ -292,13 +300,43 @@
             return '<span class="module-card-status" data-kind="alert">同步失败</span>' +
                    '<button class="memo-retry" type="button" data-action="retry">重试</button>';
         }
-        return '<span class="module-card-status" data-kind="ready">已同步</span>' +
-               (lastSync ? `<span class="memo-status-time">${hm(lastSync)}</span>` : '');
+        return '<span class="module-card-status" data-kind="ready">已同步</span>';
     }
 
     function pendingPillHTML() {
         const n = drafts.length;
         return n > 0 ? `<span class="module-card-status" data-kind="pending">待同步 ${n}</span>` : '';
+    }
+
+    /**
+     * 同步时刻的文案。**只在成功态给值**——同步中 / 失败时显示上一次成功的
+     * 时刻，会让人以为刚刚同步成功过（`statusPillHTML` 早先是这个语义，
+     * 拆出时刻时别把它弄丢）。
+     * 四处共用（fillStatus / statusKey / panelHTML / renderPanelMaybe 的就地刷新），
+     * 各写一遍必然漂移。
+     */
+    function syncTimeText() {
+        return syncState === 'synced' && lastSync ? hm(lastSync) : '';
+    }
+
+    /**
+     * 把状态写进**卡片头**（标题右侧）与底部小字里的同步时刻。
+     *
+     * 状态胶囊原先独占正文第一行，占掉整整一行高度（胶囊行 + 8px 外边距约 26px）；
+     * 现在挪进卡片头——与「服务器监控」那张卡一直以来的放法一致。
+     * 「管理」按钮因此也从头里挪到底部那行小字（那行本来就在说「点击管理」），
+     * 否则最窄的一档卡片（132px）装不下「标题 + 胶囊 + 管理」，标题会被截断。
+     */
+    function fillStatus() {
+        if (cardStatus) cardStatus.innerHTML = statusPillHTML() + pendingPillHTML();
+        if (cardBody) {
+            const part = cardBody.querySelector('.memo-sync-part');
+            // 整段一起给：没有时刻时连分隔符都不渲染，不留一个孤零零的「·」
+            if (part) {
+                const t = syncTimeText();
+                part.textContent = t ? ` · ${t}同步` : '';
+            }
+        }
     }
 
     /**
@@ -322,20 +360,18 @@
      * 有这一层，数据与同步态都没变的一轮轮询是**零 DOM 写入**。
      */
     function statusKey() {
-        return [syncState, drafts.length, lastSync ? hm(lastSync) : ''].join('|');
+        return [syncState, drafts.length, syncTimeText()].join('|');
     }
 
-    /** 只就地刷新状态行——数据没变时用它代替整块重建。 */
+    /** 只就地刷新状态——数据没变时用它代替整块重建。 */
     function renderCardStatus() {
         if (!cardBody) return;
         const key = statusKey();
         if (key === lastCardStatusKey) return;
         lastCardStatusKey = key;
-        const row = cardBody.querySelector('.memo-status-row');
-        if (row) row.innerHTML = statusPillHTML() + pendingPillHTML();
-        // 状态行本身也会变高：失败态多出一个「重试」按钮，而
-        // .memo-status-row 是 flex-wrap: wrap，窄卡片上会折成两行。
-        // 不请求重排的话，下面那几张的位置就停在旧高度上。
+        fillStatus();
+        // 状态位本身也会变高：失败态多出一个「重试」按钮，而卡片头与底部
+        // 那行小字都是可折行的；不请求重排的话，下面那几张停在旧高度。
         if (requestStack) requestStack();
     }
 
@@ -352,8 +388,6 @@
     function renderCard() {
         if (!cardBody) return;
         lastCardKey = cardKey();
-        // 整块重建时状态行也一并重画了，指纹要跟着走，否则下一轮会白刷一次
-        lastCardStatusKey = statusKey();
         const rows = memos.slice(0, PREVIEW_ROWS).map(m =>
             `<div class="memo-row" data-action="open">` +
             `${m.pinned ? PIN_SVG : ''}` +
@@ -361,11 +395,16 @@
             `<span class="memo-row-time">${relTime(m.updatedAt)}</span>` +
             `</div>`).join('');
         cardBody.innerHTML =
-            `<div class="memo-status-row">${statusPillHTML()}${pendingPillHTML()}</div>` +
             (memos.length
                 ? `<div class="memo-rows">${rows}</div>`
                 : '<div class="memo-empty-card">还没有备忘录</div>') +
-            `<div class="module-card-hint">共 ${memos.length} 条 · 点击管理</div>`;
+            `<div class="module-card-hint">共 ${memos.length} 条` +
+                `<span class="memo-sync-part"></span>` +
+                ` · <button class="memo-card-manage" type="button" data-action="open">管理</button>` +
+            `</div>`;
+        // 整块重建时状态也一并重画了，指纹要跟着走，否则下一轮会白刷一次
+        lastCardStatusKey = statusKey();
+        fillStatus();
         // 卡片高度随内容变化（0 条与 3 条差一截），宽屏的纵向偏移按实测高度排。
         if (requestStack) requestStack();
     }
@@ -393,6 +432,12 @@
         label.className = 'module-widget-title';
         label.textContent = '备忘录';
 
+        // 状态胶囊放卡片头（标题右侧），不再独占正文第一行。
+        // ⚠️ 它是模块级状态 cardStatus，写在 **cardBody 之外**（在卡片头里）——
+        // 正文的整块重建不该顺手把它抹掉，两处各写各的。
+        const status = document.createElement('span');
+        status.className = 'memo-card-status';
+
         const handle = document.createElement('button');
         handle.type = 'button';
         handle.className = 'module-drag-handle';
@@ -400,31 +445,28 @@
         handle.setAttribute('aria-label', '拖拽调整备忘录的位置');
         // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
 
-        const expand = document.createElement('button');
-        expand.type = 'button';
-        expand.className = 'module-widget-expand';
-        expand.title = '管理备忘录';
-        expand.setAttribute('aria-label', '打开备忘录管理');
-        expand.textContent = '管理';
+        // 「管理」不在卡片头里：最窄的一档卡片（132px）装不下
+        // 「标题 + 状态胶囊 + 管理」，标题会被截断。它挪到底部那行小字里
+        // （那行本来就在说「点击管理」），由 renderCard 渲染、走同一层事件委托。
 
-        head.append(label, handle, expand);
+        head.append(label, status, handle);
 
         const body = document.createElement('div');
         body.className = 'module-widget-body';
-        // 事件委托：摘要行点击打开管理；失败态的「重试」也在这一层
-        body.addEventListener('click', event => {
-            const t = event.target.closest('[data-action]');
-            if (!t) return;
-            if (t.dataset.action === 'open') openPanel();
-            else if (t.dataset.action === 'retry') poll();
-        });
 
         card.append(head, body);
         cardBody = body;
+        cardStatus = status;
 
-        expand.addEventListener('click', event => {
-            event.stopPropagation();
-            openPanel();
+        // 事件委托挂在**整张卡**上，不是正文上。状态胶囊（含失败态的「重试」）
+        // 在卡片头里，而卡片头与正文是兄弟节点——委托挂在正文上时，头里那个
+        // 「重试」是死按钮。实测（停服制造失败态）：点头里的「重试」不发请求、
+        // 状态纹丝不动，而面板里的「同步」正常——同一个动作两种结果。
+        card.addEventListener('click', event => {
+            const t = event.target.closest('[data-action]');
+            if (!t) return;
+            if (t.dataset.action === 'open') openPanel();
+            else if (t.dataset.action === 'retry') poll({ manual: true });
         });
 
         renderCard();
@@ -483,7 +525,7 @@
                     break;
                 case 'sync':
                 case 'retry':
-                    if (!inFlight) poll();
+                    if (!inFlight) poll({ manual: true });
                     break;
                 case 'add':
                     panelView = 'edit';
@@ -569,7 +611,7 @@
         if (key === lastPanelKey) {
             // 数据没变：仅就地刷新同步时间
             const t = panel.panelEl.querySelector('.memo-status-time');
-            if (t && syncState === 'synced' && lastSync) t.textContent = hm(lastSync);
+            if (t) t.textContent = syncTimeText();
             return;
         }
         renderPanel();
@@ -583,7 +625,7 @@
         return `
             <div class="memo-dialog-header">
                 <h2>备忘录</h2>
-                <span class="memo-status-row">${statusPillHTML()}${pendingPillHTML()}</span>
+                <span class="memo-status-row">${statusPillHTML()}${pendingPillHTML()}<span class="memo-status-time">${syncTimeText()}</span></span>
                 <button class="btn" type="button" data-action="sync">同步</button>
                 <button class="module-panel-close" type="button" data-action="close" aria-label="关闭">×</button>
             </div>

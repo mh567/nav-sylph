@@ -517,37 +517,50 @@ test('卡片按数据指纹跳过整块重建，同步态就地更新', () => {
     assert.match(maybeBody, /cardKey\(\) === lastCardKey/, '指纹相同走就地更新');
     assert.match(maybeBody, /renderCardStatus\(\)/, '就地只刷状态行');
     assert.match(maybeBody, /renderCard\(\)/, '不同才整块重建');
-    assert.match(code, /function renderCardStatus\(\)/, '状态行就地更新');
+    assert.match(code, /function renderCardStatus\(\)/, '状态就地更新');
     assert.match(code, /lastCardKey = cardKey\(\)/, '整块重建后记下指纹');
-    // 状态行自己也有指纹：数据与同步态都没变的一轮轮询应当零 DOM 写入
+    // 状态自己也有指纹：数据与同步态都没变的一轮轮询应当零 DOM 写入
     const statusAt = code.indexOf('function renderCardStatus()');
     const statusBody = code.slice(statusAt, code.indexOf('\n    }', statusAt));
-    assert.ok(statusBody.length > 200, `切出 renderCardStatus（${statusBody.length}）`);
-    assert.match(statusBody, /if \(key === lastCardStatusKey\) return;/, '状态行没变就不写');
-    // ⚠️ 光钉「有指纹」不够：这个函数的**全部作用**就是把状态写进那一行，
-    // 删掉写入语句后上面几条断言照样绿。必须钉住写入本身。
-    assert.match(statusBody, /querySelector\('\.memo-status-row'\)/, '定位到状态行');
-    assert.match(statusBody, /row\.innerHTML = statusPillHTML\(\) \+ pendingPillHTML\(\)/,
-        '真的把状态行内容写进去');
-    assert.match(code, /lastCardStatusKey = statusKey\(\)/, '整块重建后同步状态行指纹');
+    assert.ok(statusBody.length > 150, `切出 renderCardStatus（${statusBody.length}）`);
+    assert.match(statusBody, /if \(key === lastCardStatusKey\) return;/, '状态没变就不写');
+    // ⚠️ 光钉「有指纹」不够：这个函数的作用就是把状态**写出去**，
+    // 删掉写入语句后上面几条断言照样绿。写入本身必须钉住。
+    assert.match(code, /function fillStatus\(\)/, '有真正写状态的函数');
+    const fillAt = code.indexOf('function fillStatus()');
+    const fillBody = code.slice(fillAt, code.indexOf('\n    }', fillAt));
+    assert.ok(fillBody.length > 150, `切出 fillStatus（${fillBody.length}）`);
+    assert.match(fillBody, /cardStatus\.innerHTML = statusPillHTML\(\) \+ pendingPillHTML\(\)/,
+        '状态胶囊写进**卡片头**的状态区（不再独占正文第一行）');
+    // ⚠️ 只断言「出现过 querySelector('.memo-sync-part')」是不够的：把那行
+    // **写入**删掉、只留查询，断言照样绿，而底部小字里的时刻就没了。
+    assert.match(fillBody, /part\.textContent = t \? ` · \$\{t\}同步` : ''/,
+        '真的把同步时刻写进底部小字（没有时刻时连分隔符一起不渲染）');
+    // 时刻只在成功态给值——同步中/失败时显示上一次成功的时刻会误导
+    assert.match(code, /function syncTimeText\(\)\s*\{[\s\S]{0,200}syncState === 'synced' && lastSync/,
+        '同步时刻只在成功态给值');
+    assert.match(code, /lastCardStatusKey = statusKey\(\)/, '整块重建后同步状态指纹');
     // setSyncState 必须走 renderCardMaybe，否则上面两层都白搭
     const syncAt = code.indexOf('function setSyncState(next)');
     const syncBody = code.slice(syncAt, code.indexOf('\n    }', syncAt));
     assert.match(syncBody, /renderCardMaybe\(\)/, '同步态变化走「没变就不重建」的入口');
 
-    // ③ 自动轮询与手动同步**都**进「同步中」态。备忘录的既定需求是
-    //    「可通过服务器自动实时同步，并反馈同步状态，手动同步时也反馈同步状态」。
-    //    ⚠️ 本轮我曾按「性能优化」把它改成只有手动才显示，并写了断言把那个
-    //    变更钉成契约——两轴审查独立指出这既超出所选选项、又与上面那句需求
-    //    相抵触（每轮多出来的那次更新本来就被指纹兜住了，不需要动行为）。
-    //    已撤回：断言现在守的是「不许再限制成手动」。
-    const pollAt = code.indexOf('async function poll()');
-    assert.ok(pollAt > 0, 'poll 不再带 manual 参数');
+    // ③ 只有**手动**同步才进「同步中」态（自动轮询不转圈）。用户原话：
+    //    「不要一直在前台转圈显示刷新，一是不美观，二是是否会占用更多终端资源」。
+    //    实测：每次轮询都转圈时未变动的一轮是 +15 次 DOM 变更 / +4 次强制重排，
+    //    仅手动时 +0 / +0。
+    //    ⚠️ 上一轮我为这件事写过方向相反的断言（把「自动也不提示」钉成契约），
+    //    两轴审查把它判为越界的行为变更并撤回；本轮由用户自己提出，方向反转。
+    const pollAt = code.indexOf('async function poll(');
+    assert.ok(pollAt > 0, '找到 poll');
     const pollBody = code.slice(pollAt, code.indexOf('\n    }', pollAt));
     assert.ok(pollBody.length > 150, `切出 poll（${pollBody.length}）`);
-    assert.match(pollBody, /setSyncState\('syncing'\)/, '进「同步中」态');
-    assert.doesNotMatch(pollBody, /if \(manual\)/, '不得把「同步中」限制在手动轮询');
-    assert.doesNotMatch(code, /manual: true/, '不得留下手动开关的残迹');
+    assert.match(pollBody, /if \(manual\) setSyncState\('syncing'\)/,
+        '「同步中」只在手动同步时出现');
+    assert.match(code, /poll\(\{ manual: true \}\)/, '同步 / 重试按钮走手动');
+    // 两种入口都要传 manual——只传一处会让另一个入口静默不提示
+    assert.equal((code.match(/poll\(\{ manual: true \}\)/g) || []).length, 2,
+        '手动入口恰好两处：卡片上的「重试」与面板里的「同步 / 重试」');
 
     // ④ 首轮 promise 交给平台（与 server-monitor 同一处契约）
     assert.match(code, /const firstRound = poll\(\)/, '首轮拉取');
@@ -570,8 +583,54 @@ test('卡片按数据指纹跳过整块重建，同步态就地更新', () => {
     assert.ok(renderCardBody.length > 300, `切出 renderCard（${renderCardBody.length}）`);
     assert.match(renderCardBody, /if \(requestStack\) requestStack\(\)/,
         '整块重建后请求一次合并重排');
-    // 状态行自己也会变高（失败态多一个「重试」按钮，而 .memo-status-row 是
-    // flex-wrap: wrap），所以它那条路径也必须请求重排——否则下面几张停在旧高度
+    // 状态本身也会让卡片变高：底部那行小字是块级、会折行，失败态多一个
+    // 「重试」、同步时刻那一小段出现/消失（「共 N 条 · 01:07同步 · 管理」），
+    // 在最窄的 132px 卡片上都可能让它从一行变两行。所以这条路径也必须请求重排。
     assert.match(statusBody, /if \(requestStack\) requestStack\(\)/,
-        '状态行变化后也要请求重排（它会折行变高）');
+        '状态变化后也要请求重排（底部小字会折行变高）');
+});
+
+test('卡片布局：状态胶囊在卡片头，「管理」在正文（窄卡片才装得下）', () => {
+    // 用户原话：「备忘录的"已同步"状态应该放在第一行，不应该占用这么大空间」。
+    // 状态胶囊原来独占正文第一行（胶囊行 + 8px 外边距约 26px）。
+    //
+    // ⚠️ 但**不能连「管理」一起放进卡片头**：实测最窄的一档卡片只有 132px、
+    // 头部可用 104px，而「标题(33) + 胶囊(41) + 管理(36) + 间隙」需要 126px，
+    // 标题会被挤成 8px（对照表见 docs/mockup-module-status-motion.html，四个
+    // 位置 × 两档宽度的实测）。所以「管理」下移到右下角那行小字——那行本来
+    // 就在说「点击管理」。
+    const code = stripComments(memoSrc);
+
+    // ① 卡片头里有一个独立的状态容器，且不参与正文的整块重建
+    assert.match(code, /let cardStatus = null;/, '状态区是模块级状态');
+    assert.match(code, /const status = document\.createElement\('span'\);\s*\n\s*status\.className = 'memo-card-status'/,
+        '卡片头里建了状态容器');
+    assert.match(code, /head\.append\(label, status, handle\)/, '状态容器排在标题之后');
+    assert.match(code, /cardStatus = status;/, '挂载时记下状态容器');
+
+    // ② 正文里不再有那一行
+    const cardAt = code.indexOf('function renderCard() {');
+    const renderBody = code.slice(cardAt, code.indexOf('\n    }', cardAt));
+    assert.ok(renderBody.length > 300, `切出 renderCard（${renderBody.length}）`);
+    assert.doesNotMatch(renderBody, /memo-status-row/, '正文不再渲染独立的状态行');
+
+    // ③ 「管理」在正文底部，带 data-action（走那一层事件委托）
+    assert.match(renderBody, /class="memo-card-manage"[^>]*data-action="open"/,
+        '「管理」在底部小字里，仍是 data-action="open"');
+    assert.match(renderBody, /memo-sync-part/, '同步时刻的容器也在底部小字里');
+    // 卡片头里不得再有「管理」按钮（那就是会挤掉标题的那个形状）
+    assert.doesNotMatch(code, /module-widget-expand/, '卡片头里不得再有「管理」按钮');
+
+    // ④ 委托必须挂在**整张卡**上，不能挂在正文上。
+    //    ⚠️ 这是本轮踩到的真缺陷：状态胶囊（含失败态的「重试」按钮）在卡片头里，
+    //    而卡片头与正文是**兄弟节点**——委托挂在正文上时，头里那个「重试」是
+    //    死按钮。实测（停服制造失败态）：点头里的「重试」不发请求、状态纹丝不动，
+    //    而面板里的「同步」正常。光断言「字符串 poll({manual:true}) 存在」抓不到它，
+    //    因为那个分支还在、只是永远走不到。
+    assert.match(code, /card\.addEventListener\('click'/, '点击委托挂在整张卡上');
+    assert.doesNotMatch(code, /body\.addEventListener\('click'/,
+        '不得只挂在正文上——卡片头里的「重试」会点不到');
+    assert.match(code, /card\.append\(head, body\)/, '卡片头与正文都是 card 的子节点');
+    assert.match(code, /t\.dataset\.action === 'retry'\)\s*poll\(\{ manual: true \}\)/,
+        '失败态的「重试」确实接到手动同步上');
 });

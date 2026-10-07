@@ -2913,6 +2913,13 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    卡片是带着 margin-top: 0 出生的，此时若允许过渡，四张卡会先完全重叠
    再各自滑开——那是加载时最显眼的「卡顿感」。只在这一次布局里关掉。 */
 .module-zone.is-laying-out .module-widget { transition: none; }
+/* 模块区**首次出现**时的淡入上浮。只动 opacity / transform——两者都由
+   合成器处理，不触发布局，与 --stack-top（margin-top）那套让位动画互不干扰。
+   时长必须与 app.js 的 App.MODULE_ENTER_MS 一致（有断言钉住）。
+   ⚠️ 摘类之前 `animation-fill-mode: both` 会把最后一帧的 `transform: none`
+   一直压着，而拖拽正是靠 inline transform 跟手——所以 app.js 播完必须摘掉。 */
+@keyframes moduleEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.module-zone.is-entering .module-widget { animation: moduleEnter 260ms cubic-bezier(.2,.8,.25,1) both; }
 /* 模块区整体不接收指针事件，只有卡片本身可交互——否则它铺满全宽会挡住背板 */
 .module-zone-inner > .module-widget { pointer-events: auto; }
 
@@ -3110,8 +3117,15 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-panel-detail dd { color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ===== 备忘录模块 ===== */
-/* 卡片内：同步状态行 + 摘要行。配色档与 .module-card-status 同值。 */
-.memo-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+/* 卡片头里的状态区：状态胶囊放这儿（标题右侧），不再独占正文第一行。 */
+.memo-card-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+/* 底部小字行里的「管理」：从卡片头挪下来，给最窄的一档卡片（132px）
+   腾出标题宽度——那里装不下「标题 + 胶囊 + 管理」三样。 */
+.memo-card-manage { border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.memo-card-manage:hover { color: var(--accent); }
+/* 同步状态行现在**只**出现在管理面板的头部（卡片里那份已挪进卡片头）。
+   面板头自己给了 margin: 0，所以这里不再写底边距。 */
+.memo-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .memo-status-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .memo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; cursor: pointer; }
 .memo-spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: memo-spin 700ms linear infinite; }
