@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：后台模块启停开关点不动（修复提交 `378aa61`，未发布）
+## 最新一轮：后台模块启停开关点不动（修复提交 `378aa61`，版本账 `b96cff9`，已发布 **v1.14.2**）
 
 用户原话：「后台管理界面各个模块的启停按钮点击不生效了」
 
@@ -39,9 +39,11 @@
 ### 下一步
 
 1. 检查 `git status --short --branch` 与本段 diff。
-2. 本轮回归修复完成并提交（`378aa61`），**未发布**；应与 `3abf360`（Special Line 交互）那批一并走 `scripts/release.sh`，并单独推送 `main`。
+2. 本轮已随 **v1.14.2** 发布（版本账提交 `b96cff9`，tag `v1.14.2`，Release 已建）；`main` 已推送。发布方式：`scripts/release.sh` 打包并建 Release，随后单独 `git push origin main`（脚本只推 tag）。
+3. **本批发布内容**：后台模块开关回归修复（`378aa61`）与 Special Line 交互修复（`3abf360`，见下一节）一并进入 v1.14.2。`public/` 变更的 SW 缓存为 `nav-v84`。
+4. **已发布产物的核对**（下载 `nav-sylph-v1.14.2.tar.gz` 解包后实测）：三处版本账均为 1.14.2；`public/sw.js` 的 `CACHE = 'nav-v84'` 与其注释块首条一致；`public/app.js` 含 1 处 `<label class="module-setting-toggle">` 且不含 span 宿主；`styles.css` 含 `.special-line-item:has(.special-line-tools[open])` 与 `.special-line-listwrap.is-filtering`；`modules/special-line.js` 含筛选过渡分支与失败回滚；未夹带 `.modules.json`、`.admin-password.json`、`.webdav-config.json`、`config.json`、`favorites.json`、`nav-sylph.db`、`server-config/config.json`、`.env`；`agent/dist/` 只有三个 Linux 二进制，无 darwin。sha256 `81521a9b…60a800`。
 
-## 上一轮：Special Line 操作菜单层叠与筛选过渡（修复提交 `3abf360`，未发布）
+## 上一轮：Special Line 操作菜单层叠与筛选过渡（修复提交 `3abf360`，随 **v1.14.2** 发布）
 
 用户原话：「special line 目前手动建了一个事件，事件操作那三个点点击时弹出框在上方会被遮挡，修复。鼠标在不同分类如已读未读全部来源稍后阅读等点击切换时不够丝滑顺畅」
 
