@@ -57,7 +57,10 @@ build() {
       go build -trimpath -ldflags="$LDFLAGS" -o "$OUT/$out" . )
 }
 
-echo "构建 agent（$(go version)，版本 $AGENT_VERSION）"
+# ⚠️ 变量必须写成 ${VAR}：紧跟其后的是全角「）」，bash 会把这个非 ASCII 字节
+# 吃进变量名（`set -u` 下报 AGENT_VERSION：unbound variable），而外层脚本把它
+# 报成「请先安装 Go 1.22+」——本轮发布就是被这一句挡下的，Go 其实装好了。
+echo "构建 agent（$(go version)，版本 ${AGENT_VERSION}）"
 for arch in "${LINUX_ARCHES[@]}"; do
     if [ "$arch" = "armv7" ]; then
         # ⚠️ armv7 的正确写法是 GOARCH=arm + GOARM=7，
