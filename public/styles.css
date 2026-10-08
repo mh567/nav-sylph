@@ -3366,7 +3366,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 .special-line-pill[data-kind="pending"] { color: #a2762c; }
 .special-line-pill[data-kind="alert"] { color: #a44c46; }
-.special-line-pill[data-kind="unread"] { color: var(--text-secondary); }
 
 :root[data-theme="dark"] .special-line-pill[data-kind="pending"] { color: #e0bd7a; }
 :root[data-theme="dark"] .special-line-pill[data-kind="alert"] { color: #e9a69d; }
@@ -3755,6 +3754,5 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-event h3 { font-size: 14px; }
     .special-line-event p { font-size: 12px; }
     .special-line-btn { min-height: 44px; font-size: 12px; }
-    .special-line-dialog { width: min(100vw - 24px, 420px); padding: 18px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
