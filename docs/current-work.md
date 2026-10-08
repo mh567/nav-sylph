@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 菜单上翻越出容器顶边被筛选行遮挡（修复提交 `54ad060`，未发布）
+## 最新一轮：Special Line 菜单上翻越出容器顶边被筛选行遮挡（修复提交 `54ad060`，版本账 `295d290`，已发布 **v1.14.4**）
 
 用户原话：「我用的 edge 浏览器 154.0.4258.62版本，点击事件右上角菜单依然会被"全部/未读/已归档"所在的那行遮挡住」
 
@@ -50,7 +50,8 @@
 ### 下一步
 
 1. 检查 `git status --short --branch` 与本段 diff。
-2. 本轮已提交（`54ad060`），**未发布**；随本批走 `scripts/release.sh` 并单独推送 `main`（脚本只推 tag）。
+2. 本轮已随 **v1.14.4** 发布（版本账提交 `295d290`，tag `v1.14.4`，Release 已建）；`main` 已推送。发布方式：`scripts/release.sh` 打包并建 Release，随后单独 `git push origin main`（脚本只推 tag）。
+3. **已发布产物的核对**（下载 `nav-sylph-v1.14.4.tar.gz` 解包后实测）：三处版本账均为 1.14.4；`public/sw.js` 的 `CACHE = 'nav-v86'`；`public/modules/special-line.js` 含 `const MENU_EDGE = 4;`、夹取分支 `menuRect.top < wrap.top + MENU_EDGE`、`closeMenus` 里的 `m.style.top = ''` 与 `remove('is-menu-open')`；前几轮的修复（`:has()` 替换、筛选过渡/失败回滚、后台开关 label）同样在产物内；未夹带 `.modules.json`、`.admin-password.json`、`.webdav-config.json`、`config.json`、`favorites.json`、`nav-sylph.db`、`server-config/config.json`、`.env`；`agent/dist/` 只有三个 Linux 二进制，无 darwin。sha256 `d0a365b4…0f721`。
 
 ## 上一轮：Special Line 操作菜单仍被遮挡——`:has()` 在用户浏览器里失效（修复提交 `234f395`，版本账 `acb88e4`，已发布 **v1.14.3**）
 
