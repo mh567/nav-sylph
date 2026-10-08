@@ -1,6 +1,49 @@
 {
   "versions": [
     {
+      "version": "1.12.0",
+      "date": "2026-10-08",
+      "summary": "新增 WebDAV 自动同步开关，并修正远程备份区块展开后无法加载的问题",
+      "highlights": [
+        "远程备份新增「自动同步」开关：开启后，配置、书签或模块设置发生变化时会自动备份一次",
+        "修正重新打开管理面板后，远程备份区块展开后一直显示「加载中」的问题"
+      ],
+      "changes": {
+        "add": [
+          "自动同步开关（.webdav-config.json 的 autoSync，缺省关闭）。生效条件是 enabled && autoSync && url 三者同时成立；界面上未勾选「启用 WebDAV 备份」时该勾选框置灰，状态行分三态显示（已开启 / 待启用 / 已关闭）——「开着但没启用」与「关着」的下一步动作不同，塌缩成一句会让用户自己猜",
+          "触发点在 server.js 的 writeJSON——三个数据文件（config.json / favorites.json / .modules.json）的唯一写出口。不逐条路由加钩子：.modules.json 一个文件就有 8 处写路径（新增/编辑/删除机器、领取推送凭据、探测部署态、agent 注册、改密码重加密），逐条加漏一处的表现是「改了这项不会自动同步」而用户不会知道。钩子排在落盘与 chmod 之后（写失败不该触发上传）",
+          "30 秒防抖把一次编辑会话里的多次保存合并成一次上传（AUTO_SYNC_DELAY_MS；NAV_AUTO_SYNC_DELAY_MS 可覆盖，仅供端到端测试）。已在跑时置 autoSyncQueued、在 finally 里再排一次，避免两个并发备份在同一个 .webdav-config.json 上互相覆盖校验和与 lastBackupTime。定时器 unref() 且 gracefulShutdown 里清掉，待触发的定时器不得让事件循环保持活着",
+          "启动期不排期（autoSyncReady）：init() 的 ensureFile() 也走 writeJSON，若此时 .webdav-config.json 已是 enabled+autoSync（例如刚恢复了 WebDAV 配置而 config.json 丢了），一次开机就会把默认配置推到自动槽位、覆盖掉一份好数据",
+          "自动备份写固定槽位：nav-sylph-config-auto.json / -bookmarks-auto.html / -modules-auto.json，不带时间戳、每次覆盖。listBackups() 把它归成一个 isAuto 分组并显式排在最前（不依赖 'auto' 恰好大于数字的字典序巧合），createdAt 取远端 lastmod；cleanupOldBackups() 用 filter(b => !b.isAuto) 把它排除在「保留最新 5 组」的计数与删除之外——它永远排最前，不排除的话反而会最先被当成最旧一组删掉。恢复对话框对该分组加「自动同步」前缀",
+          "自动与手动各用一套校验和：自动读写 lastAuto*Checksum，手动仍用 last*Checksum，lastBackupTime 两条都更新。只有一套时，自动备份跑完会让用户点「立即备份」得到一句「没有变化」、什么都不生成——一次显式请求被静默吞掉",
+          "失败留痕：lastAutoSyncError / lastAutoSyncErrorAt 写回配置、由 /api/webdav/config 回给前端并渲染在区块里。恢复备份期间抑制自动同步（autoSyncSuppressed，递减放在 finally；否则中间任一步抛错会让抑制永久开着、自动同步静默失效，而界面上的开关还写着「已开启」）",
+          "备份载荷的组装抽成 collectBackupPayload() + performBackup()，手动路由与自动路径共用，避免「哪些文件进备份」这份清单被写两遍"
+        ],
+        "fix": [
+          "「远程备份区块展开失败」的根因：判据是「配置在不在内存里」（!this.webdavConfig），而 renderAdminPanel() 每次重建 #modalBody 都会产生一个只写着「加载中...」的新 #webdavSection，webdavConfig 却还留着上一份——于是展开时条件为假、不发请求，占位符永久留在页面上。改为 webdavRendered 闩锁（判据落在「有没有渲染进当前这块 DOM」）",
+          "基线实测（HEAD，浏览器）：第二次展开后区块内容为「加载中...」、hasForm=false、aria-expanded=true、webdavConfig=有，全程只发出 1 次 /api/webdav/config（第二次一次都没发）；修复后同一序列两次展开均渲染出配置、请求数 2。可复现路径：登录 → 打开管理面板 → 展开（正常）→ 关闭 → 再打开 → 展开即复现；导入收藏、添加收藏、默认密码提示分支之后同样触发",
+          "该缺陷与 v1.11.7 修的模块分区 !this.modulesConfig 属同一类：判据要落在输出（画出来没有），不是输入（拉回来没有）",
+          "tests/login-guard.test.js 里原有一条断言把这个判据正面钉住（expanded && sectionId === 'webdav' && !this.webdavConfig），不删它则正确修法会让测试转红。已改为钉闩锁并给测试改名陈述应有行为",
+          "顺带修：「配置已保存」从来没有显示过——提示写在 renderWebDAVSection() 之前，而那次重渲染会重建整个容器、把提示换成空元素。改为先重渲染再把提示写到新元素上",
+          "顺带修：勾「自动同步」后状态行不刷新（onchange 只绑了「启用」；浏览器实测发现）。两个勾选框改为共用一个 refreshAutoState()，状态文案与禁用态只在一处计算",
+          "顺带修：tests/backup-privacy.test.js 一条旧断言的端锚点用了错的路由方法（indexOf(\"app.post('/api/webdav/list'\") 而该路由是 GET），indexOf 返回 -1 使 slice(start, -1) 静默给出「直到文件末尾」的巨大窗口，断言靠窗口里的其它文本通过。已改用 app.get 并补长度上限断言",
+          "提交前两轴审查（基线 v1.11.9，跑在未提交的工作树上）后补的四处缺陷：①恢复期间只靠 autoSyncSuppressed 挡不住「点恢复之前就已排期、此刻正在飞」的那一次——它会读到写了一半的文件（config.json 已换、favorites.json 还没换），上传一份混合快照并把它记成最新自动槽位；现在进入恢复时先 cancelScheduledAutoSync() 取消已排期的定时器，runAutoSync 开头也再看一眼抑制标志。②删掉自动槽位的文件时不同步清掉 lastAuto*Checksum，noChanges 会让它再也不会被重建，而界面仍写着「已开启」；deleteBackup 现在按文件名清掉对应那一组（赋 undefined 而非 null——JSON.stringify 会丢掉值为 undefined 的键，写 null 时若当前内容也判出 null，null === null 会让上传再次被吞）。③collectBackupPayload 的两个兜底 catch 只吞 ENOENT：favorites.json 损坏时兜底是空数组，上传它等于用一份空书签直接抹掉远端那一份，而自动同步发生在用户没点任何按钮的时候。④「还可能把真正的还原点挤出保留窗口」这个因果说法不成立——自动槽位已被排除在轮换之外，自动备份不可能挤掉手动分组的保留位；三处措辞已按实际改写"
+        ],
+        "improve": [
+          "public/sw.js 的 CACHE 由 nav-v74 升到 nav-v75——public/ 有改动，回访用户须拿到新 bundle",
+          ".env.example 补 NAV_AUTO_SYNC_DELAY_MS 说明；README 核心功能表加「自动同步」，远程备份一节补开关说明与自动槽位的文件名",
+          "docs/architecture.md 新增「WebDAV 远程备份与自动同步」一节，「后台管理分区」补折叠区判据纪律；docs/current-work.md 记录本轮根因、设计、验证数据与仍未验证项",
+          "测试：单测 489/489（相对 v1.11.9 基线 476 条，新增 13 条）；22 条红/绿变异全部按预期变红且落在对应用例；真实 HTTP 边界 e2e（真服务 + 按客户端解析器形状实现的桩 WebDAV）9 步全过，含「连做 6 轮后手动裁到 5 组而自动槽位仍在」与「手动『立即备份』仍生成时间戳分组」",
+          "常量改名 AUTO_SYNC_KEEP_COUNT → BACKUP_KEEP_COUNT：它管的是**手动**分组的保留数（cleanupOldBackups 会把自动槽位排除在计数外），旧名字会被读成「自动备份留几份」",
+          "自动槽位的三个文件名只定义在 lib/webdav-backup.js 文件头一处常量，createBackup 不再重写一遍字面量（listBackups 的识别用的是同一组常量，两处各写一遍必然漂移）",
+          "删除确认框改用列表里**渲染出来的那串名字**（自动槽位显示为「自动同步 · 时间」），而不是按 createdAt 重算——重算会退化成光秃秃的时间，用户认不出自己点的是哪一条",
+          "去掉两处没有消费者的东西：runAutoSync 返回值里的 auto 字段（只有测试读）、自动同步失败行的 id=\"webdavAutoSyncError\"（没有 CSS 规则也没有 JS 读取，样式本就来自 .webdav-message.error）",
+          "favManagerRendered 补上构造函数里的显式初始化——本文件自己的规矩是不靠 undefined 的隐式比较，三个同批复位的标记此前只有两个显式初始化",
+          "README 环境变量一节的说明补 NAV_AUTO_SYNC_DELAY_MS；自动槽位那段把「上面那几份」这种指代改为直陈句，并去掉与上方表格重复的文件名罗列"
+        ]
+      }
+    },
+    {
       "version": "1.11.9",
       "date": "2026-10-07",
       "summary": "重写文档结构，以功能为主线突出核心功能",
