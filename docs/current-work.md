@@ -69,7 +69,7 @@
 ### 下一步
 
 1. 检查 `git status --short --branch` 与本段 diff。
-2. 本轮修复与测试已完成并提交（`3abf360`），**尚未发布、未改版本号**；`public/` 变更要求 SW CACHE `nav-v83`，版本 1.14.1 与 CHANGELOG 暂保持不动。发布时按仓库约定用 `scripts/release.sh` 并单独推送 `main`（脚本只推 tag）。
+2. 本节修复（`3abf360`）已随 **v1.14.2** 发布（与后台模块开关回归修复合并，见上一节）；`public/` 变更的 SW 缓存为 `nav-v83`，v1.14.2 的最终缓存名为 `nav-v84`。
 
 ## 上一轮：Special Line 日期栏与轨道分离、压缩留白（修复提交 `ebf9f74`，版本账 `5798bbc`，已发布 **v1.14.1**）
 
