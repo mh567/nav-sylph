@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 日期栏与轨道分离、压缩留白（v1.14.1 发布准备）
+## 最新一轮：Special Line 日期栏与轨道分离、压缩留白（修复提交 `ebf9f74`，版本账 `5798bbc`，已发布 **v1.14.1**）
 
 目标：修正日期和时间与时间线节点重叠，减少左侧空白，把宽度还给正文。保留现有日期轨道、事件卡与窄版单列结构，不改首页三列布局或模块数据行为。
 
@@ -46,11 +46,16 @@
 
 1. 接续时检查 `git status --short --branch`，并核对本段的发布记录。
 2. 如需查看对照页，可运行本会话 scratchpad 中的 `timeline-preview.cjs`，打开生成的 `timeline-preview.html`，切改前／改后、主题和宽度；这些临时文件不进入发布包。
-3. 已获得「提交并发布」授权，使用 `scripts/release.sh` 发布 v1.14.1，再下载实际产物核对。
+3. 本轮发布与产物核对已完成；后续改动继续以发布版本及实际程序为准，官方订阅连接与真实触摸的验证边界未被本次样式修复消除。
 
 ### 发布记录
 
-发布与产物核对完成后回填；当前尚未运行发布脚本。
+- 修复提交 `ebf9f74`，版本账 `5798bbc`；当前程序基线为发布 tag `v1.14.1` 所指向的 `5798bbc`。本段文档收尾另行提交，避免修改已发布提交的哈希。
+- `bash scripts/release.sh </dev/null`：退出码 0，构建 Linux amd64／arm64／armv7 三种静态 ELF 后打包并创建 Release：https://github.com/mh567/nav-sylph/releases/tag/v1.14.1 。脚本只推 tag，随后 `git push origin main` 推送分支（`a34ab75..5798bbc`）。
+- `gh release view v1.14.1 --json url,tagName,isDraft,isPrerelease,assets` 与 `gh api repos/mh567/nav-sylph/releases/latest`：正式发布、非草稿、非预发布，latest 为 `v1.14.1`；`git rev-list -n 1 v1.14.1` 与发布时 HEAD 均为 `5798bbc750493b649e853318cd88007baf7c94f3`。
+- `gh release download v1.14.1 --pattern nav-sylph-v1.14.1.tar.gz --dir "$COMMANDCODE_SCRATCHPAD/release-v1.14.1"`：已下载实际附件。先检查 tar 路径与私有文件排除再解包；三处版本均为 1.14.1，CACHE 为 nav-v82，紧凑日期栏规则存在，程序及版本文件与提交内容逐字节一致，agent 目录仅含三种 Linux ELF。
+- 包内没有 `.admin-password.json`、`.modules.json`、`.webdav-config.json`、`config.json`、`favorites.json`、`.env` 或数据库。附件 SHA-256：`68f2b3b37193bb431d2623ea179b728ad343ceed30feb184cfd23f885356c474`。
+- 发布构建后再执行 `node --test tests/*.test.js`：538/538 通过，0 失败、0 跳过；`git diff --check` 通过。下载解包目录核对后清理；本轮未启动后台服务。
 
 ## 上一轮：后台「模块」分区按模块分组 + 平台侧不留模块专属代码（内容提交 `e1d1262`，版本账 `6e31134`，已发布 **v1.14.0**）
 
