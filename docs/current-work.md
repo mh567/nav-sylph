@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 改为内联显示（v1.13.1）
+## 最新一轮：Special Line 改为内联显示（内容提交 `39365d5`，版本账 `83ef907`，已发布 **v1.13.1**）
 
 用户原话：「不对，我想让 special line 这个模块直接在首页右侧显示，不是单独弹出一个框再显示」。
 
@@ -50,7 +50,11 @@
 
 ### 发布记录
 
-（发布后回填：内容提交与版本账哈希、Release 地址、产物核对。）
+- 内容提交 `39365d5`，版本账 `83ef907`；`scripts/release.sh` 完成打包 → tag → `gh release create`。
+- Release：https://github.com/mh567/nav-sylph/releases/tag/v1.13.1
+- 分支手工推送（脚本只推 tag）：`d00e58c..83ef907  main -> main`。
+- 产物下载后核对：`version.json` 为 1.13.1；`CACHE = 'nav-v77'`；模块脚本里 `module-overlay` / `special-line-panel` 的出现次数为 **0**（弹窗确实去掉了）；包含块那条修复在包内的 `styles.css` 里；未夹带任何私有文件。
+- 本轮自己踩的一个小坑：截图时给 `agent-browser screenshot` 传了**相对路径**，图落进了仓库根目录（`sl-inline2.png`），提交前扫 `git status` 时发现并删除。教训与既有的「工具说成功≠文件在指定位置」同源：凡是会写文件的命令，落点都要给绝对路径，并在收尾时扫一遍仓库根。
 
 ## 上一轮：Special Line 时间线模块（内容提交 `c54bf41`，版本账 `ed9f709`，已发布 **v1.13.0**）
 
