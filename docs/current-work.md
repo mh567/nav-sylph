@@ -2,7 +2,46 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 操作菜单层叠与筛选过渡（修复提交 `3abf360`，未发布）
+## 最新一轮：后台模块启停开关点不动（修复提交 `378aa61`，未发布）
+
+用户原话：「后台管理界面各个模块的启停按钮点击不生效了」
+
+### 根因与改法
+
+`e1d1262`（后台模块分区按模块分组，随 **v1.14.0** 发布）重写 `renderModuleBlock` 时把整行的 `<label>`
+外壳丢了，开关宿主只剩 `<span class="module-setting-toggle">`。而 `styles.css` 的 `.toggle-switch input`
+是 `opacity:0; width:0; height:0`——零尺寸、不可命中；可见的 `.toggle-slider` 是它的**兄弟** `<span>`，
+两者没有 label 关联，点滑块等于点什么都没绑的 span。于是**每个**模块的启停都点不动（同一文件另外两个
+开关「隐私模式」「信任此设备」都是 `<label>` 包裹，所以只有模块开关整体失效）。改回 `<label>` 宿主，
+并在模板里补注说明为什么必须是 label。
+
+为什么回归能悄悄发布：`tests/admin-modules.test.js` 原有的守卫只断言**渲染出的 HTML 含 `data-module-toggle`**
+与**handler 源码里出现 `await this.saveModulesConfig({ enabledModules: next })`**。两者都真，而控件不可点
+——正是本仓库反复记录的那一类「形状断言放过了不可操作的控件」。
+
+### 实际验证
+
+隔离夹具加载真实 `renderModuleBlock` 输出与真实 `styles.css` / `admin.css`，浏览器命中测试：
+
+- **修复前**：input 命中框 `0×0`、无 label 祖先、滑块中心命中 `SPAN.toggle-slider`；点它 `checked` 不变、`change` 触发 **0** 次（复现用户症状）。
+- **修复后**：宿主 `LABEL`、`labelAncestor: true`；点滑块中心 `checked` 由 false → true、`change` 触发 **1** 次。
+
+新增守卫钉「宿主是 label 元素，且输入框与可见滑块落在**同一个** label 内」；两项变异（宿主退回 span、
+把 input 挪出 label）各自使该守卫变红，`app.js` 逐字节还原。`public/sw.js` CACHE `nav-v83 → nav-v84`
+（`app.js` 属受缓存资源）。全套 `node --test tests/*.test.js` **541/541**。
+
+### 验证边界
+
+命中测试与守卫作用在隔离夹具与渲染出的 HTML 上，**未**在真实后端 + 真实 `.modules.json` 上点一次开关
+观察落盘——那会改动用户私有数据，本轮不碰。开关的**落盘**路径已有既有守卫（handler 经 `saveModulesConfig`）；
+本轮补的是「控件可被点到」这一层。若你实际点击仍有异常，请说明是哪个模块与浏览器。
+
+### 下一步
+
+1. 检查 `git status --short --branch` 与本段 diff。
+2. 本轮回归修复完成并提交（`378aa61`），**未发布**；应与 `3abf360`（Special Line 交互）那批一并走 `scripts/release.sh`，并单独推送 `main`。
+
+## 上一轮：Special Line 操作菜单层叠与筛选过渡（修复提交 `3abf360`，未发布）
 
 用户原话：「special line 目前手动建了一个事件，事件操作那三个点点击时弹出框在上方会被遮挡，修复。鼠标在不同分类如已读未读全部来源稍后阅读等点击切换时不够丝滑顺畅」
 
