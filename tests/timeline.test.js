@@ -631,7 +631,7 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
         '并把它登记进模块定义');
 });
 
-test('时间线内联在首页那一列里：没有弹窗，工具与行内操作都在卡片上', () => {
+test('时间线内联在首页那一列里：没有弹窗，形态与仿真一致（轨道 / 事件卡 / ⋯ / chips）', () => {
     const code = stripComments(moduleSource);
 
     // ① 不再有弹窗面板（用户的明确要求：「不是单独弹出一个框再显示」）
@@ -640,24 +640,77 @@ test('时间线内联在首页那一列里：没有弹窗，工具与行内操�
     assert.doesNotMatch(code, /openPanel/, '不得再实现 / 注册 openPanel');
 
     // ② 卡片本身就是时间线：四段都挂在 card 上
-    assert.match(code, /card\.append\(head, bar, list, foot\)/, '头 / 工具行 / 列表 / 底部都在卡片里');
+    assert.match(code, /card\.append\(head, chipsEl, listEl, footEl\)/, '头 / 筛选 / 列表 / 底部都在卡片里');
 
-    // ③ 筛选用原生下拉——132～420px 的那一列排不下三个 chips
-    assert.match(code, /sourceSelect = document\.createElement\('select'\)/, '来源筛选是下拉');
-    assert.match(code, /viewSelect = document\.createElement\('select'\)/, '状态筛选是下拉');
+    // ③ 形态对齐仿真：日期轨道（time）+ 事件卡（article）+ chips 筛选 + 「⋯」菜单
+    assert.match(code, /<time class="special-line-time">/, '左侧日期轨道');
+    assert.match(code, /<article class="special-line-event">/, '事件卡');
+    assert.match(code, /class="special-line-mark"/, '来源标记');
+    // chips 的 data-action 由调用处的 kind 决定，所以钉调用处而不是拼出来的字面量
+    assert.match(code, /data-action="\$\{kind\}"/, 'chips 的动作类型由调用处传入');
+    assert.match(code, /chip\('', '全部来源', 'filter-source'\)/, '来源 chips（含「全部来源」）');
+    assert.match(code, /chip\('manual', '稍后阅读', 'filter-source'\)/, '「稍后阅读」是固定入口');
+    assert.match(code, /chip\('all', '全部', 'filter-view'\)/, '状态 chips');
+    assert.match(code, /<details class="special-line-tools">/, '「⋯」菜单（与仿真同款）');
+    assert.match(code, /<div class="special-line-actions">/, '菜单里是操作列表');
+    assert.match(code, /data-action="read"/, '标为已读 / 未读');
+    assert.match(code, /data-action="archive"/, '归档 / 取消归档');
 
-    // ④ 已读 / 归档是行内按钮，不是 <details> 弹层：
-    //    弹层挂在 .special-line-listwrap（overflow-y:auto）里会被裁掉
-    assert.match(code, /data-action="read"/);
-    assert.match(code, /data-action="archive"/);
-    assert.doesNotMatch(code, /<details class="special-line-tools/, '列表里不得用 details 弹层');
+    // ④ 「⋯」菜单会被滚动容器裁掉，所以要有量一次、必要时往上弹的处理
+    assert.match(code, /function adjustMenu\(details\)/, '有翻转逻辑');
+    assert.match(code, /classList\.add\('is-up'\)/, '超出底边时往上弹');
+    assert.match(code, /closeMenus\(/, '打开一个菜单时先收起别的');
 });
 
-test('内联卡片的 CSS：高度有上限、列表内滚动、这一列宽度被放开', () => {
+test('平台宽栏机制：背板为 wideRail 模块让位，且让位发生在判停靠之前', () => {
+    const app = stripComments(appSource);
+    // 模块声明它要一条宽列
+    assert.match(stripComments(moduleSource), /wideRail: true/, '模块声明 wideRail');
+
+    // 平台侧：判定 + 应用到 #app + 顺序
+    assert.match(app, /wideRailAvailable\(\) \{/, '有宽栏可用性判定');
+    assert.match(app, /wantsWideRail\(\) \{/, '只看已启用且声明了 wideRail 的模块');
+    assert.match(app, /syncRail\(\) \{[\s\S]*?dataset\.rail = wide \? 'wide' : 'narrow'/, '把结论写到 #app');
+    // ⚠️ 顺序：sideDockAvailable 读的是背板**实际**宽度，让位必须先发生
+    const zone = app.slice(app.indexOf('async renderModuleZone()'),
+        app.indexOf('async renderModuleZone()') + 4000);
+    assert.ok(zone.indexOf('this.syncRail()') > 0 && zone.indexOf('this.syncRail()') < zone.indexOf('this.sideDockAvailable()'),
+        'syncRail 必须排在 sideDockAvailable 之前');
+    // 未登录不该让背板一直窄着
+    assert.match(app, /if \(!this\.authenticated\) \{[\s\S]{0,220}?dataset\.rail = 'narrow'/, '登出时复位');
+
+    // CSS 侧：背板让位 + 右侧 420 + 左列按剩余空间
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const board = /#app\[data-rail="wide"\] \.backboard \{([\s\S]*?)\n\}/.exec(css);
+    assert.ok(board, '宽栏下背板有自己的规则');
+    assert.match(board[1], /max-width: min\(936px, calc\(100% - 592px\)\)/, '背板让出 592px（152 + 420 + 20）');
+    // ⚠️ 必须改掉默认的居中：否则背板右半边会被那 420px 的列压住（实测压 124px）
+    assert.match(board[1], /margin-left: 152px/, '背板靠左排，左边正好留出左侧那一列');
+    assert.match(board[1], /margin-right: auto/, '右侧不再居中');
+    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="right"\] \{ width: 420px; \}/,
+        '右侧那一列固定 420px');
+    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="left"\] \{/,
+        '左侧那一列按剩余空间给（132～220）');
+});
+
+test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按容器宽度切换', () => {
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     const card = /\.special-line-card \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(card, '切出 .special-line-card 规则');
     assert.match(card[1], /max-height:/, '卡片必须有高度上限——右侧那一列不能无限长下去');
+    // 版式按**卡片自己的宽度**切，而不是按视口：拖到左列、窗口变窄都不必重渲染
+    assert.match(card[1], /container-type: inline-size/, '卡片是容器查询的容器');
+
+    // 两套版式：宽列用仿真的桌面版（日期在左），窄列用仿真 ≤700px 那套（时间在卡上方）
+    const wide = /@container \(min-width: 340px\) \{([\s\S]*?)\n\}/.exec(css);
+    assert.ok(wide, '有宽列版式');
+    assert.match(wide[1], /grid-template-columns: 84px minmax\(0, 1fr\)/, '桌面版：左侧日期轨道 + 事件卡');
+    assert.match(wide[1], /text-align: right/, '桌面版时间靠右（贴近竖线）');
+    const narrow = /@container \(max-width: 339\.98px\) \{([\s\S]*?)\n\}/.exec(css);
+    assert.ok(narrow, '有窄列版式');
+    assert.match(narrow[1], /display: block/, '窄版：单列');
+    assert.match(narrow[1], /margin-left: 24px/, '窄版：事件卡缩进让开竖线');
+    assert.match(narrow[1], /\.special-line-time \{ display: block/, '<time> 必须显式 block，否则 padding 盒压到卡上沿');
 
     // 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块，
     // 而 below 停靠下卡片是 static——那些盒子会以 .module-zone（absolute）为
@@ -676,12 +729,9 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、这一列宽度�
     assert.match(wrap[1], /overflow-y: auto/, '列表自己滚');
     assert.match(wrap[1], /min-height: 0/, 'flex 子项必须 min-height:0 才会真的滚（否则被内容撑开）');
 
-    // 宽度放开：只针对本模块，且上限仍是「可用余量」，只是把平台的 220px 抬到 420px
-    assert.match(css,
-        /\.module-zone\[data-dock="outside"\] \.module-widget\[data-module-id="special-line"\] \{/,
-        '为这一列放开宽度上限');
-    assert.match(css, /width: clamp\(132px, calc\(\(100% - 936px\) \/ 2 - 20px\), 420px\)/,
-        '上限仍是可用余量');
+    // 「⋯」菜单在滚动容器里要能往上弹
+    assert.match(css, /\.special-line-tools\.is-up \.special-line-actions \{ top: auto; bottom: calc\(100% \+ 4px\); \}/,
+        '菜单贴底时往上弹');
 
     // 颜色 token：本仓库**没有** --danger / --warning / --success，
     // 引用它们不会报错，只会静默丢掉那条声明（观感像「样式没生效」）

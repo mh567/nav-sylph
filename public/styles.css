@@ -3262,15 +3262,16 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 /* ==================== Special Line 时间线（模块） ====================
-   时间线**内联**在首页那一列里（不是「摘要卡 + 点开弹窗」）：卡片头是标题与
-   同步状态，下面一条工具行，再下面是可滚动的事件列表，底部是计数。
+   形态与仿真样例（docs/mockup-special-line.html）一致：左侧日期轨道 + 贯穿节点线
+   + 事件卡 + chips 筛选，**内联**显示在首页右侧那一列里（不是「摘要卡 + 弹窗」）。
+   两套版式由**容器查询**按卡片的实际宽度切换：宽列用桌面版，窄列用仿真 ≤700px 那套。
    类名统一 special-line- 前缀，避免与既有模块的类撞名。 */
 
-/* 告警 / 警示色。⚠️ 本仓库**没有** --danger / --warning / --success 这三个
-   主题 token（`grep -- '--danger:' public/styles.css` 为空），颜色的既有写法是
-   「hex + 深色块覆盖」。所以这里自带一对命名空间化的变量，值取自
-   .btn-danger 与 .module-card-status[data-kind="alert"]，不引用不存在的 token
-   ——引用不存在的 token 不会报错，只会静默丢掉那条声明。 */
+/* 告警 / 警示色。⚠️ 本仓库**没有** --danger / --warning / --success 这三个主题
+   token（`grep -- '--danger:' public/styles.css` 只会命中注释里的引用）。颜色的
+   既有写法是「hex + 深色块覆盖」，所以这里自带一对命名空间化的变量，值取自
+   .btn-danger 与 .module-card-status[data-kind="alert"]。引用不存在的 token
+   不会报错，只会静默丢掉那条声明。 */
 :root {
     --sl-danger: #a44c46;
     --sl-warning: #a2762c;
@@ -3296,36 +3297,51 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     white-space: nowrap;
 }
 
-/* ---------- 这一列按「时间线」用，不是按「摘要卡」用 ----------
-   平台把两侧的卡片宽度钳在 220px，装不下一行「来源 + 标题 + 时间」。
-   这里只放开本模块：上限取可用余量（与平台同一个 calc），再封顶 420px。
-   data-dock="below"（窄屏）时不生效，仍用平台宽度。 */
-.module-zone[data-dock="outside"] .module-widget[data-module-id="special-line"] {
-    width: clamp(132px, calc((100% - 936px) / 2 - 20px), 420px);
+/* ---------- 宽栏模式（平台机制，由 #app[data-rail] 驱动） ----------
+   声明了 `wideRail: true` 的模块（今天只有 Special Line）需要一条真宽度的列，
+   否则仿真那套「日期轨道 + 事件卡」在 210px 里没法成立。做法：右侧固定留 420px，
+   背板收成「剩下的宽度」（仍以 936 为上限），左侧那一列按剩余空间给 132～220。
+   是否进入这个模式由 app.js 的 wideRailAvailable() 判定——放不下就不进，
+   模块自己再按容器宽度降级成窄版。 */
+/* ⚠️ 背板默认是 `margin: 0 auto` 居中的——宽栏下必须让它**靠左**排，否则右侧那条
+   420px 的列会压上来（实测压 124px）。左边留 152px = 左侧那一列的 132 + 20 间距；
+   背板宽度公式里的 592 正是「152 + 420 + 20」，两者对得上。 */
+#app[data-rail="wide"] .backboard {
+    max-width: min(936px, calc(100% - 592px));
+    margin-left: 152px;
+    margin-right: auto;
+}
+#app[data-rail="wide"] .module-widget[data-side="right"] { width: 420px; }
+#app[data-rail="wide"] .module-widget[data-side="left"] {
+    width: clamp(132px, calc(100% - 936px - 440px), 220px);
 }
 
-/* ---------- 卡片：纵向四段，列表自己滚 ---------- */
+/* ---------- 卡片：纵向四段（头 / 筛选 / 列表 / 底） ---------- */
 .special-line-card {
     display: flex;
     flex-direction: column;
     gap: 8px;
     /* 右侧那一列的高度不能无限长：列表超出就在卡片内滚动 */
-    max-height: min(58vh, 560px);
+    max-height: min(62vh, 620px);
+    /* 版式按**卡片自己的宽度**切，而不是按视口：同一份 DOM 在 210px 与 420px
+       下各自成立（拖到左列、窗口变窄都不需要重渲染）。 */
+    container-type: inline-size;
 }
 
-/* ⚠️ 卡片必须自成一个包含块。本模块是第一个在卡片里用 .sr-only（绝对定位）的：
+/* ⚠️ 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块。
    below 停靠下卡片是 position: static，那些 1×1 的盒子会以 .module-zone
    （它本身是 position: absolute）为包含块，逐行累积的溢出逃出横滑条的裁剪，
    把**整个文档**撑宽——实测 390 视口下多出 338px，页面能真的横向滚动。
-   选择器要 ①写到能压过平台那条 0-3-0 的 below 规则（`.special-line-card` 只有
-   0-1-0，会被压掉），又 ②**只作用于 below**——不限定 dock 的话它是 0-3-0，
-   会把 outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute
-   也一起顶掉，宽屏那一列就散架了。 */
+   （container-type 的 layout containment 也提供这个包含块，但显式写上更稳。）
+   选择器要 ①压得过平台那条 0-3-0 的 below 规则（`.special-line-card` 只有
+   0-1-0，会被压掉），又 ②**只作用于 below**——不限定 dock 就是 0-3-0，会把
+   outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute 也顶掉。 */
 .module-zone[data-dock="below"] .module-widget[data-module-id="special-line"] { position: relative; }
-.special-line-card .module-widget-head { margin-bottom: 0; }
 
-/* ---------- 卡片头里的状态胶囊 ---------- */
-.special-line-card-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+/* ---------- 头：标题 + 副标题 + 状态 + 同步 / 保存 + 拖拽把手 ---------- */
+.special-line-head { flex-wrap: wrap; margin-bottom: 0; }
+.special-line-sub { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
+.special-line-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 .special-line-pill {
     display: inline-flex;
@@ -3347,6 +3363,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     :root:not([data-theme="light"]) .special-line-pill[data-kind="alert"] { color: #e9a69d; }
 }
 
+.special-line-time-note { color: var(--text-muted); font-size: 10px; }
+
 .special-line-spinner {
     width: 9px;
     height: 9px;
@@ -3367,38 +3385,16 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     cursor: pointer;
 }
 
-/* ---------- 工具行：两个下拉 + 两个图标按钮 ----------
-   窄列（这一列常见 152～230px）里放不下「两个下拉 + 两个按钮」一行，
-   硬挤会把来源名截成「全…」。所以允许换行、基准宽度 120px：
-   窄时来源独占一行（正好拿到整行宽度），状态与两个按钮排第二行；
-   卡片够宽（约 ≥340px）时自动回到一行。 */
-.special-line-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-
-.special-line-select {
-    flex: 1 1 120px;
-    min-width: 0;
-    height: 26px;
-    padding: 0 3px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    font-size: 10px;
-    text-overflow: ellipsis;
-}
-.special-line-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-
 .special-line-iconbtn {
     flex: 0 0 auto;
-    width: 26px;
     height: 26px;
-    padding: 0;
+    padding: 0 9px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 7px;
     background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
     box-shadow: var(--shadow);
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: 11px;
     line-height: 1;
     cursor: pointer;
     transition: transform 120ms, box-shadow 120ms, color 120ms;
@@ -3406,6 +3402,40 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .special-line-iconbtn:hover { color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-lg); }
 .special-line-iconbtn:active { transform: translateY(1px) scale(.985); }
 .special-line-iconbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.special-line-save { border-color: transparent; background: var(--accent); color: #fffaf5; font-weight: 620; }
+.special-line-save:hover { background: var(--accent-hover); color: #fffaf5; }
+
+/* ---------- 筛选 chips（窄列时横向滚动，与仿真一致） ---------- */
+.special-line-filters {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.special-line-filters::-webkit-scrollbar { display: none; }
+.special-line-chip {
+    flex: 0 0 auto;
+    min-height: 26px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.special-line-chip:hover { background: var(--bg-hover); color: var(--text); }
+.special-line-chip[aria-pressed="true"] {
+    border-color: var(--border);
+    background: var(--glass-strong);
+    color: var(--accent);
+    font-weight: 650;
+}
+.special-line-sep { flex: 0 0 auto; width: 1px; height: 18px; margin: 0 3px; background: var(--border); }
 
 /* ---------- 列表（自身滚动） ---------- */
 .special-line-listwrap {
@@ -3414,97 +3444,202 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
-    margin: 0 -4px;
-    padding: 0 4px;
 }
 
-.special-line-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
-
-.special-line-item {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 7px;
-    padding: 7px 5px 7px 7px;
-    border: 1px solid transparent;
-    border-radius: 7px;
+.special-line-list {
+    position: relative;
+    margin: 0;
+    padding: 4px 0 8px;
+    list-style: none;
 }
-.special-line-item:hover { background: var(--bg-hover); }
-.special-line-item[data-unread="true"] {
-    border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+/* 贯穿节点线：画在列表上而不是每个 item 上——items 高度不一，逐段画会断开 */
+.special-line-list::before {
+    position: absolute;
+    top: 12px;
+    bottom: 18px;
+    width: 1px;
+    background: linear-gradient(var(--border), rgba(var(--divider-rgb), .27) 88%, transparent);
+    content: "";
 }
 
-.special-line-sym {
+.special-line-item { position: relative; }
+.special-line-item::before {
+    position: absolute;
+    z-index: 1;
+    width: 9px;
+    height: 9px;
+    border: 2px solid var(--bg-card);
+    border-radius: 50%;
+    background: var(--accent);
+    content: "";
+}
+.special-line-item[data-unread="true"]::before {
+    width: 11px;
+    height: 11px;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.special-line-time { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.special-line-time strong { color: var(--text-secondary); font-weight: 570; }
+
+.special-line-event {
+    min-width: 0;
+    padding: 10px 11px 9px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow);
+    transition: transform 150ms, box-shadow 150ms;
+}
+.special-line-event:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+
+.special-line-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text-muted); font-size: 9px; }
+.special-line-mark { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); font-weight: 630; }
+.special-line-icon {
     display: inline-grid;
-    width: 15px;
-    height: 15px;
-    margin-top: 2px;
+    width: 17px;
+    height: 17px;
     place-items: center;
     border: 1px solid var(--border);
     border-radius: 5px;
     background: var(--bg-card);
     color: var(--accent);
-    font-size: 8px;
+    font-size: 9px;
     font-weight: 700;
 }
+.special-line-type { color: var(--text-muted); font-size: 9px; }
 
-.special-line-main { min-width: 0; }
-
-.special-line-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; font-size: 9px; }
-.special-line-source { color: var(--text-secondary); font-weight: 620; }
-.special-line-type { color: var(--text-muted); }
-
-.special-line-h { margin: 2px 0 0; font-size: 12px; font-weight: 560; line-height: 1.4; overflow-wrap: anywhere; }
-.special-line-title { color: inherit; text-decoration: none; }
-.special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-.special-line-item[data-unread="true"] .special-line-h { font-weight: 640; }
-
-.special-line-summary {
-    display: -webkit-box;
-    margin: 3px 0 0;
-    overflow: hidden;
-    color: var(--text-secondary);
-    font-size: 10px;
-    line-height: 1.55;
-    /* 摘要最多两行：卡片是列表，不是阅读器 */
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-}
-
-.special-line-stamp {
-    margin-top: 3px;
+/* 「⋯」菜单：与仿真同款。⚠️ 列表是滚动容器，朝下弹到容器外会被裁掉，
+   所以 render 后由 JS 量一次、必要时加 .is-up 往上弹。 */
+.special-line-tools { position: relative; margin-left: auto; }
+.special-line-tools summary {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
     color: var(--text-muted);
-    font-size: 9px;
-    font-variant-numeric: tabular-nums;
+    font-size: 16px;
+    line-height: 1;
+    list-style: none;
+    cursor: pointer;
 }
+.special-line-tools summary::-webkit-details-marker { display: none; }
+.special-line-tools summary:hover,
+.special-line-tools[open] summary { background: var(--bg-hover); color: var(--text-secondary); }
+.special-line-tools summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-/* 行内操作：不用弹出菜单——菜单挂在滚动容器里会被 overflow 裁掉 */
-.special-line-acts { display: grid; align-content: start; gap: 3px; }
-.special-line-act {
-    width: 22px;
-    height: 22px;
-    padding: 0;
+.special-line-actions {
+    position: absolute;
+    z-index: 3;
+    top: calc(100% + 4px);
+    right: 0;
+    display: grid;
+    min-width: 112px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow-lg);
+}
+.special-line-tools.is-up .special-line-actions { top: auto; bottom: calc(100% + 4px); }
+
+.special-line-action {
+    min-height: 30px;
+    padding: 0 10px;
     border: 0;
     border-radius: 5px;
     background: transparent;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: 11px;
-    line-height: 1;
+    text-align: left;
+    white-space: nowrap;
     cursor: pointer;
 }
-.special-line-act:hover { background: var(--bg-card); color: var(--accent); }
-.special-line-act[aria-pressed="true"] { color: var(--accent); }
-.special-line-act:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.special-line-action:hover { background: var(--bg-hover); color: var(--accent); }
+.special-line-action[aria-pressed="true"] { color: var(--accent); }
 
-/* ---------- 底部与状态 ---------- */
+.special-line-event h3 { margin: 0 0 6px; font-size: 13px; line-height: 1.45; font-weight: 610; overflow-wrap: anywhere; }
+.special-line-title { color: inherit; text-decoration: none; }
+.special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.special-line-item[data-unread="true"] .special-line-event h3 { font-weight: 640; }
+.special-line-event p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.special-line-event blockquote {
+    margin: 8px 0 0;
+    padding: 7px 10px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+    border-radius: 0 6px 6px 0;
+    background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1.6;
+}
+.special-line-stamp { margin-top: 5px; color: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+
+/* ---------- 宽列（≥340px）：仿真里的桌面版——日期在左、事件卡在右 ---------- */
+@container (min-width: 340px) {
+    .special-line-list::before { left: 80px; }
+    .special-line-item { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; padding: 8px 0 14px; }
+    .special-line-item::before { top: 21px; left: 76px; }
+    .special-line-item[data-unread="true"]::before { top: 20px; left: 75px; }
+    .special-line-time { padding-top: 16px; text-align: right; }
+    .special-line-time strong { display: block; margin-bottom: 3px; font-size: 11px; }
+    .special-line-stamp { display: none; }   /* 桌面版时间在左轨道上，卡内不重复 */
+}
+
+/* ---------- 窄列（<340px）：仿真 ≤700px 那套——时间移到卡上方、竖线贴左、单列 ---------- */
+@container (max-width: 339.98px) {
+    .special-line-list::before { left: 10px; }
+    .special-line-item { display: block; padding: 8px 0 14px; }
+    .special-line-item::before { top: 30px; left: 5px; }
+    .special-line-item[data-unread="true"]::before { top: 29px; left: 4px; }
+    /* <time> 默认是行内元素：不显式 block，它的 padding 盒会压到下面那张卡的上沿 */
+    .special-line-time { display: block; padding: 6px 0 6px 24px; }
+    .special-line-time strong { display: inline; margin-right: 6px; }
+    .special-line-event { margin-left: 24px; }
+    .special-line-sub { display: none; }     /* 窄列那一行留给状态与两个按钮 */
+}
+
+/* ---------- 提示 / 空态 / 骨架 / 底 ---------- */
+.special-line-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--sl-warning) 34%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--sl-warning) 8%, var(--glass));
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1.55;
+}
+.special-line-notice strong { color: var(--sl-warning); }
+
+.special-line-empty { padding: 22px 12px; color: var(--text-muted); text-align: center; font-size: 11px; line-height: 1.7; }
+.special-line-empty p { margin: 0 0 8px; }
+
+.special-line-skeleton {
+    height: 58px;
+    margin-bottom: 8px;
+    border-radius: 9px;
+    background: linear-gradient(90deg, var(--glass), var(--bg-hover), var(--glass));
+    background-size: 200% 100%;
+    animation: specialLineShimmer 1.5s ease-in-out infinite;
+}
+@keyframes specialLineShimmer { to { background-position: -200% 0; } }
+
 .special-line-foot {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: 10px;
 }
-
 .special-line-linkbtn {
     padding: 0;
     border: 0;
@@ -3515,37 +3650,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     cursor: pointer;
 }
 
-.special-line-state { padding: 10px 2px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
-.special-line-state p { margin: 0 0 6px; }
-
-.special-line-notice {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 6px;
-    margin-bottom: 6px;
-    padding: 7px 9px;
-    border: 1px solid color-mix(in srgb, var(--sl-warning) 34%, var(--border));
-    border-radius: 7px;
-    background: color-mix(in srgb, var(--sl-warning) 8%, var(--glass));
-    color: var(--text-secondary);
-    font-size: 10px;
-    line-height: 1.55;
-}
-.special-line-notice strong { color: var(--sl-warning); }
-
-.special-line-skeleton {
-    height: 52px;
-    margin-bottom: 6px;
-    border-radius: 7px;
-    background: linear-gradient(90deg, var(--glass), var(--bg-hover), var(--glass));
-    background-size: 200% 100%;
-    animation: specialLineShimmer 1.5s ease-in-out infinite;
-}
-@keyframes specialLineShimmer { to { background-position: -200% 0; } }
-
 /* ---------- 保存文章对话框 ---------- */
-
 .special-line-dialog {
     width: min(440px, calc(100vw - 32px));
     max-height: calc(100dvh - 32px);
@@ -3591,17 +3696,20 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-skeleton { animation: none; }
 }
 
-/* ---------- 窄屏：触控目标 ≥44px，下拉用 16px 字体（防 iOS 聚焦放大） ---------- */
+/* ---------- 窄屏（视口 ≤700px）：触控目标 ≥44px ---------- */
 @media (max-width: 700px) {
-    .special-line-card { max-height: min(70vh, 620px); gap: 7px; }
-    .special-line-bar { flex-wrap: wrap; }
-    .special-line-select { flex: 1 1 46%; height: 40px; font-size: 16px; }
-    .special-line-iconbtn { width: 40px; height: 40px; font-size: 15px; }
-    .special-line-act { width: 34px; height: 34px; font-size: 13px; }
-    .special-line-h { font-size: 13px; }
-    .special-line-summary { font-size: 11px; -webkit-line-clamp: 3; }
+    .special-line-card { max-height: min(72vh, 640px); }
+    .special-line-head { gap: 6px; }
+    /* 44px 是仿真样例定的触控下限（与 .filter-button / .timeline-action 一致）：
+       窄屏上手指就是指针，低于它的按钮点了没反应，用户只会以为坏了。 */
+    .special-line-chip { min-height: 44px; padding: 0 12px; }
+    .special-line-iconbtn { height: 44px; padding: 0 11px; }
+    .special-line-tools summary { width: 44px; height: 44px; }
+    .special-line-action { min-height: 44px; font-size: 12px; }
+    .special-line-event h3 { font-size: 14px; }
+    .special-line-event p { font-size: 12px; }
     .special-line-foot { font-size: 10px; }
-    .special-line-linkbtn { min-height: 34px; }
+    .special-line-linkbtn { min-height: 30px; }
     .special-line-dialog { width: min(100vw - 24px, 420px); padding: 18px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }

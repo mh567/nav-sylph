@@ -3,13 +3,18 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v78：Special Line 的形态改成与仿真样例一致 —— 左侧日期轨道 + 贯穿节点线 +
+// 事件卡 + chips 筛选 + 「⋯」菜单（v1.13.1 那版是紧凑列表 + 原生下拉，用户否掉了
+// 「界面完全变了」）。为此给平台加了**宽栏机制**：模块可声明 wideRail，平台据此让
+// 背板让位（#app[data-rail="wide"]：右侧固定 420px、背板 max-width calc(100%-592px)、
+// 左侧按剩余空间给 132～220），让位发生在判停靠**之前**（sideDockAvailable 读的是
+// 背板实际宽度）。模块的两套版式由**容器查询**按卡片宽度切换，与视口无关。
+// 另：v1.13.1 里那条「卡片必须自成一个包含块」保留（below 停靠下的 .sr-only
+// 溢出会把整个文档撑宽）。改了 app.js、modules/special-line.js、styles.css。
 // nav-v77：Special Line 改为**内联**在首页右侧那一列里显示（v1.13.0 是「摘要卡 +
-// 点开弹窗」，用户否掉了那个形态）。去掉 .module-overlay 面板，卡片本身即时间线：
-// 头（标题 + 状态 + 拖拽把手）/ 工具行（来源与状态下拉、↻、＋）/ 可滚动列表
-// （行内「标为已读」「归档」按钮）/ 底部计数。为这一列放开宽度上限（220 → 420px）。
+// 点开弹窗」，用户否掉了那个形态）。去掉 .module-overlay 面板，卡片本身即时间线。
 // 另修：样式里引用了本仓库不存在的 --danger / --warning / --success 三个 token，
-// 会静默丢掉那些声明；改用自带的 --sl-danger / --sl-warning。改了 app.js、
-// modules/special-line.js、styles.css、admin.css。
+// 会静默丢掉那些声明；改用自带的 --sl-danger / --sl-warning。
 // nav-v76：新增「Special Line」时间线模块（public/modules/special-line.js）——
 // 社交订阅与稍后阅读汇成一条时间线，启用后默认停靠在首页右侧空白区、位置可拖。
 // 同时给平台加了两个通用能力：模块定义可声明 defaultSide（无已保存布局时按它
@@ -150,7 +155,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v77';
+const CACHE = 'nav-v78';
 const ASSETS = [
     '/',
     '/index.html',

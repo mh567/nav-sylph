@@ -314,6 +314,49 @@
             return side >= MIN_SIDE + GAP;
         }
 
+        /** 已启用的模块里有没有声明 `wideRail` 的（要一条宽列而不是一张窄卡）。 */
+        wantsWideRail() {
+            return this.enabledModuleIds().some(id => {
+                const def = this.getModule(id);
+                return !!(def && def.wideRail === true);
+            });
+        }
+
+        /**
+         * 放得下**宽**模块列吗？放得下就让背板让位。
+         *
+         * 有些模块的内容不是一张摘要卡而是一条时间线（Special Line）：仿真里那套
+         * 版式（左侧日期轨道 + 事件卡）需要 340px 以上才有意义，而两侧均分只给到
+         * ~210px。做法是右侧固定留 `RAIL_WIDE`，背板收成「剩下的宽度」，但不得低于
+         * `MIN_BOARD`（再窄分类网格就没法看），左侧那一列也至少要 `MIN_SIDE`。
+         *
+         * 放不下就返回 false——退回普通布局，模块自己再按容器宽度降级成窄版
+         * （两套版式由容器查询切换，见 styles.css 的 @container）。
+         */
+        wideRailAvailable() {
+            const RAIL_WIDE = 420;
+            const MIN_SIDE = 132;
+            const GAP = 20;
+            const MIN_BOARD = 640;
+            const app = $('#app');
+            if (!app) return false;
+            const content = app.getBoundingClientRect().width - 22 * 2;
+            return content >= MIN_SIDE + GAP + MIN_BOARD + GAP + RAIL_WIDE;
+        }
+
+        /**
+         * 决定 `#app` 的 data-rail，并返回它。
+         *
+         * ⚠️ 必须在 `sideDockAvailable()` **之前**调：后者读的是背板的实际宽度，
+         * 而宽栏模式会把背板收窄——顺序反了就会按旧宽度判停靠。
+         */
+        syncRail() {
+            const app = $('#app');
+            const wide = this.wantsWideRail() && this.wideRailAvailable();
+            if (app) app.dataset.rail = wide ? 'wide' : 'narrow';
+            return wide;
+        }
+
         /**
          * 加载并渲染模块区。
          * 单个模块加载失败不影响其它模块——失败的那个渲染出错误与重试按钮。
@@ -328,9 +371,15 @@
             if (!this.authenticated) {
                 zone.hidden = true;
                 zone.replaceChildren();
+                // 未登录不该让背板继续收窄——让位是给登录后那条时间线的
+                const app = $('#app');
+                if (app) app.dataset.rail = 'narrow';
                 return;
             }
             if (!this.modulesConfig) await this.loadModulesConfig();
+
+            // 宽栏模块先让背板让位，再量余量（顺序不能反，见 syncRail 的注释）
+            this.syncRail();
 
             // 停靠方式必须在**错误分支之前**定下来：`.module-zone` 的基础规则是
             // `position: absolute; pointer-events: none`，不设 data-dock 的话失败时
@@ -1207,8 +1256,13 @@
                 dockResizeTimer = setTimeout(() => {
                     const zone = $('#moduleZone');
                     if (!zone || zone.hidden) return;
+                    // 背板宽度也是连续量（宽栏模式在阈值附近来回切），所以先重算
+                    // data-rail 再判停靠；两者任一变了都要重渲染。
+                    const railBefore = $('#app') ? $('#app').dataset.rail : null;
+                    this.syncRail();
+                    const railChanged = ($('#app') ? $('#app').dataset.rail : null) !== railBefore;
                     const want = this.sideDockAvailable() ? 'outside' : 'below';
-                    if (zone.dataset.dock !== want) this.renderModuleZone();
+                    if (railChanged || zone.dataset.dock !== want) this.renderModuleZone();
                 }, 150);
             });
             $('#modalBackdrop').onclick = () => this.closeAdmin();

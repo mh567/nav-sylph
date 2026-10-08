@@ -1,13 +1,13 @@
 /**
  * Special Line 时间线模块。
  *
- * **时间线直接显示在首页右侧那一列里**，不是一个「摘要卡 + 点开弹窗」的入口。
- * 卡片头是标题与同步状态，下面一条工具行（来源 / 状态筛选、同步、保存文章），
- * 再下面是事件列表（列表自身滚动，卡片高度有上限——右侧那一列的高度不能无限
- * 长下去），底部是计数与「加载更早」。条目的已读 / 归档做成**行内按钮**，
- * 不用弹出菜单：菜单挂在滚动容器里会被 overflow 裁掉。
+ * 时间线**内联显示在首页右侧那一列里**，形态与仿真样例（docs/mockup-special-line.html）
+ * 一致：左侧日期轨道 + 贯穿节点线 + 事件卡 + chips 筛选；不是「摘要卡 + 点开弹窗」。
  *
- * 「保存文章」仍然是一个原生 <dialog>——那是个表单，塞不进 132～420px 的列。
+ * 两套版式由**容器查询**切换（见 styles.css 的 @container special-line-card）：
+ *  - 宽列（≥340px，平台让背板让位后拿到的就是它）：桌面版，日期在左、事件卡在右；
+ *  - 窄列：仿真里 ≤700px 那套，时间移到卡上方、竖线贴左、单列。
+ * 两者是同一份 DOM，只有排版不同——所以拖拽/换窗口不会丢状态。
  *
  * 数据在服务端 SQLite（lib/timeline/），服务器是多端同步的唯一真相源。
  * 本模块按 pollInterval 轮询；页面不可见时停表，切回前台补拉一次。
@@ -34,7 +34,7 @@
     let syncFailed = [];
     let lastSync = null;
     let listError = null;
-    let busy = false;           // 面板整体忙碌（首轮 / 换筛选 / 加载更早）
+    let busy = false;
 
     let filterSource = '';      // '' = 全部来源
     let filterView = 'all';     // all | unread | archived
@@ -44,12 +44,11 @@
     let visibilityHandler = null;
     let inFlight = false;
 
-    /** 卡片上的几个持久节点（工具行只建一次，避免轮询把它重建、丢掉焦点与滚动位置） */
+    /** 卡片上的持久节点（chips 只建一次，避免轮询把它重建、丢掉焦点与滚动位置） */
     let headStatus = null;
+    let chipsEl = null;
     let listEl = null;
     let footEl = null;
-    let sourceSelect = null;
-    let viewSelect = null;
 
     let saveDialog = null;
     let saveTrigger = null;
@@ -57,6 +56,7 @@
     let saveDraft = { url: '', title: '', summary: '' };
 
     let lastKey = '';
+    let lastChipsKey = '';
 
     // ================= 小工具 =================
 
@@ -70,14 +70,21 @@
         return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     }
 
+    /** 轨道上那一列：今天 / 昨天 / 月日 */
+    function dayLabel(ts) {
+        const d = new Date(ts);
+        if (d.toDateString() === new Date().toDateString()) return '今天';
+        if (d.toDateString() === new Date(Date.now() - 86400e3).toDateString()) return '昨天';
+        return `${d.getMonth() + 1}月${String(d.getDate()).padStart(2, '0')}日`;
+    }
+
     function relTime(ts) {
         const s = (Date.now() - ts) / 1000;
         if (s < 60) return '刚刚';
         if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
         if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
         const d = new Date(ts);
-        const y = new Date(Date.now() - 86400e3);
-        if (d.toDateString() === y.toDateString()) return '昨天 ' + hm(ts);
+        if (d.toDateString() === new Date(Date.now() - 86400e3).toDateString()) return '昨天 ' + hm(ts);
         return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hm(ts)}`;
     }
 
@@ -109,11 +116,7 @@
         return event.sourceName || event.providerType;
     }
 
-    /**
-     * 那一行的来源文案。来源名是用户自己起的（常写成「X · @northstar」），
-     * 再把作者拼一次就成了「X · @northstar · @northstar」——已经在名字里
-     * 出现过的账号就不再重复。
-     */
+    /** 来源角标那一行：来源名已经含账号（「X · @northstar」）时不再重复作者 */
     function sourceLabelOf(event) {
         const name = sourceNameOf(event);
         const author = String(event.author || '').trim();
@@ -130,43 +133,43 @@
             ? `<a class="special-line-title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${title}` +
               `<span class="sr-only">（新标签页打开）</span></a>`
             : `<span class="special-line-title">${title}</span>`;
-        const summary = e.summary ? `<p class="special-line-summary">${esc(e.summary)}</p>` : '';
         return `<li class="special-line-item" data-unread="${e.unread ? 'true' : 'false'}">` +
-            `<span class="special-line-sym" aria-hidden="true">${esc(symbolOf(e))}</span>` +
-            `<div class="special-line-main">` +
+            `<time class="special-line-time"><strong>${esc(dayLabel(e.occurredAt))}</strong>${hm(e.occurredAt)}</time>` +
+            `<article class="special-line-event">` +
                 `<div class="special-line-meta">` +
-                    `<span class="special-line-source">${esc(sourceLabelOf(e))}</span>` +
+                    `<span class="special-line-mark"><span class="special-line-icon" aria-hidden="true">${esc(symbolOf(e))}</span>` +
+                        `${esc(sourceLabelOf(e))}</span>` +
                     `<span class="special-line-type">${esc(e.eventTypeLabel || '')}</span>` +
                     `<span class="sr-only">${e.unread ? '未读' : '已读'}</span>` +
+                    `<details class="special-line-tools">` +
+                        `<summary aria-label="事件操作" title="事件操作">⋯</summary>` +
+                        `<div class="special-line-actions">` +
+                            `<button class="special-line-action" type="button" data-action="read" data-id="${esc(e.id)}"` +
+                                ` aria-pressed="${e.unread ? 'false' : 'true'}">${e.unread ? '标为已读' : '标为未读'}</button>` +
+                            `<button class="special-line-action" type="button" data-action="archive" data-id="${esc(e.id)}"` +
+                                ` aria-pressed="${e.archived ? 'true' : 'false'}">${e.archived ? '取消归档' : '归档'}</button>` +
+                        `</div>` +
+                    `</details>` +
                 `</div>` +
-                `<h3 class="special-line-h">${linked}</h3>` +
-                summary +
+                `<h3>${linked}</h3>` +
+                (e.summary ? `<p>${esc(e.summary)}</p>` : '') +
+                (e.quote ? `<blockquote>${esc(e.quote)}</blockquote>` : '') +
                 `<div class="special-line-stamp">${relTime(e.occurredAt)}</div>` +
-            `</div>` +
-            `<div class="special-line-acts">` +
-                `<button class="special-line-act" type="button" data-action="read" data-id="${esc(e.id)}"` +
-                    ` aria-pressed="${e.unread ? 'false' : 'true'}"` +
-                    ` title="${e.unread ? '标为已读' : '标为未读'}" aria-label="${e.unread ? '标为已读' : '标为未读'}">` +
-                    `${e.unread ? '✓' : '↺'}</button>` +
-                `<button class="special-line-act" type="button" data-action="archive" data-id="${esc(e.id)}"` +
-                    ` aria-pressed="${e.archived ? 'true' : 'false'}"` +
-                    ` title="${e.archived ? '取消归档' : '归档'}" aria-label="${e.archived ? '取消归档' : '归档'}">` +
-                    `${e.archived ? '⇡' : '⇣'}</button>` +
-            `</div>` +
-        `</li>`;
+            `</article></li>`;
     }
 
     function emptyHTML() {
         const filtered = filterSource !== '' || filterView !== 'all';
         if (filtered) {
-            return '<div class="special-line-state"><p>当前筛选下没有内容。</p>' +
+            return '<div class="special-line-empty"><p>当前筛选下没有内容。清除筛选后可查看完整时间线。</p>' +
                 '<button class="special-line-linkbtn" type="button" data-action="reset-filters">清除筛选</button></div>';
         }
-        return '<div class="special-line-state"><p>时间线还没有内容。订阅来源请在后台「模块」分区配置，也可以先保存一篇文章。</p>' +
+        return '<div class="special-line-empty"><p>时间线还没有内容。订阅来源请在后台「模块」分区配置，' +
+            '也可以先保存一篇文章。这里会按发生时间汇集各类事件。</p>' +
             '<button class="special-line-linkbtn" type="button" data-action="save">＋ 保存文章</button></div>';
     }
 
-    /** 数据指纹：没变就不重写 DOM（保住滚动位置与 select 焦点） */
+    /** 数据指纹：没变就不重写 DOM（保住滚动位置与展开的菜单） */
     function viewKey() {
         return [
             filterSource, filterView, syncState, listError || '', busy ? 'b' : '',
@@ -182,12 +185,11 @@
 
         if (headStatus) {
             headStatus.innerHTML = statusHTML() +
-                (unreadCount > 0 ? `<span class="special-line-pill" data-kind="unread">未读 ${unreadCount}</span>` : '');
+                (unreadCount > 0 ? `<span class="special-line-pill" data-kind="unread">未读 ${unreadCount}</span>` : '') +
+                (syncTimeText() ? `<span class="special-line-time-note">${syncTimeText()} 同步</span>` : '');
         }
 
-        // 保住滚动位置：轮询重写列表时不该把用户正在看的位置弹回顶部
         const scrollTop = listEl.scrollTop;
-
         const notice = syncFailed.length
             ? `<div class="special-line-notice" role="status"><strong>同步未完成</strong>` +
               `<span>保留了上次同步的事件。` +
@@ -198,7 +200,7 @@
             : '';
         const err = listError
             ? `<div class="special-line-notice" role="alert"><strong>读取失败</strong><span>${esc(listError)}</span>` +
-              `<button class="btn" type="button" data-action="reload">重试</button></div>`
+              `<button class="special-line-linkbtn" type="button" data-action="reload">重试</button></div>`
             : '';
 
         listEl.innerHTML = err + notice +
@@ -209,13 +211,45 @@
 
         if (footEl) {
             footEl.innerHTML =
-                `<span>共 ${events.length} 条${hasMore ? '（还有更早的）' : ''}` +
-                `${syncTimeText() ? ` · 更新于 ${syncTimeText()}` : ''}</span>` +
-                (hasMore ? '<button class="special-line-linkbtn" type="button" data-action="more">加载更早</button>' : '');
+                `<span>共 ${events.length} 条${hasMore ? '（还有更早的）' : ''}</span>` +
+                (hasMore
+                    ? '<button class="special-line-linkbtn" type="button" data-action="more">加载更早</button>'
+                    : `<span>${syncTimeText() ? '更新于 ' + syncTimeText() : ''}</span>`);
         }
 
         listEl.scrollTop = scrollTop;
         if (requestStack) requestStack();
+    }
+
+    // ================= 筛选 chips =================
+
+    function chipsKey() {
+        return sources.map(s => `${s.id}:${s.providerLabel}:${s.externalKey}`).join('|') +
+            '>' + filterSource + '>' + filterView;
+    }
+
+    function renderChips() {
+        if (!chipsEl) return;
+        const key = chipsKey();
+        if (key === lastChipsKey) return;
+        lastChipsKey = key;
+
+        const chip = (value, label, kind) =>
+            `<button class="special-line-chip" type="button" data-action="${kind}" data-value="${esc(value)}"` +
+            ` aria-pressed="${(kind === 'filter-source' ? filterSource : filterView) === value}">${esc(label)}</button>`;
+
+        let html = chip('', '全部来源', 'filter-source');
+        for (const s of sources) {
+            if (s.providerType === 'manual') continue;
+            html += chip(s.id, s.providerLabel + (s.externalKey ? ' · ' + s.externalKey : ''), 'filter-source');
+        }
+        // 「稍后阅读」是固定入口，不是一条可配置来源——它永远在
+        html += chip('manual', '稍后阅读', 'filter-source');
+        html += '<span class="special-line-sep" aria-hidden="true"></span>';
+        html += chip('all', '全部', 'filter-view');
+        html += chip('unread', '未读', 'filter-view');
+        html += chip('archived', '已归档', 'filter-view');
+        chipsEl.innerHTML = html;
     }
 
     // ================= 轮询 =================
@@ -223,10 +257,7 @@
     function applyPayload(data) {
         events = Array.isArray(data.events) ? data.events : [];
         unreadCount = Number(data.unreadCount) || 0;
-        if (Array.isArray(data.sources)) {
-            sources = data.sources;
-            syncSourceOptions();
-        }
+        if (Array.isArray(data.sources)) sources = data.sources;
         syncFailed = (data.sync && Array.isArray(data.sync.failed)) ? data.sync.failed : [];
         nextCursor = data.nextCursor || null;
         hasMore = !!data.hasMore;
@@ -240,12 +271,10 @@
         if (inFlight) return;
         inFlight = true;
         busy = true;
-        if (manual) {
-            syncState = 'syncing';
-            lastKey = '';       // 强制重画一次状态
-            render();
-        }
-        if (append && nextCursor) lastKey = '';
+        if (manual) syncState = 'syncing';
+        lastKey = '';
+        lastChipsKey = '';
+        renderChips();
         render();
         try {
             const params = new URLSearchParams({ view: filterView, limit: String(PAGE_SIZE) });
@@ -262,10 +291,10 @@
                 syncFailed = (data.sync && Array.isArray(data.sync.failed)) ? data.sync.failed : syncFailed;
                 nextCursor = data.nextCursor || null;
                 hasMore = !!data.hasMore;
+                syncState = syncFailed.length ? 'failed' : 'synced';
             } else {
                 applyPayload(data);
             }
-            syncState = syncFailed.length ? 'failed' : 'synced';
 
             // 服务端回当前生效的周期：后台改过之后不必刷新页面
             if (Number.isFinite(data.pollInterval) && data.pollInterval * 1000 !== pollMs) {
@@ -278,7 +307,6 @@
         } catch (e) {
             console.error('Special line refresh failed:', e);
             if (append) {
-                // 加载更早失败不该把已有列表判成失败态
                 listError = e && e.status === 429 ? '请求过于频繁，请稍后再试' : '加载更早的事件失败';
             } else {
                 syncState = 'failed';
@@ -288,6 +316,8 @@
             inFlight = false;
             busy = false;
             lastKey = '';
+            lastChipsKey = '';
+            renderChips();
             render();
         }
     }
@@ -315,7 +345,7 @@
     // ================= 写操作 =================
 
     async function setRead(event, read) {
-        const beforeUnread = event.unread;
+        const before = event.unread;
         event.unread = !read;
         unreadCount = Math.max(0, unreadCount + (read ? -1 : 1));
         lastKey = '';
@@ -323,7 +353,7 @@
         try {
             await api.post(`/api/timeline/events/${encodeURIComponent(event.id)}/read`, { read });
         } catch (e) {
-            event.unread = beforeUnread;
+            event.unread = before;
             unreadCount = Math.max(0, unreadCount + (read ? 1 : -1));
             lastKey = '';
             render();
@@ -338,13 +368,34 @@
         render();
         try {
             await api.post(`/api/timeline/events/${encodeURIComponent(event.id)}/archive`, { archived });
-            // 归档会把它移出默认视图 / 移进归档视图，重新拉一次比在本地删更准
             refresh();
         } catch (e) {
             event.archived = before;
             lastKey = '';
             render();
             window.app?.showToast('归档失败，请重试', 'error');
+        }
+    }
+
+    /**
+     * 「⋯」菜单贴着列表底边时要往上弹。
+     *
+     * 列表是**滚动容器**（卡片高度有上限），菜单是绝对定位的——朝下弹到容器外
+     * 会被 overflow 裁掉。所以打开后量一次，超出就翻上去。
+     */
+    function adjustMenu(details) {
+        if (!details || !listEl) return;
+        details.classList.remove('is-up');
+        const wrap = listEl.getBoundingClientRect();
+        const menu = details.querySelector('.special-line-actions');
+        if (!menu) return;
+        if (menu.getBoundingClientRect().bottom > wrap.bottom - 4) details.classList.add('is-up');
+    }
+
+    function closeMenus(except) {
+        if (!listEl) return;
+        for (const d of listEl.querySelectorAll('.special-line-tools[open]')) {
+            if (d !== except) d.open = false;
         }
     }
 
@@ -387,7 +438,6 @@
         const summaryEl = dlg.querySelector('#specialLineSummary');
         const errEl = dlg.querySelector('.special-line-form-error');
 
-        // 输入就清错：留着上一次的红字会让人以为这次也不行
         dlg.addEventListener('input', () => {
             errEl.hidden = true;
             dlg.querySelectorAll('[aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
@@ -488,7 +538,6 @@
         }
 
         let providers = [];
-        /** 表单模式：null=收起，{mode:'add'} 或 {mode:'reauth', id, providerType, externalKey} */
         let form = null;
         let adminBusy = false;
 
@@ -720,27 +769,6 @@
 
     // ================= 挂载 =================
 
-    /** 来源下拉：变化时才重建 option，避免每轮轮询都动它（会打断用户展开的选择）。 */
-    function syncSourceOptions() {
-        if (!sourceSelect) return;
-        const options = [['', '全部来源']];
-        for (const s of sources) {
-            if (s.providerType === 'manual') continue;
-            options.push([s.id, `${s.providerLabel}${s.externalKey ? ' · ' + s.externalKey : ''}`]);
-        }
-        // 「稍后阅读」是固定入口，不是一条可配置来源——它永远在
-        options.push(['manual', '稍后阅读']);
-        const html = options.map(([value, label]) =>
-            `<option value="${esc(value)}">${esc(label)}</option>`).join('');
-        // 只在选项真的变了才重写：每轮轮询都 innerHTML = … 会把用户展开的选择收起
-        if (sourceSelect.innerHTML !== html) {
-            const current = filterSource;
-            sourceSelect.innerHTML = html;
-            sourceSelect.value = current;
-            if (sourceSelect.value !== current) filterSource = '';   // 该来源已不存在
-        }
-    }
-
     function mountWidget(shell, state) {
         api = (state && state.api) || null;
         requestStack = (state && state.requestStack) || null;
@@ -753,40 +781,22 @@
 
         const card = document.createElement('section');
         card.className = 'module-card special-line-card';
-        // 布局键是稳定域 id，不是数组下标（平台约定）
         card.dataset.instanceId = 'special-line:main';
 
-        // ---- 卡片头：标题 + 状态 + 拖拽把手 ----
+        // ---- 头：标题 + 副标题 + 状态 + 同步 / 保存 + 拖拽把手 ----
         const head = document.createElement('div');
-        head.className = 'module-widget-head';
+        head.className = 'module-widget-head special-line-head';
+
         const label = document.createElement('span');
         label.className = 'module-widget-title';
         label.textContent = 'Special Line';
-        const status = document.createElement('span');
-        status.className = 'special-line-card-status';
-        const handle = document.createElement('button');
-        handle.type = 'button';
-        handle.className = 'module-drag-handle';
-        handle.title = '拖拽调整位置';
-        handle.setAttribute('aria-label', '拖拽调整 Special Line 的位置');
-        // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
-        head.append(label, status, handle);
-        headStatus = status;
 
-        // ---- 工具行：筛选 / 同步 / 保存。只建一次，不随轮询重建 ----
-        const bar = document.createElement('div');
-        bar.className = 'special-line-bar';
+        const sub = document.createElement('span');
+        sub.className = 'special-line-sub';
+        sub.textContent = '动态 · 稍后阅读';
 
-        sourceSelect = document.createElement('select');
-        sourceSelect.className = 'special-line-select';
-        sourceSelect.setAttribute('aria-label', '按来源筛选');
-        sourceSelect.innerHTML = '<option value="">全部来源</option>';
-
-        viewSelect = document.createElement('select');
-        viewSelect.className = 'special-line-select';
-        viewSelect.setAttribute('aria-label', '按状态筛选');
-        viewSelect.innerHTML = '<option value="all">全部</option><option value="unread">未读</option>' +
-            '<option value="archived">已归档</option>';
+        headStatus = document.createElement('span');
+        headStatus.className = 'special-line-status';
 
         const syncBtn = document.createElement('button');
         syncBtn.type = 'button';
@@ -798,30 +808,49 @@
 
         const saveBtn = document.createElement('button');
         saveBtn.type = 'button';
-        saveBtn.className = 'special-line-iconbtn';
+        saveBtn.className = 'special-line-iconbtn special-line-save';
         saveBtn.dataset.action = 'save';
         saveBtn.title = '保存文章到稍后阅读';
         saveBtn.setAttribute('aria-label', '保存文章到稍后阅读');
-        saveBtn.textContent = '＋';
+        saveBtn.textContent = '＋ 保存';
 
-        bar.append(sourceSelect, viewSelect, syncBtn, saveBtn);
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'module-drag-handle';
+        handle.title = '拖拽调整位置';
+        handle.setAttribute('aria-label', '拖拽调整 Special Line 的位置');
+        // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
+
+        head.append(label, sub, headStatus, syncBtn, saveBtn, handle);
+
+        // ---- 筛选 chips（只建容器，内容随来源变化）----
+        chipsEl = document.createElement('nav');
+        chipsEl.className = 'special-line-filters';
+        chipsEl.setAttribute('aria-label', '时间线筛选');
 
         // ---- 列表（自身滚动，卡片高度有上限）----
-        const list = document.createElement('div');
-        list.className = 'special-line-listwrap';
-        listEl = list;
+        listEl = document.createElement('div');
+        listEl.className = 'special-line-listwrap';
 
-        // ---- 底部：计数 + 加载更早 ----
-        const foot = document.createElement('div');
-        foot.className = 'special-line-foot';
-        footEl = foot;
+        footEl = document.createElement('div');
+        footEl.className = 'special-line-foot';
 
-        card.append(head, bar, list, foot);
+        card.append(head, chipsEl, listEl, footEl);
 
-        // 事件委托挂在**整张卡**上（列表内部会重写，委托在卡上才不会被换掉）
+        // 事件委托挂在**整张卡**上：列表内部会重写，委托在卡上才不会被换掉
         card.addEventListener('click', event => {
-            const target = event.target.closest('[data-action]');
+            const target = event.target.closest('[data-action], summary');
             if (!target) return;
+
+            // 点「⋯」：开着的时候先把别的收起来，开完再量一次要不要往上弹
+            if (target.tagName === 'SUMMARY') {
+                const details = target.closest('details');
+                const willOpen = !details.open;
+                closeMenus(details);
+                if (willOpen) setTimeout(() => adjustMenu(details), 0);
+                return;
+            }
+
             const action = target.dataset.action;
             const id = target.dataset.id;
             switch (action) {
@@ -838,14 +867,37 @@
                 case 'more':
                     refresh({ append: true });
                     break;
-                case 'reset-filters':
-                    filterSource = '';
-                    filterView = 'all';
-                    sourceSelect.value = '';
-                    viewSelect.value = 'all';
+                case 'filter-source':
+                    closeMenus();
+                    filterSource = target.dataset.value || '';
                     events = [];
                     nextCursor = null;
                     lastKey = '';
+                    lastChipsKey = '';
+                    renderChips();
+                    render();
+                    refresh();
+                    break;
+                case 'filter-view':
+                    closeMenus();
+                    filterView = target.dataset.value || 'all';
+                    events = [];
+                    nextCursor = null;
+                    lastKey = '';
+                    lastChipsKey = '';
+                    renderChips();
+                    render();
+                    refresh();
+                    break;
+                case 'reset-filters':
+                    closeMenus();
+                    filterSource = '';
+                    filterView = 'all';
+                    events = [];
+                    nextCursor = null;
+                    lastKey = '';
+                    lastChipsKey = '';
+                    renderChips();
                     render();
                     refresh();
                     break;
@@ -862,23 +914,7 @@
             }
         });
 
-        sourceSelect.addEventListener('change', () => {
-            filterSource = sourceSelect.value;
-            events = [];
-            nextCursor = null;
-            lastKey = '';
-            render();
-            refresh();
-        });
-        viewSelect.addEventListener('change', () => {
-            filterView = viewSelect.value;
-            events = [];
-            nextCursor = null;
-            lastKey = '';
-            render();
-            refresh();
-        });
-
+        renderChips();
         render();
         const firstRound = refresh();
         schedulePolling();
@@ -892,6 +928,9 @@
         summary: '登录后可用 · 社交订阅与稍后阅读汇成一条时间线',
         // 启用后默认停靠在首页右侧空白区；用户拖过之后以保存的位置为准。
         defaultSide: 'right',
+        // 内容不是一张摘要卡而是一条时间线：需要一条**宽**列才用得上仿真那套版式
+        // （左侧日期轨道 + 事件卡）。平台据此让背板让位，见 app.js 的 wideRailAvailable。
+        wideRail: true,
         adminSectionTitle: 'Special Line · 订阅来源',
         mountWidget,
         renderAdminSection

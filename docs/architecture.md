@@ -112,19 +112,35 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 - **游标只在成功时前进**：失败保留旧游标与旧事件，只记 `last_error`（JSON `{code, message}`）与下次时刻（指数退避，上限 4 小时）。`code` 必须能区分「凭据失效」与「网络不通」——界面据此给「重新授权」还是「稍后重试」；把两者塌缩成一句「同步失败」，用户只能自己猜。
 - **容量与保留**：社交事件保留 90 天，手动文章不按时限删、上限 500 条，单来源硬上限 5000 条。**触顶时停止入库并显式报错，不静默驱逐已有数据**。常量集中在 `lib/timeline/constants.js` 并写进测试。
 - **每来源至多一个在途同步**，全局并发上限 2（同时打多个第三方 API 只会一起被限流）；调度器定时器 `unref()`，且 `gracefulShutdown` 里**先于 `db.close()`** 停掉——它可能正打第三方 API 并在回调里写库。
-- **平台为它加了两个通用能力**（都不特判模块 id）：① 模块定义可声明 `defaultSide`——没有已保存布局项时按它停靠，用户拖过之后 `widgets[].side` 就是唯一真相、默认值不再参与（`applyWidgetLayout` 的 `sideOf` 与 `commitWidgetDrag` 的新建分支共用同一判据）；② 模块可挂自己的后台区块 `renderAdminSection(host, { api })`，平台只给容器与标题，provider 专属的表单与文案留在模块文件里。
+- **平台为它加了三个通用能力**（都不特判模块 id）：① 模块定义可声明 `defaultSide`——没有已保存布局项时按它停靠，用户拖过之后 `widgets[].side` 就是唯一真相、默认值不再参与（`applyWidgetLayout` 的 `sideOf` 与 `commitWidgetDrag` 的新建分支共用同一判据）；② 模块可挂自己的后台区块 `renderAdminSection(host, { api })`，平台只给容器与标题，provider 专属的表单与文案留在模块文件里；③ 模块可声明 `wideRail`，平台据此**让背板让位**（见下）。
 - **API 不回传凭据**：来源列表只回 `hasCredentials`，任何响应里都不出现 token（明文与密文都不出现）。改管理密码时由 `reencryptCredentials()` 一并重加密，单条解不开则保留原值并记进 `details`，不阻断改密码。
 - **备份里不含凭据**（见 WebDAV 一节）。恢复是**整表替换**（一个事务），恢复后的来源是「待授权」，由用户重新粘贴 token。
 - **自动同步不挂社交事件的摄入**：社交事件可再从提供方取回，且是机器节奏的高频写入，挂钩会把远端上传变成每轮一次。触发的是**不可再生**的数据——保存文章、已读 / 归档、来源增删改。
 
 ⚠️ **官方接口未在本环境验证。** X 与微博的 adapter 按各自官方文档的端点形状实现（只读；凭据由运维在平台控制台取得后粘贴，不做应用内 OAuth），测试用固定响应的 fixture。真实连通性需要各自的开发者凭据与授权应用，**必须以有凭据的机器上界面里的「测试连接」结果为准**——把 fixture 通过当成「平台可用」是错的。微博的错误不走 HTTP 状态码（HTTP 200 + body 里的 `error_code`），所以 adapter 必须自己判 body。
 
-⚠️ **它的卡片不走「卡片可点开弹窗」那套**（用户的明确要求：「直接在首页右侧显示，不是单独弹出一个框再显示」）。卡片本身就是时间线：头 / 工具行 / 可滚动列表 / 底部四段，`.module-overlay` 面板已删除。两个随之而来的约束写在 `styles.css` 里，都有测试钉着：
+⚠️ **它的卡片不走「卡片可点开弹窗」那套**（用户的明确要求：「直接在首页右侧显示，不是单独弹出一个框再显示」）。形态与仿真样例一致：**左侧日期轨道 + 贯穿节点线 + 事件卡 + chips 筛选 + 「⋯」菜单**，`.module-overlay` 面板已删除。
+
+**两套版式由容器查询切换，与视口无关**：卡片自己 `container-type: inline-size`，`@container (min-width: 340px)` 是仿真里的桌面版（`grid-template-columns: 84px 1fr`，日期靠右贴近竖线、时间不在卡内重复），`@container (max-width: 339.98px)` 是仿真 ≤700px 那套（时间移到卡上方并在窄版里显式 `display: block`、事件卡缩进 24px 让开贴左的竖线）。同一份 DOM，所以把卡片拖到左列、或窗口变窄，都不需要重渲染。
+
+### 宽栏机制（`#app[data-rail="wide"]`）
+
+时间线需要一条真宽度的列，否则 84px 的日期轨道 + 事件卡在 210px 里立不住。所以平台加了这条通用机制（今天只有 Special Line 声明 `wideRail: true`）：
+
+- **判定**在 `app.js`：`wideRailAvailable()` 要求 `content >= 132 + 20 + 640 + 20 + 420`（左侧窄卡 132、间距 20、背板下限 640、间距 20、宽栏 420）；`wantsWideRail()` 只看**已启用且声明了 wideRail**的模块。两者都成立才把结论写进 `#app.dataset.rail`。
+- **顺序是硬约束**：`syncRail()` 必须排在 `sideDockAvailable()` **之前**——后者读的是背板的**实际**宽度，而宽栏模式会把背板收窄，顺序反了就会按旧宽度判停靠。未登录时复位成 `narrow`（让位是给登录后那条时间线的）。`resize` 处理器里也要先重算 rail 再判停靠，两者任一变了都重渲染。
+- **CSS 表达**（`styles.css`）：`max-width: min(936px, calc(100% - 592px))` + `margin-left: 152px; margin-right: auto`，右侧卡片 `width: 420px`，左侧 `clamp(132px, calc(100% - 936px - 440px), 220px)`。宽度公式里的 592 正是「152 + 420 + 20」，与左侧留白对得上。
+- ⚠️ **背板默认是 `margin: 0 auto` 居中的，必须显式改成靠左**：不改的话右侧那 420px 的列会压在背板上（实测压 124px），而 `git diff` 里只看宽度公式是看不出来的。
+- 放不下就不进这个模式，模块按容器宽度自己降级成窄版——判定在 JS、降级在 CSS，两者互不依赖。
+
+另外两条约束也写在 `styles.css` 里，都有测试钉着：
 
 1. **卡片必须有高度上限，列表自己滚**（`max-height` + 列表 `overflow-y: auto` + `min-height: 0`）。右侧那一列是绝对定位堆叠的，卡片长到超出视口时页面不会跟着变高，用户就再也够不到下面的内容。
 2. **卡片必须自成一个包含块（`position: relative`）**。本模块是第一个在卡片里用 `.sr-only`（绝对定位）的：`.module-zone` 本身是 `position: absolute`，而卡片在 `data-dock="below"`（窄屏横滑条）下是 `position: static`——那些 1×1 盒子于是以 `.module-zone` 为包含块，**逐行累积的溢出逃出横滑条的裁剪，把整个文档撑宽**（实测 390 视口下 `documentElement.scrollWidth` 728 vs 视口 390，页面能真的横向滚动）。修法的选择器还要 **≥ 平台那条 `.module-zone[data-dock="below"] .module-widget`（0-3-0）**，且**必须限定 `[data-dock="below"]`**：不限定就是 0-3-0，会把 outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute 一起顶掉，宽屏那一列散架。`tests/timeline.test.js` 同时断言这条存在、且不得写成不限 dock 的版本。
 
    一般化的教训：**模块往卡片里放绝对定位内容时，卡片必须是它的包含块**；这条在 wide 模式下自动成立（卡片本来就是 absolute），只在窄屏的横滑条里现形。
+
+3. **「⋯」菜单要能往上弹**。列表是滚动容器，菜单是绝对定位的——朝下弹到容器外会被 `overflow` 裁掉。所以打开后量一次（`adjustMenu`），超出底边就加 `.is-up` 把菜单翻到上方；同时打开一个菜单会收起别的（`closeMenus`）。实测：最后一个条目的菜单 `flippedUp: true` 且仍在容器内。
 
 ## 多服务器监控
 
