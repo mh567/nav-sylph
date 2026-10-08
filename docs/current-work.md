@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 操作菜单仍被遮挡——`:has()` 在用户浏览器里失效（修复提交 `234f395`，未发布）
+## 最新一轮：Special Line 操作菜单仍被遮挡——`:has()` 在用户浏览器里失效（修复提交 `234f395`，版本账 `acb88e4`，已发布 **v1.14.3**）
 
 用户原话：「点击事件操作的三个点按钮，弹出的取消归档等操作弹框依然会被 specialline 模块本身遮挡」
 
@@ -43,7 +43,9 @@
 ### 下一步
 
 1. 检查 `git status --short --branch` 与本段 diff。
-2. 本轮已提交（`234f395`），**未发布**；随本批走 `scripts/release.sh` 并单独推送 `main`（脚本只推 tag）。
+2. 本轮已随 **v1.14.3** 发布（版本账提交 `acb88e4`，tag `v1.14.3`，Release 已建）；`main` 已推送。发布方式：`scripts/release.sh` 打包并建 Release，随后单独 `git push origin main`（脚本只推 tag）。
+3. **已发布产物的核对**（下载 `nav-sylph-v1.14.3.tar.gz` 解包后实测）：三处版本账均为 1.14.3；`public/sw.js` 的 `CACHE = 'nav-v85'`；`public/styles.css` 含 `.special-line-item.is-menu-open { z-index: 2 }` 且**不含** `special-line-item:has(`；`public/modules/special-line.js` 含 `classList.toggle('is-menu-open', details.open)` 与 `closeMenus` 的摘类；前两轮的修复（菜单层级/筛选过渡/失败回滚、后台开关 label）同样在产物内；未夹带 `.modules.json`、`.admin-password.json`、`.webdav-config.json`、`config.json`、`favorites.json`、`nav-sylph.db`、`server-config/config.json`、`.env`；`agent/dist/` 只有三个 Linux 二进制，无 darwin。sha256 `7cc6088b…94f489`。
+4. 用户的浏览器型号/版本仍未确认（**推断**为不支持 `:has()`）。若仍能复现，请提供浏览器名称与版本。
 
 ## 上一轮：后台模块启停开关点不动（修复提交 `378aa61`，版本账 `b96cff9`，已发布 **v1.14.2**）
 
