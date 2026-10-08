@@ -3,6 +3,12 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v75：后台「远程备份」区块两件事。①修「第二次打开管理面板后展开该区块
+// 一直停在『加载中...』」——判据从「配置是否已加载」改成「是否已渲染进当前
+// 这块 DOM」（面板每次重建 DOM 都会产生新的 #webdavSection，而配置还在
+// 内存里，旧判据于是跳过加载、没人把它画出来）。②新增「自动同步」开关：
+// 配置 / 书签 / 模块设置变更后自动备份一次，写在固定槽位，不占用手动备份的
+// 5 份历史。改了 app.js、admin.css、server.js、lib/webdav-backup.js。
 // nav-v74：模块轮询接口（GET /api/modules/metrics、GET /api/memos）不再与
 // 管理操作共用 30 次/分钟的限流桶——轮询按标签页数线性增长，正常刷几次页面
 // 就能把桶打满，表现为「模块区渲染不出来」+「监控数据读取失败」两种听起来
@@ -131,7 +137,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v74';
+const CACHE = 'nav-v75';
 const ASSETS = [
     '/',
     '/index.html',

@@ -284,6 +284,18 @@
 .webdav-message.success { color: var(--admin-success); }
 .webdav-message.error { color: var(--admin-error); }
 
+/* ===== 远程备份：自动同步 ===== */
+/* 状态行现在有三段（启用态 / 自动同步态 / 上次备份）。窄屏放不下时不换行
+   会把「上次备份」挤出容器，所以允许换行。特异度靠 .modal 抬高，确保压过
+   styles.css 里那条基础规则。 */
+.modal .webdav-status { flex-wrap: wrap; row-gap: 4px; }
+.webdav-auto-status { font-size: 12px; color: var(--text-muted); }
+/* 未启用 WebDAV 时自动同步勾选框置灰——一个看着开着、其实什么也不做的
+   开关，比没有这个开关更糟。 */
+.webdav-row label.is-disabled { opacity: .55; cursor: not-allowed; }
+/* 自动同步槽位不是历史还原点，用左侧色条与手动备份区分 */
+.webdav-backup-item.is-auto { border-left: 3px solid var(--accent); }
+
 .fav-dialog { max-width: 440px; border-radius: 14px; }
 .fav-dialog h3 { color: var(--text); font-size: 16px; font-weight: 600; }
 .fav-dialog:focus { outline: none; }

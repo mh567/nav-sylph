@@ -173,6 +173,18 @@
             this.modulesLoading = false;
             this.modulesError = null;
             this.modulesEditorRendered = false;
+            // 远程备份区块：配置缓存 + 「有没有渲染进当前这块 DOM」的闩锁。
+            // 判据必须是后者。面板每次 openAdmin / 重渲染都会重建 #modalBody，
+            // 于是 #webdavSection 是一个只写着「加载中...」的新节点，而
+            // webdavConfig 还在内存里——拿「配置是否已加载」当条件，展开时
+            // 条件为假、不发请求，占位符就永远留在页面上（用户报的「展开失败」）。
+            // 与模块分区的 modulesEditorRendered 是同一条纪律。
+            this.webdavConfig = null;
+            this.webdavRendered = false;
+            // 收藏管理器同理。此前它只在 selectAdminTab / renderAdminPanel 里赋值、
+            // 靠 undefined 参与判断——而本文件自己的规矩是「显式初始化，不靠
+            // undefined 的隐式比较」（见下面 _gridEditing 的注释），补上这一行。
+            this.favManagerRendered = false;
             this.editLayout = false;
             // 编辑会话的草稿快照：进入编辑模式时对 config 与 widgets 各存一份，
             // 「保存编辑」才落盘，Esc/退出则整体丢弃。
@@ -4572,6 +4584,10 @@
             // 收藏管理器同理：面板 DOM 每次都是新的，
             // 不复位的话上一会话渲染过就会让本分区跳过加载。
             this.favManagerRendered = false;
+            // 远程备份区块同理，且它踩的正是这个坑：DOM 重建后 #webdavSection
+            // 只剩模板里那句「加载中...」，而 webdavConfig 还在内存里——
+            // 不复位「已渲染」闩锁，展开时就不会再去加载，也就没人把它画出来。
+            this.webdavRendered = false;
             // 回到上次停留的分区，而不是每次都弹回第一个。
             // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
@@ -4633,10 +4649,11 @@
                 if (!await this.closeAdmin()) return;
                 this.authenticated = false;
                 this.sessionTrusted = false;
-                // 换会话后远程备份配置不再可信，必须清掉：
-                // 否则下次进入管理面板时 toggleSection 会因「已加载过」而跳过请求，
-                // 直接显示上一个会话的内容。
+                // 换会话后远程备份配置不再可信，必须清掉：内存里不留上一个会话的
+                // 配置。真正决定「展开时要不要重新加载」的是 webdavRendered
+                //（见 toggleSection），所以两样一起清。
                 this.webdavConfig = null;
+                this.webdavRendered = false;
                 // 通知服务端销毁会话并清 Cookie；失败也要继续清理本地状态
                 try { await API.post('/api/logout', {}); } catch (e) {
                     console.error('Logout failed:', e);
@@ -4724,6 +4741,7 @@
                 <div class="webdav-status">
                     <span class="webdav-status-dot ${cfg.enabled ? 'active' : ''}"></span>
                     <span>${cfg.enabled ? '已启用' : '未启用'}</span>
+                    <span class="webdav-auto-status"></span>
                     ${cfg.lastBackupTime ? `<span class="webdav-last-backup">上次备份: ${lastBackup}</span>` : ''}
                 </div>
                 <div class="webdav-form">
@@ -4731,6 +4749,12 @@
                         <label>
                             <input type="checkbox" id="webdavEnabled" ${cfg.enabled ? 'checked' : ''}>
                             启用 WebDAV 备份
+                        </label>
+                    </div>
+                    <div class="webdav-row">
+                        <label${cfg.enabled ? '' : ' class="is-disabled"'}>
+                            <input type="checkbox" id="webdavAutoSync" ${cfg.autoSync ? 'checked' : ''} ${cfg.enabled ? '' : 'disabled'}>
+                            自动同步（配置变更后自动备份）
                         </label>
                     </div>
                     <div class="webdav-row">
@@ -4744,6 +4768,8 @@
                         <label class="field-label">远程路径<input type="text" id="webdavPath" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}"></label>
                     </div>
                 </div>
+                <p class="fav-hint">开启自动同步后，首页导航、书签或模块设置发生变化时会自动备份一次；同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
+                ${cfg.lastAutoSyncError ? `<div class="webdav-message error">上次自动同步失败${cfg.lastAutoSyncErrorAt ? `（${this.formatBackupTime(cfg.lastAutoSyncErrorAt)}）` : ''}：${this.esc(cfg.lastAutoSyncError)}</div>` : ''}
                 <div class="webdav-actions">
                     <button class="btn" id="webdavSaveBtn">保存配置</button>
                     <button class="btn" id="webdavTestBtn">测试连接</button>
@@ -4757,6 +4783,32 @@
             $('#webdavTestBtn').onclick = () => this.testWebDAVConnection();
             $('#webdavBackupBtn').onclick = () => this.createWebDAVBackup();
             $('#webdavRestoreBtn').onclick = () => this.showWebDAVRestoreDialog();
+
+            // 状态行与禁用态都由这两个勾选框的**当前值**算出来，只有一处实现。
+            //
+            // 三种状态必须分开说：「开着但没启用 WebDAV」与「关着」看起来都是
+            // 「没在同步」，但下一步该做什么完全不同（前者去勾「启用」，后者来
+            // 勾这一项）。合成一句就是让用户自己猜。
+            //
+            // 两个框都要绑 onchange：只绑「启用」的话，勾上自动同步后状态行仍写着
+            // 「已关闭」（浏览器实测如此），读起来正像「勾了没反应」。
+            const enabledBox = $('#webdavEnabled');
+            const autoBox = $('#webdavAutoSync');
+            const autoStatusEl = container.querySelector('.webdav-auto-status');
+            const refreshAutoState = () => {
+                if (autoBox.checked && enabledBox.checked) autoStatusEl.textContent = '自动同步：已开启';
+                else if (autoBox.checked) autoStatusEl.textContent = '自动同步：待启用（需先勾选「启用 WebDAV 备份」）';
+                else autoStatusEl.textContent = '自动同步：已关闭';
+                // 未启用时置灰：一个看着开着、其实什么也不做的开关比没有更糟
+                autoBox.disabled = !enabledBox.checked;
+                autoBox.closest('label').classList.toggle('is-disabled', !enabledBox.checked);
+            };
+            enabledBox.onchange = refreshAutoState;
+            autoBox.onchange = refreshAutoState;
+            refreshAutoState();
+
+            // 闩锁：这份配置已经画进当前这块 DOM 了，toggleSection 不必再加载。
+            this.webdavRendered = true;
         }
 
         async saveWebDAVConfig() {
@@ -4767,6 +4819,7 @@
             try {
                 const data = {
                     enabled: $('#webdavEnabled').checked,
+                    autoSync: $('#webdavAutoSync').checked,
                     url: $('#webdavUrl').value.trim(),
                     username: $('#webdavUsername').value.trim(),
                     remotePath: $('#webdavPath').value.trim() || '/nav-sylph-backups/'
@@ -4778,9 +4831,14 @@
                 const res = await API.post('/api/webdav/config', data);
                 if (res.success) {
                     this.webdavConfig = res.config;
-                    msgEl.textContent = '配置已保存';
-                    msgEl.className = 'webdav-message success';
+                    // 顺序要紧：先重渲染，再把提示写到**新**的那个元素上。
+                    // renderWebDAVSection() 会重建整个容器，先写的话提示会被
+                    // 刚建出来的空 #webdavMessage 覆盖掉——保存成功却什么都没显示，
+                    // 用户无法判断刚才那一勾有没有存下去（本轮顺带修的既有缺陷）。
                     this.renderWebDAVSection();
+                    const freshMsg = $('#webdavMessage');
+                    freshMsg.textContent = '配置已保存';
+                    freshMsg.className = 'webdav-message success';
                 } else {
                     msgEl.textContent = res.error || '保存失败';
                     msgEl.className = 'webdav-message error';
@@ -4873,14 +4931,18 @@
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
                                     const hasModules = !!b.modulesFile;
-                                    const displayName = this.formatBackupTime(b.createdAt);
+                                    // 自动槽位不是历史还原点，单独标出来，免得用户
+                                    // 把它当成某个时间点的手动备份。
+                                    const displayName = b.isAuto
+                                        ? `自动同步${b.createdAt ? ` · ${this.formatBackupTime(b.createdAt)}` : ''}`
+                                        : this.formatBackupTime(b.createdAt);
                                     const files = [];
                                     if (isLegacy) files.push('旧版备份');
                                     if (hasConfig) files.push('配置');
                                     if (hasBookmarks) files.push('书签');
                                     if (hasModules) files.push('模块');
                                     return `
-                                    <div class="webdav-backup-item"
+                                    <div class="webdav-backup-item${b.isAuto ? ' is-auto' : ''}"
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
                                          data-modules="${this.esc(b.modulesFile || '')}"
@@ -4936,7 +4998,11 @@
                         const bookmarksFile = item.dataset.bookmarks;
                         const modulesFile = item.dataset.modules;
                         const legacyFile = item.dataset.legacy;
-                        const displayName = this.formatBackupTime(item.dataset.createdAt);
+                        // 用列表里**渲染出来的那串名字**，而不是按 createdAt 重算：
+                        // 自动槽位的显示名是「自动同步 · 时间」，重算会退化成光秃秃的
+                        // 时间，用户在确认框里认不出自己点的是哪一条。
+                        const displayName = $('.webdav-backup-name', item)?.textContent
+                            || this.formatBackupTime(item.dataset.createdAt);
 
                         if (!await this.confirmAction(`确定删除备份 ${displayName}？`, '删除备份', true)) return;
 
@@ -5074,7 +5140,13 @@
                 // 折叠区块改为**首次展开时**才拉数据。此前在 renderAdminPanel 末尾
                 // 就预取，每次重渲染（保存配置、增删分类等）都会多打一次请求，
                 // 累积起来会撞上管理接口的限流。
-                if (expanded && sectionId === 'webdav' && !this.webdavConfig) {
+                //
+                // 判据是 webdavRendered（这份配置有没有画进当前这块 DOM），
+                // **不是 webdavConfig（配置在不在内存里）**。面板每重建一次，
+                // #webdavSection 就是一个新的「加载中...」节点，而 webdavConfig
+                // 还留着上一份——用后者当条件，展开时条件为假、不发请求，
+                // 占位符永远留在页面上，用户看到的就是「展开失败」。
+                if (expanded && sectionId === 'webdav' && !this.webdavRendered) {
                     this.loadWebDAVConfig();
                 }
             }

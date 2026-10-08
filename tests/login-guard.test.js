@@ -15,6 +15,30 @@ function stripComments(src) {
         .replace(/(^|[^:'"\\])\/\/.*$/gm, '$1');
 }
 
+/**
+ * 按大括号配对取出一个方法的完整定义（含签名行）。
+ *
+ * 传**完整签名**（如 `'toggleSection(sectionId) {'`）而不是方法名：
+ * 调用点（`app.toggleSection('webdav')`）与定义同名，用方法名会切到模板里
+ * 那次调用上去。切片两端都要 `assert.ok(length > N)` 兜住——端锚点落空时
+ * slice 会静默给出一个错误范围的窗口，而断言照样能通过（本仓库踩过多次）。
+ */
+function methodBody(src, signature) {
+    const start = src.indexOf(signature);
+    assert.ok(start >= 0, `找到方法定义：${signature}`);
+    const open = src.indexOf('{', start + signature.length - 1);
+    assert.ok(open > start, `${signature} 有方法体`);
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) return src.slice(start, i + 1);
+        }
+    }
+    throw new Error(`${signature} 的大括号不配对`);
+}
+
 // 登录防护是纯函数 + 注入时钟，抽出来直接测，不启动监听器。
 // 注意：这里用**原始源码**定位边界——stripComments 会把行注释删掉，
 // 拿注释当结束标记会得到 -1（此前踩过）。
@@ -249,19 +273,91 @@ test('远程备份配置改为首次展开时加载，不再每次重渲染都�
     // 修复前在 renderAdminPanel 末尾预取：每次保存配置、增删分类都会重渲染，
     // 于是每次都多打一次请求，累积起来撞上管理接口的限流。
     const c = stripComments(appSource);
-    const panel = c.slice(c.indexOf('renderAdminPanel()'), c.indexOf('async loadWebDAVConfig()'));
+    const panel = methodBody(c, 'renderAdminPanel() {');
+    assert.ok(panel.length > 5000, 'renderAdminPanel 切片完整（含整块面板模板）');
     assert.doesNotMatch(panel, /this\.loadWebDAVConfig\(\)/,
         'renderAdminPanel 末尾不应再预取 WebDAV 配置');
-    const toggle = c.slice(c.indexOf('toggleSection(sectionId)'));
-    assert.match(toggle, /expanded && sectionId === 'webdav' && !this\.webdavConfig/,
-        '应在首次展开且尚未加载时才拉取');
 });
 
-test('登出后清空 webdavConfig，避免下一会话显示上一份内容', () => {
+test('远程备份区块按「是否已渲染进当前 DOM」判定，不按「配置是否已加载」', () => {
+    // 本轮修的就是这一条。修复前判据是 !this.webdavConfig：面板每次重建
+    // #modalBody 都会产生一个只写着「加载中...」的新 #webdavSection，而
+    // webdavConfig 还在内存里——条件为假、不发请求，占位符永远留在页面上。
+    // 用户报的「改完配置去同步时，展开会失败」就是它：第二次打开管理面板
+    // 起必然复现，不是偶发。
+    //
+    // 这与 tests/api-boundary.test.js 里模块分区那条是同一个缺陷类：
+    // 判据要落在「输出有没有画出来」，不是「输入在不在内存里」。
     const c = stripComments(appSource);
+    const toggle = methodBody(c, 'toggleSection(sectionId) {');
+    assert.ok(toggle.length > 200, 'toggleSection 方法体完整');
+    assert.match(toggle, /sectionId === 'webdav' && !this\.webdavRendered/,
+        '判据必须是 webdavRendered（这份配置有没有画进当前这块 DOM）');
+    assert.doesNotMatch(toggle, /sectionId === 'webdav' && !this\.webdavConfig/,
+        'webdavConfig 只是缓存，重建 DOM 后它照样为真——用它当条件会让区块停在「加载中...」');
+});
+
+test('面板重建 DOM 时复位 webdavRendered，登出时两样一起清', () => {
+    const c = stripComments(appSource);
+
+    // 容器是新的，标记就得跟着复位——与 modulesEditorRendered /
+    // favManagerRendered 同一条纪律。
+    //
+    // 断言必须钉住**这三行在同一段连续语句里**，不是「方法体里出现过
+    // this.webdavRendered = false」：
+    // ① logout 处理器就在 renderAdminPanel 方法体之内，那里也有一行同样的复位；
+    // ② 用 `[\s\S]*?` 连接三行时，懒匹配会一路跨到 logout 那一行去，
+    //    于是删掉本行仍然绿（变异实测两次都是这样绿的）。
+    // `[^;]*` 限定两行之间不能再有别的语句，logout 那段隔着几十行代码，
+    // 无法被跨过。
+    const panel = methodBody(c, 'renderAdminPanel() {');
+    assert.match(panel,
+        /this\.modulesEditorRendered = false;[^;]*this\.favManagerRendered = false;[^;]*this\.webdavRendered = false;/,
+        'renderAdminPanel 必须复位「已渲染」闩锁（与另两个标记相邻成组），否则重建后展开不会再加载');
+    assert.match(panel, /this\.modulesEditorRendered = false/);
+    assert.match(panel, /this\.favManagerRendered = false/);
+
+    // 渲染成功要置位，否则每次展开都会重复请求
+    const render = methodBody(c, 'renderWebDAVSection() {');
+    assert.ok(render.length > 500, 'renderWebDAVSection 方法体完整');
+    assert.match(render, /this\.webdavRendered = true/);
+
     const logout = c.slice(c.indexOf("$('#logoutBtn').onclick"));
     assert.match(logout, /this\.webdavConfig = null/,
-        '换会话后配置不再可信；不清掉会导致下次进入面板时因「已加载过」而跳过请求');
+        '换会话后内存里不留上一个会话的配置');
+    assert.match(logout, /this\.webdavRendered = false/,
+        '闩锁也要清——决定「展开时要不要重新加载」的是它，只清缓存清不掉新会话的「已加载过」状态');
+});
+
+test('自动同步开关：控件存在、禁用态联动、三种状态分开说、随保存提交', () => {
+    const c = stripComments(appSource);
+    const render = methodBody(c, 'renderWebDAVSection() {');
+
+    assert.match(render, /id="webdavAutoSync"/, '有自动同步勾选框');
+    // 未启用 WebDAV 时置灰并实时联动——一个看着开着、其实什么也不做的开关，
+    // 比没有这个开关更糟。**两个框都要绑**：只绑「启用」时，勾上自动同步后
+    // 状态行仍写着「已关闭」（浏览器实测如此），读起来正像「勾了没反应」。
+    assert.match(render, /enabledBox\.onchange = refreshAutoState/);
+    assert.match(render, /autoBox\.onchange = refreshAutoState/,
+        '自动同步自己的勾选也要刷新状态行');
+    assert.match(render, /autoBox\.disabled = !enabledBox\.checked/);
+    // 三种状态不能塌缩成一句：「开着但没启用」与「关着」的下一步完全不同
+    assert.match(render, /自动同步：已开启/);
+    assert.match(render, /自动同步：待启用/);
+    assert.match(render, /自动同步：已关闭/);
+    // 失败态必须渲染出来，不能只进 console
+    assert.match(render, /lastAutoSyncError/, '上次自动同步失败要显示在区块里');
+
+    const save = methodBody(c, 'saveWebDAVConfig() {');
+    assert.match(save, /autoSync: \$\('#webdavAutoSync'\)\.checked/,
+        '保存配置时要一并提交开关，否则勾了也存不下去');
+    // 既有缺陷（本轮顺带修）：成功提示曾被 renderWebDAVSection 重建容器时抹掉，
+    // 于是「保存成功」从来没显示过。顺序必须是先重渲染、再写提示。
+    const renderAt = save.indexOf('this.renderWebDAVSection()');
+    const freshAt = save.indexOf("const freshMsg = $('#webdavMessage')");
+    assert.ok(renderAt >= 0 && freshAt > renderAt,
+        '成功分支必须先重渲染、再把提示写到新元素上（反过来提示会被空元素覆盖）');
+    assert.match(save, /freshMsg\.textContent = '配置已保存'/);
 });
 
 test('错误提示经过转义，不直接插入用户可见文本', () => {

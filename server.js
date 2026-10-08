@@ -792,10 +792,24 @@ async function readJSON(file) {
     return JSON.parse(data);
 }
 
+/**
+ * 哪些文件的改动算「配置变了」。WebDAV 备份覆盖的就是这三个文件，
+ * 与 createBackup 的入参一一对应。**.admin-password.json 不在其中**——
+ * 备份里永远不含密码哈希。
+ */
+function isBackupSource(file) {
+    return file === CONFIG_FILE || file === FAVORITES_FILE || file === MODULES_FILE;
+}
+
 /** 只用于 PRIVATE_FILES 里的文件：写完立即收紧，不留 644 窗口。 */
 async function writeJSON(file, data) {
     await fs.writeFile(file, JSON.stringify(data, null, 2));
     await fs.chmod(file, 0o600);
+    // 触发自动同步的钩子放在这里，而不是逐条路由里加：.modules.json 一个
+    // 文件就有 8 处写路径（新增/编辑/删除机器、领取推送凭据、探测部署态、
+    // agent 注册、改密码重加密…）。逐条加，漏一处的表现是「改了这项不会
+    // 自动同步」——而用户不会知道，那正是备份最不该有的失败方式。
+    if (isBackupSource(file)) scheduleAutoSync();
 }
 
 async function verifyPassword(password) {
@@ -910,6 +924,11 @@ async function init() {
         geoDatabase: config.security.geoDatabase,
         backend: createSqliteBackend(db)
     });
+
+    // 初始化完成，之后的数据文件写入才算「用户改动」。
+    // 置在这里而不是更早：上面几个 ensureFile 在全新安装时也会写文件，
+    // 那些写入不该触发自动同步（见 scheduleAutoSync 的注释）。
+    autoSyncReady = true;
 }
 
 // 这条软门在无会话时会跑一次 bcrypt 比对，而匿名访问必走这条路。
@@ -1713,6 +1732,164 @@ async function getPasswordHash() {
     }
 }
 
+// ========== 自动同步（WebDAV）==========
+//
+// 配置一改就排一次备份，把一段时间内的连续改动合并成一次上传。
+// 触发点在 writeJSON（见那里），所以每条写路径都覆盖到了；开关本身
+// 存在 .webdav-config.json 的 autoSync 里，缺省关闭。
+//
+// 备份载荷的组装与手动路径共用 performBackup，避免「哪些文件进备份」
+// 这份清单被写两遍——两份副本必然漂移。
+
+// 防抖窗口。30 秒足够把「一次编辑会话里的多次保存」合成一次上传，
+// 又不至于让用户改完半天看不到同步。
+// NAV_AUTO_SYNC_DELAY_MS 只为端到端测试能把窗口压到秒级。
+const AUTO_SYNC_DELAY_MS = Number(process.env.NAV_AUTO_SYNC_DELAY_MS) || 30 * 1000;
+// 手动备份的保留组数。名字刻意不叫 AUTO_SYNC_*：cleanupOldBackups 会把
+// 自动槽位排除在计数之外（见 lib/webdav-backup.js 的 filter(b => !b.isAuto)），
+// 这个数管的是**手动**分组，叫 AUTO_SYNC_KEEP_COUNT 会读成「自动备份留几份」。
+const BACKUP_KEEP_COUNT = 5;
+
+// init() 期间 ensureFile() 也会走 writeJSON。那个时刻的写入是「创建初始文件」，
+// 不是用户改动；而若 .webdav-config.json 已是 enabled+autoSync（例如刚恢复了
+// WebDAV 配置而 config.json 丢了），开机就会把**默认配置**推到自动槽位、
+// 覆盖掉一份好数据。所以启动期一律不排期。
+let autoSyncReady = false;
+// 恢复备份期间抑制：刚从远端拉回来的状态不该立刻再推上去——那是一次多余的
+// 上传。（它挤不掉手动备份的保留位：自动槽位与手动分组是分开的，见
+// cleanupOldBackups 的 filter(b => !b.isAuto)。）
+let autoSyncSuppressed = 0;
+let autoSyncTimer = null;
+let autoSyncRunning = false;
+let autoSyncQueued = false;
+
+/** 取消待触发的自动同步。排期之后输入又变了（例如开始恢复备份）时要调它。 */
+function cancelScheduledAutoSync() {
+    if (autoSyncTimer) {
+        clearTimeout(autoSyncTimer);
+        autoSyncTimer = null;
+    }
+}
+
+function scheduleAutoSync() {
+    if (!autoSyncReady || autoSyncSuppressed > 0) return;
+    if (autoSyncTimer) clearTimeout(autoSyncTimer);
+    autoSyncTimer = setTimeout(() => {
+        autoSyncTimer = null;
+        runAutoSync();
+    }, AUTO_SYNC_DELAY_MS);
+    // 待触发的定时器不得把进程吊住：本文件被测试当模块加载时尤为明显——
+    // 一个 30 秒的 pending timer 会让 `out=$(node --test …)` 永不返回。
+    if (typeof autoSyncTimer.unref === 'function') autoSyncTimer.unref();
+}
+
+/** 数据文件的内容与路径 → 备份载荷。手动与自动两条路径共用。 */
+async function collectBackupPayload() {
+    const configData = await readJSON(CONFIG_FILE);
+    // ⚠️ 只吞 ENOENT（文件不存在，旧版本升级后的正常情况）。
+    // 文件**损坏**时不能吞：favorites 的兜底是空数组，上传它等于用一份空书签
+    // **直接抹掉**远端那一份；而自动同步是在用户没点任何按钮的情况下发生的，
+    // 静默抹掉最不该发生。让失败浮上去 → 记进 lastAutoSyncError 并显示在界面上。
+    let favoritesData = { favorites: [] };
+    try {
+        favoritesData = await readJSON(FAVORITES_FILE);
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+    }
+    // 模块平台配置。丢了它，监控目标、每台的 token、顺序与显示开关全部重来，
+    // 所以它必须跟配置、书签一起进备份。文件不存在时（旧版本）跳过。
+    let modulesData = null;
+    try {
+        modulesData = await readJSON(MODULES_FILE);
+    } catch (err) {
+        // 同上：损坏时失败要可见，别把「没有模块配置」当成一份合法备份存下去
+        if (err.code !== 'ENOENT') throw err;
+    }
+    let appVersion = '1.0.0';
+    try {
+        const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
+        appVersion = versionData.version;
+    } catch {}
+    return { configData, favoritesData, modulesData, appVersion };
+}
+
+/**
+ * 备份一次并清理旧的手动备份。options.auto 交给 createBackup 决定
+ * 「写哪个文件名、比对哪一组校验和」。
+ */
+async function performBackup(webdav, options = {}) {
+    const { configData, favoritesData, modulesData, appVersion } = await collectBackupPayload();
+    const result = await webdav.createBackup(
+        configData, favoritesData, appVersion, generateBookmarkHtml, modulesData, options
+    );
+    // 自动清理：手动备份只留最新 5 组。自动槽位不参与这个轮换（见 cleanupOldBackups）
+    if (!result.noChanges) {
+        try {
+            await webdav.cleanupOldBackups(BACKUP_KEEP_COUNT);
+        } catch (cleanupErr) {
+            console.error('自动清理旧备份失败:', cleanupErr.message);
+        }
+    }
+    return result;
+}
+
+/**
+ * 真正跑一次自动同步。每个分支都有理由：
+ * - 先把配置读回来再判断：开关关着时排了期也只是空转一次，不做任何网络动作。
+ * - 串行：两个并发备份会在同一个 .webdav-config.json 上互相覆盖校验和与
+ *   lastBackupTime，结果是「两份都以为自己在管最新状态」。
+ * - 失败必须留痕：写回 lastAutoSyncError，界面上的状态行会渲染它。
+ *   静默失败在这里代价最大——用户以为配置已经进云了。
+ */
+async function runAutoSync() {
+    // ⚠️ 排期之后才进入恢复流程的：那一次排期的输入已经不是当前状态了。
+    // 不在这里再看一眼的话，一个在「点恢复」之前就已排期的定时器会照常触发，
+    // 而恢复正好写到一半（config.json 已换、favorites.json 还没换），
+    // 上传的是一份**混合快照**，并且把它记成最新的自动槽位。
+    // scheduleAutoSync 只挡住「抑制期间新排的期」，挡不住已经在飞的这一次。
+    if (autoSyncSuppressed > 0) return;
+    if (autoSyncRunning) {
+        autoSyncQueued = true;
+        return;
+    }
+    autoSyncRunning = true;
+    try {
+        const passwordHash = await getPasswordHash();
+        const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+        await webdav.loadConfig();
+        // 两侧必须同时成立：只有 autoSync 而没有 enabled，是一个看着开、
+        // 其实什么也不做的开关。
+        if (!webdav.config.enabled || !webdav.config.autoSync || !webdav.config.url) return;
+
+        await performBackup(webdav, { auto: true });
+
+        // 上一次的失败原因要清掉，否则修好之后界面上还挂着旧错误
+        if (webdav.config.lastAutoSyncError) {
+            await webdav.saveConfig({ lastAutoSyncError: null, lastAutoSyncErrorAt: null });
+        }
+    } catch (err) {
+        console.error('自动同步失败:', err.message);
+        try {
+            const passwordHash = await getPasswordHash();
+            const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+            await webdav.loadConfig();
+            await webdav.saveConfig({
+                lastAutoSyncError: err.message,
+                lastAutoSyncErrorAt: new Date().toISOString()
+            });
+        } catch (writeErr) {
+            console.error('记录自动同步失败原因失败:', writeErr.message);
+        }
+    } finally {
+        autoSyncRunning = false;
+        // 跑的过程中又有改动 → 再排一次，不能丢掉
+        if (autoSyncQueued) {
+            autoSyncQueued = false;
+            scheduleAutoSync();
+        }
+    }
+}
+
 // Get WebDAV config (password masked)
 app.get('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
     try {
@@ -1729,7 +1906,7 @@ app.get('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
 // Save WebDAV config
 app.post('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
     try {
-        const { url, username, password: webdavPassword, remotePath, enabled } = req.body;
+        const { url, username, password: webdavPassword, remotePath, enabled, autoSync } = req.body;
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
         await webdav.loadConfig();
@@ -1741,6 +1918,12 @@ app.post('/api/webdav/config', rateLimit, requireAdmin, async (req, res) => {
             newConfig.password = webdavPassword;
         }
         if (remotePath !== undefined) newConfig.remotePath = remotePath;
+        if (autoSync !== undefined) newConfig.autoSync = !!autoSync;
+
+        // 用户刚动过配置，旧的那条自动同步失败原因说的是旧配置，
+        // 留着只会让人以为问题还在（下一次真失败会立刻写回来）。
+        newConfig.lastAutoSyncError = null;
+        newConfig.lastAutoSyncErrorAt = null;
 
         await webdav.saveConfig(newConfig);
         res.json({ success: true, config: webdav.getPublicConfig() });
@@ -1780,34 +1963,9 @@ app.post('/api/webdav/backup', rateLimit, requireAdmin, async (req, res) => {
             return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
         }
 
-        // Read current config and favorites
-        const configData = await readJSON(CONFIG_FILE);
-        let favoritesData = { favorites: [] };
-        try {
-            favoritesData = await readJSON(FAVORITES_FILE);
-        } catch {}
-        // 模块平台配置。丢了它，监控目标、每台的 token、顺序与显示开关全部重来，
-        // 所以它必须跟配置、书签一起进备份。文件不存在时（旧版本）跳过。
-        let modulesData = null;
-        try {
-            modulesData = await readJSON(MODULES_FILE);
-        } catch {}
-
-        // Get app version
-        let appVersion = '1.0.0';
-        try {
-            const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
-            appVersion = versionData.version;
-        } catch {}
-
-        const result = await webdav.createBackup(configData, favoritesData, appVersion, generateBookmarkHtml, modulesData);
-
-        // Auto cleanup: keep only latest 5 backups
-        try {
-            await webdav.cleanupOldBackups(5);
-        } catch (cleanupErr) {
-            console.error('自动清理旧备份失败:', cleanupErr.message);
-        }
+        // 载荷组装与清理都在 performBackup 里，与自动同步共用同一份
+        // 「哪些文件进备份」的清单。
+        const result = await performBackup(webdav);
 
         res.json(result);
     } catch (err) {
@@ -1870,28 +2028,40 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             restoreModules
         });
 
-        // Write restored data
-        if (result.data.config && restoreConfig) {
-            await writeJSON(CONFIG_FILE, result.data.config);
-        }
-
-        if (result.data.favorites && restoreBookmarks) {
-            await writeJSON(FAVORITES_FILE, result.data.favorites);
-        }
-
-        // Parse and restore bookmarks from HTML if present
-        if (result.data.bookmarksHtml && restoreBookmarks) {
-            const imported = parseBookmarkHtml(result.data.bookmarksHtml);
-            await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
-        }
-
-        // 模块配置。token 保持密文原样写回——换机器时用同一个管理员密码
-        // 才能解开，所以这里不做任何转换。恢复后要重置内存里的配置与缓存，
-        // 否则页面还拿着恢复前的服务器列表。
+        // 恢复期间抑制自动同步：这里的 writeJSON 会被钩子当成「用户改了配置」。
+        // 刚从远端拉回来的内容立刻再推上去是一次多余的上传。
+        // 递增抑制**并同时取消已排期的定时器**——只递增挡不住「点恢复之前就已排期、
+        // 现在正在飞」的那一次，那次会读到写了一半的文件（见 runAutoSync 的守卫）。
+        // 递减放在 finally 里：中间任何一步抛错都不能让抑制永久留在开状态
+        //（那会让自动同步从此静默失效，而界面上开关还是「已开启」）。
         let modulesRestored = false;
-        if (result.data.modules && restoreModules) {
-            await writeJSON(MODULES_FILE, result.data.modules);
-            modulesRestored = true;
+        cancelScheduledAutoSync();
+        autoSyncSuppressed++;
+        try {
+            // Write restored data
+            if (result.data.config && restoreConfig) {
+                await writeJSON(CONFIG_FILE, result.data.config);
+            }
+
+            if (result.data.favorites && restoreBookmarks) {
+                await writeJSON(FAVORITES_FILE, result.data.favorites);
+            }
+
+            // Parse and restore bookmarks from HTML if present
+            if (result.data.bookmarksHtml && restoreBookmarks) {
+                const imported = parseBookmarkHtml(result.data.bookmarksHtml);
+                await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
+            }
+
+            // 模块配置。token 保持密文原样写回——换机器时用同一个管理员密码
+            // 才能解开，所以这里不做任何转换。恢复后要重置内存里的配置与缓存，
+            // 否则页面还拿着恢复前的服务器列表。
+            if (result.data.modules && restoreModules) {
+                await writeJSON(MODULES_FILE, result.data.modules);
+                modulesRestored = true;
+            }
+        } finally {
+            autoSyncSuppressed--;
         }
 
         res.json({
@@ -3590,6 +3760,11 @@ function createServer() {
 
 function gracefulShutdown(signal) {
     console.log(`\n${signal} received, shutting down gracefully...`);
+    // 待触发的自动同步定时器不再需要；虽然它已 unref，显式清掉更明确
+    if (autoSyncTimer) {
+        clearTimeout(autoSyncTimer);
+        autoSyncTimer = null;
+    }
     // 关库会把 WAL 合并回主文件（checkpoint），于是升级/备份只需处理一个 .db 文件。
     if (db) {
         try {

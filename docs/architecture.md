@@ -430,7 +430,29 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 **分区切换与懒渲染。** `selectAdminTab(panel)` 记住当前分区（`this.adminTab`），`renderAdminPanel()` 每次重建面板 DOM 后据此恢复——不复位会让「切走再切回」弹回第一个分区。模块分区与收藏夹分区都**只在首次进入时渲染**（`modulesEditorRendered` / `favManagerRendered`），两个标记都必须在 `renderAdminPanel()` 里复位；否则面板 DOM 重建后该分区会跳过渲染，停在模板里的「加载中...」。
 
+⚠️ **折叠区（远程备份）的判据是「有没有渲染进当前这块 DOM」，不是「配置在不在内存里」。** 三个标记 `modulesEditorRendered` / `favManagerRendered` / `webdavRendered` 都在构造函数里**显式初始化**（本文件自己的规矩：不靠 `undefined` 的隐式比较），也都在 `renderAdminPanel()` 里同批复位。远程备份此前用 `!this.webdavConfig` 当条件——`renderAdminPanel()` 每次重建 `#modalBody` 都会产生一个只写着「加载中...」的新 `#webdavSection`，而 `webdavConfig` 还在内存里，于是条件为假、不发请求，占位符永久留在页面上（用户报的「改完配置手动去同步时，展开会失败」；**第二次打开管理面板起必然复现**，不是偶发）。这与模块分区当初的 `!this.modulesConfig` 是同一个缺陷类：判据要落在**输出**（画出来没有），不是**输入**（拉回来没有）。`tests/login-guard.test.js` 钉住这条，并反向断言该处不得再出现 `!this.webdavConfig`；断言必须钉「三行复位同处一段连续语句」（`[^;]*` 连接），因为 logout 处理器就在 `renderAdminPanel` 方法体之内、也有一行同样的复位，用 `[\s\S]*?` 会跨过去匹配到它——**变异实测两次都是这样绿的**。
+
 **收藏管理器渲染进 `#favManagerHost`，不整块替换 `#modalBody`。** 各编辑路径（添加 / 编辑 / 删除 / 批量隐私 / 分类重命名 / 拖拽归类）都即时 `saveFavorites()` 并调用 `renderFavManager()` 原地重绘，因此不再需要旧实现里的「← 返回」——它只是一次兜底保存。管理器只重绘宿主容器，而**头部「共 N 个书签」不在宿主内**，由 `updateFavStat()` 在每次数据变化后单独刷新：这两行从前分处两个分区、看不出来，同屏后就变成「删了书签头部不动」的缺陷。
+
+## WebDAV 远程备份与自动同步
+
+备份覆盖三个数据文件：`config.json`（主题 / 搜索引擎 / 首页导航分类）、`favorites.json`（书签 HTML）、`.modules.json`（监控目标、布局、**密文**凭据）。`.admin-password.json` 永远不进备份——把密码哈希交出去等于把账号交出去。恢复按类型可选，校验 `type` 与 `checksum`。
+
+**自动同步（`autoSync`）只在 `enabled && autoSync && url` 三者同时成立时工作**，缺省关闭（远端上传是有副作用的动作，不该因为升级到新版本就自己开始跑）。界面上的自动同步勾选框在「启用 WebDAV 备份」未勾选时置灰，并把状态行分成三态（已开启 / 待启用 / 已关闭）——「开着但没启用」与「关着」的下一步动作完全不同，塌缩成一句就是让用户自己猜。
+
+- **触发点在 `writeJSON`，不逐条路由加。** `.modules.json` 一个文件就有 8 处写路径（新增 / 编辑 / 删除机器、领取推送凭据、探测部署态、agent 注册、改密码重加密…），逐条加钩子漏一处的表现是「改了这项不会自动同步」，而用户不会知道。钩子放在落盘与 `chmod` **之后**（写失败就不该触发上传），判据是 `isBackupSource(file)`（只认那三个文件）。`.admin-password.json` 与 `.webdav-config.json` 自身不在其中——备份里永远不含密码哈希，而保存 WebDAV 配置本身不该立刻引发一次上传（存了地址不等于内容变了）。**其中一处不直观但有意保留**：改管理员密码会重加密 `.modules.json` 里的 token 密文（`reencryptCredentials`），因而也算一次配置改动、会触发自动备份——密文确实变了，备份该跟着更新。
+- **文件损坏时失败要可见。** `collectBackupPayload()` 的两个兜底 `catch` **只吞 `ENOENT`**（文件不存在，旧版本升级的正常情况）：`favorites.json` 的兜底是空数组，把它上传等于用一份空书签**直接抹掉**远端那一份，而自动同步发生在用户没点任何按钮的时候。其余错误（例如 JSON 损坏）让它抛上去，记进 `lastAutoSyncError` 并显示在界面上。
+- **启动期不排期**（`autoSyncReady`）。`init()` 的 `ensureFile()` 也走 `writeJSON`，而若 `.webdav-config.json` 已是 `enabled+autoSync`（例如刚恢复了 WebDAV 配置而 `config.json` 丢了），一次开机就会把**默认配置**推到自动槽位、覆盖掉一份好数据。
+- **30 秒防抖**（`AUTO_SYNC_DELAY_MS`，可用 `NAV_AUTO_SYNC_DELAY_MS` 覆盖，仅供 e2e 压到秒级），把一次编辑会话里的多次保存合并成一次上传。定时器 `unref()` 且 `gracefulShutdown` 里清掉——待触发的定时器不得让事件循环保持活着，否则测试里 `out=$(node --test …)` 永不返回。
+- **串行**：已在跑就置 `autoSyncQueued`，`finally` 里再排一次。两个并发备份会在同一个 `.webdav-config.json` 上互相覆盖校验和与 `lastBackupTime`。
+- **失败必须留痕**：`lastAutoSyncError` / `lastAutoSyncErrorAt` 写回配置、由 `/api/webdav/config` 回给前端、渲染在区块里。静默失败在这里代价最大——用户以为配置已经进云了。成功且存在残留错误时才清掉它；保存配置接口也会清（用户刚改过配置，旧错误说的是旧配置）。
+- **恢复备份期间抑制**（`cancelScheduledAutoSync()` + `autoSyncSuppressed++`，递减放在 `finally`）。刚从远端拉回来的内容立刻再推上去是一次多余的上传。⚠️ **只递增抑制挡不住「点恢复之前就已排期、此刻正在飞」的那一次**：它会读到写了一半的文件（`config.json` 已换、`favorites.json` 还没换），上传一份混合快照并把它记成最新自动槽位。所以进入恢复时既要取消已排期的定时器，`runAutoSync` 开头也要再看一眼抑制标志。递减若不在 `finally`，中间任一步抛错会让抑制永久留在开状态——自动同步从此静默失效，而界面上的开关还写着「已开启」。
+
+⚠️ **自动备份与手动备份各用一套校验和，这是最容易被漏掉的交互。** 只有一套 `last*Checksum` 时，自动备份跑完会让用户点「立即备份」得到一句「没有变化」、什么都不生成——一次显式请求被静默吞掉。因此自动路径读写 `lastAuto*Checksum`，手动路径仍用 `last*Checksum`；`lastBackupTime` 两条都更新（它就是界面上的「上次备份」）。
+
+**自动备份写固定槽位，不参与「保留最新 5 组」的轮换。** 文件名不带时间戳（`nav-sylph-config-auto.json` / `-bookmarks-auto.html` / `-modules-auto.json`，三个名字只定义在 `lib/webdav-backup.js` 文件头，`createBackup` 与 `listBackups` 都用同一组常量拼），每次覆盖；`listBackups()` 把它归成一个 `{ timestamp:'auto', isAuto:true }` 分组并**显式排在最前**（不依赖 `'auto'` 恰好大于数字的字典序巧合），`createdAt` 取远端 `lastmod`（固定文件名里没有时刻）。`cleanupOldBackups()` 用 `backups.filter(b => !b.isAuto)` 把它排除在计数与删除之外——否则因为它永远排在最前，反而会最先被当成「最旧一组」删掉；反过来说，自动备份**不可能**挤掉手动备份的保留位。恢复对话框对 `isAuto` 加「自动同步」前缀，删除确认也用列表里渲染出来的那串名字（重算会退化成光秃秃的时间，用户认不出点的是哪一条）。**删掉自动槽位的文件必须同时清掉它那一组校验和**（`deleteBackup` 里按文件名判断，赋 `undefined` 而不是 `null`）——否则 `noChanges` 会在下一次自动同步时短路，远端那份再也不会被重新创建，而界面上还写着「已开启」。
+
+**备份载荷的组装只有一份**（`collectBackupPayload()` + `performBackup()`），手动路由与自动路径共用。手动路由里不得再出现 `readJSON(MODULES_FILE)` 这类「哪些文件进备份」的清单——两份副本必然漂移。
 
 ## 数据与请求路径
 
