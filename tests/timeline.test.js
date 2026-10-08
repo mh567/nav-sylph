@@ -641,17 +641,84 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
         '并把它登记进模块定义');
 });
 
-test('打开的事件菜单提升所在事件行，避免被后续事件卡遮住', () => {
+test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has() 的浏览器里菜单会被下一张卡盖住）', () => {
+    const code = stripComments(moduleSource);
     const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
-    const rule = /\.special-line-item:has\(\.special-line-tools\[open\]\)\s*\{([^}]*)\}/.exec(css);
-    assert.ok(rule, '打开菜单时提升其事件行');
-    assert.ok(Number(/z-index:\s*(\d+)/.exec(rule[1])?.[1]) > 0,
-        '菜单所在事件行进入高于普通行的堆叠层级');
-    // 把断言钉在该规则自己的花括号内：整文件惰性匹配会跨过 `}` 落到后面的
-    // 任意 z-index:3 上，删掉这条声明仍会假绿（本仓库反复踩过的边界缺陷）。
+
+    // ① 跑**真实的** adjustMenu（DOM 用桩）：按 details.open 加/摘 is-menu-open，
+    //    并保留「超出容器底边就翻上去」的旧行为。
+    //    这条机制此前写成 CSS 的 :has()，而不支持它的浏览器会整条忽略该规则，
+    //    于是短条目（手动保存的文章）的菜单被下一张事件卡盖住——
+    //    用户报的「被 specialline 模块本身遮挡」正是这个，真机复现过。
+    const makeDom = ({ open, menuBottom, wrapBottom }) => {
+        const state = { toggles: [], classes: [] };
+        state.item = {
+            set: new Set(),
+            classList: {
+                toggle: (name, on) => {
+                    state.toggles.push([name, on]);
+                    if (on) state.item.set.add(name); else state.item.set.delete(name);
+                }
+            }
+        };
+        const menu = { getBoundingClientRect: () => ({ bottom: menuBottom }) };
+        state.details = {
+            open,
+            classList: {
+                add: c => state.classes.push(['add', c]),
+                remove: c => state.classes.push(['remove', c])
+            },
+            closest: sel => (sel === '.special-line-item' ? state.item : null),
+            querySelector: sel => (sel === '.special-line-actions' ? menu : null)
+        };
+        state.listEl = { getBoundingClientRect: () => ({ bottom: wrapBottom }) };
+        return state;
+    };
+    const run = state => new Function('listEl',
+        `${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl)(state.details);
+
+    const opened = makeDom({ open: true, menuBottom: 100, wrapBottom: 500 });
+    run(opened);
+    assert.deepEqual(opened.toggles, [['is-menu-open', true]], '打开时给所在行加上抬升类');
+    assert.deepEqual(opened.classes.filter(c => c[0] === 'add'), [], '没超出底边时不翻上去');
+
+    const closed = makeDom({ open: false, menuBottom: 100, wrapBottom: 500 });
+    run(closed);
+    assert.deepEqual(closed.toggles, [['is-menu-open', false]], '关闭时把抬升类摘掉');
+
+    const overflow = makeDom({ open: true, menuBottom: 600, wrapBottom: 500 });
+    run(overflow);
+    assert.deepEqual(overflow.classes.filter(c => c[0] === 'add'), [['add', 'is-up']],
+        '超出容器底边时仍然翻上去（滚动容器会裁掉朝下的菜单）');
+
+    // ② CSS 只消费这个类；菜单本身仍要压在卡片内容之上
+    const rule = /\.special-line-item\.is-menu-open\s*\{([^}]*)\}/.exec(css);
+    assert.ok(rule, '有 .special-line-item.is-menu-open 规则');
+    assert.ok(Number(/z-index:\s*(\d+)/.exec(rule[1])?.[1]) > 0, '抬升到高于普通行的层级');
     const actions = /\.special-line-actions\s*\{([^}]*)\}/.exec(css);
     assert.ok(actions, '菜单容器 .special-line-actions 规则存在');
     assert.match(actions[1], /z-index:\s*3/, '菜单本身仍在卡片内容之上');
+
+    // ③ 收起别的菜单时也要摘掉它们所在行的类。这一段同样**执行**（不只比源码）：
+    //    closeMenus 是另一条关菜单的路径（切筛选、点开另一个菜单都走它），
+    //    漏摘会让那一行一直停在 z-index:2。
+    const mkRow = () => {
+        const item = { set: new Set(['is-menu-open']),
+            classList: { remove: name => item.set.delete(name) } };
+        return { item, details: { open: true, closest: sel => (sel === '.special-line-item' ? item : null) } };
+    };
+    const rowA = mkRow();
+    const rowB = mkRow();
+    const listStub = { querySelectorAll: () => [rowA.details, rowB.details] };
+    new Function('listEl',
+        `${extractFunction(code, 'function closeMenus(except)')}; return closeMenus;`)(listStub)(rowB.details);
+    assert.equal(rowA.details.open, false, '别的菜单被收起');
+    assert.equal(rowA.item.set.has('is-menu-open'), false, '收起的那一行摘掉了抬升类');
+    assert.equal(rowB.details.open, true, '被点的那一个不动');
+    assert.equal(rowB.item.set.has('is-menu-open'), true, '被点的那一行保留抬升类');
+
+    // ④ 不得退回 :has()：那是「只在支持的浏览器里成立」的机制，正是回归的来源。
+    assert.doesNotMatch(css, /\.special-line-item:has\(/, '不用 :has()（老浏览器整条忽略）');
 });
 
 test('筛选不先清空事件，进行中的筛选只补拉最后一次选择', async () => {

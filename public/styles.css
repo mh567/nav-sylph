@@ -3503,10 +3503,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 .special-line-item { position: relative; }
-/* 事件卡自身在 :hover 时建立了 stacking context；单给「⋯」菜单 z-index:3
-   只在那张卡内部生效，后面绘制的下一张卡仍会盖住它。抬高菜单所在的整行，
-   即使是第一条（包括手动保存的文章），菜单也压在相邻事件卡上方。 */
-.special-line-item:has(.special-line-tools[open]) { z-index: 2; }
+/* 打开菜单的整行抬到相邻事件卡之上。
+   ⚠️ 由 JS 加/摘 is-menu-open（见 special-line.js 的 adjustMenu），**不用 `:has()`**：
+   不支持 :has() 的浏览器会整条忽略那条规则，于是短条目（手动保存的文章，
+   条目比菜单还矮）的菜单又被下一张事件卡盖住——用户报的「被模块本身遮挡」。 */
+.special-line-item.is-menu-open { z-index: 2; }
 .special-line-item::before {
     position: absolute;
     z-index: 1;

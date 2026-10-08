@@ -453,7 +453,14 @@
      */
     function adjustMenu(details) {
         if (!details || !listEl) return;
+        // ⚠️ 打开菜单的那一行必须抬到相邻事件卡之上，而且**不能**靠 CSS 的 :has()：
+        // 不支持 :has() 的浏览器会整条忽略那条规则，于是短条目（手动保存的文章，
+        // 比菜单还矮）的菜单又被下一张事件卡盖住——用户报的「被模块本身遮挡」。
+        // 由 JS 加/摘类，任何浏览器都成立；CSS 只负责消费这个类。
+        const item = details.closest('.special-line-item');
+        if (item) item.classList.toggle('is-menu-open', details.open);
         details.classList.remove('is-up');
+        if (!details.open) return;
         const wrap = listEl.getBoundingClientRect();
         const menu = details.querySelector('.special-line-actions');
         if (!menu) return;
@@ -463,7 +470,10 @@
     function closeMenus(except) {
         if (!listEl) return;
         for (const d of listEl.querySelectorAll('.special-line-tools[open]')) {
-            if (d !== except) d.open = false;
+            if (d !== except) {
+                d.open = false;
+                d.closest('.special-line-item')?.classList.remove('is-menu-open');
+            }
         }
     }
 
@@ -922,9 +932,9 @@
             // 点「⋯」：开着的时候先把别的收起来，开完再量一次要不要往上弹
             if (target.tagName === 'SUMMARY') {
                 const details = target.closest('details');
-                const willOpen = !details.open;
                 closeMenus(details);
-                if (willOpen) setTimeout(() => adjustMenu(details), 0);
+                // 开与关都要跑一次：adjustMenu 按 details.open 同步那一行的抬升类。
+                setTimeout(() => adjustMenu(details), 0);
                 return;
             }
 
