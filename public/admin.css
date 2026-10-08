@@ -923,16 +923,18 @@
     white-space: nowrap;
 }
 .special-line-source-copy small { color: var(--text-muted); font-size: 10px; }
-.special-line-source-error { color: var(--danger); font-size: 10px; line-height: 1.5; }
+.special-line-source-error { color: var(--sl-danger); font-size: 10px; line-height: 1.5; }
 
 .special-line-source-state { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
-.special-line-source-state[data-status="ok"] { color: var(--success); }
-.special-line-source-state[data-status="expired"] { color: var(--warning); }
-.special-line-source-state[data-status="failed"] { color: var(--danger); }
+/* 「已连接」用 --accent：与 .module-card-status[data-kind="ready"] 同一套，
+   本仓库没有 success 色 token。告警两档用 styles.css 里定义的 --sl-*。 */
+.special-line-source-state[data-status="ok"] { color: var(--accent); }
+.special-line-source-state[data-status="expired"] { color: var(--sl-warning); }
+.special-line-source-state[data-status="failed"] { color: var(--sl-danger); }
 
 .special-line-source-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
 .special-line-source-actions .btn { min-height: 30px; padding-inline: 10px; font-size: 11px; }
-.special-line-source-actions .btn-danger { color: var(--danger); }
+.special-line-source-actions .btn-danger { color: var(--sl-danger); }
 
 .special-line-source-form {
     display: grid;

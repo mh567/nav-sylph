@@ -3,6 +3,13 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v77：Special Line 改为**内联**在首页右侧那一列里显示（v1.13.0 是「摘要卡 +
+// 点开弹窗」，用户否掉了那个形态）。去掉 .module-overlay 面板，卡片本身即时间线：
+// 头（标题 + 状态 + 拖拽把手）/ 工具行（来源与状态下拉、↻、＋）/ 可滚动列表
+// （行内「标为已读」「归档」按钮）/ 底部计数。为这一列放开宽度上限（220 → 420px）。
+// 另修：样式里引用了本仓库不存在的 --danger / --warning / --success 三个 token，
+// 会静默丢掉那些声明；改用自带的 --sl-danger / --sl-warning。改了 app.js、
+// modules/special-line.js、styles.css、admin.css。
 // nav-v76：新增「Special Line」时间线模块（public/modules/special-line.js）——
 // 社交订阅与稍后阅读汇成一条时间线，启用后默认停靠在首页右侧空白区、位置可拖。
 // 同时给平台加了两个通用能力：模块定义可声明 defaultSide（无已保存布局时按它
@@ -143,7 +150,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v76';
+const CACHE = 'nav-v77';
 const ASSETS = [
     '/',
     '/index.html',

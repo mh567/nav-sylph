@@ -119,6 +119,13 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 
 ⚠️ **官方接口未在本环境验证。** X 与微博的 adapter 按各自官方文档的端点形状实现（只读；凭据由运维在平台控制台取得后粘贴，不做应用内 OAuth），测试用固定响应的 fixture。真实连通性需要各自的开发者凭据与授权应用，**必须以有凭据的机器上界面里的「测试连接」结果为准**——把 fixture 通过当成「平台可用」是错的。微博的错误不走 HTTP 状态码（HTTP 200 + body 里的 `error_code`），所以 adapter 必须自己判 body。
 
+⚠️ **它的卡片不走「卡片可点开弹窗」那套**（用户的明确要求：「直接在首页右侧显示，不是单独弹出一个框再显示」）。卡片本身就是时间线：头 / 工具行 / 可滚动列表 / 底部四段，`.module-overlay` 面板已删除。两个随之而来的约束写在 `styles.css` 里，都有测试钉着：
+
+1. **卡片必须有高度上限，列表自己滚**（`max-height` + 列表 `overflow-y: auto` + `min-height: 0`）。右侧那一列是绝对定位堆叠的，卡片长到超出视口时页面不会跟着变高，用户就再也够不到下面的内容。
+2. **卡片必须自成一个包含块（`position: relative`）**。本模块是第一个在卡片里用 `.sr-only`（绝对定位）的：`.module-zone` 本身是 `position: absolute`，而卡片在 `data-dock="below"`（窄屏横滑条）下是 `position: static`——那些 1×1 盒子于是以 `.module-zone` 为包含块，**逐行累积的溢出逃出横滑条的裁剪，把整个文档撑宽**（实测 390 视口下 `documentElement.scrollWidth` 728 vs 视口 390，页面能真的横向滚动）。修法的选择器还要 **≥ 平台那条 `.module-zone[data-dock="below"] .module-widget`（0-3-0）**，且**必须限定 `[data-dock="below"]`**：不限定就是 0-3-0，会把 outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute 一起顶掉，宽屏那一列散架。`tests/timeline.test.js` 同时断言这条存在、且不得写成不限 dock 的版本。
+
+   一般化的教训：**模块往卡片里放绝对定位内容时，卡片必须是它的包含块**；这条在 wide 模式下自动成立（卡片本来就是 absolute），只在窄屏的横滑条里现形。
+
 ## 多服务器监控
 
 **目标机上跑 agent，本服务采集它。** 本服务只能读到运行它自己的那台主机；要看别的机器，目标机上就得有一个东西去读 `/proc` 并把结果吐出来。

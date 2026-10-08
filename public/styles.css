@@ -3262,8 +3262,29 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 /* ==================== Special Line 时间线（模块） ====================
-   模块卡（缩略时间线）+ 时间线面板 + 保存文章对话框。
+   时间线**内联**在首页那一列里（不是「摘要卡 + 点开弹窗」）：卡片头是标题与
+   同步状态，下面一条工具行，再下面是可滚动的事件列表，底部是计数。
    类名统一 special-line- 前缀，避免与既有模块的类撞名。 */
+
+/* 告警 / 警示色。⚠️ 本仓库**没有** --danger / --warning / --success 这三个
+   主题 token（`grep -- '--danger:' public/styles.css` 为空），颜色的既有写法是
+   「hex + 深色块覆盖」。所以这里自带一对命名空间化的变量，值取自
+   .btn-danger 与 .module-card-status[data-kind="alert"]，不引用不存在的 token
+   ——引用不存在的 token 不会报错，只会静默丢掉那条声明。 */
+:root {
+    --sl-danger: #a44c46;
+    --sl-warning: #a2762c;
+}
+:root[data-theme="dark"] {
+    --sl-danger: #e9a69d;
+    --sl-warning: #e0bd7a;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --sl-danger: #e9a69d;
+        --sl-warning: #e0bd7a;
+    }
+}
 
 .sr-only {
     position: absolute;
@@ -3275,8 +3296,35 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     white-space: nowrap;
 }
 
-/* ---------- 卡片头里的状态胶囊 ---------- */
+/* ---------- 这一列按「时间线」用，不是按「摘要卡」用 ----------
+   平台把两侧的卡片宽度钳在 220px，装不下一行「来源 + 标题 + 时间」。
+   这里只放开本模块：上限取可用余量（与平台同一个 calc），再封顶 420px。
+   data-dock="below"（窄屏）时不生效，仍用平台宽度。 */
+.module-zone[data-dock="outside"] .module-widget[data-module-id="special-line"] {
+    width: clamp(132px, calc((100% - 936px) / 2 - 20px), 420px);
+}
 
+/* ---------- 卡片：纵向四段，列表自己滚 ---------- */
+.special-line-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    /* 右侧那一列的高度不能无限长：列表超出就在卡片内滚动 */
+    max-height: min(58vh, 560px);
+}
+
+/* ⚠️ 卡片必须自成一个包含块。本模块是第一个在卡片里用 .sr-only（绝对定位）的：
+   below 停靠下卡片是 position: static，那些 1×1 的盒子会以 .module-zone
+   （它本身是 position: absolute）为包含块，逐行累积的溢出逃出横滑条的裁剪，
+   把**整个文档**撑宽——实测 390 视口下多出 338px，页面能真的横向滚动。
+   选择器要 ①写到能压过平台那条 0-3-0 的 below 规则（`.special-line-card` 只有
+   0-1-0，会被压掉），又 ②**只作用于 below**——不限定 dock 的话它是 0-3-0，
+   会把 outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute
+   也一起顶掉，宽屏那一列就散架了。 */
+.module-zone[data-dock="below"] .module-widget[data-module-id="special-line"] { position: relative; }
+.special-line-card .module-widget-head { margin-bottom: 0; }
+
+/* ---------- 卡片头里的状态胶囊 ---------- */
 .special-line-card-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 .special-line-pill {
@@ -3319,17 +3367,77 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     cursor: pointer;
 }
 
-/* ---------- 卡片正文：缩略时间线 ---------- */
+/* ---------- 工具行：两个下拉 + 两个图标按钮 ----------
+   窄列（这一列常见 152～230px）里放不下「两个下拉 + 两个按钮」一行，
+   硬挤会把来源名截成「全…」。所以允许换行、基准宽度 120px：
+   窄时来源独占一行（正好拿到整行宽度），状态与两个按钮排第二行；
+   卡片够宽（约 ≥340px）时自动回到一行。 */
+.special-line-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 
-.special-line-rows { display: grid; gap: 4px; }
+.special-line-select {
+    flex: 1 1 120px;
+    min-width: 0;
+    height: 26px;
+    padding: 0 3px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-overflow: ellipsis;
+}
+.special-line-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-.special-line-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.special-line-iconbtn {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
+    box-shadow: var(--shadow);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 120ms, box-shadow 120ms, color 120ms;
+}
+.special-line-iconbtn:hover { color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+.special-line-iconbtn:active { transform: translateY(1px) scale(.985); }
+.special-line-iconbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* ---------- 列表（自身滚动） ---------- */
+.special-line-listwrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    margin: 0 -4px;
+    padding: 0 4px;
+}
+
+.special-line-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+
+.special-line-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 7px;
+    padding: 7px 5px 7px 7px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+}
+.special-line-item:hover { background: var(--bg-hover); }
+.special-line-item[data-unread="true"] {
+    border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+}
 
 .special-line-sym {
-    flex: 0 0 auto;
     display: inline-grid;
     width: 15px;
     height: 15px;
+    margin-top: 2px;
     place-items: center;
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -3339,28 +3447,65 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     font-weight: 700;
 }
 
-.special-line-row-title {
-    flex: 1 1 auto;
-    min-width: 0;
+.special-line-main { min-width: 0; }
+
+.special-line-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; font-size: 9px; }
+.special-line-source { color: var(--text-secondary); font-weight: 620; }
+.special-line-type { color: var(--text-muted); }
+
+.special-line-h { margin: 2px 0 0; font-size: 12px; font-weight: 560; line-height: 1.4; overflow-wrap: anywhere; }
+.special-line-title { color: inherit; text-decoration: none; }
+.special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.special-line-item[data-unread="true"] .special-line-h { font-weight: 640; }
+
+.special-line-summary {
+    display: -webkit-box;
+    margin: 3px 0 0;
     overflow: hidden;
     color: var(--text-secondary);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-size: 10px;
+    line-height: 1.55;
+    /* 摘要最多两行：卡片是列表，不是阅读器 */
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
 }
-a.special-line-row-title:hover { color: var(--accent); text-decoration: underline; }
-.special-line-row[data-unread="true"] .special-line-row-title { color: var(--text); font-weight: 600; }
 
-.special-line-row-time {
-    flex: 0 0 auto;
+.special-line-stamp {
+    margin-top: 3px;
     color: var(--text-muted);
     font-size: 9px;
     font-variant-numeric: tabular-nums;
 }
 
-.special-line-empty-card { color: var(--text-muted); font-size: 11px; }
+/* 行内操作：不用弹出菜单——菜单挂在滚动容器里会被 overflow 裁掉 */
+.special-line-acts { display: grid; align-content: start; gap: 3px; }
+.special-line-act {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+}
+.special-line-act:hover { background: var(--bg-card); color: var(--accent); }
+.special-line-act[aria-pressed="true"] { color: var(--accent); }
+.special-line-act:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
-.special-line-open {
+/* ---------- 底部与状态 ---------- */
+.special-line-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 9px;
+}
+
+.special-line-linkbtn {
     padding: 0;
     border: 0;
     background: transparent;
@@ -3370,246 +3515,34 @@ a.special-line-row-title:hover { color: var(--accent); text-decoration: underlin
     cursor: pointer;
 }
 
-/* ---------- 时间线面板 ---------- */
-
-.special-line-panel { width: min(100%, 720px); max-height: min(88dvh, 760px); }
-
-.special-line-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    padding: 15px 18px 12px;
-    border-bottom: 1px solid var(--border);
-}
-.special-line-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .02em; }
-.special-line-subtitle { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
-.special-line-sync { display: inline-flex; align-items: center; gap: 7px; margin-left: 4px; }
-.special-line-time-note { color: var(--text-muted); font-size: 10px; }
-.special-line-head .module-panel-close { margin-left: auto; }
-
-.special-line-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 12px;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--border);
-}
-.special-line-source-filters,
-.special-line-view-filters { display: flex; flex-wrap: wrap; gap: 4px; }
-.special-line-view-filters { margin-left: auto; }
-
-.special-line-chip {
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px solid transparent;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 11px;
-    white-space: nowrap;
-    cursor: pointer;
-}
-.special-line-chip:hover { background: var(--bg-hover); color: var(--text); }
-.special-line-chip[aria-pressed="true"] {
-    border-color: var(--border);
-    background: var(--glass);
-    color: var(--accent);
-    font-weight: 600;
-}
+.special-line-state { padding: 10px 2px; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.special-line-state p { margin: 0 0 6px; }
 
 .special-line-notice {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 8px;
-    margin: 12px 18px 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--border));
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--warning) 8%, var(--glass));
+    gap: 6px;
+    margin-bottom: 6px;
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--sl-warning) 34%, var(--border));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--sl-warning) 8%, var(--glass));
     color: var(--text-secondary);
-    font-size: 11px;
-    line-height: 1.6;
-}
-.special-line-notice strong { color: var(--warning); }
-
-/* 列表标题 + 结果计数（标题随筛选切换） */
-.special-line-topline {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 14px 18px 2px;
-}
-.special-line-topline h3 { margin: 0; font-size: 13px; font-weight: 620; }
-.special-line-topline span { color: var(--text-muted); font-size: 11px; }
-
-/* 左侧时间轨道 + 贯穿节点线；事件主体在右侧 */
-.special-line-timeline { position: relative; margin: 0; padding: 6px 18px 10px; list-style: none; }
-.special-line-timeline::before {
-    position: absolute;
-    top: 16px;
-    bottom: 22px;
-    left: 118px;
-    width: 1px;
-    background: linear-gradient(var(--border), rgba(var(--divider-rgb), .27) 88%, transparent);
-    content: "";
-}
-
-.special-line-item { position: relative; display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 20px; padding: 10px 0 14px; }
-.special-line-item::before {
-    position: absolute;
-    z-index: 1;
-    top: 22px;
-    left: 113px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--accent);
-    content: "";
-}
-.special-line-item[data-unread="true"]::before {
-    width: 11px;
-    height: 11px;
-    top: 21px;
-    left: 112px;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.special-line-time {
-    padding-top: 17px;
-    color: var(--text-muted);
-    text-align: right;
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-}
-.special-line-time strong { display: block; margin-bottom: 3px; color: var(--text-secondary); font-size: 12px; font-weight: 570; }
-
-.special-line-event {
-    min-width: 0;
-    padding: 14px 16px 13px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--glass);
-    box-shadow: var(--shadow);
-    transition: border-color 150ms, transform 150ms, box-shadow 150ms;
-}
-.special-line-event:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
-
-.special-line-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text-muted); font-size: 10px; }
-.special-line-source { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); font-weight: 630; }
-.special-line-icon {
-    display: inline-grid;
-    width: 18px;
-    height: 18px;
-    place-items: center;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-card);
-    color: var(--accent);
     font-size: 10px;
-    font-weight: 700;
+    line-height: 1.55;
 }
-.special-line-type { color: var(--text-muted); font-size: 9px; }
-
-/* ⋯ 菜单：用 <details> 实现，键盘可达，且不改变卡片高度 */
-.special-line-tools { position: relative; margin-left: auto; flex: 0 0 auto; }
-.special-line-tools summary {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    color: var(--text-muted);
-    font-size: 17px;
-    line-height: 1;
-    list-style: none;
-    cursor: pointer;
-}
-.special-line-tools summary::-webkit-details-marker { display: none; }
-.special-line-tools summary:hover,
-.special-line-tools[open] summary { background: var(--bg-hover); color: var(--text-secondary); }
-.special-line-tools summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-
-.special-line-actions {
-    position: absolute;
-    z-index: 3;
-    top: calc(100% + 4px);
-    right: 0;
-    display: grid;
-    min-width: 116px;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--glass-strong);
-    box-shadow: var(--shadow-lg);
-}
-.special-line-action {
-    min-height: 32px;
-    padding: 0 10px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--text-secondary);
-    font-size: 11px;
-    text-align: left;
-    white-space: nowrap;
-    cursor: pointer;
-}
-.special-line-action:hover { background: var(--bg-hover); color: var(--accent); }
-.special-line-action[aria-pressed="true"] { color: var(--accent); }
-
-.special-line-event h3 { margin: 0 0 7px; font-size: 14px; line-height: 1.45; font-weight: 610; overflow-wrap: anywhere; }
-.special-line-title { color: inherit; text-decoration: none; }
-.special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-.special-line-event p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.7; white-space: pre-line; overflow-wrap: anywhere; }
-.special-line-event blockquote {
-    margin: 9px 0 0;
-    padding: 8px 11px;
-    border-left: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
-    border-radius: 0 6px 6px 0;
-    background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
-    color: var(--text-secondary);
-    font-size: 11px;
-    line-height: 1.65;
-}
-
-.special-line-state {
-    margin: 28px 18px 20px;
-    padding: 40px 18px;
-    border: 1px dashed var(--border);
-    border-radius: 10px;
-    color: var(--text-muted);
-    text-align: center;
-}
-.special-line-state-icon {
-    display: grid;
-    width: 40px;
-    height: 40px;
-    margin: 0 auto 12px;
-    place-items: center;
-    border: 1px solid var(--border);
-    border-radius: 50%;
-    color: var(--accent);
-    font-size: 18px;
-}
-.special-line-state h3 { margin: 0 0 7px; color: var(--text-secondary); font-size: 14px; font-weight: 600; }
-.special-line-state p { max-width: 46ch; margin: 0 auto 15px; font-size: 11px; line-height: 1.7; }
+.special-line-notice strong { color: var(--sl-warning); }
 
 .special-line-skeleton {
-    width: calc(100% - 36px);
-    height: 68px;
-    margin: 0 18px 10px;
-    border-radius: 9px;
+    height: 52px;
+    margin-bottom: 6px;
+    border-radius: 7px;
     background: linear-gradient(90deg, var(--glass), var(--bg-hover), var(--glass));
     background-size: 200% 100%;
     animation: specialLineShimmer 1.5s ease-in-out infinite;
 }
 @keyframes specialLineShimmer { to { background-position: -200% 0; } }
-
-.special-line-more { display: flex; justify-content: center; padding: 4px 18px 14px; }
-.special-line-foot { margin: 0; padding: 0 18px 16px; color: var(--text-muted); font-size: 10px; }
 
 /* ---------- 保存文章对话框 ---------- */
 
@@ -3624,7 +3557,11 @@ a.special-line-row-title:hover { color: var(--accent); text-decoration: underlin
     color: var(--text);
     box-shadow: var(--shadow-lg);
 }
-.special-line-dialog::backdrop { background: rgba(18, 16, 14, .58); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.special-line-dialog::backdrop {
+    background: rgba(18, 16, 14, .58);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
 .special-line-dialog h2 { margin: 0 0 6px; font-size: 18px; }
 .special-line-dialog-hint { margin: 0 0 14px; color: var(--text-muted); font-size: 11px; line-height: 1.65; }
 
@@ -3640,12 +3577,12 @@ a.special-line-row-title:hover { color: var(--accent); text-decoration: underlin
     border-radius: 7px;
     background: var(--bg-card);
     color: var(--text);
-    /* 16px 是 iOS 的底线：小一号，聚焦时页面会被整体放大 */
+    /* 16px 是 iOS 的底线：小一号，聚焦时整个页面会被放大 */
     font-size: 16px;
 }
 .special-line-form textarea { min-height: 84px; max-height: 220px; resize: vertical; }
 .special-line-form details summary { padding: 6px 0; color: var(--text-muted); font-size: 12px; cursor: pointer; }
-.special-line-form-error { margin: 0; color: var(--danger); font-size: 11px; }
+.special-line-form-error { margin: 0; color: var(--sl-danger); font-size: 11px; }
 .special-line-form-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .special-line-form-actions .btn { min-height: 40px; }
 
@@ -3654,41 +3591,17 @@ a.special-line-row-title:hover { color: var(--accent); text-decoration: underlin
     .special-line-skeleton { animation: none; }
 }
 
-/* ---------- 窄屏：单列，时间贴近竖线，触控目标 ≥44px ---------- */
-
+/* ---------- 窄屏：触控目标 ≥44px，下拉用 16px 字体（防 iOS 聚焦放大） ---------- */
 @media (max-width: 700px) {
-    .special-line-panel { width: min(100%, 520px); max-height: min(92dvh, 820px); }
-    .special-line-head { padding: 13px 14px 10px; }
-    .special-line-filters { padding: 8px 14px; }
-    .special-line-source-filters,
-    .special-line-view-filters { width: 100%; }
-    .special-line-view-filters { margin-left: 0; }
-    /* 44px 是方案里定的触控下限（与仿真样例一致）：窄屏上手指就是指针，
-       低于它的按钮点了没反应，用户只会以为坏了。 */
-    .special-line-chip { min-height: 44px; padding: 0 12px; }
-
-    /* 窄屏把副标题收起来：卡片头那一行要留给状态与按钮 */
-    .special-line-subtitle { display: none; }
-    .special-line-topline { padding: 12px 14px 2px; }
-    .special-line-timeline { padding: 4px 14px 8px; }
-    .special-line-timeline::before { top: 14px; bottom: 18px; left: 11px; }
-    .special-line-item { display: block; padding: 8px 0 14px; }
-    .special-line-item::before { top: 34px; left: 6px; }
-    .special-line-item[data-unread="true"]::before { top: 33px; left: 5px; }
-    /* 显式 block：<time> 默认是行内元素，它的 padding 盒会压到下面那张卡的
-       上沿（桌面是网格项，不存在这个问题）。 */
-    .special-line-time { display: block; padding: 8px 0 7px 28px; text-align: left; font-size: 10px; }
-    .special-line-time strong { display: inline; margin: 0 7px 0 0; font-size: 11px; }
-    .special-line-event { margin-left: 28px; padding: 12px 12px 11px; }
-    .special-line-tools summary { width: 44px; height: 44px; }
-    .special-line-action { min-height: 44px; font-size: 12px; }
-    .special-line-notice { margin: 10px 14px 0; }
-    .special-line-state { margin: 20px 14px 16px; padding: 34px 14px; }
-    .special-line-skeleton { width: calc(100% - 28px); margin: 0 14px 9px; }
-    .special-line-more { padding: 4px 14px 12px; }
-    .special-line-more .btn { min-height: 44px; }
-    .special-line-foot { padding: 0 14px 14px; }
-
+    .special-line-card { max-height: min(70vh, 620px); gap: 7px; }
+    .special-line-bar { flex-wrap: wrap; }
+    .special-line-select { flex: 1 1 46%; height: 40px; font-size: 16px; }
+    .special-line-iconbtn { width: 40px; height: 40px; font-size: 15px; }
+    .special-line-act { width: 34px; height: 34px; font-size: 13px; }
+    .special-line-h { font-size: 13px; }
+    .special-line-summary { font-size: 11px; -webkit-line-clamp: 3; }
+    .special-line-foot { font-size: 10px; }
+    .special-line-linkbtn { min-height: 34px; }
     .special-line-dialog { width: min(100vw - 24px, 420px); padding: 18px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }

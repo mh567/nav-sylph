@@ -631,6 +631,70 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
         '并把它登记进模块定义');
 });
 
+test('时间线内联在首页那一列里：没有弹窗，工具与行内操作都在卡片上', () => {
+    const code = stripComments(moduleSource);
+
+    // ① 不再有弹窗面板（用户的明确要求：「不是单独弹出一个框再显示」）
+    assert.doesNotMatch(code, /module-overlay/, '不得再建遮罩层');
+    assert.doesNotMatch(code, /module-panel/, '不得再建弹窗面板');
+    assert.doesNotMatch(code, /openPanel/, '不得再实现 / 注册 openPanel');
+
+    // ② 卡片本身就是时间线：四段都挂在 card 上
+    assert.match(code, /card\.append\(head, bar, list, foot\)/, '头 / 工具行 / 列表 / 底部都在卡片里');
+
+    // ③ 筛选用原生下拉——132～420px 的那一列排不下三个 chips
+    assert.match(code, /sourceSelect = document\.createElement\('select'\)/, '来源筛选是下拉');
+    assert.match(code, /viewSelect = document\.createElement\('select'\)/, '状态筛选是下拉');
+
+    // ④ 已读 / 归档是行内按钮，不是 <details> 弹层：
+    //    弹层挂在 .special-line-listwrap（overflow-y:auto）里会被裁掉
+    assert.match(code, /data-action="read"/);
+    assert.match(code, /data-action="archive"/);
+    assert.doesNotMatch(code, /<details class="special-line-tools/, '列表里不得用 details 弹层');
+});
+
+test('内联卡片的 CSS：高度有上限、列表内滚动、这一列宽度被放开', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const card = /\.special-line-card \{([\s\S]*?)\n\}/.exec(css);
+    assert.ok(card, '切出 .special-line-card 规则');
+    assert.match(card[1], /max-height:/, '卡片必须有高度上限——右侧那一列不能无限长下去');
+
+    // 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块，
+    // 而 below 停靠下卡片是 static——那些盒子会以 .module-zone（absolute）为
+    // 包含块，溢出逃出横滑条的裁剪、把整个文档撑宽（实测 390 视口多出 338px）。
+    // ⚠️ 这条规则的特异性必须 ≥ 平台那条 0-3-0 的 below 规则，否则被压掉。
+    assert.match(css,
+        /\.module-zone\[data-dock="below"\] \.module-widget\[data-module-id="special-line"\] \{ position: relative; \}/,
+        '卡片必须是自身绝对定位后代的包含块（0-4-0 压得过平台的 below 规则）');
+    // 且这条不得越过 dock 限定：不限定就是 0-3-0，会把 outside 模式的
+    // `.module-widget[data-side="right"]`（0-2-0）的 absolute 也顶掉，宽屏那一列散架
+    assert.doesNotMatch(css, /^\.module-zone \.module-widget\[data-module-id="special-line"\] \{ position: relative; \}/m,
+        '不得写成不限 dock 的版本');
+
+    const wrap = /\.special-line-listwrap \{([\s\S]*?)\n\}/.exec(css);
+    assert.ok(wrap, '切出 .special-line-listwrap 规则');
+    assert.match(wrap[1], /overflow-y: auto/, '列表自己滚');
+    assert.match(wrap[1], /min-height: 0/, 'flex 子项必须 min-height:0 才会真的滚（否则被内容撑开）');
+
+    // 宽度放开：只针对本模块，且上限仍是「可用余量」，只是把平台的 220px 抬到 420px
+    assert.match(css,
+        /\.module-zone\[data-dock="outside"\] \.module-widget\[data-module-id="special-line"\] \{/,
+        '为这一列放开宽度上限');
+    assert.match(css, /width: clamp\(132px, calc\(\(100% - 936px\) \/ 2 - 20px\), 420px\)/,
+        '上限仍是可用余量');
+
+    // 颜色 token：本仓库**没有** --danger / --warning / --success，
+    // 引用它们不会报错，只会静默丢掉那条声明（观感像「样式没生效」）
+    const admin = fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8');
+    for (const [name, src] of [['styles.css', css], ['admin.css', admin]]) {
+        const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '');
+        for (const bad of ['--danger', '--warning', '--success']) {
+            assert.ok(!new RegExp(`var\\(${bad}\\)`).test(stripped),
+                `${name} 不得引用不存在的 token var(${bad})`);
+        }
+    }
+});
+
 test('模块脚本只用平台注入的 API，不摸 window.app 的内部方法', () => {
     const code = stripComments(moduleSource);
     assert.doesNotMatch(code, /\bAPI\.(get|post|request)\(/,
