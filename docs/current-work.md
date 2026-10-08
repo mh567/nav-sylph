@@ -2,7 +2,52 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 菜单上翻越出容器顶边被筛选行遮挡（修复提交 `54ad060`，版本账 `295d290`，已发布 **v1.14.4**）
+## 最新一轮：Special Line 操作菜单的交互整体返工（位置、外部点击、Esc）（修复提交 `2d23500`，未发布）
+
+用户原话：「可是现在弹出来的位置又很奇怪，点击空白处也不会消失，全面审查这部分的交互」
+
+### 审查结论（逐条实测，隔离夹具 + 真实模块与样式）
+
+| # | 现象 | 测量 | 定性 |
+|---|---|---|---|
+| 1 | 位置变怪 | 1280×400：`inlineTop=-40px`，菜单顶离按钮底 **66px**（自然位置应贴 4px） | **上一轮「夹进容器」的副作用** |
+| 2 | 点空白不关 | 两个视口均 `closedByOutsideClick=false` | 缺陷（从来如此） |
+| 3 | Esc 不关 | `closedByEscape=false` | 缺陷（从来如此） |
+| 4 | 菜单被裁 | 列表矮时上翻越顶边被 `overflow` 裁（v1.14.4 已修，但用的是有副作用的夹取） | 缺陷（已换机制） |
+
+关闭路径原先只有四条：再点一次 ⋯、点别的 ⋯、切筛选、重渲染。
+
+### 改法
+
+把菜单从「往容器里塞」改为**放进 top layer**：`.special-line-actions` 加 `popover="manual"`，打开时
+`showPopover()`——任何祖先的 `overflow` 都裁不到它，于是**恢复「紧贴按钮」的自然位置**。top layer 的
+包含块是**视口**（UA 还带 `inset:0` + `margin:auto`），所以坐标由 JS 显式给：贴按钮下方、放不下翻上去、
+最后按视口夹取。关闭路径补齐到**六条**，新增 **点空白处**（`document` 的 `pointerdown` 捕获阶段，点在
+`.special-line-tools` 内不关）与 **Esc**（`document` 的 `keydown`）。不支持 popover 的浏览器走回退分支
+（保留上翻 + 夹取）。抬升类 `is-menu-open` 保留给回退路径。
+
+### 实际验证（修复后实测）
+
+- 位置：两个视口 `gapButtonToMenu=4`、`menuAwayFromButton=false`——菜单紧贴按钮。
+- 外部点击 `closedByOutsideClick=true`；Esc `closedByEscapeOnly=true`（单独一次只按 Esc 的测量）。
+- top layer 确实生效：1280×400 下菜单底 262 > 列表底 249（越过 13px），按钮中心 `elementFromPoint` 仍命中自身、且命中元素位于 `[popover]` 内。
+- 参数扫描（⋯ 完整可见的条目 × 3 滚动位置）：1280×400 与 1440×360 均 **0 失败**。
+- 新增两条守卫：**执行真实的 `adjustMenu`**（popover 桩：打开 `showPopover`、关闭 `hidePopover`）与 **执行 `onDocPointerDown` / `onDocKeyDown`**（点内部不关、点外部关、非 Esc 键不关、Esc 关），另加接线断言。
+- **八项变异全部变红**且逐字节还原。`public/sw.js` 缓存 `nav-v86 → nav-v87`。全套 **543/543**。
+
+### 验证边界
+
+仍在隔离夹具中测得，未在用户的 Edge 上直接复跑（无该环境）。夹具为临时草稿、未入库。
+**测「点空白处」时必须先派发 `pointerdown` 再 `click`**——处理器挂在 `pointerdown` 上，只合成 `click`
+会误报为「不关」（本轮的第一次探针就是这么错的，已在夹具注释里记下）。「列表比菜单还矮」的极端情形
+在支持 popover 的浏览器里已不再有问题（top layer 不裁剪），但回退路径仍会遇到。
+
+### 下一步
+
+1. 检查 `git status --short --branch` 与本段 diff。
+2. 本轮已提交（`2d23500`），**未发布**；随本批走 `scripts/release.sh` 并单独推送 `main`（脚本只推 tag）。
+
+## 上一轮：Special Line 菜单上翻越出容器顶边被筛选行遮挡（修复提交 `54ad060`，版本账 `295d290`，已发布 **v1.14.4**）
 
 用户原话：「我用的 edge 浏览器 154.0.4258.62版本，点击事件右上角菜单依然会被"全部/未读/已归档"所在的那行遮挡住」
 
