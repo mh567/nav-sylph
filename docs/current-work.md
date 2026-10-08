@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：后台「模块」分区按模块分组 + 平台侧不留模块专属代码（v1.14.0）
+## 最新一轮：后台「模块」分区按模块分组 + 平台侧不留模块专属代码（内容提交 `e1d1262`，版本账 `6e31134`，已发布 **v1.14.0**）
 
 用户原话：「后台管理模块页的配置应该按照模块分割，比如监控目标应该和服务器监控和开关放在一起，订阅来源管理应该和 specialline 模块名称和开关放在一起等，现在逻辑混乱」
 
@@ -63,7 +63,12 @@
 
 ### 发布记录
 
-（发布后回填。）
+- 内容提交 `e1d1262`（代码 + 测试 + 文档 + 仿真稿），版本账 `6e31134`，tag / Release **v1.14.0**：
+  https://github.com/mh567/nav-sylph/releases/tag/v1.14.0
+- 预检：改动集 ∩ 打包路径 = `public/`（**必须**升 CACHE —— 本轮**已升**到 `nav-v81`，属「确认」而非「抓到漏升」）；工作树无私有文件。
+- 产物核对（下载 tarball 后在树外解包）：`version.json` = 1.14.0、`CACHE` = nav-v81、`renderModuleBlock` / `moduleServices` / `saveModulesConfig` 在、**app.js 里六大模块专属标识符一个都没有**、模块文件里有 `renderAdminSection` + `监控目标` + `enroll-token` + `showDeployDialog`、admin.css 有模块块与平台块样式、三条死规则在可执行 CSS 里已无（只剩一句历史注释提到 `navDeployPulse`）、`#serverList + #addServerBtn` 相邻规则与窄屏 44px 规则都还在、四类私有文件未夹带。
+- ⚠️ 核对脚本第一版把「CSS 里不得出现 navDeployPulse」写成朴素 grep，被我自己留的那句历史注释判红——**剥注释再查**是同一条纪律的又一次应用（探针的错，不是产物的错）。
+- `scripts/release.sh` 只推 tag，分支手工推送（`91761c3..6e31134`）。
 
 ## 上一轮：修首屏宽栏判定读不到模块声明（v1.13.4）
 
