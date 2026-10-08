@@ -1,6 +1,42 @@
 {
   "versions": [
     {
+      "version": "1.13.0",
+      "date": "2026-10-08",
+      "summary": "新增 Special Line 时间线模块，把社交订阅与稍后阅读汇成一条时间线",
+      "highlights": [
+        "新增「Special Line 时间线」模块：社交订阅与手动保存的文章按时间汇成一条，可标为已读与归档",
+        "模块启用后默认停靠在首页右侧空白区，位置可用编辑态拖拽把手调整",
+        "新增时间线数据的远程备份与恢复；订阅凭据不随备份，恢复后重新授权一次即可"
+      ],
+      "changes": {
+        "add": [
+          "登录后可用的第三个模块。数据落在 SQLite 的新表（v5 迁移，尾部追加）：timeline_sources / timeline_credentials / timeline_events / timeline_event_state。去重在数据库层（UNIQUE(source_id, dedupe_key) + INSERT OR IGNORE），用户状态（已读 / 归档）单独成表——重复摄入既不会重复入库，也不会重置用户标过的状态",
+          "服务端 lib/timeline/：registry（provider 与事件类型）→ adapters（manual / x / weibo）→ repository（全部 SQL）→ service（校验与编排）→ sync（调度器）。service 是不可信输入的边界：长度、URL 协议（仅 http/https）、时间合理性、metadata 白名单、未知事件类型跳过该条而非作废整批。adapter 不碰数据库、不推进游标",
+          "调度器：每来源至多一个在途同步、全局并发 2；成功才推进游标，失败保留旧游标与旧事件、记 last_error（JSON {code,message}，能区分「凭据失效」与「网络不通」，界面据此给「重新授权」或「稍后重试」）并按指数退避到上限 4 小时。定时器 unref()，gracefulShutdown 里先于 db.close() 停掉",
+          "10 条 /api/timeline/* 路由全部 requireAdmin；读（GET /api/timeline/events）走 modulePollLimit，写走 rateLimit。没有新增限流 Map——复用既有桶，也就不必往 60 秒清扫定时器里加东西",
+          "前端 public/modules/special-line.js：摘要卡（缩略时间线）+ 面板（左侧日期轨道 + 贯穿节点线 + 事件卡）+ 保存文章对话框 + 后台来源管理区。事件标题即原文链接（target=_blank + rel=noopener noreferrer，无链接则纯文本）；已读 / 归档收进卡片右上角「⋯」菜单（原生 details，不改变卡高）；时间只在左侧轨道显示、卡内不重复；筛选可按来源与状态（全部 / 未读 / 已归档）",
+          "平台加了两个**不特判模块 id** 的通用能力：模块定义可声明 defaultSide（无已保存布局项时按它停靠），模块可挂自己的后台区块 renderAdminSection(host, { api })（平台只给容器与标题，provider 专属表单留在模块文件里）",
+          "「默认模块启用后放在导航首页右侧空白部分，可拖拽」按「启用后默认停靠右侧、模块本身仍由后台开关 opt-in」实现（与备忘录 / 服务器监控一致，升级不会自动启用）。用户拖过之后 widgets[].side 就是唯一真相，默认值不再参与——不覆盖已保存位置",
+          "稍后阅读：同一 URL 再次保存是**更新**那一条（按 URL 哈希去重、保留首次保存时间）而不是新增。服务端不抓取网页内容或生成预览，摘要由用户自己填——不新增 SSRF 面",
+          "数据保留：社交订阅事件保留 90 天，手动文章不按时限删、上限 500 条，单来源硬上限 5000 条。触顶时停止入库并显式报错，不静默驱逐。常量集中在 lib/timeline/constants.js 并写进测试",
+          "凭据：新增 timeline 用途上下文（timeline-credential-key），纳入改密码时的全量重加密。接口只回 hasCredentials，任何响应里都不出现 token（明文与密文都不出现）",
+          "WebDAV 备份新增 nav-sylph-timeline-{时间戳}.json（来源 / 事件 / 用户状态的逻辑导出，只在有内容时生成）与自动槽位 nav-sylph-timeline-auto.json；恢复是**整表替换**（一个事务）；listBackups / cleanupOldBackups / 恢复对话框与删除流程全部带上它",
+          "自动同步的触发点：写 JSON 的钩子管不到 SQLite，所以由 service 的 onDurableChange 显式挂钩。触发的是**不可再生**的数据（保存文章 / 已读归档 / 来源增删改）；社交事件的轮询摄入刻意不触发——那一类可再从提供方取回且是机器节奏的高频写入，挂钩会把远端上传变成每轮一次"
+        ],
+        "fix": [
+          "本轮两轴审查中自己引入又修掉的三处（**均未发布**，记在这里以便追溯）：①reencryptCredentials 里时间线凭据在循环内逐条落库，破坏了「全部算完才写」的原子性——中途抛错会留下半新半旧密钥，那一半永久解不开；已改成先收集、最后在一个事务里统一写。②恢复对话框的「唯一可选项默认选中」判据写成「四项全无」（恒为假），于是只含模块 / 只含时间线的分组里一个 radio 都不选中，$(':checked').value 抛在 handler 里，表现为「点确认恢复什么都不发生」；已改成按可选项个数判定，并补了一条真跑该方法体的回归测试与红绿变异证明。③保存文章成功后草稿没清——close 监听会把输入框的值回采进 saveDraft、覆盖掉刚赋的空值，重开对话框会残留上一篇的链接与标题；已在 close() 前先清输入框",
+          "同步失败提示补回「保留了上次同步的事件。」：用户看到「同步未完成」的第一反应是「内容是不是没了」，先说这句再给下一步（仿真样例里确认过的措辞）"
+        ],
+        "improve": [
+          "modulePollLimit 由 120 抬到 **180** 次/分钟：新增第三条轮询接口（GET /api/timeline/events）后，原来按「2 个接口 × 6 次/分钟 × 10 个标签页」推导的额度不够了——三模块全开 + 10 标签页会把桶打满，复现的正是 v1.11.7 修过的故障。同时把「按接口数推导」的守卫改成从源码数接口，避免下次新增轮询接口时推导悄悄失效",
+          "public/sw.js 的 CACHE 由 nav-v75 升到 nav-v76（public/ 有改动，回访用户须拿到新 bundle）；新模块脚本进 ASSETS 预缓存清单",
+          "README 增「Special Line 时间线」一节（含后台配来源的步骤、凭据与备份边界、保留策略）；备份一节补时间线文件与自动槽位文件名。docs/architecture.md 增「Special Line 时间线」一节，并同步凭据上下文、后台分区、备份与轮询额度四处；docs/current-work.md 记录本轮根因、设计、两轴审查结论与仍未验证项",
+          "测试 489 → 521（新增 tests/timeline.test.js 22 条、tests/timeline-backup.test.js 10 条）。其中路由测试**真跑**真实处理器（不只断言源码形状），重加密测试用 vm 跑真实的 reencryptCredentials，恢复选项测试真跑该方法体并解析它生成的模板。另按审查建议给 x adapter 的 userIdCache 加上限、把模块内元素 id 统一成 specialLine* 并补「不与页面既有 id 撞名」守卫、把容量判断提到第三方请求之前、错误文本落库前剥掉像凭据的片段"
+        ]
+      }
+    },
+    {
       "version": "1.12.0",
       "date": "2026-10-08",
       "summary": "新增 WebDAV 自动同步开关，并修正远程备份区块展开后无法加载的问题",
