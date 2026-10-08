@@ -3729,13 +3729,17 @@
                             <span class="module-block-title">${this.esc(def.title)}</span>
                             ${def.summary ? `<span class="module-block-summary">${this.esc(def.summary)}</span>` : ''}
                         </div>
-                        <span class="module-setting-toggle">
+                        <!-- ⚠️ 这里必须是 label 元素：.toggle-switch 里的 input 是 0×0 的隐藏框
+                             （styles.css），可见的是它的兄弟 .toggle-slider。没有 label 关联时
+                             点滑块等于点什么都没绑的 span——整个模块开关点不动。分组改版时
+                             曾把它写成 span 宿主，回归就是「点击不生效」。 -->
+                        <label class="module-setting-toggle">
                             <div class="toggle-switch">
                                 <input type="checkbox" data-module-toggle="${this.esc(def.id)}" ${on ? 'checked' : ''}>
                                 <span class="toggle-slider"></span>
                             </div>
                             <span class="module-setting-state">${on ? '已启用' : '未启用'}</span>
-                        </span>
+                        </label>
                     </div>
                     ${body}
                 </div>`;

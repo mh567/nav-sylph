@@ -83,6 +83,8 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 
 **「有没有配置可折叠」不认模块 id，只看它有没有声明 `renderAdminSection`**：声明了就有配置区（未启用时收起成一行「未启用，配置先收起来。[展开配置]」，点开就地重渲染这一块——不重新拉配置、也不改开关状态）；没声明就只给一行淡字说明，不给折叠入口。**收起态不渲染配置容器**，模块自己的接口因此不会被拉（关掉的模块不该还在后台打请求）。版式与交互以 `docs/mockup-admin-modules.html`（已确认的设计稿）为准。
 
+**开关宿主必须是 `<label>`。** `.toggle-switch input` 是 `opacity:0`、`width:0`、`height:0` 的隐藏框，可见的 `.toggle-slider` 是它的**兄弟**，两者之间只有 label 的关联语义。宿主退化成 `<span>` 时点滑块既不改 `checked` 也不触发 `change`——表面看是「按钮点不动」，而且渲染出的 HTML 与 handler 源码都仍然正确，形状断言全绿。回归实例：`e1d1262` 分组改版把整行的 `<label>` 外壳写成了 `<span class="module-setting-toggle">`，随 v1.14.0 发布，后台每个模块的启停一起失效。守卫见 `tests/admin-modules.test.js` 里「模块开关宿主是 label」那条用例。
+
 **后台区块的契约是一个服务包**（`moduleServices()`，平台侧一处构造）：
 
 ```

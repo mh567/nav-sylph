@@ -67,6 +67,30 @@ test('每个模块一块：块头是名称+说明+开关，块内是它自己的
     assert.doesNotMatch(html, /module-block-off-note/, '已启用时不出现折叠提示');
 });
 
+test('模块开关宿主是 label：input 是 0×0 隐藏框，只有 label 能承接滑块点击', () => {
+    const body = methodBodyOf(stripComments(appSource), 'renderModuleBlock');
+    assert.ok(body.length > 500, `切出 renderModuleBlock（${body.length}）`);
+    const render = new Function('def', 'config', `return ({ ${body} }).renderModuleBlock;`)();
+    const def = { id: 'memo', title: '备忘录', summary: '随手记几行' };
+    const html = render.call({ esc: s => String(s), expandedDisabled: new Set() }, def, { enabledModules: [] });
+
+    // 实测过的回归：分组改版把开关宿主从 label 退回 span，于是后台每个模块的
+    // 启停都点不动。浏览器命中测试证明——input 只有 0×0（styles.css），可见的
+    // .toggle-slider 是它的**兄弟**；没有 label 关联时点滑块既不改 checked
+    // 也不触发 change，看起来就是「按钮没反应」。
+    assert.match(html, /<label class="module-setting-toggle">/, '开关宿主必须是 label 元素');
+    assert.doesNotMatch(html, /<span class="module-setting-toggle">/, '不得退回 span：那会让整个模块开关点不动');
+
+    // 光有 label 不够：输入框与可见滑块必须落在**同一个** label 里，
+    // 否则 label 关联不到这个 input（把两半拆到不同祖先下同样点不动）。
+    const open = html.indexOf('<label class="module-setting-toggle">');
+    const close = html.indexOf('</label>', open);
+    assert.ok(open >= 0 && close > open, 'label 有配对闭合');
+    const inside = html.slice(open, close);
+    assert.match(inside, /data-module-toggle="memo"/, '输入框在 label 内');
+    assert.match(inside, /class="toggle-slider"/, '可见滑块也在同一个 label 内');
+});
+
 test('未启用时配置收起：只留一行提示与「展开配置」；点开后就地展开', () => {
     const body = methodBodyOf(stripComments(appSource), 'renderModuleBlock');
     const render = new Function('def', 'config', `return ({ ${body} }).renderModuleBlock;`)();
