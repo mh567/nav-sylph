@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 恢复仿真形态 + 平台宽栏机制（v1.13.2）
+## 最新一轮：Special Line 恢复仿真形态 + 平台宽栏机制（内容提交 `ef4c895`，版本账 `8816201`，已发布 **v1.13.2**）
 
 用户原话：「不对，现在的界面和当时的仿真界面或者之前那版弹窗时间线比，界面完全变了和当时设计不一样」。
 
@@ -45,7 +45,10 @@
 
 ### 发布记录
 
-（发布后回填。）
+- 内容提交 `ef4c895`，版本账 `8816201`；`scripts/release.sh` 完成打包 → tag → `gh release create`。
+- Release：https://github.com/mh567/nav-sylph/releases/tag/v1.13.2
+- 分支手工推送（脚本只推 tag）：`47a0606..8816201  main -> main`。
+- 产物下载后核对：`version.json` 为 1.13.2；`CACHE = 'nav-v78'`；`styles.css` 里 `data-rail="wide"` 规则 3 条、`@container` 块 2 个；模块脚本声明 `wideRail: true`；`app.js` 含宽栏判定；未夹带任何私有文件。
 
 ## 上一轮：Special Line 改为内联显示（内容提交 `39365d5`，版本账 `83ef907`，已发布 **v1.13.1**）
 
