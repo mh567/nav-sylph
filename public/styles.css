@@ -3596,12 +3596,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    ——阈值写 400（甚至 390）都会让它误判成窄版（实测：1280 视口下卡片 400 却
    渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px），正好落在窄版。 */
 @container (min-width: 360px) {
-    .special-line-list::before { left: 80px; }
-    .special-line-item { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; padding: 8px 0 14px; }
-    .special-line-item::before { top: 21px; left: 76px; }
-    .special-line-item[data-unread="true"]::before { top: 20px; left: 75px; }
-    .special-line-time { padding-top: 16px; text-align: right; }
-    .special-line-time strong { display: block; margin-bottom: 3px; font-size: 11px; }
+    .special-line-list::before { left: 64px; }
+    .special-line-item { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 32px; padding: 8px 0 14px; }
+    .special-line-item::before { top: 24px; left: 64px; transform: translate(-50%, -50%); }
+    .special-line-item[data-unread="true"]::before { top: 24px; left: 64px; }
+    .special-line-time { min-width: 0; padding-top: 16px; text-align: right; white-space: nowrap; }
+    .special-line-time strong { display: block; margin-bottom: 3px; font-size: 10px; }
     .special-line-stamp { display: none; }   /* 桌面版时间在左轨道上，卡内不重复 */
 }
 

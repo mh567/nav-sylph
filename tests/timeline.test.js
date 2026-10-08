@@ -881,6 +881,58 @@ test('底部与仿真一致：居中的「加载更早事件」按钮 + 一行�
     assert.doesNotMatch(css, /\.special-line-linkbtn/, '样式表里那套下划线按钮规则也要删掉，不留死规则');
 });
 
+test('宽版日期栏不侵入节点光圈，轨道居中且正文起点紧凑', () => {
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    const at = css.indexOf('@container (min-width: 360px) {');
+    assert.ok(at >= 0, '宽版容器查询存在');
+    const open = css.indexOf('{', at);
+    let depth = 1;
+    let end = open + 1;
+    for (; end < css.length && depth; end++) {
+        if (css[end] === '{') depth++;
+        if (css[end] === '}') depth--;
+    }
+    assert.equal(depth, 0, '宽版容器查询完整闭合');
+    const wide = css.slice(open + 1, end - 1);
+    const rule = (source, selector) => {
+        const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const matches = [...source.matchAll(new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`, 'g'))];
+        assert.ok(matches.length, `${selector} 规则存在`);
+        return Object.fromEntries(matches.flatMap(match => match[1].split(';')
+            .map(declaration => /^\s*([\w-]+):\s*(.*?)\s*$/.exec(declaration))
+            .filter(Boolean).map(declaration => [declaration[1], declaration[2]])));
+    };
+    const px = (declarations, property) => {
+        const match = /^([\d.]+)px$/.exec(declarations[property]);
+        assert.ok(match, `${property} 的有效 px 值存在`);
+        return Number(match[1]);
+    };
+    const base = css.slice(0, at);
+    const item = rule(wide, '.special-line-item');
+    const column = /^([\d.]+)px minmax\(0, 1fr\)$/.exec(item['grid-template-columns']);
+    assert.ok(column, '日期与正文使用两列网格');
+    const timeWidth = Number(column[1]);
+    const gap = px(item, 'gap');
+    const track = px(rule(wide, '.special-line-list::before'), 'left');
+    const node = { ...rule(base, '.special-line-item::before'), ...rule(wide, '.special-line-item::before') };
+    const unread = { ...node, ...rule(base, '.special-line-item[data-unread="true"]::before'),
+        ...rule(wide, '.special-line-item[data-unread="true"]::before') };
+    for (const [name, declarations] of [['普通节点', node], ['未读节点', unread]]) {
+        const halo = declarations['box-shadow'] ? /^0 0 0 ([\d.]+)px /.exec(declarations['box-shadow']) : null;
+        if (declarations['box-shadow']) assert.ok(halo, `${name} 的有效光圈尺寸可解析`);
+        const radius = px(declarations, 'width') / 2 + (halo ? Number(halo[1]) : 0);
+        assert.equal(px(declarations, 'left'), track, `${name} 与轨道中心一致`);
+        assert.equal(declarations.transform, 'translate(-50%, -50%)', `${name} 最终仍以中心定位`);
+        assert.ok(track - radius - timeWidth >= 6, `${name} 光圈与日期框至少留 6px`);
+        assert.ok(timeWidth + gap - track - radius >= 6, `${name} 光圈与正文卡至少留 6px`);
+    }
+    assert.equal(px(node, 'top'), px(unread, 'top'), '已读与未读节点不偏移');
+    assert.ok(timeWidth + gap <= 80, '正文左起点不超过 80px');
+    assert.equal(rule(wide, '.special-line-time')['white-space'], 'nowrap', '日期与时刻不被挤断');
+    assert.ok(px(rule(wide, '.special-line-time strong'), 'font-size') <= 10,
+        '紧凑日期栏保持 10px 日期字号，最长月日日期不会溢出');
+});
+
 test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按容器宽度切换', () => {
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     const card = /\.special-line-card \{([\s\S]*?)\n\}/.exec(css);
@@ -896,7 +948,7 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按�
     // 400 却渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px）。
     const wide = /@container \(min-width: 360px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(wide, '有宽列版式');
-    assert.match(wide[1], /grid-template-columns: 84px minmax\(0, 1fr\)/, '桌面版：左侧日期轨道 + 事件卡');
+    assert.match(wide[1], /grid-template-columns: 48px minmax\(0, 1fr\)/, '桌面版：紧凑日期栏 + 事件卡');
     assert.match(wide[1], /text-align: right/, '桌面版时间靠右（贴近竖线）');
     const narrow = /@container \(max-width: 359\.98px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(narrow, '有窄列版式');
