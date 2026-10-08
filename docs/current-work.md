@@ -2,7 +2,7 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：Special Line 时间线模块（v1.13.0）
+## 最新一轮：Special Line 时间线模块（内容提交 `c54bf41`，版本账 `ed9f709`，已发布 **v1.13.0**）
 
 用户原话：「可以，开始实现。默认模块启用后放在导航首页右侧空白部分，可拖拽」。在此之前方案与仿真样例都已确认（设计基线 `~/.commandcode/plans/special-line-timeline.md`，实施计划 `special-line-timeline-implementation.md`，仿真 `docs/mockup-special-line.html`，本轮随代码入库）。
 
@@ -66,6 +66,15 @@
 - **多标签页下的轮询配额**：本轮把 `modulePollLimit` 抬到 180 是按公式推导 + 单测钉住，**没有真的开 10 个标签页压测**（要 10 个浏览器上下文，未做）。
 - **真机触摸**：44px 触控目标是按 CSS 计算值验的（390 视口），没有真机手指测试。
 - Service Worker 的 install/`addAll` 运行时行为未核（工具链限制）。
+
+### 发布记录
+
+- 内容提交 `c54bf41`（29 个文件，+5620/−56），版本账 `ed9f709`，随后 `b53e852` 修了发布脚本的一处 bug。
+- **发布过程中被 `scripts/build-agent.sh:60` 挡下过一次**：`echo "…版本 $AGENT_VERSION）"` 后面紧跟全角「）」，bash 在 `set -u` 下把这个非 ASCII 字节吃进变量名（报 `AGENT_VERSION：unbound variable`），而 `release.sh` 把它报成「请先安装 Go 1.22+」——Go 其实装好了。改成 `${AGENT_VERSION}` 后 4 个目标全部构建成功。
+- `scripts/release.sh` 完成：打包 → `git tag -a v1.13.0` → 推 tag → `gh release create`。Release：https://github.com/mh567/nav-sylph/releases/tag/v1.13.0
+- **分支由手工推送**（脚本只推 tag，这是既有设计）：`cea929f..b53e852  main -> main`。
+- 发布产物下载后核对：`version.json` 为 1.13.0；`public/sw.js` 里 `CACHE = 'nav-v76'` 且 `ASSETS` 含 `/modules/special-line.js`；`lib/db.js` 含 v5 建表语句；`lib/timeline/*` 与 `public/modules/special-line.js` 都在包内；**未夹带任何私有文件**（`.modules.json` / `.admin-password.json` / `config.json` / `favorites.json` / `nav-sylph.db` / `.webdav-config.json` 逐一 grep 为空）。
+- `docs/` 与 `tests/` 不在打包范围（`release.sh` 的 `cp` 清单里没有它们），所以本文件与仿真样例只存在于仓库。
 
 ### 下一步
 
