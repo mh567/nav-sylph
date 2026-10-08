@@ -641,6 +641,136 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
         '并把它登记进模块定义');
 });
 
+test('打开的事件菜单提升所在事件行，避免被后续事件卡遮住', () => {
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    const rule = /\.special-line-item:has\(\.special-line-tools\[open\]\)\s*\{([^}]*)\}/.exec(css);
+    assert.ok(rule, '打开菜单时提升其事件行');
+    assert.ok(Number(/z-index:\s*(\d+)/.exec(rule[1])?.[1]) > 0,
+        '菜单所在事件行进入高于普通行的堆叠层级');
+    assert.match(css, /\.special-line-actions\s*\{[\s\S]*?z-index:\s*3/,
+        '菜单本身仍在卡片内容之上');
+});
+
+test('筛选不先清空事件，进行中的筛选只补拉最后一次选择', async () => {
+    const code = stripComments(moduleSource);
+    const signature = code.indexOf('async function refresh(');
+    assert.ok(signature >= 0, 'refresh 函数定义存在');
+    // 参数包含解构对象与默认值；不能从签名里的第一个 `{` 开始配对，
+    // 要从 `) {` 的方法体开括号开始（正是测试工具里反复踩过的括号边界）。
+    const open = code.indexOf(') {', signature) + 2;
+    assert.ok(open > signature, 'refresh 函数体开括号存在');
+    let depth = 0, end = -1;
+    for (let i = open; i < code.length; i++) {
+        if (code[i] === '{') depth++;
+        else if (code[i] === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    assert.ok(end > open, 'refresh 函数体括号配对成功');
+    const body = code.slice(signature, end);
+    const apply = extractFunction(code, 'function applyPayload(data)');
+    const resolvers = [];
+    const rejectors = [];
+    const requested = [];
+    const initial = [{ id: 'manual-old-1' }, { id: 'manual-old-2' }];
+    const refresh = new Function('initial', 'api', `
+        const PAGE_SIZE = 20;
+        const URLSearchParams = globalThis.URLSearchParams;
+        let events = initial.slice(), sources = [], unreadCount = events.length;
+        let nextCursor = 'old-cursor', hasMore = true, syncFailed = [], lastSync = null;
+        let syncState = 'synced', listError = null, busy = false;
+        let filterSource = 'manual', filterView = 'unread', inFlight = false;
+        let appliedFilterSource = 'manual', appliedFilterView = 'unread';
+        let filterTransition = false, filterRefreshPending = false;
+        let lastKey = '', lastChipsKey = '', pollMs = 15000, pollTimer = null;
+        const renderChips = () => {};
+        const render = () => {};
+        const console = { error() {} };
+        ${apply}
+        ${body}
+        return {
+            refresh,
+            setFilter(source, view) { filterSource = source; filterView = view; },
+            get events() { return events; },
+            get pending() { return filterRefreshPending; },
+            get transition() { return filterTransition; },
+            get filters() { return [filterSource, filterView]; },
+            get appliedFilters() { return [appliedFilterSource, appliedFilterView]; },
+            get error() { return listError; },
+            get cursor() { return nextCursor; }
+        };
+    `)(initial, { get: url => { requested.push(url); return new Promise((resolve, reject) => { resolvers.push(resolve); rejectors.push(reject); }); } });
+
+    const first = refresh.refresh();
+    await Promise.resolve();
+    assert.deepEqual(refresh.events.map(e => e.id), ['manual-old-1', 'manual-old-2'],
+        '筛选请求等待时不先清空旧数据');
+    assert.match(requested[0], /source=manual/);
+    assert.match(requested[0], /view=unread/);
+
+    refresh.setFilter('source-x', 'all');
+    await refresh.refresh({ filterChange: true });
+    assert.equal(refresh.pending, true, '普通轮询在途时切筛选会排入最后条件');
+    assert.equal(refresh.transition, true, '即便原请求不是筛选请求，也立即显示切换过渡态');
+    assert.equal(requested.length, 1, '不并发重复打相同列表请求');
+    assert.equal(refresh.cursor, 'old-cursor', '切换筛选时暂留原分页游标，失败可回到原结果继续翻页');
+
+    resolvers[0]({ events: [{ id: 'stale-filter-response' }], unreadCount: 1, sources: [], sync: { failed: [] },
+        nextCursor: null, hasMore: false, pollInterval: 15 });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(requested.length, 2, '上一请求结束后自动补拉一次');
+    assert.match(requested[1], /source=source-x/, '补拉使用最后选择的来源');
+    assert.match(requested[1], /view=all/, '补拉使用最后选择的状态');
+    assert.equal(refresh.transition, true, '中间过期结果不结束过渡态');
+
+    resolvers[1]({ events: [{ id: 'latest-filter-result' }], unreadCount: 1, sources: [], sync: { failed: [] },
+        nextCursor: 'latest-cursor', hasMore: true, pollInterval: 15 });
+    await first;
+    assert.deepEqual(refresh.events.map(e => e.id), ['latest-filter-result'], '最终采用最后筛选的响应');
+    assert.equal(refresh.transition, false, '最终结果到达后清除过渡态');
+    assert.deepEqual(refresh.appliedFilters, ['source-x', 'all'], '成功结果记录与内容匹配的筛选');
+    refresh.setFilter('manual', 'unread');
+    const failed = refresh.refresh({ filterChange: true });
+    await Promise.resolve();
+    rejectors[2](Object.assign(new Error('offline'), { status: 503 }));
+    await failed;
+    assert.deepEqual(refresh.filters, ['source-x', 'all'], '读取失败时恢复上一组已成功筛选');
+    assert.deepEqual(refresh.appliedFilters, ['source-x', 'all']);
+    assert.equal(refresh.cursor, 'latest-cursor', '失败时保留上一组结果的翻页游标');
+    assert.ok(refresh.error, '失败状态可见');
+    assert.equal(refresh.transition, false, '失败后结束过渡状态');
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    assert.match(css, /\.special-line-listwrap\.is-filtering \.special-line-list\s*\{[^}]*opacity:\s*\.42/,
+        '过渡态降低旧结果的视觉权重');
+    assert.match(css, /\.special-line-filtering\s*\{[^}]*pointer-events:\s*none/,
+        '切换提示不拦截列表或筛选操作');
+
+    const filterCases = [
+        ["case 'filter-source':", "case 'filter-view':"],
+        ["case 'filter-view':", "case 'reset-filters':"],
+        ["case 'reset-filters':", "case 'read':"]
+    ];
+    for (const [start, end] of filterCases) {
+        const from = code.indexOf(start);
+        const to = code.indexOf(end, from + start.length);
+        assert.ok(from >= 0 && to > from, `${start} / ${end} 分支边界存在`);
+        const branch = code.slice(from, to);
+        assert.match(branch, /refresh\(\{ filterChange: true \}\)/, `${start} 用筛选过渡请求`);
+        assert.doesNotMatch(branch, /events\s*=\s*\[\]/, `${start} 不先清空事件造成闪空`);
+    }
+    assert.match(body, /if \(inFlight\) \{[\s\S]*?filterRefreshPending = true/,
+        '切换请求进行中时记住新的筛选，当前请求结束后再拉最后一次');
+    const renderBody = extractFunction(code, 'function render()');
+    const transitionAt = renderBody.indexOf('if (filterTransition && listEl.querySelector(\'.special-line-list\'))');
+    const replaceAt = renderBody.indexOf('listEl.innerHTML =');
+    assert.ok(transitionAt > 0 && replaceAt > transitionAt,
+        '筛选过渡分支必须在列表 innerHTML 重建之前');
+    assert.match(renderBody.slice(transitionAt, replaceAt),
+        /classList\.add\('is-filtering'\)[\s\S]*?setAttribute\('aria-busy', 'true'\)[\s\S]*?return;/,
+        '过渡分支保留现有列表 DOM，只标记繁忙态后返回');
+    assert.match(renderBody.slice(transitionAt, replaceAt), /正在切换…/,
+        '过渡期间显示明确的切换状态');
+});
+
 test('时间线内联在首页那一列里：没有弹窗，形态与仿真一致（轨道 / 事件卡 / ⋯ / chips）', () => {
     const code = stripComments(moduleSource);
 

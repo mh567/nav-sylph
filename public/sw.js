@@ -3,6 +3,8 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v83：修复 Special Line 操作菜单被后续事件卡遮挡；筛选切换保留旧列表，
+// 等新结果到达后再替换，快速连续切换只补拉最后条件。改了 special-line.js、styles.css。
 // nav-v82：修正时间线日期与节点重叠，压缩日期栏留白。
 // nav-v81：后台「模块」分区按模块分组 + 监控目标整块搬进模块文件。
 // ① 每个模块一块：块头是「名称 + 说明 + 开关」，块内是它自己的配置；未启用时
@@ -183,7 +185,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v82';
+const CACHE = 'nav-v83';
 const ASSETS = [
     '/',
     '/index.html',

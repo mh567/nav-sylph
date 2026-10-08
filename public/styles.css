@@ -3453,11 +3453,37 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* ---------- 列表（自身滚动） ---------- */
 .special-line-listwrap {
+    position: relative;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
+}
+.special-line-listwrap.is-filtering .special-line-list {
+    opacity: .42;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+}
+.special-line-filtering {
+    position: absolute;
+    z-index: 5;
+    top: 8px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow);
+    color: var(--text-muted);
+    font-size: 10px;
+    pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+    .special-line-listwrap.is-filtering .special-line-list { transition: none; }
 }
 
 .special-line-list {
@@ -3477,6 +3503,10 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 .special-line-item { position: relative; }
+/* 事件卡自身在 :hover 时建立了 stacking context；单给「⋯」菜单 z-index:3
+   只在那张卡内部生效，后面绘制的下一张卡仍会盖住它。抬高菜单所在的整行，
+   即使是第一条（包括手动保存的文章），菜单也压在相邻事件卡上方。 */
+.special-line-item:has(.special-line-tools[open]) { z-index: 2; }
 .special-line-item::before {
     position: absolute;
     z-index: 1;

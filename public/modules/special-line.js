@@ -38,6 +38,10 @@
 
     let filterSource = '';      // '' = 全部来源
     let filterView = 'all';     // all | unread | archived
+    let appliedFilterSource = '';
+    let appliedFilterView = 'all';
+    let filterTransition = false;
+    let filterRefreshPending = false;
 
     let pollTimer = null;
     let pollMs = DEFAULT_POLL_MS;
@@ -189,6 +193,30 @@
                 (syncTimeText() ? `<span class="special-line-time-note">${syncTimeText()} 同步</span>` : '');
         }
 
+        // 筛选结果在途时保留当前事件 DOM：先给 chips 即时反馈、轻微淡化旧结果，
+        // 等新载荷到达再一次性替换列表。旧逻辑先 events=[] 再画骨架，
+        // 每次点「已读 / 未读 / 全部来源 / 稍后阅读」都会闪空；更糟的是
+        // render 内还保留滚动位置，再将它写回到一份全新的骨架上。
+        if (filterTransition && listEl.querySelector('.special-line-list')) {
+            listEl.classList.add('is-filtering');
+            listEl.setAttribute('aria-busy', 'true');
+            if (!listEl.querySelector('.special-line-filtering')) {
+                const status = document.createElement('div');
+                status.className = 'special-line-filtering';
+                status.setAttribute('role', 'status');
+                const spinner = document.createElement('span');
+                spinner.className = 'special-line-spinner';
+                spinner.setAttribute('aria-hidden', 'true');
+                const label = document.createElement('span');
+                label.textContent = '正在切换…';
+                status.append(spinner, label);
+                listEl.appendChild(status);
+            }
+            return;
+        }
+        listEl.classList.remove('is-filtering');
+        listEl.removeAttribute('aria-busy');
+
         const scrollTop = listEl.scrollTop;
         const notice = syncFailed.length
             ? `<div class="special-line-notice" role="status"><strong>同步未完成</strong>` +
@@ -270,11 +298,23 @@
         listError = null;
     }
 
-    /** @param {{append?: boolean, manual?: boolean}} [opts] */
-    async function refresh({ append = false, manual = false } = {}) {
-        if (inFlight) return;
+    /** @param {{append?: boolean, manual?: boolean, filterChange?: boolean}} [opts] */
+    async function refresh({ append = false, manual = false, filterChange = false } = {}) {
+        if (inFlight) {
+            if (filterChange) {
+                filterRefreshPending = true;
+                filterTransition = true;
+                lastKey = '';
+                render();
+            }
+            return;
+        }
         inFlight = true;
         busy = true;
+        if (filterChange) {
+            filterTransition = true;
+            listError = null;
+        }
         if (manual) syncState = 'syncing';
         lastKey = '';
         lastChipsKey = '';
@@ -287,7 +327,10 @@
             const data = await api.get('/api/timeline/events?' + params.toString());
             if (!data || !Array.isArray(data.events)) throw new Error('bad payload');
 
-            if (append) {
+            if (filterRefreshPending) {
+                // 当前响应对应的是过期筛选，不能先让它覆盖屏幕上仍显示的旧结果；
+                // finally 会立即按最新 filterSource/filterView 补拉一次。
+            } else if (append) {
                 const seen = new Set(events.map(e => e.id));
                 events = events.concat(data.events.filter(e => !seen.has(e.id)));
                 unreadCount = Number(data.unreadCount) || unreadCount;
@@ -296,8 +339,12 @@
                 nextCursor = data.nextCursor || null;
                 hasMore = !!data.hasMore;
                 syncState = syncFailed.length ? 'failed' : 'synced';
+                appliedFilterSource = filterSource;
+                appliedFilterView = filterView;
             } else {
                 applyPayload(data);
+                appliedFilterSource = filterSource;
+                appliedFilterView = filterView;
             }
 
             // 服务端回当前生效的周期：后台改过之后不必刷新页面
@@ -310,11 +357,13 @@
             }
         } catch (e) {
             console.error('Special line refresh failed:', e);
-            if (append) {
-                listError = e && e.status === 429 ? '请求过于频繁，请稍后再试' : '加载更早的事件失败';
-            } else {
-                syncState = 'failed';
-                listError = e && e.status === 429 ? '请求过于频繁，请等一分钟' : '时间线读取失败';
+            if (!filterRefreshPending) {
+                if (append) {
+                    listError = e && e.status === 429 ? '请求过于频繁，请稍后再试' : '加载更早的事件失败';
+                } else {
+                    syncState = 'failed';
+                    listError = e && e.status === 429 ? '请求过于频繁，请等一分钟' : '时间线读取失败';
+                }
             }
         } finally {
             inFlight = false;
@@ -322,6 +371,21 @@
             lastKey = '';
             lastChipsKey = '';
             renderChips();
+            if (filterRefreshPending) {
+                // 用户在上一次筛选请求尚未完成时又点了别的 chips：丢弃过时响应后
+                // 立即只拉**最后选择**的条件，不闪回中间筛选的旧结果。
+                filterRefreshPending = false;
+                return refresh({ filterChange: true });
+            }
+            if (filterChange && listError) {
+                // 新筛选读取失败时，旧列表仍留在 DOM；把 chips 也退回最后一次
+                // 成功载入的条件，避免「选中 X、列表其实还是稍后阅读」的假状态。
+                filterSource = appliedFilterSource;
+                filterView = appliedFilterView;
+                lastChipsKey = '';
+                renderChips();
+            }
+            filterTransition = false;
             render();
         }
     }
@@ -883,36 +947,24 @@
                 case 'filter-source':
                     closeMenus();
                     filterSource = target.dataset.value || '';
-                    events = [];
-                    nextCursor = null;
-                    lastKey = '';
                     lastChipsKey = '';
                     renderChips();
-                    render();
-                    refresh();
+                    refresh({ filterChange: true });
                     break;
                 case 'filter-view':
                     closeMenus();
                     filterView = target.dataset.value || 'all';
-                    events = [];
-                    nextCursor = null;
-                    lastKey = '';
                     lastChipsKey = '';
                     renderChips();
-                    render();
-                    refresh();
+                    refresh({ filterChange: true });
                     break;
                 case 'reset-filters':
                     closeMenus();
                     filterSource = '';
                     filterView = 'all';
-                    events = [];
-                    nextCursor = null;
-                    lastKey = '';
                     lastChipsKey = '';
                     renderChips();
-                    render();
-                    refresh();
+                    refresh({ filterChange: true });
                     break;
                 case 'read': {
                     const e = events.find(x => x.id === id);
