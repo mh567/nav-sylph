@@ -3,6 +3,17 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v81：后台「模块」分区按模块分组 + 监控目标整块搬进模块文件。
+// ① 每个模块一块：块头是「名称 + 说明 + 开关」，块内是它自己的配置；未启用时
+//    配置收起（给「展开配置」）；平台级设置（自签证书 / 更新周期）挪到末尾单独的
+//    「平台设置」块。用户原话：「监控目标应该和服务器监控和开关放在一起，订阅来源
+//    管理应该和 specialline 模块名称和开关放在一起，现在逻辑混乱」。
+// ② 平台侧不再有任何模块专属渲染：监控目标（服务器列表、检测、部署面板、添加/编辑
+//    对话框、探测定时器）整体搬进 modules/server-monitor.js，平台只给容器与服务包
+//    （api / config / saveConfig / toast / dialog / confirm / notice / requestStack /
+//    refreshAdmin / refreshHome / selfSigned / version）+ 一个 onAdminSectionClose。
+// ③ 模块配置写入收敛为 saveModulesConfig 一条路径（模块开关、显示隐藏、更新周期）。
+// 改了 app.js、modules/server-monitor.js、modules/special-line.js、admin.css。
 // nav-v80：修首屏布局判定读不到模块声明。
 // 宽栏判定（要不要给时间线让出宽列）读的是模块定义里的 wideRail，而定义由模块
 // 脚本执行时才注册，脚本又只有 mountModule 会加载——syncRail 排在它前面，于是
@@ -171,7 +182,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v80';
+const CACHE = 'nav-v81';
 const ASSETS = [
     '/',
     '/index.html',

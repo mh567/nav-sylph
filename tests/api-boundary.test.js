@@ -831,22 +831,20 @@ test('管理分区记住当前分区，重渲染后恢复而不是弹回第一�
 test('模块分区的说明文字紧贴它描述的那一行，不汇总在区块底部', () => {
     // 早先是「启用后该模块会出现在首页模块区…」一句放在所有开关下面，
     // 离得太远，要来回对照才知道说的是哪个模块。
-    // 现在每行自带 summary，紧贴名称；状态文字紧贴开关。
+    // 现在每个模块一块：块头自带 summary（紧贴名称），状态文字紧贴开关。
     //
-    // 每行的标记在 **rows 的 map 里**（@1042 起），不在 host.innerHTML 模板里
-    // （模板只插 `${rows}`）。只切模板会一个都找不到——这里切整个方法体。
-    //
-    // 方法边界不能用「下一个顶格方法定义」找：内部有一个 catch 块，
-    // `console.warn(...)` 之后换行的形式会误判成新方法，把切片截在 ~489 处。
-    // 改用「下一处同缩进的 `}` 」——方法体结束就是它。
+    // ⚠️ 这两件事现在分住在两个方法里，断言也要各找各的：
+    //   · 块头与它那组类 → `renderModuleBlock(def, config)`
+    //   · 开关的 change 处理器（状态文字同步）→ `renderModulesEditorContent(host, config)`
+    // 早先它们是同一个方法体，一句切片就能全查到；搬迁后仍按旧锚点切，
+    // 只会得到「一个都找不到」的假红。
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    // ⚠️ `renderModulesEditorContent(` 会同时命中**调用处**与**定义处**，
-    // 而调用处后面紧跟的就是别的东西 —— 切片只有几百字符、四个标记全 -1，
-    // 失败信息却显示成「说明与开关不在同一行」，完全指不到真正的原因。
-    // 用带参数的定义形态定位：定义才有签名。
-    const defRe = /\n        renderModulesEditorContent\(host, config\) \{/;
+    // ⚠️ `renderModuleBlock(` 会同时命中**调用处**与**定义处**，而调用处后面
+    // 紧跟的就是别的东西 —— 切片只有几百字符、标记全 -1，失败信息却显示成
+    // 「说明与开关不在同一行」，完全指不到真正的原因。用带参数的定义形态定位。
+    const defRe = /\n        renderModuleBlock\(def, config\) \{/;
     const m = defRe.exec(appSource);
-    assert.ok(m, '找到 renderModulesEditorContent 的定义（含签名）');
+    assert.ok(m, '找到 renderModuleBlock 的定义（含签名）');
     const start = m.index;
     const rest = appSource.slice(start);
     // 方法体结束 = 下一个同缩进的方法定义。
@@ -856,25 +854,31 @@ test('模块分区的说明文字紧贴它描述的那一行，不汇总在区�
     // `slice(0, -1)` 变成「除最后一个字符外的全部」——看起来有内容，
     // 实际覆盖了后面整个文件。
     const next = rest.slice(1).search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
-    const body = next > 0 ? rest.slice(0, next + 1) : rest;
-    assert.ok(body.length > 500, `切出方法体（${body.length}）`);
-    for (const marker of ['module-setting-label', 'module-setting-hint',
+    const block = next > 0 ? rest.slice(0, next + 1) : rest;
+    assert.ok(block.length > 500, `切出块渲染方法（${block.length}）`);
+    for (const marker of ['module-block-title', 'module-block-summary',
         'module-setting-toggle', 'module-setting-state']) {
-        assert.ok(body.includes(marker), `切片内含 ${marker}`);
+        assert.ok(block.includes(marker), `切片内含 ${marker}`);
     }
 
-    // 每行：名称 + 可选说明 + 开关 + 状态文字，四者同在一条 setting-row 里
-    assert.match(body, /module-setting-label[\s\S]*?module-setting-hint[\s\S]*?module-setting-toggle[\s\S]*?module-setting-state/,
-        '说明与开关在同一行内依次出现');
+    // 每块：名称 + 可选说明 + 开关 + 状态文字，四者同在一块头里
+    assert.match(block, /module-block-title[\s\S]*?module-block-summary[\s\S]*?module-setting-toggle[\s\S]*?module-setting-state/,
+        '说明与开关在同一块头内依次出现');
     // 说明文字取自模块自己的 summary，不是硬编码的一句话
-    assert.match(body, /def\.summary\s*\?/, '说明文字由各模块的 summary 提供，便于后续模块复用同一形状');
+    assert.match(block, /def\.summary\s*\?/, '说明文字由各模块的 summary 提供，便于后续模块复用同一形状');
 
     // 汇总式的那句提示不该再出现在**可执行代码**里。
     // 必须剥注释再查：解释这次改动的注释里正写着那句话本身，
     // 不剥的话断言会把自己的说明当成违规代码。
-    const codeOnly = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    const editorStart = appSource.indexOf('\n        renderModulesEditorContent(host, config) {');
+    assert.ok(editorStart > 0, '找到 renderModulesEditorContent 的定义');
+    const editorRest = appSource.slice(editorStart);
+    const editorNext = editorRest.slice(1).search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
+    const editor = editorNext > 0 ? editorRest.slice(0, editorNext + 1) : editorRest;
+    assert.ok(editor.length > 500, `切出编辑器方法体（${editor.length}）`);
+    const codeOnly = editor.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
     assert.doesNotMatch(codeOnly, /启用后该模块会出现在首页模块区/,
-        '汇总提示已被每行 summary 取代（注释里的历史说明不算）');
+        '汇总提示已被每块 summary 取代（注释里的历史说明不算）');
 
     // 状态文字必须随开关同步，否则紧贴开关的两者会互相矛盾。
     //
@@ -883,11 +887,17 @@ test('模块分区的说明文字紧贴它描述的那一行，不汇总在区�
     // 因为失败回滚要按「这次的方向」取反（`box.checked` 那时已被改动），
     // 于是断言转红——而它想守的意图（文字跟着开关走）始终成立。
     // 按仓库纪律放宽断言、不改代码去迎合它：现在只要求某个布尔快照
-    // 驱动这两个字、且成对出现。真正的行为验证在
-    // `tests/monitor-agent.test.js`「后台模块开关真的落盘」——它跑真实
-    // 处理器的成功与失败两条路径。
-    assert.match(body, /\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换');
-    assert.match(body, /addEventListener\('change'/, 'change 事件里同步状态文字');
+    // 驱动这两个字、且成对出现。
+    //
+    // ⚠️ 另有一处随时间变过：成功路径**不再就地改文字**，而是整块重渲染
+    // （配置区要跟着开关显隐）。所以现在这两处是：
+    //   · 块模板里给出两个字的文案（按 on 选择）；
+    //   · 失败回滚时按这次的方向拨回去。
+    // 真正的行为验证在 `tests/monitor-agent.test.js`「后台模块开关真的落盘」
+    // ——它把真实处理器的成功与失败两条路径都跑一遍。
+    assert.match(editor, /\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换（失败回滚路径）');
+    assert.match(block, /\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换（块模板）');
+    assert.match(editor, /addEventListener\('change'/, 'change 事件里同步状态文字');
 });
 
 test('模块列表行不再有「启用状态」区块标题', () => {

@@ -620,10 +620,20 @@ test('commitWidgetDrag 真的把 defaultSide 写进新条目（执行真实方�
     assert.equal(layoutCalls, 1, '写完 order 之后重排一次');
 });
 
-test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注入 API', () => {
+test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注入服务包', () => {
     const code = stripComments(appSource);
-    assert.match(code, /def\.renderAdminSection\(el, \{ api: API \}\)/,
-        '平台按模块提供的渲染函数挂后台区块，并把 API 注入进去');
+    // ⚠️ 注入的不再只是 `{ api }`：模块的后台区块还需要写配置、提示、对话框、
+    // 重渲染等能力（监控目标整块搬进模块后尤其明显）。契约见 architecture.md。
+    assert.match(code, /def\.renderAdminSection\(el, this\.moduleServices\(\)\)/,
+        '平台按模块提供的渲染函数挂后台区块，并注入服务包');
+    const services = code.slice(code.indexOf('moduleServices() {'), code.indexOf('moduleServices() {') + 1200);
+    // ⚠️ 每一项都要**各自**断言：早先写成 `includes(key + ':') || includes('get config')`，
+    // 而那段切片里本来就有 `get config()`，于是 || 右边恒真、六项全是空转。
+    for (const key of ['api', 'saveConfig', 'reloadConfig', 'toast', 'dialog', 'confirm',
+        'notice', 'refreshAdmin', 'refreshHome', 'selfSigned', 'version']) {
+        assert.ok(services.includes(key + ':'), `服务包里有 ${key}`);
+    }
+    assert.ok(services.includes('get config()'), 'config 是取值器（不是快照）');
     assert.match(code, /data-module-admin="\$\{this\.esc\(def\.id\)\}"/, '区块容器带模块 id');
     assert.match(moduleSource, /function renderAdminSection\(host, state\)/,
         '模块实现该渲染函数');

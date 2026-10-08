@@ -27,7 +27,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码、agent token、推送凭据共用 |
 | `agent/` | 部署在**被监控目标机**上的只读采集程序。**Go 静态二进制，零第三方依赖**（`go.mod` 无 `require`）：`main.go`（协议、HTTPS、注册、推送、`upgrade`）+ 平台桩（`mem_darwin.go` / `mem_other.go` / `readcpu_darwin.go` / `readcpu_other.go` / `disk_other.go` / `disk_unsupported.go`）、`install.sh`（一键 `curl \| bash`）、`README.md` |
 | `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
-| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`） |
+| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`、`special-line.js`） |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
 | `tests/` | 备份隐私、移动书签、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
@@ -78,6 +78,31 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 **后台分区导航**用 tab 三件套（`role="tablist"` / `tab` + `aria-selected` / `tabpanel`），宽屏（≥900px）左侧竖排常驻侧栏，≤899px 退化为顶部横向滚动标签条，同一套 DOM 与状态。**这些规则必须写在 `admin.css`**，不能写进 `styles.css`——后者先加载，而窄屏块内用 `.modal` 提高了特异性，写错文件会被静默压掉（见 :18）。
 
 **模块配置不共用 `#saveBtn`。** 它只保存 `config.json`；模块配置走独立端点、独立保存按钮，也不参与 `beginConfigEdit()` 的脏检查——否则用户改了个服务器名点「取消」会被「你有未保存的修改」拦住。模块分区首次进入时才拉 `/api/modules/config`，每次 `renderAdminPanel()` 都预取会累积撞上限流。
+
+**后台「模块」分区：一个模块一块。** 每个模块一块 `.module-block`——块头是「名称 + 说明 + 开关」，块内是它自己的配置；平台级设置（自签证书、更新周期）在末尾单独的 `.platform-block`，并写明「不属于任何单个模块」。用户原话：「后台管理模块页的配置应该按照模块分割，比如监控目标应该和服务器监控和开关放在一起，订阅来源管理应该和 specialline 模块名称和开关放在一起等，现在逻辑混乱」——原来的平铺把「模块」与「配置区」两个分组轴叠在一起，同一模块的开关与配置被拆到列表两端，平台级设置又夹在中间。
+
+**「有没有配置可折叠」不认模块 id，只看它有没有声明 `renderAdminSection`**：声明了就有配置区（未启用时收起成一行「未启用，配置先收起来。[展开配置]」，点开就地重渲染这一块——不重新拉配置、也不改开关状态）；没声明就只给一行淡字说明，不给折叠入口。**收起态不渲染配置容器**，模块自己的接口因此不会被拉（关掉的模块不该还在后台打请求）。版式与交互以 `docs/mockup-admin-modules.html`（已确认的设计稿）为准。
+
+**后台区块的契约是一个服务包**（`moduleServices()`，平台侧一处构造）：
+
+```
+api           HTTP（沿用 mountWidget 的注入方式）
+config        modulesConfig —— **取值器**，不是快照
+saveConfig    (patch) => 唯一的模块配置写路径
+reloadConfig  () => 重新拉一份配置
+toast / dialog / confirm / notice   提示与对话框
+requestStack  首页纵向重排（同 mountWidget）
+refreshAdmin / refreshHome          重渲染后台 / 首页模块区
+selfSigned / version                **函数**，读实时值
+```
+
+⚠️ 两条纪律，都是真机抓出来的：① `config` / `selfSigned` / `version` 必须是取值器或函数——配置写回后平台会更新它们，快照会让模块读到上一版（「连续改两台机器的显示开关、第二次把第一次的改动丢掉」就是这一类）；② 包里的平台能力必须写成 `app.showToast(...)` ——`showToast` / `showUiDialog` 是 App 的**方法**，写成裸名会 `ReferenceError`，而它在静态断言里看不出来（服务包的键都在、切片也正常），只有真点一次才炸；模块的开关处理器里那一炸被 `catch` 吞成「保存失败」，表现为「开关拨了没反应、自己弹回去」。所以测试里 `showToast` 挂在**假 app 对象**上（不是当参数注入 vm——那等于替真代码补了作用域，把这个错误掩盖掉），并另有一条源码形状断言钉住「必须经 this 调用」。
+
+**模块配置只有一条写路径：`saveModulesConfig(patch)`。** 早先三处各写一份请求体（模块开关、显示/隐藏、更新周期），每处只带自己关心的键——写路径一多就必然出现「A 用一份陈旧快照写回、把 B 刚改的字段覆盖掉」。现在统一：合并进当下这份配置 → 按服务端要的形状整份提交 → **原地** `Object.assign` 更新（换对象会让各处闭包与模块手里的取值器一起过期）。首页编辑态的 `saveWidgetLayout()` 有意不并入（草稿/回滚语义纠缠），所以 `/api/modules/config` 在 `app.js` 里恰好两处。
+
+**后台面板关闭时逐个通知模块**（`closeModuleAdminSections()` → 各模块可选的 `onAdminSectionClose()`）。⚠️ 模块自己的 60 秒探测定时器的判据是**这块 DOM 还在不在**（`adminHost.isConnected`），不是平台当前停在哪个分区——模块拿不到平台的分区状态，也不该去拿；于是从「模块」切到别的分区时它仍会跑，关面板才停。平台不认识「探测定时器」这种东西——早先那里写死了 `clearPendingProbe()`，等于平台特判了 server-monitor 一个模块。谁在自己的后台区块里起了定时器/订阅，谁自己收；单个模块抛错不影响关面板。
+
+**平台侧不留任何模块专属的渲染代码。** 监控目标（服务器列表与状态位、检测、部署面板与一次性令牌的签发、添加/编辑对话框、显示隐藏、60 秒未就绪探测定时器）整块住在 `public/modules/server-monitor.js`，与 `special-line` 的订阅来源同一形状。测试里有一条**零出现断言**逐个点名 `renderServerList` / `showDeployDialog` / `schedulePendingProbe` / `#serverList` / `server-item` 等标识符不得在 `app.js` 出现，并反向断言它们确实在模块文件里（只查前者时，把功能整块删掉也能全绿）。
 
 **新增模块的落点**：定义放 `public/modules/<id>.js`，id 加入 `App.KNOWN_MODULES`，配置项加入 `normalizeModulesConfig()` 的白名单。需要增长或查询的数据（条目、缓存）在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不预建空表。新增 `public/` 文件必须同步 `sw.js` 的 `ASSETS` 与 `CACHE`——延后加载的文件若不预缓存，回访用户每次打开模块都要走一次网络，与延后加载的初衷相反。
 
@@ -478,7 +503,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 | --- | --- | --- |
 | 1 | 首页导航 | 界面设置（主题 / 默认引擎 / 隐私模式）、搜索引擎编辑器 |
 | 2 | 收藏夹 | `favorites.json` 的书签：导入 / 导出 / 添加 + 收藏管理器（分类树、列表、批量隐私 / 删除） |
-| 3 | 模块 | 模块平台配置（独立保存，不随「保存」按钮提交）；各模块自己的区块（如 Special Line 的订阅来源）由平台的 `renderAdminSection` 挂点渲染 |
+| 3 | 模块 | **一个模块一块**：块头是名称 + 说明 + 开关，块内是它自己的配置（由模块的 `renderAdminSection` 渲染，如服务器监控的「监控目标」、Special Line 的「订阅来源」）；未启用时配置收起；平台级设置（自签证书 / 更新周期）在末尾的「平台设置」块。独立保存，不随「保存」按钮提交 |
 | 4 | 账户与备份 | 登录安全（信任此设备）、远程备份、退出登录 |
 
 **命名表**——同一份数据在两处出现时用词必须区分，不要混称：

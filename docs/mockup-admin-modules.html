@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>后台「模块」分区 · 按模块分组 仿真样例</title>
+<!-- 复用项目自己的样式表：仿真里看到的就是真实观感，不另维护一套 CSS。
+     （http(s) 打开时可直接用；file:// 下浏览器允许同目录相对路径的样式表） -->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+/* ===== 只属于仿真页：工具条 + 提议新增的类（也是给实现看的样式规格）===== */
+.mock-toolbar {
+    position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 14px 20px;
+    align-items: center; padding: 10px 16px; background: var(--glass-strong, #faf8f4);
+    border-bottom: 1px solid var(--border); backdrop-filter: blur(12px); font-size: 12px;
+}
+.mock-toolbar .mock-group { display: flex; align-items: center; gap: 6px; }
+.mock-toolbar label { color: var(--text-muted); }
+.mock-toolbar button {
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer;
+    background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
+    color: var(--text-secondary); font: inherit; font-size: 12px;
+}
+.mock-toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent); }
+.mock-note { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.mock-stage { padding: 22px; }
+/* 仿真里把模态框的限高与内滚动去掉——要看的是全貌，不是滚动条；
+   真实面板里它是有 max-height 的，这一点仿真与实现不同，特此说明。 */
+.mock-stage .modal-content { height: auto; max-height: none; }   /* 真实面板是 height: min(92dvh,900px) + 内滚动 */
+.mock-stage .modal-body { overflow: visible; }
+.mock-stage[data-width="narrow"] { max-width: 430px; margin: 0 auto; }
+
+/* ---- 提议：每个模块一块 ---- */
+.module-block {
+    border: 1px solid var(--border); border-radius: var(--radius, 12px);
+    background: var(--glass); box-shadow: var(--shadow);
+    margin-bottom: 14px; overflow: hidden;
+}
+.module-block-head {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 12px 14px;
+}
+.module-block-head + .module-block-body { border-top: 1px solid var(--border); }
+.module-block-copy { flex: 1 1 auto; min-width: 0; }
+.module-block-title { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
+.module-block-summary { display: block; margin-top: 2px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
+.module-block-body { padding: 12px 14px 14px; background: var(--glass-strong); }
+.module-block-sub { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+/* 未启用时的折叠态：配置收起来，只留一行说明 + 一个展开入口 */
+.module-block-off-note {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    background: var(--glass-strong); font-size: 11px; color: var(--text-muted);
+}
+.module-block-off-note button {
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer;
+    background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
+    color: var(--text-secondary); font: inherit; font-size: 11px;
+}
+/* ⚠️ 这里**不**用 `[data-enabled="0"] .module-block-body { display:none }`：
+   那样「展开配置」得同时翻 data-enabled（只 append 一个 body 是看不见的，
+   本文件第一版就是这么错的）。实现里由 JS 决定渲染 body 还是折叠条——见
+   app.js 的 renderModuleBlock，这里保持一致。 */
+/* 平台设置：明确与模块分开 */
+.platform-block {
+    margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border);
+}
+.platform-block > .section-title { margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<div class="mock-toolbar">
+    <span class="mock-group">
+        <label>版式</label>
+        <button data-variant="A" aria-pressed="false">A 现状（平铺）</button>
+        <button data-variant="B" aria-pressed="true">B 按模块分组</button>
+        <button data-variant="C" aria-pressed="false">C 分组 + 未启用折叠</button>
+    </span>
+    <span class="mock-group">
+        <label>主题</label>
+        <button data-theme-btn="light" aria-pressed="false">浅色</button>
+        <button data-theme-btn="dark" aria-pressed="true">深色</button>
+    </span>
+    <span class="mock-group">
+        <label>模块状态</label>
+        <button data-state="all-on" aria-pressed="true">三个都启用</button>
+        <button data-state="sl-off" aria-pressed="false">Special Line 未启用</button>
+    </span>
+    <span class="mock-group">
+        <label>宽度</label>
+        <button data-width="wide" aria-pressed="true">宽</button>
+        <button data-width="narrow" aria-pressed="false">窄（手机）</button>
+    </span>
+    <span class="mock-note">仿真样例，不连后端；模块名与开关来自真实数据，机器/来源的条目是示意值</span>
+</div>
+
+<div class="mock-stage" data-width="wide">
+    <div class="modal" id="modal">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+            <div class="modal-header">
+                <h2 id="adminTitle">管理</h2>
+                <div class="modal-actions">
+                    <span class="config-save-status" id="configSaveStatus" role="status" aria-live="polite"></span>
+                    <button class="btn" id="cancelBtn">取消</button>
+                    <button class="btn btn-primary" id="saveBtn">保存</button>
+                </div>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const MODULES = [
+        {
+            id: 'server-monitor', title: '服务器监控',
+            summary: '采集本机或远端主机的运行状态，在首页显示为一张卡片。',
+            configTitle: '监控目标',
+            configHint: '每个方块是一台机器。改动即时生效；单台机器的配置在它的「编辑」里保存。'
+        },
+        {
+            // 顺序与真实的 App.KNOWN_MODULES 一致（server-monitor / memo / special-line），
+            // 仿真不为了好看重排真实顺序。
+            id: 'memo', title: '备忘录',
+            summary: '在首页卡片里随手记几行，支持置顶与离线暂存。'
+        },
+        {
+            id: 'special-line', title: 'Special Line',
+            summary: 'X / 微博订阅与手动保存的文章，按发生时间倒序汇总成一条时间线。',
+            configTitle: '订阅来源',
+            configHint: '没有凭据的来源可以先用「手动保存文章」记东西；X / 微博需要在来源上重新授权。'
+        }
+    ];
+
+    const SERVERS = [
+        { name: '本机', url: '本服务所在主机', bits: ['在线'], mode: '本机', state: '', local: true },
+        { name: 'NAS', url: 'https://192.168.1.8:4319', bits: ['在线', '已就绪'], mode: '拉取', state: '' },
+        { name: 'VPS', url: 'http://203.0.113.10:4318', bits: ['离线', '未部署'], mode: '推送', state: 'credential_bad' }
+    ];
+
+    const SOURCES = [
+        { sym: 'X', label: 'X · @northstar', meta: '最近成功 12 分钟前', status: '正常', state: 'ok' },
+        { sym: '微', label: '微博 · 城市观察员', meta: '最近成功 3 小时前', status: '正常', state: 'ok' },
+        { sym: '读', label: '稍后阅读', meta: '未配置凭据 · 尚未同步成功', status: '待授权', state: 'pending' }
+    ];
+
+    function toggle(on) {
+        return '<span class="module-setting-toggle">' +
+            `<div class="toggle-switch"><input type="checkbox" ${on ? 'checked' : ''}><span class="toggle-slider"></span></div>` +
+            `<span class="module-setting-state">${on ? '已启用' : '未启用'}</span></span>`;
+    }
+
+    function serverCards() {
+        return SERVERS.map(s => {
+            const bits = s.bits.map(b => `<span class="server-item-bit" data-status="${b === '在线' ? 'online' : (b === '离线' ? 'offline' : 'ready')}">${b}</span>`).join('');
+            const actions = s.local
+                ? '<label class="server-item-show"><input type="checkbox" checked><span>显示</span></label>'
+                : '<label class="server-item-show"><input type="checkbox" checked><span>显示</span></label>' +
+                  (s.mode === '推送' ? '' : '<button class="btn btn-sm">检测</button>') +
+                  '<button class="btn btn-sm">部署</button><button class="btn btn-sm">编辑</button><button class="btn btn-sm btn-danger">删除</button>';
+            const body = s.state === 'credential_bad'
+                ? '<div class="server-item-note">凭据无法解密，请重新输入 token</div>' : '';
+            return '<div class="server-item">' +
+                `<div class="server-item-head"><span class="server-item-name">${s.name}</span><span class="server-item-url">${s.url}</span></div>` +
+                `<div class="server-item-badges">${bits}<span class="server-item-mode">${s.mode}</span></div>` +
+                body + `<div class="server-item-actions">${actions}</div></div>`;
+        }).join('');
+    }
+
+    function sourceRows() {
+        return SOURCES.map(s =>
+            '<div class="special-line-source-row">' +
+            `<span class="special-line-icon" aria-hidden="true">${s.sym}</span>` +
+            '<div class="special-line-source-copy">' +
+            `<strong>${s.label}</strong><small>${s.meta}</small></div>` +
+            `<span class="special-line-source-state" data-status="${s.state}">${s.status}</span>` +
+            '<div class="special-line-source-actions">' +
+            '<button class="btn">测试连接</button><button class="btn">立即同步</button>' +
+            '<button class="btn">暂停同步</button><button class="btn btn-danger">删除</button></div></div>'
+        ).join('');
+    }
+
+    function moduleConfig(m, on) {
+        if (m.id === 'memo') {
+            return `<p class="fav-hint">这个模块没有额外配置——它的内容在首页那张卡片里直接编辑。</p>`;
+        }
+        // 无配置的模块也要有 body：块内留一句淡字说明，块才不会是个空壳
+        const inner = m.id === 'server-monitor'
+            ? `<div id="serverList">${serverCards()}</div><button class="btn" id="addServerBtn">添加服务器</button>`
+            : `<div class="module-admin-section">${sourceRows()}<button class="btn">＋ 添加订阅来源</button></div>`;
+        return `<p class="module-block-sub">${m.configTitle}</p>` +
+            `<p class="fav-hint">${m.configHint}</p>` + inner;
+    }
+
+    function platformSettings() {
+        return '' +
+            '<div class="setting-row self-signed-row">' +
+            '<label class="self-signed-label"><span class="self-signed-name">本服务的 https 证书是自签的</span>' +
+            '<span class="setting-toggle"><input type="checkbox"><span>否</span></span></label>' +
+            '<p class="self-signed-hint">自签选「是」，否则部署与升级命令会少一个 <code>--server-ca</code>，agent 会报 ' +
+            '<code>certificate signed by unknown authority</code>。改完<strong>重启本服务</strong>才生效。</p></div>' +
+            '<div class="setting-row"><label><span>更新周期</span>' +
+            '<select><option>10 秒</option><option selected>15 秒</option><option>30 秒</option><option>60 秒</option></select></label></div>' +
+            // ⚠️ 这一句照抄实现（app.js 的 updatePollIntervalHint）：仿真稿里的措辞是
+            // 我写稿时的草稿，实现里那句还带上了「切后台暂停、回前台立即刷新」。
+            '<p class="fav-hint">每 15 秒自动刷新一次；页面切到后台时暂停，回到前台立即刷新。</p>';
+    }
+
+    function tabs() {
+        return `
+        <nav class="admin-tabs" role="tablist" aria-label="管理栏目">
+            <button class="admin-tab" role="tab" data-panel="site" aria-selected="false" id="adminTabSite" aria-controls="adminPanelSite">首页导航</button>
+            <button class="admin-tab" role="tab" data-panel="fav" aria-selected="false" id="adminTabFav" aria-controls="adminPanelFav">收藏夹</button>
+            <button class="admin-tab is-active" role="tab" data-panel="modules" aria-selected="true" id="adminTabModules" aria-controls="adminPanelModules">模块</button>
+            <button class="admin-tab" role="tab" data-panel="account" aria-selected="false" id="adminTabAccount" aria-controls="adminPanelAccount">账户与备份</button>
+        </nav>`;
+    }
+
+    function panels(html) {
+        return '<div class="admin-panels">' +
+            `<div class="admin-panel" role="tabpanel" id="adminPanelModules">${html}</div></div>`;
+    }
+
+    /* ---- A：现状（平铺）---- */
+    function variantA(states) {
+        const rows = MODULES.map(m => {
+            const on = states[m.id];
+            return '<div class="setting-row module-setting-row"><label>' +
+                `<span class="module-setting-label">${m.title}</span>` +
+                `<span class="module-setting-hint">${m.summary}</span>` +
+                toggle(on) + '</label></div>';
+        }).join('');
+        const sl = MODULES.find(m => m.id === 'special-line');
+        const sm = MODULES.find(m => m.id === 'server-monitor');
+        return `<div class="section">
+            <div class="section-title">模块</div>
+            <p class="fav-hint">模块配置独立保存，不随上方的「保存」按钮提交。</p>
+            ${rows}
+            <div class="section-title">${sl.title} · ${sl.configTitle}</div>
+            <div class="module-admin-section">${sourceRows()}<button class="btn">＋ 添加订阅来源</button></div>
+            <div class="section-title">${sm.configTitle}</div>
+            <p class="fav-hint">${sm.configHint}</p>
+            <div id="serverList">${serverCards()}</div>
+            <button class="btn" id="addServerBtn">添加服务器</button>
+            ${platformSettings()}
+        </div>`;
+    }
+
+    /* ---- B / C：按模块分组 ---- */
+    function variantBC(states, collapseOff) {
+        const blocks = MODULES.map(m => {
+            const on = states[m.id];
+            const hasConfig = true;   // 无配置的模块也渲染 body（内部是一行淡字说明）
+            const body = hasConfig
+                ? `<div class="module-block-body">${moduleConfig(m, on)}</div>` : '';
+            const offNote = (hasConfig && !on)
+                ? '<div class="module-block-off-note"><span>未启用，配置先收起来。</span>' +
+                  '<button type="button">展开配置</button></div>' : '';
+            const showBody = !(collapseOff && !on);
+            return `<div class="module-block" data-module="${m.id}" data-enabled="${on ? 1 : 0}">
+                <div class="module-block-head">
+                    <div class="module-block-copy">
+                        <span class="module-block-title">${m.title}</span>
+                        <span class="module-block-summary">${m.summary}</span>
+                    </div>
+                    ${toggle(on)}
+                </div>
+                ${showBody ? body : ''}
+                ${showBody && hasConfig ? '' : (hasConfig ? offNote : '')}
+            </div>`;
+        }).join('');
+        return `<div class="section">
+            <div class="section-title">模块</div>
+            <p class="fav-hint">每个模块的开关与它自己的配置放在一起；模块配置独立保存，不随上方的「保存」按钮提交。</p>
+            ${blocks}
+            <div class="platform-block">
+                <div class="section-title">平台设置</div>
+                <p class="fav-hint">以下设置不属于任何单个模块，影响全局。</p>
+                ${platformSettings()}
+            </div>
+        </div>`;
+    }
+
+    const state = { variant: 'B', theme: 'dark', modules: 'all-on', width: 'wide' };
+
+    function states() {
+        // 关掉的那个必须挑**有配置**的模块，否则 C 版（未启用折叠）演示不出差别
+        return state.modules === 'all-on'
+            ? { 'server-monitor': true, 'special-line': true, memo: true }
+            : { 'server-monitor': true, 'special-line': false, memo: true };
+    }
+
+    function render() {
+        const s = states();
+        const body = state.variant === 'A' ? variantA(s)
+            : (state.variant === 'B' ? variantBC(s, false) : variantBC(s, true));
+        document.querySelector('#modalBody').innerHTML = tabs() + panels(body);
+        document.documentElement.dataset.theme = state.theme;
+        document.querySelector('.mock-stage').dataset.width = state.width;
+        for (const btn of document.querySelectorAll('[data-variant]')) {
+            btn.setAttribute('aria-pressed', String(btn.dataset.variant === state.variant));
+        }
+        for (const btn of document.querySelectorAll('[data-theme-btn]')) {
+            btn.setAttribute('aria-pressed', String(btn.dataset.themeBtn === state.theme));
+        }
+        for (const btn of document.querySelectorAll('[data-state]')) {
+            btn.setAttribute('aria-pressed', String(btn.dataset.state === state.modules));
+        }
+        for (const btn of document.querySelectorAll('[data-width]')) {
+            btn.setAttribute('aria-pressed', String(btn.dataset.width === state.width));
+        }
+    }
+
+    document.addEventListener('click', ev => {
+        const b = ev.target.closest('button');
+        if (!b) return;
+        if (b.dataset.variant) state.variant = b.dataset.variant;
+        else if (b.dataset.themeBtn) state.theme = b.dataset.themeBtn;
+        else if (b.dataset.state) state.modules = b.dataset.state;
+        else if (b.dataset.width) state.width = b.dataset.width;
+        else if (b.textContent.trim() === '展开配置') {
+            // 与实现同一套语义：展开只是重渲染这一块（body 与折叠条二选一），
+            // 不改开关状态、也不翻 data-enabled。
+            const block = b.closest('.module-block');
+            const id = block.dataset.module;
+            const m = MODULES.find(x => x.id === id);
+            block.querySelector('.module-block-off-note')?.remove();
+            const body = document.createElement('div');
+            body.className = 'module-block-body';
+            body.innerHTML = moduleConfig(m, false);
+            block.appendChild(body);
+            return;
+        } else return;
+        render();
+    });
+
+    render();
+})();
+</script>
+</body>
+</html>

@@ -90,11 +90,17 @@ function methodBodyOf(code, name) {
     // 方法定义里**有 12 个**切不出来、返回空字符串——而空切片会让所有基于它
     // 的断言静默落空，看起来和通过一样绿。
     // `) {` 仍然把它与裸调用（`this.foo(s);`，后面是 `;`）区分开。
-    const re = new RegExp(`\\n        (?:async )?${name}\\([^()]*\\) \\{`);
+    // ⚠️ 两种缩进都要认：app.js 的方法缩进 8，模块文件（IIFE 内）的函数缩进 4。
+    // 只认 8 会让所有针对模块文件的切片返回空串——而空切片让断言静默落空，
+    // 看起来和通过一样绿（下面那条自检就是为此存在的）。
+    // `function ` 前缀也要认：app.js 里是类方法（`name(...) {`），模块文件里是
+    // 函数声明（`function name(...) {`）。
+    const re = new RegExp(`\\n( {8}| {4})(?:async )?(?:function )?${name}\\([^()]*\\) \\{`);
     const m = re.exec(code);
     if (!m) return '';
+    const indent = m[1];
     const rest = code.slice(m.index + 1);
-    const next = rest.search(/\n        (?:async )?[a-zA-Z_][\w$]*\(/);
+    const next = rest.search(new RegExp(`\\n${indent}(?:async )?(?:function )?[a-zA-Z_][\\w$]*\\(`));
     return next > 0 ? rest.slice(0, next) : rest;
 }
 
@@ -113,15 +119,23 @@ function methodBodyOf(code, name) {
  */
 test('切片辅助函数切到的是定义（含参数列表与花括号），不是裸调用', () => {
     const code = stripComments(appSource);
-    for (const name of ['isAgentOutdated', 'renderServerStateBody',
-        'renderServerStatusBits', 'showDeployDialog', 'renderModuleZone']) {
-        const body = methodBodyOf(code, name);
+    // 后台「监控目标」那一整块现在住在模块文件里（4 空格缩进），平台侧只剩
+    // renderModuleZone 这类通用方法——两处都要切得出来。
+    const modCode = stripComments(moduleSource);
+    const cases = [
+        [code, 'renderModuleZone'],
+        [modCode, 'isAgentOutdated'], [modCode, 'renderServerStateBody'],
+        [modCode, 'renderServerStatusBits'], [modCode, 'showDeployDialog'],
+        [modCode, 'renderServerList'], [modCode, 'schedulePendingProbe']
+    ];
+    for (const [src, name] of cases) {
+        const body = methodBodyOf(src, name);
         assert.ok(body.length > 200, `切出 ${name}（${body.length}）`);
         // ⚠️ 片段必须以**定义形态**开头：名字 + 参数列表 + 花括号。
         // 只按名字匹配会命中裸调用（`this.foo(s);` 后面没有 `{`），
         // 于是断言全部落空且没有一条失败 —— 一个什么都不检查的测试
         // 看起来和通过的测试一样绿。
-        assert.match(body, new RegExp(`^\\s*(?:async )?${name}\\([\\w$, ]*\\) \\{`),
+        assert.match(body, new RegExp(`^\\s*(?:async )?(?:function )?${name}\\([\\w$, ]*\\) \\{`),
             `${name} 切到的是定义而非调用`);
     }
     // 零参方法也要能切（renderModuleZone() 就是一个）——早先的判据要求
@@ -135,10 +149,16 @@ test('切片辅助函数切到的是定义（含参数列表与花括号），�
     const unsliceable = defined.filter(name => methodBodyOf(code, name).length === 0);
     assert.deepEqual(unsliceable, [],
         `这些方法定义切不出来（空切片会让断言静默落空）：${unsliceable.join(', ')}`);
-    // 而 app.js 里确实同时存在这三种形态，说明这条断言不是空转：
+    // 模块文件也过一遍同一道关（4 空格缩进的函数）：监控目标那一整块搬过去之后，
+    // 它同样不能出现「切不出来」的函数。
+    const modDefined = [...new Set([...modCode.matchAll(/\n    (?:async )?(?:function )?([a-zA-Z_$][\w$]*)\s*\(/g)].map(m => m[1]))];
+    assert.ok(modDefined.length > 30, `模块文件里枚举到足够多的函数（${modDefined.length}）`);
+    assert.deepEqual(modDefined.filter(name => methodBodyOf(modCode, name).length === 0), [],
+        '模块文件里的函数也必须切得出来');
+    // 而这两个文件里确实同时存在这两种形态，说明上面那条断言不是空转：
     // 定义带 `{`，调用不带。
-    assert.match(code, /isAgentOutdated\(s\) \{/, '定义形态：带 {');
-    assert.match(code, /this\.isAgentOutdated\(s\);/, '调用形态：不带 {');
+    assert.match(modCode, /isAgentOutdated\(s\) \{/, '定义形态：带 {');
+    assert.match(modCode, /const outdated = isAgentOutdated\(s\);/, '调用形态：不带 {');
 });
 
 /** 取出某个 @media 查询的正文（按括号配平，不靠正则）。 */
@@ -413,7 +433,7 @@ test('后台卡片有「在线」与「部署就绪」两个独立状态位', ()
     // 与「哪几台没装」（去部署），两类待办的处置完全不同。
     //
     // 首页仍只保留合并后的那一个（用户拍板：首页一个就够）。
-const code = stripComments(appSource);
+const code = stripComments(moduleSource);
     // ⚠️ 切片以「下一个缩进 8 的方法定义」为界。用 \n        } 当边界时，
     // 函数体里任何一层缩进 8 的右花括号都会提前截断——加了注释就切不全，
     // 而表现是「第一条断言无故失败」而不是「切错了」。
@@ -449,10 +469,10 @@ const code = stripComments(appSource);
     // 回归记录（浏览器实测发现）：renderServerStatusBits 调用时不传 probe，
     // 而 reachable 只存在于 /probe 的响应里、不在配置里 —— 于是两个位
     // 里的第一个恒为「未检测」，等于白做。
-    assert.match(render, /probe \|\| this\.lastProbe\?\.\[s\.id\]/,
+    assert.match(render, /probe \|\| lastProbe\[s\.id\]/,
         '渲染时退回读缓存的探测结果');
     // 探测与轮询都要写缓存
-    const probeCalls = code.match(/this\.lastProbe\[(id|s\.id)\] = res;/g) || [];
+    const probeCalls = code.match(/lastProbe\[(id|s\.id)\] = res;/g) || [];
     assert.ok(probeCalls.length >= 2,
         `探测与轮询都写缓存（实际 ${probeCalls.length} 处）`);
 
@@ -476,7 +496,7 @@ const code = stripComments(appSource);
     // 这里改成在同一方法体内逐个断言，不依赖顺序距离。
     const body = methodBodyOf(code, 'renderServerStateBody');
     assert.ok(body.length > 200, `切出 renderServerStateBody（${body.length}）`);
-    assert.match(body, /const bit = this\.serverDeployBit\(s\);/,
+    assert.match(body, /const bit = serverDeployBit\(s\);/,
         '说明区复用 serverDeployBit 的措辞');
     assert.match(body, /class="server-item-state"/,
         '确实渲染成那块说明区');
@@ -490,14 +510,20 @@ test('hasEnrollToken 有真实消费者：决定「复制命令」还是「部�
     // 用户拍板「有用就留着」，所以接上：它正是「令牌还能直接用」的判据。
     assert.match(serverSource, /hasEnrollToken: Boolean\(enrollTokenHash\) && enrollTokenExpiresAt > Date\.now\(\)/,
         '服务端算出它且已考虑过期');
-    const code = stripComments(appSource);
-    const fn = /renderDeployAction\(s\) \{[\s\S]*?\n        \}/.exec(code);
-    assert.ok(fn, '找到 renderDeployAction');
-    assert.match(fn[0], /if \(s\.hasEnrollToken\)/, '按它分两支');
-    assert.match(fn[0], /复制命令/, '令牌有效 → 直接给可复制的命令');
-    assert.match(fn[0], /部署/, '否则给「部署」（点开面板会重新签一枚）');
+    const code = stripComments(moduleSource);
+    // ⚠️ 不要手写「以 8 空格缩进的 } 为界」的切片：模块文件里函数缩进 4，
+    // 那个正则会在**第一个分支的花括号**处停下——只切到 if 分支，于是
+    // 「否则给『部署』」那条断言被第一分支里的「复制部署命令」满足，
+    // 删掉整个 else 也照样绿（审查实测）。
+    const fn = methodBodyOf(code, 'renderDeployAction');
+    assert.ok(fn.length > 250, `切出 renderDeployAction（${fn.length}）`);
+    assert.match(fn, /if \(s\.hasEnrollToken\)/, '按它分两支');
+    assert.match(fn, /复制命令/, '令牌有效 → 直接给可复制的命令');
+    // 钉住**第二个分支本身**（按钮文案 + 那句 title），不依赖缩进
+    assert.match(fn, /title="生成一条部署命令，在目标机上执行">部署<\/button>`/,
+        '否则给「部署」（点开面板会重新签一枚）');
     // 卡片必须真的调用它，否则又是一个有定义无调用的死函数
-    assert.match(code, /\$\{this\.renderDeployAction\(s\)\}/,
+    assert.match(code, /\$\{renderDeployAction\(s\)\}/,
         '卡片渲染时调用');
 });
 
@@ -622,10 +648,11 @@ test('探测轮询比的是「本次 vs 上次」，不是「本次 vs 陈旧快
     // 同一个陈旧快照还导致第二个 bug：pending 列表只在启动时 filter 一次，
     // 已注册的机器永远进不了下一轮 —— 刚部署完的那台要等用户重开面板
     // 才被重新筛。
-    const code = stripComments(appSource);
-    const fn = /schedulePendingProbe\(config\) \{[\s\S]*?\n        \}/.exec(code);
-    assert.ok(fn, '找到 schedulePendingProbe');
-    const body = fn[0];
+    const code = stripComments(moduleSource);
+    // ⚠️ 不要手写「以 8 空格缩进的 } 为界」的切片：模块文件里函数缩进 4，
+    // 那个正则会一路跑到文件末尾（切片过大 = 断言覆盖了别的方法）。
+    const body = methodBodyOf(code, 'schedulePendingProbe');
+    assert.ok(body.length > 200, `切出 schedulePendingProbe（${body.length}）`);
 
     assert.match(body, /const lastSeen = new Map\(\)/,
         '用可变 Map 记录上次状态，而不是闭包里的陈旧快照');
@@ -642,15 +669,22 @@ test('探测轮询比的是「本次 vs 上次」，不是「本次 vs 陈旧快
     assert.match(body, /lastSeen\.set\(s\.id, now\)/,
         '判定为变化时同步更新 Map');
     // pending 列表靠重绘重建 —— 这是刚部署完那台能「毕业」的唯一路径
-    assert.match(body, /await this\.renderModulesEditor\(\)/,
-        '状态变化后重绘 → 重建 pending 列表');
+    assert.match(body, /await services\.refreshAdmin\(\)/,
+        '状态变化后重绘 → 重建 pending 列表（走平台注入的服务，模块不直接调平台方法）');
     // 只探未就绪的，且面板一关就停（零额外服务端状态）
     assert.match(body, /if \(s\.mode === 'push'\) return false;/,
         'push 模式无端口可探，跳过');
     assert.match(body, /return !s\.enrolled;/, '已注册的跳过');
-    assert.match(body, /this\.clearPendingProbe\(\);/, '面板关掉即停');
-    assert.match(code, /closeAdmin[\s\S]{0,1500}?this\.clearPendingProbe\(\)/,
-        'closeAdmin 里清理定时器（否则它跑到页面卸载）');
+    assert.match(body, /clearPendingProbe\(\);/, '面板关掉即停');
+    // 面板关掉要停表——但**平台不再写死「清掉探测定时器」**了（那是特判一个模块）。
+    // 现在：平台关面板时通知各模块（closeModuleAdminSections），模块自己收。
+    assert.match(stripComments(appSource), /closeModuleAdminSections\(\)/,
+        '平台在 closeAdmin 里通知各模块');
+    assert.match(stripComments(appSource),
+        /closeModuleAdminSections\(\) \{[\s\S]{0,400}?def\.onAdminSectionClose\(\)/,
+        '通知的是各模块的 onAdminSectionClose（平台不认识「探测」这件事）');
+    assert.match(code, /function onAdminSectionClose\(\) \{[\s\S]{0,220}?clearPendingProbe\(\)/,
+        '模块自己在 onAdminSectionClose 里收掉定时器（否则它跑到页面卸载）');
     // ⚠️ 窗口给足：body 里 setInterval 与 60000 之间隔着整个回调体
     // （含注释与 pending 循环），200 字符切不到底 —— 而窗口太窄又正是
     // 本项目反复踩的坑（切出半个函数，断言恒绿）。
@@ -1196,7 +1230,7 @@ test('模块按服务器渲染多张卡片，布局键用 instanceId', () => {
 });
 
 test('后台模块页：没有总的保存按钮，本机排第一且不可删', () => {
-    const code = stripComments(appSource);
+    const code = stripComments(moduleSource);
 
     // 用户原话：「不应该存在这个按钮」——曾有个「保存模块配置」，
     // 与右上角的「保存」职责重叠、用户分不清哪个真的生效
@@ -1210,20 +1244,20 @@ test('后台模块页：没有总的保存按钮，本机排第一且不可删',
     // 语义上什么也没证明，已移走。
 
     // 本机卡片：永远第一、无部署/编辑/删除
-    const local = /renderLocalServerCard\(config\) \{[\s\S]*?\n        \}/.exec(code);
-    assert.ok(local, '找到 renderLocalServerCard');
-    assert.ok(!/deploy-server|edit-server|del-server/.test(local[0]),
+    const localBody = methodBodyOf(code, 'renderLocalServerCard');
+    assert.ok(localBody.length > 200, `切出 renderLocalServerCard（${localBody.length}）`);
+    assert.ok(!/deploy-server|edit-server|del-server/.test(localBody),
         '本机卡片没有部署/编辑/删除按钮');
-    assert.match(local[0], /data-server-id="local"/, '本机有独立的 id');
+    assert.match(localBody, /data-server-id="local"/, '本机有独立的 id');
     // 三个状态位：已安装 / 在线 / 直读
     for (const [kind, text] of [['ready', '已安装'], ['online', '在线']]) {
-        assert.match(local[0], new RegExp(`data-kind="${kind}"[\\s\\S]{0,80}?${text}`),
+        assert.match(localBody, new RegExp(`data-kind="${kind}"[\\s\\S]{0,80}?${text}`),
             `本机的「${text}」状态位`);
     }
-    assert.match(local[0], /data-mode="local"/, '本机标注为直读');
+    assert.match(localBody, /data-mode="local"/, '本机标注为直读');
 
     // 本机永远排在远端之前
-    assert.match(code, /host\.innerHTML = this\.renderLocalServerCard\(config\)\s*\n\s*\+ servers\.map/,
+    assert.match(code, /host\.innerHTML = renderLocalServerCard\(config\)\s*\n\s*\+ servers\.map/,
         '本机卡片先渲染，随后才是远端列表');
 
     // ⚠️ 本机卡片缺按钮，所以事件绑定必须容错——
@@ -1245,9 +1279,16 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     // 绿着就把缺陷放过了——形状成立、语义上什么也没证明。
     // 所以这里不再是形状断言：把源码里那段真实循环体放进函数里跑一遍，
     // 断言它请求了什么、失败时回滚了什么。
+    //
+    // ⚠️ 写入路径现在是 `this.saveModulesConfig(patch)`（模块配置的唯一写路径），
+    // 所以这条用例**同时**把那个方法也跑真的：loop → saveModulesConfig → API.post
+    // 整条链都是真代码，只有 API 与 host 是假的。把 saveModulesConfig 也换成桩
+    // 的话，「开关真的发请求」这件事就又没人验了。
     const code = stripComments(appSource);
     const method = methodBodyOf(code, 'renderModulesEditorContent');
     assert.ok(method.length > 200, `切出模块编辑器方法体（${method.length}）`);
+    const saveBody = methodBodyOf(code, 'saveModulesConfig');
+    assert.ok(saveBody.length > 200, `切出 saveModulesConfig（${saveBody.length}）`);
 
     const start = method.indexOf("for (const box of host.querySelectorAll('[data-module-toggle]'))");
     assert.ok(start >= 0, '找到开关绑定循环');
@@ -1263,7 +1304,7 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     // 切片太短说明配对提前收口，断言会在空窗口里「通过」
     assert.ok(loop.length > 200, `循环切片长度合理（${loop.length}）`);
 
-    /** 用假 host / box / API 跑那段真实循环，返回它到底做了什么。 */
+    /** 用假 host / box / API 跑那段真实循环（含真实的 saveModulesConfig）。 */
     const runToggle = ({ checked, enabled = [], fail = false }) => {
         const calls = [];
         const toasts = [];
@@ -1285,12 +1326,23 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
             }
         };
         const app = {
+            modulesConfig: config,          // 与循环里那个 config 必须是同一份
+            expandedDisabled: new Set(),
             getModule: id => ({ id, title: '备忘录' }),
+            // ⚠️ showToast 挂在**假 app 上**（真代码里它就是 App 的方法）：
+            // 早先把它当参数注入，等于替真代码补了一个作用域，于是
+            // 「handler 里写成裸 showToast(...)」这个真机会炸的写法在测试里全绿。
             showToast: (msg, kind) => toasts.push({ msg, kind }),
-            renderModuleZone: async () => { rendered.push(1); }
+            renderModulesEditor: async () => { rendered.push('admin'); },
+            renderModuleZone: async () => { rendered.push('home'); }
         };
+        // 真实的 saveModulesConfig：它读 this.modulesConfig、POST、再回写
+        // methodBodyOf 返回的是**含签名**的片段，所以用对象字面量的写法抽出来
+        app.saveModulesConfig = new Function('API', `return { ${saveBody} }.saveModulesConfig;`)(API);
         // 循环体里写的是 this.xxx，所以按方法调用来跑：
         // `new Function` 的函数体非严格，this 就是 .call 的接收者。
+        // ⚠️ 这里**只**注入真代码里确实存在的自由变量（host / config / API）：
+        // 多注入一个 showToast 就会把「写成裸名」这种错误掩盖掉（见上）。
         const bind = new Function('host', 'config', 'API', loop);
         bind.call(app, { querySelectorAll: () => [box] }, config, API);
         assert.ok(handler, '循环注册了 change 监听');
@@ -1302,15 +1354,24 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     assert.equal(on.calls[0].url, '/api/modules/config');
     assert.deepEqual([...on.calls[0].payload.enabledModules], ['memo'], '写下去的是新的启用列表');
     assert.deepEqual([...on.config.enabledModules], ['memo'], '内存里的列表同步更新');
-    assert.equal(on.stateEl.textContent, '已启用');
-    assert.equal(on.rendered.length, 1, '启用后要重渲染模块区，否则关掉面板看不到卡片');
+    // 成功路径不再**就地**改状态文字（那正是「只改字不发请求」时代的形状），
+    // 而是整块重渲染——配置区要跟着开关显隐，文字由 renderModuleBlock 的模板给出。
+    assert.equal(on.rendered.length, 2, '启用后要重渲染后台与首页：配置区跟着开关显隐，卡片也要出来');
     assert.match(on.toasts[0].msg, /已启用「备忘录」/, '给出反馈（用户才知道自己刚做了什么）');
 
     const off = await runToggle({ checked: false, enabled: ['memo', 'server-monitor'] });
     assert.equal(off.calls.length, 1);
     assert.deepEqual([...off.calls[0].payload.enabledModules], ['server-monitor'],
         '关闭时只移除自己，不动别的模块');
-    assert.equal(off.stateEl.textContent, '未启用');
+    assert.equal(off.rendered.length, 2, '关闭同样靠重渲染（配置区收起，卡片撤掉）');
+
+    // ⚠️ 源码形状：那几处平台调用必须是 this.xxx（它们都是 App 的方法）。
+    // 真机抓到过一次裸 showToast(...) —— ReferenceError 被 catch 吞成「保存失败」，
+    // 于是开关看起来「拨了没反应、自己弹回去」。
+    const editorBody = methodBodyOf(code, 'renderModulesEditorContent');
+    assert.doesNotMatch(editorBody, /(?<![\w.])showToast\(/,
+        '不得裸调 showToast（它是 App 的方法，不是文件作用域函数）');
+    assert.match(editorBody, /this\.showToast\(/, '经 this 调用');
 
     const bad = await runToggle({ checked: true, fail: true });
     assert.equal(bad.box.checked, false, '保存失败必须把开关拨回去');
@@ -1448,10 +1509,10 @@ test('首页状态位只回答「能不能读到数据」，不再说「已就�
 
     // 后台那张卡片**保留**完整三状态位——那里才是分派任务的地方。
     // 断言这一点是为了防止「首页收敛」被误做成「两处一起简化」。
-    assert.match(appSource, /text: '已就绪',/,
-        '后台卡片仍用「已就绪」等完整措辞');
-    assert.match(appSource, /text: '未部署',/,
-        '后台仍区分「未部署」');
+    assert.match(moduleSource, /text: '已就绪',/,
+        '后台卡片仍用「已就绪」等完整措辞（该卡片已搬进模块文件）');
+    assert.match(moduleSource, /text: '未部署',/,
+        '后台仍区分「未部署」（同上，在模块文件里）');
 });
 
 test('首页第三条指标是存储占用，不是负载', () => {
@@ -1832,14 +1893,16 @@ test('重复执行部署命令不会撞 ETXTBSY，且会先停掉旧 agent', () 
 });
 
 test('部署面板给出独立的升级命令，且路径与脚本一致', () => {
-    const code = stripComments(appSource);
+    const code = stripComments(moduleSource);
     // ⚠️ 切片必须守长度上界：本文件（app.js）里 showDeployDialog 之类的名字
     // 可能同时出现在**调用处**与定义处，取第一个匹配的 `\n        }` 会切出
     // 一个几百字符的片段，于是后面的断言全部指向错误的范围。
     // 同批新增的断言都守了这条（route.length > 800、slice(0, 2500)），唯独它没有。
-    const dialog = /showDeployDialog\(server\) \{[\s\S]*?\n        \}/.exec(code);
-    assert.ok(dialog, '切出 showDeployDialog');
-    assert.ok(dialog[0].length > 800,
+    // ⚠️ 用切片助手，别手写「以 8 空格缩进的 } 为界」：模块文件里函数缩进 4，
+    // 那个正则会越过函数末尾继续吃下去（实测切出 6116 字符，把 showCommandPanel
+    // 也算了进来），后面的断言就指向了错误的范围。
+    const dialog = [methodBodyOf(code, 'showDeployDialog')];
+    assert.ok(dialog[0].length > 800 && dialog[0].length < 5000,
         `切到的是定义而非调用处（${dialog[0].length} 字符）`);
 
     // 升级命令必须在面板里，与部署命令**并列**
@@ -1950,6 +2013,8 @@ test('自签证书开关是真实可用的（有配置键、有 UI、有赋值�
     //
     // 这类 bug 最贵的地方在于它**看起来完全正常**：属性名合理、判断有模有样、
     // 形状断言与全绿测试都看不见「它从来没有被写」。
+    // ⚠️ 这条用例查的是 app.js 的 init、开关处理器与 server.js 的路由，
+    // 与「监控目标」的搬迁无关——它读的是 app.js，不是模块文件。
     const code = stripComments(appSource);
     const defs = fs.readFileSync(path.join(ROOT, 'server-config', 'defaults.js'), 'utf8');
     // 剥掉行注释再查「赋值」：init 里那条注释正解释着为什么要赋值，
@@ -2041,11 +2106,17 @@ test('自签证书开关是真实可用的（有配置键、有 UI、有赋值�
     assert.doesNotMatch(codeOnly, /serverIsSelfSigned/,
         '可执行代码里不得再有 serverIsSelfSigned');
 
-    // ⑦ 部署与升级两条命令都要用它
-    const dialog = methodBodyOf(code, 'showDeployDialog');
+    // ⑦ 部署与升级两条命令都要用它（部署面板已搬进模块文件）
+    const dialog = methodBodyOf(stripComments(moduleSource), 'showDeployDialog');
     assert.ok(dialog.length > 800, `切出 showDeployDialog（${dialog.length}）`);
-    const uses = dialog.match(/this\.selfSignedCert === true/g) || [];
-    assert.equal(uses.length, 2, `部署与升级各用一次（实际 ${uses.length}）`);
+    // ⚠️ 读的是平台注入的**取值器**（services.selfSigned()），不是渲染时的快照：
+    // 快照会在用户拨过自签开关之后过期。
+    const reads = dialog.match(/services\.selfSigned\(\)/g) || [];
+    assert.equal(reads.length, 1, `从平台服务读一次（实际 ${reads.length}）`);
+    // 至少两处（部署命令一处、升级命令一处）；实际计数不写死——将来多一条命令
+    // 不该红，少一条才是缺陷
+    const uses = dialog.match(/\bselfSigned(?![\w(])/g) || [];
+    assert.ok(uses.length >= 2, `部署与升级都要用到它（实际 ${uses.length} 处）`);
 });
 
 test('部署面板第 3 步不给看不见的入口，且按模式分开说', () => {
@@ -2064,7 +2135,7 @@ test('部署面板第 3 步不给看不见的入口，且按模式分开说', ()
     // `!s.enrolled` 的机器（app.js 里 `return !s.enrolled`）——
     // **已注册的那台永远不会被自动探测**，照原文案读，用户执行完部署
     // 却等不到卡片自己变。
-    const code = stripComments(appSource);
+    const code = stripComments(moduleSource);
     const dialog = methodBodyOf(code, 'showDeployDialog');
     assert.ok(dialog.length > 800, `切出 showDeployDialog（${dialog.length}）`);
 
@@ -2167,6 +2238,8 @@ test('自签开关成块靠左、说明贴行不横贯、无嵌套 label', () =>
     // 这三条都属于**布局**，单元测试看不见，但可以钉住「不许退回旧形状」：
     // 旧形状是能跑通的（开关照常工作），所以不会被任何行为测试发现，
     // 而它正是用户抱怨的东西。
+    // 这一行是**平台级设置**，标记在 app.js 的 selfSignedRow() 里——与监控目标
+    // 的搬迁无关，所以要读 app.js。
     const code = stripComments(appSource);
 
     // ① 嵌套 label 不得复活。单数形式断言的是「没有 label 开标签但没关」
@@ -2176,8 +2249,8 @@ test('自签开关成块靠左、说明贴行不横贯、无嵌套 label', () =>
     assert.equal(labelOpen, labelClose, `<label> 成对（开 ${labelOpen} / 闭 ${labelClose}）`);
 
     // ② 这一行用的是自己的一组类，不再复用通用 `.setting-row label`
-    const editor = methodBodyOf(code, 'renderModulesEditorContent');
-    assert.ok(editor.length > 800, `切出 renderModulesEditorContent（${editor.length}）`);
+    const editor = methodBodyOf(code, 'selfSignedRow');
+    assert.ok(editor.length > 300, `切出 selfSignedRow（${editor.length}）`);
     assert.match(editor, /class="setting-row self-signed-row"/, '自签行有自己的一组类');
     assert.match(editor, /class="self-signed-label"/, '标题与开关那一层有自己的类');
     assert.match(editor, /class="self-signed-hint"/, '说明有自己的类');
@@ -2234,13 +2307,15 @@ test('agent 版本有真实消费者：后台提示「可升级」', () => {
     // 审查发现：服务端把 agentVersion 算出来、probe 回传了，而 public/
     // 里零引用——正是本项目自己的注释所描述的假承诺（「后台据此提示
     // 旧版可升级」，而那个提示不存在）。
-    const code = stripComments(appSource);
+    const code = stripComments(moduleSource);
 
     // ① 真的比较了版本
     const fn = methodBodyOf(code, 'isAgentOutdated');
     assert.ok(fn.length > 200, `切出 isAgentOutdated（${fn.length}）`);
     assert.match(fn, /s\.agentVersion/, '读目标机版本');
-    assert.match(fn, /this\.currentVersion \|\| this\.serverVersion/, '读本服务版本');
+    // ⚠️ 本服务版本走平台注入的取值器（services.version()），模块不读平台字段；
+    // 顺带消掉了原来那个从未被赋值的 this.serverVersion 兜底。
+    assert.match(fn, /services\.version\(\)/, '读本服务版本（平台注入）');
     // ⚠️ 必须逐段比数字：字符串比较会让 '1.10.0' < '1.9.0'
     assert.match(fn, /split\('\.'\)\.map\(Number\)/, '按段转数字再比');
     assert.doesNotMatch(fn, /have\s*<\s*want/, '不得直接比字符串');
@@ -2259,8 +2334,8 @@ test('agent 版本有真实消费者：后台提示「可升级」', () => {
         '已就绪但版本旧时仍要显示');
 
     // ③ agentVersion 从探测结果里读 —— 它不在配置里
-    assert.match(code, /const probe = this\.lastProbe\?\.\[raw\.id\];/,
-        '读缓存的探测结果');
+    assert.match(code, /const probe = lastProbe\[raw\.id\];/,
+        '读缓存的探测结果（lastProbe 现在是模块内部的普通对象，没有可选链）');
     assert.match(code, /const s = probe \? \{ \.\.\.raw, \.\.\.probe \} : raw;/,
         '合并探测结果（不改配置对象）');
     assert.doesNotMatch(code, /\bs\.agentVersion\s*=/,
@@ -2357,18 +2432,26 @@ test('每台服务器可单独控制是否在首页显示', () => {
     // 详见下方专门用例）
     assert.doesNotMatch(modCode, /e\.id === 'local' \|\| !hidden\.has/, '本机不再无条件放行');
 
-    // 界面：每行一个开关，且立即落盘
-    assert.match(appCode, /data-server-visible=/, '每行有可见性开关');
-    // 断言范围限定在这个方法体内：用 [\s\S]*? 扫全文件会跨到别的方法去
-    const save = appCode.slice(appCode.indexOf('async saveServerVisibility(key, shown, config)'));
-    assert.ok(save.length > 200, 'saveServerVisibility 方法被正确切出');
-    assert.match(save.slice(0, 900), /API\.post\('\/api\/modules\/config'/,
-        '走模块配置端点落盘');
+    // 界面：每行一个开关，且立即落盘（卡片与保存逻辑都在模块文件里）
+    assert.match(modCode, /data-server-visible=/, '每行有可见性开关');
+    // 断言范围限定在这个函数体内：用 [\s\S]*? 扫全文件会跨到别的函数去
+    const save = methodBodyOf(modCode, 'saveServerVisibility');
+    assert.ok(save.length > 200, `saveServerVisibility 被正确切出（${save.length}）`);
+    // ⚠️ 写入走平台注入的**唯一写路径** saveConfig：模块自己 POST 的话，
+    // 请求体就只有它关心的那几个键，与其它写入路径抢同一份配置时会互相覆盖。
+    assert.match(save, /await services\.saveConfig\(\{ widgets \}\)/,
+        '走平台注入的唯一写路径 saveConfig');
+    assert.doesNotMatch(save, /API\.post\(/,
+        '模块不再自己拼请求体直接 POST');
     // 只改这一条的 enabled，其余原样带回
     assert.match(save, /const widgets = \(config\.widgets \|\| \[\]\)\.map\(w => \(\{ \.\.\.w \}\)\)/,
         '复制后只改目标那条，不动其他服务器的顺序与左右');
+    // ⚠️ 配置对象是**取值器**读来的当下那一份：写回之后平台会更新它，
+    // 缓存引用会让第二次点「隐藏」把第一次的改动丢掉。
+    assert.match(save, /const config = currentConfig\(\)/,
+        '每次都读当下的配置，不用渲染时捕获的旧引用');
     // 失败要回滚界面，否则显示的是一个没生效的状态
-    assert.match(save, /Save server visibility failed[\s\S]*?renderModulesEditor\(\)/,
+    assert.match(save, /Save server visibility failed[\s\S]*?services\.refreshAdmin\(\)/,
         '保存失败后重绘列表，把开关拨回去');
 });
 
@@ -2844,9 +2927,35 @@ test('推送模式断线后保留上次数值，而不是清空', () => {
     assert.match(modCode, /if\s*\(!entry\s*\|\|\s*\(!entry\.online\s*&&\s*!entry\.metrics\)\)/,
         '只有连 metrics 都没有时才走错误分支');
     assert.match(modCode, /lastUpdatedText/, '渲染最后更新时间');
-    // 全部文本写入仍须是 textContent——推送值是网络输入
-    const innerHtml = modCode.match(/\.innerHTML\s*=/g) || [];
-    assert.equal(innerHtml.length, 0, '模块内不得有 innerHTML 写入');
+    // ⚠️ 「模块内不得有 innerHTML 写入」的原意是**推送值（网络输入）不得直接
+    // 拼进 innerHTML**，不是「模块里一个 innerHTML 都不能有」：后台「监控目标」
+    // 那一块用的是平台既有的「静态模板 + esc() 转义」写法（它本来就是这么写的，
+    // 只是原来住在 app.js 里）。所以断言分两层，各自钉住真正的风险：
+    //   ① 卡片/面板渲染路径（推送值落在这里）仍然零 innerHTML；
+    //   ② 后台模板里凡有插值，必须是字面量/条件表达式，或过 esc()/渲染函数。
+    const cardRender = methodBodyOf(modCode, 'renderCardBody') + methodBodyOf(modCode, 'renderPanelBody');
+    assert.ok(cardRender.length > 800, `切出卡片与面板渲染（${cardRender.length}）`);
+    assert.equal((cardRender.match(/\.innerHTML\s*=/g) || []).length, 0,
+        '卡片/面板渲染路径不得写 innerHTML（推送值是网络输入）');
+    for (const name of ['renderLocalServerCard', 'renderServerList']) {
+        const tpl = methodBodyOf(modCode, name);
+        assert.ok(tpl.length > 200, `切出 ${name}（${tpl.length}）`);
+        // ⚠️ 只扫**含 `<` 的模板**（即真正的 HTML 字符串）：`const key = \`server-monitor:${raw.id}\``
+        // 那种纯标识符模板不是 HTML，扫进来会误报。
+        const htmlTpls = [...tpl.matchAll(/`[^`]*`/g)].map(x => x[0]).filter(x => x.includes('<'));
+        assert.ok(htmlTpls.length >= 1, `${name} 里有 HTML 模板`);
+        for (const html of htmlTpls) {
+            for (const [, expr] of html.matchAll(/\$\{([^{}]*)\}/g)) {
+                const e = expr.trim();
+                // 允许：esc(...) / renderXxx(...) / 「布尔标识符 ? 字面量 : 字面量」
+                // （后者是 isPush ? '推送' : '拉取' 这类；两侧必须是字面量，
+                //  `s.name ? x : y` 这种标识符分支不算安全）
+                const safe = /^esc\(/.test(e) || /^render[A-Z]\w*\(/.test(e)
+                    || /^[a-zA-Z]\w*\s*\?\s*['"`][\s\S]*['"`]\s*:\s*['"`]/.test(e);
+                assert.ok(safe, `${name} 的模板插值必须转义或走渲染器：\${${e.slice(0, 40)}}`);
+            }
+        }
+    }
 });
 
 test('推送的超时阈值独立于聚合缓存的 TTL', () => {
@@ -3214,23 +3323,19 @@ test('renderServerList 里不引用它没有的参数', () => {
     //
     // 这类缺陷对源码形状断言是隐形的：它看起来只是一句正常的重绘调用。
     // 所以这里比对「方法签名声明了什么」与「方法体里用了哪些局部标识符」。
-    const app = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8'));
-    const sigAt = app.indexOf('renderServerList(host, config) {');
-    assert.ok(sigAt > 0, '找到 renderServerList 方法');
-    // 边界：下一个同缩进的方法定义
-    const nextAt = app.indexOf('\n        async ', sigAt);
-    assert.ok(nextAt > sigAt, '找到方法的下边界');
-    const body = app.slice(sigAt, nextAt);
-    assert.ok(body.length > 500, `方法体长度合理（${body.length}）`);
+    // 方法搬到了模块文件里（本机卡片与服务器列表同属「监控目标」那一块）
+    const mod = stripComments(moduleSource);
+    const body = methodBodyOf(mod, 'renderServerList');
+    assert.ok(body.length > 500, `切出 renderServerList（${body.length}）`);
 
     // 签名里声明的参数
     const params = ['host', 'config'];
     // 早先的缺陷：`await onDone()`
     assert.doesNotMatch(body, /\bonDone\b/,
         'renderServerList 没有 onDone 参数，不能引用它');
-    // 重绘必须走本方法真实可用的入口
-    assert.match(body, /await this\.renderModulesEditor\(\)/,
-        '配对成功后走 renderModulesEditor 重绘（与编辑/删除同一入口）');
+    // 重绘必须走本方法真实可用的入口（平台注入的服务，模块不去够平台方法）
+    assert.match(body, /await services\.refreshAdmin\(\)/,
+        '配对成功后走 refreshAdmin 重绘（与编辑/删除同一入口）');
     // 参数确实都在用（反向：声明了却没用是另一种残留）
     for (const p of params) {
         assert.ok(body.includes(p), `参数 ${p} 有被使用`);
@@ -3268,14 +3373,14 @@ test('本机卡片可以被「显示/隐藏」真正关掉（后台与首页不�
     // ② 本机的恢复入口必须存在——那是「可以关」这件事成立的前提。
     //    若有人删掉后台的本机复选框，①就退回「关掉打不开」的老困境，
     //    到时该重新讨论而不是静默沿用此规则。
-    const app = stripComments(appSource);
+    const app = stripComments(moduleSource);
     const cardAt = app.indexOf('renderLocalServerCard(config) {');
     assert.ok(cardAt > 0, '找到 renderLocalServerCard');
     const cardNext = app.indexOf('\n        async ', cardAt);
     const card = app.slice(cardAt, cardNext > cardAt ? cardNext : undefined);
     assert.match(card, /'server-monitor:local'/, '后台本机卡用的就是 home 那个键');
-    assert.match(card, /data-server-visible="\$\{key\}"/, '且真的渲染了显示/隐藏复选框');
-});
+    // 插值统一过 esc（模块里凡是拼进 HTML 的都转义）
+    assert.match(card, /data-server-visible="\$\{esc\(key\)\}"/, '且真的渲染了显示/隐藏复选框');});
 
 // ========== 模块加载速度与轮询开销 ==========
 

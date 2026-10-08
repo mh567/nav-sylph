@@ -536,6 +536,15 @@
 
     function renderAdminSection(host, state) {
         const adminApi = (state && state.api) || api;
+        // 平台注入的服务（后台区块的契约，见 docs/architecture.md）：提示与对话框
+        // 都由平台给，模块不必去够 window.app。取不到时退回 window.app?.——
+        // 那是给「平台还没注入」的过渡态留的兜底，不是设计。
+        // ⚠️ 兜底里必须写 window.app，不能写成 `toast(...)`：那是在定义它自己，
+        // 一调用就无限递归（本轮改这句时真踩了一次）。
+        const toast = (state && state.toast)
+            || ((message, kind) => window.app?.showToast(message, kind));
+        const dialog = (state && state.dialog)
+            || (options => window.app?.showUiDialog(options));
         if (!adminApi) {
             host.innerHTML = '<p class="fav-hint">未拿到 API，无法读取来源。</p>';
             return;
@@ -646,11 +655,11 @@
                 const externalKey = el.querySelector('[name="externalKey"]').value.trim();
                 const token = el.querySelector('[name="token"]').value;
                 if (!externalKey) {
-                    window.app?.showToast('请填写账号标识', 'error');
+                    toast('请填写账号标识', 'error');
                     return;
                 }
                 if (form.mode === 'add' && !token) {
-                    window.app?.showToast('请填写凭据', 'error');
+                    toast('请填写凭据', 'error');
                     return;
                 }
                 adminBusy = true;
@@ -661,7 +670,7 @@
                     if (form.mode === 'add') {
                         const data = await adminApi.post('/api/timeline/sources', { providerType, externalKey, token });
                         if (data && data.error) throw Object.assign(new Error(data.error), { status: 400 });
-                        window.app?.showToast('来源已添加');
+                        toast('来源已添加');
                     } else {
                         const { res, data } = await adminApi.request(
                             `/api/timeline/sources/${encodeURIComponent(form.id)}`,
@@ -673,12 +682,12 @@
                         if (!res.ok) {
                             throw Object.assign(new Error((data && data.error) || '保存失败'), { status: res.status });
                         }
-                        window.app?.showToast('已更新授权');
+                        toast('已更新授权');
                     }
                     form = null;
                     await load();
                 } catch (e) {
-                    window.app?.showToast(e.message || '操作失败', 'error');
+                    toast(e.message || '操作失败', 'error');
                     submit.disabled = false;
                     submit.textContent = form && form.mode === 'reauth' ? '重新授权' : '保存并测试';
                 } finally {
@@ -705,11 +714,11 @@
                             try {
                                 const data = await adminApi.post(
                                     `/api/timeline/sources/${encodeURIComponent(id)}/test`, {});
-                                window.app?.showToast(
+                                toast(
                                     data && data.ok ? '连接正常' : `连接失败：${(data && data.error) || '未知原因'}`,
                                     data && data.ok ? 'success' : 'error');
                             } catch (e) {
-                                window.app?.showToast('测试失败，请重试', 'error');
+                                toast('测试失败，请重试', 'error');
                             } finally {
                                 btn.disabled = false;
                             }
@@ -721,13 +730,13 @@
                                 const data = await adminApi.post(
                                     `/api/timeline/sources/${encodeURIComponent(id)}/sync`, {});
                                 if (data && data.ok) {
-                                    window.app?.showToast(data.skipped
+                                    toast(data.skipped
                                         ? '已跳过（来源已暂停）' : `同步完成，新增 ${data.inserted} 条`);
                                 } else {
-                                    window.app?.showToast(`同步失败：${(data && data.error) || '未知原因'}`, 'error');
+                                    toast(`同步失败：${(data && data.error) || '未知原因'}`, 'error');
                                 }
                             } catch (e) {
-                                window.app?.showToast('同步失败，请重试', 'error');
+                                toast('同步失败，请重试', 'error');
                             } finally {
                                 btn.disabled = false;
                                 load();
@@ -742,14 +751,14 @@
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ enabled: !source.enabled })
                                 });
-                            if (res.ok) window.app?.showToast(source.enabled ? '已暂停同步' : '已恢复同步');
-                            else window.app?.showToast('操作失败', 'error');
+                            if (res.ok) toast(source.enabled ? '已暂停同步' : '已恢复同步');
+                            else toast('操作失败', 'error');
                             load();
                             break;
                         }
                         case 'del': {
-                            const confirmed = window.app && window.app.showUiDialog
-                                ? await window.app.showUiDialog({
+                            const confirmed = dialog
+                                ? await dialog({
                                     title: '删除订阅来源',
                                     message: `删除「${source.providerLabel} · ${source.externalKey}」会同时删除它已同步的事件。`,
                                     danger: true, confirmText: '删除'
@@ -758,8 +767,8 @@
                             if (!confirmed) return;
                             const { res, data } = await adminApi.request(
                                 `/api/timeline/sources/${encodeURIComponent(id)}`, { method: 'DELETE' });
-                            if (res.ok) window.app?.showToast('已删除');
-                            else window.app?.showToast((data && data.error) || '删除失败', 'error');
+                            if (res.ok) toast('已删除');
+                            else toast((data && data.error) || '删除失败', 'error');
                             load();
                             break;
                         }
@@ -935,7 +944,8 @@
         // 内容不是一张摘要卡而是一条时间线：需要一条**宽**列才用得上仿真那套版式
         // （左侧日期轨道 + 事件卡）。平台据此让背板让位，见 app.js 的 railLayoutFor / syncRail。
         wideRail: true,
-        adminSectionTitle: 'Special Line · 订阅来源',
+        // 模块名已经是块标题（「Special Line」），这里只写配置区自己的名字
+        adminSectionTitle: '订阅来源',
         mountWidget,
         renderAdminSection
     });

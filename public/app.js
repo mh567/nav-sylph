@@ -173,6 +173,10 @@
             this.modulesLoading = false;
             this.modulesError = null;
             this.modulesEditorRendered = false;
+            // 未启用模块被用户点开「展开配置」的那些 id。面板重建时清空，
+            // 同一面板内的重渲染（探测/编辑/删除触发）保留——否则用户刚
+            // 展开、卡片一刷新又收起来了。
+            this.expandedDisabled = new Set();
             // 远程备份区块：配置缓存 + 「有没有渲染进当前这块 DOM」的闩锁。
             // 判据必须是后者。面板每次 openAdmin / 重渲染都会重建 #modalBody，
             // 于是 #webdavSection 是一个只写着「加载中...」的新节点，而
@@ -3497,10 +3501,31 @@
             this.updateConfigStatus();
             // 面板关了，未就绪机器的探测轮询也该停：用户看不到结果，
             // 继续探只是白花限流配额，而定时器留着会一直跑到页面卸载。
-            this.clearPendingProbe();
+            this.closeModuleAdminSections();
             $('#modal').hidden = true;
             if (this.adminReturnFocus?.isConnected) this.adminReturnFocus.focus();
             return true;
+        }
+
+        /**
+         * 通知各模块「后台面板关了」。
+         *
+         * 谁在自己的后台区块里起了定时器、订阅了事件，谁自己收——平台不认识
+         * 「探测定时器」这种东西。早先这里是写死的 `this.clearPendingProbe()`，
+         * 等于平台特判了 server-monitor 一个模块。
+         *
+         * 单个模块抛错不影响别的：关面板本身不该失败。
+         */
+        closeModuleAdminSections() {
+            for (const id of App.KNOWN_MODULES) {
+                const def = this.getModule(id);
+                if (!def || typeof def.onAdminSectionClose !== 'function') continue;
+                try {
+                    def.onAdminSectionClose();
+                } catch (e) {
+                    console.error(`Close admin section ${id} failed:`, e);
+                }
+            }
         }
 
         /**
@@ -3582,80 +3607,9 @@
             await this.ensureModulesLoaded();
             this.renderModulesEditorContent(host, config);
             this.modulesEditorRendered = true;
-            // 未就绪的机器要持续探测：用户把部署命令粘到目标机上执行完，
-            // 那一刻本服务什么都不知道——不主动探，界面就永远停在「未部署」，
-            // 用户会以为命令没生效又去重跑一遍。
-            //
-            // 只探「未就绪」的那些，且只在面板打开时探：面板一关就停，
-            // 不引入任何服务端后台状态。
-            this.schedulePendingProbe(config);
-        }
-
-        /**
-         * 每 60 秒探一次还没就绪的机器，直到它们都就绪或面板被关掉。
-         *
-         * 已就绪的机器不探：它们的状态由首页那个轮询周期管着（默认 15s），
-         * 这里再探一遍只是浪费。而「未就绪」恰恰是变化最频繁的阶段——
-         * 用户正在目标机上执行命令。
-         */
-        schedulePendingProbe(config) {
-            this.clearPendingProbe();
-            // ⚠️ 用一个**可变**的 Map 记录「上次见到的状态」，而不是闭包里
-            // 捕获 config.servers。早先直接比 s.deployState，而 s 是启动时的
-            // 陈旧快照 —— 于是 `res.deployState !== s.deployState` 只要结果
-            // 非空就恒真，每 60 秒必弹一次「有机器的状态变了」，哪怕什么都没变
-            //（浏览器实测发现）。同样地，已注册的机器也永远进不了下一轮
-            // 的 pending 列表，只能靠重开面板才被重新筛。
-            const lastSeen = new Map();
-            const pending = (config.servers || []).filter(s => {
-                if (s.mode === 'push') return false; // 推送模式无端口可探
-                lastSeen.set(s.id, s.deployState || null);
-                return !s.enrolled;
-            });
-            if (!pending.length) return;
-
-            const timer = setInterval(async () => {
-                // 面板关了就不必再探：用户看不到结果，探了只是白花限流配额
-                if (!$('#modulesEditor') || this.adminTab !== 'modules') {
-                    this.clearPendingProbe();
-                    return;
-                }
-                let changed = false;
-                for (const s of pending) {
-                    try {
-                        const res = await API.post(`/api/modules/servers/${encodeURIComponent(s.id)}/probe`);
-                        // 同上：写缓存，让卡片重绘时「在线」位有数据可读
-                        if (!this.lastProbe) this.lastProbe = {};
-                        this.lastProbe[s.id] = res;
-                        const now = res.deployState || null;
-                        const before = lastSeen.get(s.id) ?? null;
-                        if (now !== before) {
-                            lastSeen.set(s.id, now);
-                            changed = true;
-                        }
-                    } catch (e) {
-                        // 单台失败不影响其它机器，也不该弹 toast 打扰用户——
-                        // 这是后台的静默轮询，不是用户发起的操作
-                        console.debug('probe failed:', e);
-                    }
-                }
-                if (changed) {
-                    // 重绘会重新调 schedulePendingProbe，从而用**最新**的
-                    // 配置重建 pending 列表 —— 这也是「刚部署完的那台机器
-                    // 能从 pending 里毕业」的唯一路径。
-                    await this.renderModulesEditor();
-                    this.showToast('有机器的状态变了', 'success');
-                }
-            }, 60000);
-
-            this.pendingProbeTimer = timer;
-        }
-
-        clearPendingProbe() {
-            if (this.pendingProbeTimer) {
-                clearInterval(this.pendingProbeTimer);
-                this.pendingProbeTimer = null;
-            }
+            // 「未就绪的机器要持续探测」这件事归 server-monitor 自己的后台区块
+            // （它的 renderAdminSection 里起定时器、onAdminSectionClose 里收）：
+            // 平台不认识「探测」这个概念，也不该替某个模块起定时器。
         }
 
         /** 确保已知模块的定义都已注册。注册表非空则直接返回。 */
@@ -3671,32 +3625,110 @@
         }
 
         /**
-         * 各模块自己的后台区块挂点。
+         * 模块后台区块的**服务包**。
          *
-         * 平台只给容器与标题，provider 专属的表单/文案留在模块文件里——
-         * 否则每加一种来源，app.js 都要跟着认识它的字段与状态。
+         * 模块文件不得引用 app.js 的内部标识符（`API` 是这个 IIFE 的 const，
+         * 不是全局，见 docs/architecture.md 的硬约束），所以平台把能力显式注入，
+         * 模块只用拿到的东西干活——`server-monitor` 的监控目标区块、`special-line`
+         * 的订阅来源都是这么写的。
+         *
+         * `config` / `selfSigned` / `version` 用**取值器**而不是快照：配置会被
+         * `reloadConfig()`（它整体换对象）更新掉，快照会让模块读到上一版，于是
+         * 「连续改两台机器的显示开关」第二次会把第一次的改动丢掉。
+         * （`saveModulesConfig` 是**原地**更新，那条路径不受影响。）
          */
-        moduleAdminSections() {
-            return App.KNOWN_MODULES
-                .map(id => this.getModule(id))
-                .filter(def => def && typeof def.renderAdminSection === 'function')
-                .map(def => `<div class="section-title">${this.esc(def.adminSectionTitle || def.title)}</div>
-                    <div class="module-admin-section" data-module-admin="${this.esc(def.id)}"></div>`)
-                .join('');
+        moduleServices() {
+            const app = this;
+            return {
+                api: API,
+                get config() { return app.modulesConfig; },
+                saveConfig: patch => app.saveModulesConfig(patch),
+                reloadConfig: () => app.loadModulesConfig(),
+                // ⚠️ 必须经 app 实例调用：`showToast` / `showUiDialog` 是 App 的
+                // **方法**，不是本文件作用域里的函数——写成裸名会 ReferenceError，
+                // 而它在静态断言里看不出来（只有真点一次才会炸）。
+                toast: (message, kind, ms) => app.showToast(message, kind, ms),
+                dialog: options => app.showUiDialog(options),
+                confirm: (message, title, danger) => app.confirmAction(message, title, danger),
+                notice: (message, title) => app.notice(message, title),
+                refreshAdmin: () => app.renderModulesEditor(),
+                refreshHome: () => app.renderModuleZone(),
+                selfSigned: () => app.selfSignedCert === true,
+                version: () => app.currentVersion || ''
+            };
         }
 
-        renderModulesEditorContent(host, config) {
-            const known = App.KNOWN_MODULES.map(id => this.getModule(id)).filter(Boolean);
-            // 每行：左侧「名称 + 说明」，右侧开关。
-            // 说明文字紧贴它描述的那一行，而不是汇总在区块底部——
-            // 早先把「启用后该模块会出现在首页模块区…」放在所有开关下面，
-            // 离得太远，读的时候要来回对照才知道说的是哪个模块。
-            const rows = known.map(def => {
-                const on = config.enabledModules.includes(def.id);
-                return `<div class="setting-row module-setting-row">
-                    <label>
-                        <span class="module-setting-label">${this.esc(def.title)}</span>
-                        ${def.summary ? `<span class="module-setting-hint">${this.esc(def.summary)}</span>` : ''}
+        /**
+         * 模块配置的**唯一写路径**。
+         *
+         * 早先三处各写一份请求体（模块开关、显示/隐藏、更新周期），每处只带自己
+         * 关心的那几个键——写路径一多，就必然出现「A 用一份陈旧快照写回、把 B 刚
+         * 改的字段覆盖掉」这类事故。现在统一：把 patch 合并进当下这份配置，再按
+         * 服务端要的形状整份提交，成功后以合并结果为准。
+         *
+         * 只改内存里的 `this.modulesConfig`，**不**负责刷新界面——调用方最清楚该
+         * 刷哪里（有的只刷首页、有的只刷后台、有的两个都要）。
+         *
+         * ⚠️ 首页编辑态的 `saveWidgetLayout()` 没并进来：它带草稿与回滚语义，
+         * 属另一条路径，合并会让两边都变复杂。
+         */
+        async saveModulesConfig(patch) {
+            const current = this.modulesConfig || {};
+            const merged = { ...current, ...patch };
+            await API.post('/api/modules/config', {
+                enabledModules: merged.enabledModules,
+                widgets: merged.widgets,
+                servers: merged.servers,
+                pollInterval: merged.pollInterval
+            });
+            // ⚠️ **原地**更新，不换对象：各处（后台区块的渲染闭包、模块拿到的
+            // `services.config` 取值器、别的写入路径）都握着这个引用，换掉它等于
+            // 让它们手里的那一份从此过期——「连续改两台机器的显示开关，第二次
+            // 把第一次的改动丢掉」就是这一类。引用同一性是这里的契约。
+            if (this.modulesConfig) Object.assign(this.modulesConfig, merged);
+            else this.modulesConfig = merged;
+            return this.modulesConfig;
+        }
+
+        /**
+         * 一个模块一块：块头是「名称 + 说明 + 开关」，块内是它自己的配置。
+         *
+         * 「有没有配置可折叠」**不认模块 id**，只看它有没有声明 `renderAdminSection`：
+         *   · 声明了 → 有配置。未启用时收起成一行「未启用，配置先收起来。[展开配置]」，
+         *     点展开就地重画这一块（不重新拉配置、也不改开关状态）；
+         *   · 没声明 → 块内只有一行淡字说明，不折叠（本来就没东西可收）。
+         *
+         * 未启用且未展开时，模块的 `renderAdminSection` **不会被调用**——它自己的
+         * 接口也就不会被拉。注意这不是「关掉的模块一律不打请求」：用户点了「展开配置」
+         * 就说明他想配置它，那一块照常渲染（server-monitor 的 60 秒探测也跟着起，
+         * 那正是配置机器时需要的信息）。
+         */
+        renderModuleBlock(def, config) {
+            const on = (config.enabledModules || []).includes(def.id);
+            const hasConfig = typeof def.renderAdminSection === 'function';
+            const expanded = this.expandedDisabled.has(def.id);
+            const showBody = hasConfig ? (on || expanded) : true;
+
+            const body = showBody
+                ? `<div class="module-block-body">
+                    ${hasConfig && def.adminSectionTitle
+                        ? `<p class="module-block-sub">${this.esc(def.adminSectionTitle)}</p>` : ''}
+                    ${hasConfig
+                        ? `<div class="module-admin-section" data-module-admin="${this.esc(def.id)}"></div>`
+                        : '<p class="fav-hint">这个模块没有额外配置——它的内容在首页那张卡片里直接编辑。</p>'}
+                </div>`
+                : `<div class="module-block-off-note">
+                    <span>未启用，配置先收起来。</span>
+                    <button type="button" data-expand-module="${this.esc(def.id)}">展开配置</button>
+                </div>`;
+
+            return `
+                <div class="module-block" data-module="${this.esc(def.id)}" data-enabled="${on ? 1 : 0}">
+                    <div class="module-block-head">
+                        <div class="module-block-copy">
+                            <span class="module-block-title">${this.esc(def.title)}</span>
+                            ${def.summary ? `<span class="module-block-summary">${this.esc(def.summary)}</span>` : ''}
+                        </div>
                         <span class="module-setting-toggle">
                             <div class="toggle-switch">
                                 <input type="checkbox" data-module-toggle="${this.esc(def.id)}" ${on ? 'checked' : ''}>
@@ -3704,18 +3736,14 @@
                             </div>
                             <span class="module-setting-state">${on ? '已启用' : '未启用'}</span>
                         </span>
-                    </label>
+                    </div>
+                    ${body}
                 </div>`;
-            }).join('');
+        }
 
-            host.innerHTML = `
-                ${rows || '<p class="fav-hint">暂无已注册模块。</p>'}
-                ${this.moduleAdminSections()}
-                <div class="section-title">监控目标</div>
-                <p class="fav-hint">每个方块是一台机器。改动即时生效；
-                    单台机器的配置在它的「编辑」里保存。</p>
-                <div id="serverList"></div>
-                <button class="btn" id="addServerBtn">添加服务器</button>
+        /** 平台设置之一：本服务的证书是不是自签的（影响部署命令里的 --server-ca）。 */
+        selfSignedRow() {
+            return `
                 <div class="setting-row self-signed-row">
                     <label class="self-signed-label">
                         <span class="self-signed-name">本服务的 https 证书是自签的</span>
@@ -3729,7 +3757,12 @@
                         <code>--server-ca</code>，agent 会报
                         <code>certificate signed by unknown authority</code>。
                         改完<strong>重启本服务</strong>才生效。</p>
-                </div>
+                </div>`;
+        }
+
+        /** 平台设置之二：首页卡片的轮询周期（全局，不属于任何单个模块）。 */
+        pollIntervalRow(config) {
+            return `
                 <div class="setting-row">
                     <label>
                         <span>更新周期</span>
@@ -3738,9 +3771,28 @@
                         </select>
                     </label>
                 </div>
-                <p class="fav-hint" id="pollIntervalHint"></p>
+                <p class="fav-hint" id="pollIntervalHint"></p>`;
+        }
+
+        renderModulesEditorContent(host, config) {
+            const known = App.KNOWN_MODULES.map(id => this.getModule(id)).filter(Boolean);
+
+            host.innerHTML = `
+                <div class="section-title">模块</div>
+                <p class="fav-hint">每个模块的开关与它自己的配置放在一起；
+                    模块配置独立保存，不随上方的「保存」按钮提交。</p>
+                ${known.length
+                    ? known.map(def => this.renderModuleBlock(def, config)).join('')
+                    : '<p class="fav-hint">暂无已注册模块。</p>'}
+                <div class="platform-block">
+                    <div class="section-title">平台设置</div>
+                    <p class="fav-hint">以下设置不属于任何单个模块，影响全局。</p>
+                    ${this.selfSignedRow()}
+                    ${this.pollIntervalRow(config)}
+                </div>
             `;
-            // ⚠️ 这两项必须真的接上。早先部署面板读的是 `this.serverIsSelfSigned`，
+
+            // ⚠️ 自签标记必须真的接上。早先部署面板读的是 `this.serverIsSelfSigned`，
             // 而那个属性**从未被赋值、也没有任何 UI 能设置它** —— 恒为 undefined，
             // 于是自签分支永不触发，自签部署的用户拿到的命令必然缺 --server-ca。
             // 「读了但没人写」是本项目最贵的一类 bug：形状断言与全绿测试都看不见。
@@ -3769,13 +3821,7 @@
             $('#pollIntervalSelect').onchange = async (e) => {
                 const value = Number(e.target.value);
                 try {
-                    await API.post('/api/modules/config', {
-                        enabledModules: config.enabledModules,
-                        widgets: config.widgets,
-                        servers: config.servers,
-                        pollInterval: value
-                    });
-                    config.pollInterval = value;
+                    await this.saveModulesConfig({ pollInterval: value });
                     this.updatePollIntervalHint(value);
                     this.showToast(`更新周期已设为 ${this.pollIntervalLabel(value)}`);
                 } catch (err) {
@@ -3785,7 +3831,6 @@
                     this.showToast('保存失败，请重试', 'error');
                 }
             };
-            this.renderServerList($('#serverList'), config);
 
             // 模块自己的后台区块：先把容器落进 DOM，再交给模块渲染
             //（它要绑事件、要读自己的数据，拿字符串做不到）。
@@ -3794,18 +3839,23 @@
                 const def = this.getModule(el.dataset.moduleAdmin);
                 if (!def || typeof def.renderAdminSection !== 'function') continue;
                 try {
-                    // 注入 API：后台区块渲染时模块可能并未挂载（模块未启用），
-                    // 所以它不能指望 mountWidget 那一次注入留下的 api 变量。
-                    def.renderAdminSection(el, { api: API });
+                    // 交付服务包：后台区块渲染时模块可能并未挂载（模块未启用），
+                    // 所以它不能指望 mountWidget 那一次注入留下的变量。
+                    def.renderAdminSection(el, this.moduleServices());
                 } catch (err) {
                     console.error(`Render admin section ${def.id} failed:`, err);
                     el.innerHTML = '<p class="fav-hint">该模块的后台区块渲染失败，请重开面板重试。</p>';
                 }
             }
 
-            $('#addServerBtn').onclick = () => this.showServerDialog(null, async () => {
-                await this.renderModulesEditor();
-            });
+            // 未启用时收起配置，点「展开配置」就地重画这一块：
+            // 只重画不重新拉配置，也不把开关拨过去（用户只是要看一眼配置）。
+            for (const btn of host.querySelectorAll('[data-expand-module]')) {
+                btn.onclick = () => {
+                    this.expandedDisabled.add(btn.dataset.expandModule);
+                    this.renderModulesEditorContent(host, config);
+                };
+            }
 
             // 开关与它那一行的「已启用/未启用」文字必须同步，
             // 否则文字会与实际状态相反——它紧贴开关，反而不一致时最刺眼。
@@ -3816,28 +3866,24 @@
             // 报的就是「备忘录模块无法启用」。用户原话：「更新后，备忘录模块
             // 无法启用」。上一轮 449→465 条测试全绿、源码形状守卫也在绿，
             // 因为那条守卫只断言了「存在一个 change 监听」。
-            // 保存路径照抄同一文件里「显示/隐藏」那个开关（POST + toast +
-            // 重渲染模块区 + 失败回滚）：模块开关与它是同一件事。
             for (const box of host.querySelectorAll('[data-module-toggle]')) {
-                const state = box.closest('.module-setting-toggle')
-                    ?.querySelector('.module-setting-state');
                 box.addEventListener('change', async () => {
                     const id = box.dataset.moduleToggle;
                     const on = box.checked;
-                    const before = config.enabledModules.slice();
+                    const before = (config.enabledModules || []).slice();
                     const next = on
                         ? [...new Set([...before, id])]
                         : before.filter(x => x !== id);
+                    const state = box.closest('.module-setting-toggle')
+                        ?.querySelector('.module-setting-state');
                     try {
-                        await API.post('/api/modules/config', {
-                            enabledModules: next,
-                            widgets: config.widgets,
-                            servers: config.servers
-                        });
-                        config.enabledModules = next;
-                        if (state) state.textContent = on ? '已启用' : '未启用';
+                        await this.saveModulesConfig({ enabledModules: next });
+                        // 配置区的显隐跟着开关走，所以这一处必须**重画**：
+                        // 早先只改文字，于是「已启用」写着、配置区却不出现。
+                        if (on) this.expandedDisabled.delete(id);
                         const title = this.getModule(id)?.title || id;
                         this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
+                        await this.renderModulesEditor();
                         await this.renderModuleZone();
                     } catch (err) {
                         console.error('Save module toggle failed:', err);
@@ -3888,755 +3934,6 @@
             const seconds = Number(current) || 15;
             hint.textContent = `每 ${this.pollIntervalLabel(seconds)}自动刷新一次；`
                 + '页面切到后台时暂停，回到前台立即刷新。';
-        }
-
-        /**
-         * 保存单台服务器的首页可见性。
-         *
-         * 立即落盘而不是等「保存模块配置」：可见性是一个开关式的即时决定，
-         * 让用户改完再去点另一个按钮，等于把两步合成一步却要两个动作。
-         * 与整体保存同一套合并语义——只改这一条的 enabled，
-         * order / side / 其他服务器一律原样带回（mergeModulesConfig 按 id 补回）。
-         */
-        async saveServerVisibility(key, shown, config) {
-            const widgets = (config.widgets || []).map(w => ({ ...w }));
-            const item = widgets.find(w => w.id === key);
-            if (item) item.enabled = shown;
-            else widgets.push({ id: key, enabled: shown, side: 'left', order: widgets.length, collapsed: false });
-
-            try {
-                await API.post('/api/modules/config', {
-                    enabledModules: config.enabledModules,
-                    widgets,
-                    servers: config.servers
-                });
-                config.widgets = widgets;
-                this.showToast(shown ? '已在首页显示' : '已从首页隐藏');
-                await this.renderModuleZone();
-            } catch (e) {
-                console.error('Save server visibility failed:', e);
-                this.showToast('保存失败，请重试', 'error');
-                // 失败要拨回去，否则界面显示的是一个没生效的状态
-                await this.renderModulesEditor();
-            }
-        }
-
-        /**
-         * 一台机器当前处于哪个部署状态。
-         *
-         * 上一版只有「在线 / 离线」两个结果，而用户真正要回答的是三个不同的
-         * 问题：**这台机器在吗、agent 装了吗、能不能读到指标**。三者塌缩成
-         * 一个「离线」时，用户无法判断该点部署、该查网络、还是该重装。
-         *
-         * pull 模式下这三问由 TCP 三态探测分别回答；push 模式没有端口可探测，
-         * 只能靠「注册过没有」判断部署状态。
-         */
-        serverDeployState(s) {
-            // 已注册但证书变了 —— 安全事件，优先于一切其它状态：
-            // 这台机器此刻报上来的东西不该被当成可信数据。
-            if (s.certMismatch) return 'cert_mismatch';
-            if (s.deployState) return s.deployState;
-            // 还没探测过：给一个诚实的初值，而不是谎称「离线」
-            if (!s.enrolled) return 'unchecked';
-            return 'ready';
-        }
-
-        /**
-         * 状态位下方那块说明区。已就绪时不渲染任何东西——
-         * 那台机器正常，没有需要解释的事。
-         */
-        renderServerStateBody(s) {
-            const state = this.serverDeployState(s);
-            // 「已就绪」时那块不渲染 —— 正常机器没有需要解释的事。
-            // 但**已就绪的机器可能跑着旧版 agent**，那是要解释的，
-            // 所以这里多一个例外而不是无条件 return ''。
-            const outdated = this.isAgentOutdated(s);
-            if ((state === 'ready' || state === 'unchecked') && !outdated) return '';
-            // 措辞统一取自 serverDeployBit —— 状态位与说明区说同一句话，
-            // 两处各写一份文案必然漂移（然后用户看到卡片说「未部署」
-            // 而展开说「等待部署」）。
-            const bit = this.serverDeployBit(s);
-            const text = s.error ? this.esc(s.error) : this.esc(bit.title);
-            const version = outdated ? `
-                <div class="server-item-version">
-                    agent ${this.esc(outdated.have)} · 本服务 ${this.esc(outdated.want)}
-                    <span title="升级不会改凭据与证书，只替换程序本身">可升级</span>
-                </div>` : '';
-            return `
-                <div class="server-item-state" data-kind="${bit.kind}">
-                    <div class="lead">${this.esc(bit.text)}</div>
-                    <div class="sub">${text}</div>
-                    ${version}
-                </div>`;
-        }
-
-        /**
-         * 这台机器上的 agent 是不是旧版。
-         *
-         * ⚠️ 只有**真的比较过**才返回结论。拿不到目标机版本（没探测过、
-         * 旧 agent 不报这个字段、版本是 dev）一律返回 null —— 那样界面
-         * 什么都不显示。
-         * 「拿不到就说有新版」比反过来糟得多：用户会被反复告知可以升级，
-         * 而升完还是同一个版本。
-         */
-        isAgentOutdated(s) {
-            const have = s.agentVersion;
-            // 本服务版本：复用版本管理已经取过的 this.currentVersion，
-            // 不另发一次请求——两个字段在同一次会话里必须是同一个值，
-            // 而各取一次就多了一个「不一致」的时机。
-            const want = this.currentVersion || this.serverVersion;
-            // dev 是从源码直接构建的产物，它与任何正式版都不可比
-            if (!have || !want || have === 'dev' || want === 'dev') return null;
-            // 逐段比数字：字符串比较会让 '1.10.0' < '1.9.0'
-            const a = String(have).split('.').map(Number);
-            const b = String(want).split('.').map(Number);
-            if (a.length === 0 || a.some(n => !Number.isFinite(n))) return null;
-            if (b.length === 0 || b.some(n => !Number.isFinite(n))) return null;
-            for (let i = 0; i < Math.max(a.length, b.length); i++) {
-                const x = a[i] || 0, y = b[i] || 0;
-                if (x !== y) return x < y ? { have, want } : null;
-            }
-            return null;
-        }
-
-        /** 地址只显示主机与端口，不必让用户每次都看见 https:// 前缀。 */
-        displayUrlOf(s) {
-            try {
-                const u = new URL(s.url);
-                return u.port ? `${u.hostname}:${u.port}` : u.hostname;
-            } catch {
-                return s.url || '';
-            }
-        }
-
-        /**
-         * 后台卡片的两个状态位：**在线**与**部署就绪**。
-         *
-         * 刻意分成两个，因为它们回答的是两个正交的问题：
-         *   · 在线吗       —— 主机的网络层能不能到达（TCP 三态探测）
-         *   · agent 就绪吗 —— 那台机器上装了没、注册了没
-         * 合成一句话（「在线 · 未部署」）在单台机器上看着够用，但用户扫过
-         * 一列卡片时，「有哪几台连不上」和「有哪几台没装」是两类不同的
-         * 待办 —— 分开才看得出该先做哪一类。
-         *
-         * 首页卡片只保留合并后的那一个（用户拍板：首页一个就够，
-         * 后台至少两个）。差别在这里：后台是操作台，要能分派任务。
-         *
-         * @param {object} s 一台机器
-         * @param {object} [probe] 最近一次探测结果（没有就退回配置里的持久状态）
-         */
-        renderServerStatusBits(s, probe) {
-            // probe 缺省时退回「上一次探测结果」的缓存。
-            // ⚠️ 早先这里不传，于是「在线」位永远是「未检测」——而服务端
-            // 早就把 reachable 算好并返回了（浏览器实测发现）。
-            // 用 lastProbe 缓存而不是重新探测：渲染不该有网络副作用，
-            // 而且每次渲染都探一次会把管理端限流桶打满。
-            const p = probe || this.lastProbe?.[s.id];
-            const online = this.serverOnlineState(s, p);
-            const deploy = this.serverDeployBit(s, p);
-            return `
-                <span class="server-item-status" data-kind="${online.kind}"
-                      title="${this.esc(online.title)}">${this.esc(online.text)}</span>
-                <span class="server-item-status" data-kind="${deploy.kind}"
-                      title="${this.esc(deploy.title)}">${this.esc(deploy.text)}</span>`;
-        }
-
-        /**
-         * 「在线」这一位。推送模式报 null —— 它一个端口都不开，
-         * 主机在不在线只能由「多久没收到上报」回答，不是探测能知道的。
-         */
-        serverOnlineState(s, probe) {
-            if (probe && 'reachable' in probe) {
-                if (probe.reachable === null) {
-                    return { kind: 'unknown', text: '在线未知', title: '推送模式不开放端口，探测不到主机是否在线' };
-                }
-                return probe.reachable
-                    ? { kind: 'online', text: '在线', title: '能连到这台机器' }
-                    : { kind: 'offline', text: '离线', title: '连不上：探测超时或主机拒绝了' };
-            }
-            // 没探测过时不要瞎猜。说「未检测」是诚实的初值，不是「离线」。
-            return { kind: 'unknown', text: '未检测', title: '还没探测过，点「检测」试一次' };
-        }
-
-        /** 「部署就绪」这一位。 */
-        serverDeployBit(s, probe) {
-            const state = (probe && probe.deployState) || this.serverDeployState(s);
-            switch (state) {
-                case 'ready':
-                    return { kind: 'ready', text: '已就绪', title: 'agent 已注册，正在上报指标' };
-                case 'pending':
-                    return { kind: 'pending', text: '等待部署', title: '目标机上有 agent，但还没向本服务注册' };
-                case 'not_deployed':
-                    return { kind: 'not_deployed', text: '未部署', title: '目标机上还没有 agent' };
-                case 'cert_mismatch':
-                    return { kind: 'alert', text: '证书异常', title: '证书与注册时不一致，可能被换了' };
-                case 'port_conflict':
-                    return { kind: 'alert', text: '端口被占', title: '该端口上有别的服务，不是 agent' };
-                default:
-                    return { kind: 'unknown', text: '未检测', title: '点「检测」确认部署状态' };
-            }
-        }
-
-        /**
-         * 部署操作按钮。这是 `hasEnrollToken` 唯一的消费者。
-         *
-         * 该字段此前算了但没人用（服务端注释声称它「决定显示复制命令还是
-         * 重新生成令牌」，而那两个按钮都不存在）——一个假承诺。
-         *
-         * 语义按用户拍板「有用就留着」接上：
-         *   · 令牌已签发且未过期 → 直接给「复制命令」（用户可以直接粘）
-         *   · 没有 / 已过期     → 给「部署」（点开面板会重新签一枚）
-         * 所以这个字段不是冗余，它是「能不能直接复制」的判据。
-         */
-        renderDeployAction(s) {
-            if (s.hasEnrollToken) {
-                return `<button class="btn btn-sm deploy-server"
-                    title="令牌还有效，直接复制部署命令">复制命令</button>`;
-            }
-            return `<button class="btn btn-sm deploy-server"
-                title="生成一条部署命令，在目标机上执行">部署</button>`;
-        }
-
-        /**
-         * 本机那张卡片。永远排第一，不需要任何配置，也**不可删**——
-         * 它是这个模块唯一的零配置产物。但它**可以**从首页隐藏：
-         * 这张卡上的「显示/隐藏」复选框自己就是恢复入口——
-         * 旧注释写「关掉后模块区可能全空却找不到入口开回来」，
-         * 那是后台还没有这张卡时的旧前提，模块侧的过滤器已与代码对齐
-         * （server-monitor.js mountWidget 与远端同一 hidden 表）。
-         * 所以它没有「部署」「编辑」「删除」，只有「是否在首页显示」。
-         *
-         * 三个状态位对本机恒为固定值：agent 天然在（不需要装）、
-         * 在线（它就是本服务本身）、同步方式是直读。
-         */
-        renderLocalServerCard(config) {
-            const key = 'server-monitor:local';
-            const item = (config.widgets || []).find(w => w.id === key);
-            const shown = item ? item.enabled !== false : true;
-            return `
-            <div class="server-item" data-server-id="local" data-local="1">
-                <div class="server-item-head">
-                    <span class="server-item-name">本机（${this.esc(location.hostname || '运行此服务的机器')}）</span>
-                </div>
-                <div class="server-item-badges">
-                    <span class="server-item-status" data-kind="ready"
-                          title="本服务直接读自己，不需要装任何东西">已安装</span>
-                    <span class="server-item-status" data-kind="online"
-                          title="它就是本服务本身，永远在线">在线</span>
-                    <span class="server-item-mode" data-mode="local"
-                          title="直接读本机系统计数器，不走网络">直读</span>
-                </div>
-                <div class="server-item-actions">
-                    <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
-                        <input type="checkbox" data-server-visible="${key}" ${shown ? 'checked' : ''}
-                               aria-label="在首页显示本机">
-                        <span>${shown ? '显示' : '隐藏'}</span>
-                    </label>
-                </div>
-            </div>`;
-        }
-
-        /**
-         * 服务器列表。本机一张 + 每台远端一张。
-         * 每张卡上有**三个**状态位（是否装了 agent / 是否在线 / 同步方式）、
-         * 一个「是否在首页显示」的复选框，以及该台机器的操作按钮。
-         * 凭据不回显——已注册的回一个布尔，编辑时留空表示保持原值
-         * （与 WebDAV 的「留空保持原密码」同一形状）。
-         */
-        renderServerList(host, config) {
-            if (!host) return;
-            const servers = config.servers || [];
-            // 本机永远有卡片——它是这个模块唯一的零配置产物，也是用户
-            // 确认「这套东西活着」的第一眼。此前它只出现在首页卡片里，
-            // 后台列表从空开始，用户会以为「还没配任何东西」。
-            host.innerHTML = this.renderLocalServerCard(config)
-                + servers.map(raw => {
-                const key = `server-monitor:${raw.id}`;
-                const item = (config.widgets || []).find(w => w.id === key);
-                const shown = item ? item.enabled !== false : true;
-                // ⚠️ 合并探测结果：agentVersion 只存在于 /probe 的响应里
-                // （配置里没有这个字段），所以「目标机上跑的是不是旧版」
-                // 这个判断必须读缓存，否则永远拿不到那个值。
-                // 用 {...raw, ...probe} 而不是直接改 raw —— 那是配置对象，
-                // 改它会让「这次探测的结果」变成「永久状态」。
-                const probe = this.lastProbe?.[raw.id];
-                const s = probe ? { ...raw, ...probe } : raw;
-                const isPush = s.mode === 'push';
-                // 一台一张卡、卡内竖排：横向由 grid 排多台，纵向因此有空间做
-                // 达标的触控目标。此前是一行一台、按钮挤在右侧一行里（实测 26px，
-                // 低于 44px 触摸下限），而那个密度是为三个按钮写的——
-                // 本轮加了「检测连通性」变四个，紧凑单行更挤不下了。
-                return `
-                <div class="server-item" data-server-id="${this.esc(s.id)}">
-                    <div class="server-item-head">
-                        <span class="server-item-name">${this.esc(s.name || s.url)}</span>
-                        <span class="server-item-url">${this.esc(this.displayUrlOf(s))}</span>
-                    </div>
-                    <div class="server-item-badges">
-                        ${this.renderServerStatusBits(s)}
-                        <span class="server-item-mode" data-mode="${isPush ? 'push' : 'pull'}"
-                              title="${isPush
-                                ? '推送：目标机主动送上来，不开放端口'
-                                : '拉取：本服务去连这台机器'}">${isPush ? '推送' : '拉取'}</span>
-                    </div>
-                    ${this.renderServerStateBody(s)}
-                    <div class="server-item-actions">
-                        <label class="server-item-show" title="${shown ? '首页显示' : '已隐藏'}">
-                            <input type="checkbox" data-server-visible="${this.esc(key)}" ${shown ? 'checked' : ''}
-                                   aria-label="在首页显示 ${this.esc(s.name || s.url)}">
-                            <span>${shown ? '显示' : '隐藏'}</span>
-                        </label>
-                        ${isPush ? '' : `<button class="btn btn-sm probe-server"
-                            title="真去连一次：主机在不在线、agent 装没装">检测</button>`}
-                        ${this.renderDeployAction(s)}
-                        <button class="btn btn-sm edit-server">编辑</button>
-                        <button class="btn btn-sm btn-danger del-server">删除</button>
-                    </div>
-                </div>`;
-            }).join('');
-
-            for (const row of host.querySelectorAll('.server-item')) {
-                const id = row.dataset.serverId;
-                // 本机卡片没有 deploy/probe/edit/delete 按钮，
-                // 所以下面每个 querySelector 都可能返回 null。
-                const server = servers.find(s => s.id === id);
-                const showBox = row.querySelector('[data-server-visible]');
-                if (showBox) {
-                    showBox.onchange = async () => {
-                        const shown = showBox.checked;
-                        row.querySelector('.server-item-show span').textContent = shown ? '显示' : '隐藏';
-                        await this.saveServerVisibility(showBox.dataset.serverVisible, shown, config);
-                    };
-                }
-                const deployBtn = row.querySelector('.deploy-server');
-                if (deployBtn) deployBtn.onclick = () => this.showDeployDialog(server);
-
-                // 探测：真去连一次，回答三个问题——主机在吗、agent 装了吗、
-                // 能读到指标吗。只对拉取模式的机器有意义：推送模式是目标机
-                // 来找我们，「够不够得着」是反过来的问题。
-                const probeBtn = row.querySelector('.probe-server');
-                if (probeBtn) {
-                    probeBtn.onclick = async () => {
-                        probeBtn.disabled = true;
-                        const original = probeBtn.textContent;
-                        probeBtn.textContent = '检测中…';
-                        try {
-                            const res = await API.post(`/api/modules/servers/${encodeURIComponent(id)}/probe`);
-                            // 记进缓存：渲染时的「在线」位要读它（服务端算好的
-                            // reachable 不会凭空出现在配置里）
-                            if (!this.lastProbe) this.lastProbe = {};
-                            this.lastProbe[id] = res;
-                            const name = server.name || server.url;
-                            // 每种结果都给出下一步——服务端已经在 hint 里写好了，
-                            // 这里只负责把它显示出来，并按情况提示下一步动作。
-                            // 措辞取自 serverDeployBit，与卡片状态位、说明区同源。
-                            const ok = res.deployState === 'ready';
-                            const bit = this.serverDeployBit(res);
-                            this.showToast(`${name}：${bit.text}。${res.hint || ''}`,
-                                ok ? 'success' : 'error');
-                            // 「主机在线但没装 agent」是最值得主动引导的一种：
-                            // 用户点检测多半就是想确认能不能用，而答案是「能连，
-                            // 但要装个东西」——直接告诉他去哪装。
-                            if (res.deployState === 'not_deployed') {
-                                await this.notice('这台机器还缺 agent', res.hint || '');
-                            }
-                            // 刷新卡片，让状态位与说明区立刻反映这次探测的结果
-                            await this.renderModulesEditor();
-                        } catch (e) {
-                            console.error('Probe server failed:', e);
-                            this.showToast('检测失败，请重试', 'error');
-                        } finally {
-                            probeBtn.disabled = false;
-                            probeBtn.textContent = original;
-                        }
-                    };
-                }
-
-                const editBtn = row.querySelector('.edit-server');
-                if (editBtn) editBtn.onclick = () => this.showServerDialog(server, async () => {
-                    await this.renderModulesEditor();
-                });
-                const delBtn = row.querySelector('.del-server');
-                if (delBtn) delBtn.onclick = async () => {
-                    if (!await this.confirmAction(`确定删除「${server.name || server.url}」？`, '删除服务器', true)) return;
-                    try {
-                        const res = await fetch(`/api/modules/servers/${encodeURIComponent(id)}`, {
-                            method: 'DELETE',
-                            credentials: 'same-origin'
-                        });
-                        if (!res.ok) {
-                            const body = await res.json().catch(() => ({}));
-                            throw new Error(body.error || `HTTP ${res.status}`);
-                        }
-                        this.showToast('已删除');
-                        await this.renderModulesEditor();
-                    } catch (e) {
-                        console.error('Delete server failed:', e);
-                        this.showToast(e.message || '删除失败', 'error');
-                    }
-                };
-            }
-        }
-
-        /**
-         * 一键部署面板：签一枚一次性令牌，把「复制粘贴一行命令」给用户。
-         *
-         * 为什么放在这里而不是 sylph.sh：sylph.sh 管的是**主服务**的安装与升级，
-         * 而 agent 部署在**别的机器**上，混进去会让两个角色互相干扰。
-         * 后台「模块 → 监控目标」是用户配置这些机器的地方，命令就该在这里。
-         *
-         * 上一版是六个代码块手工复制，还带 `<你的 token>` 占位符——
-         * 用户得先去别处取一个自己发明的 token、再手工配 systemd。
-         * 现在三处需要用户填的值（token、端口、证书指纹）全部归零：
-         * 端口由后台按当前访问地址自动带上，证书由 agent 自己签发，
-         * 令牌是一次性的、用完即废。
-         */
-        showDeployDialog(server) {
-            const name = server.name || server.url || '这台机器';
-            // 一键部署：先换一枚一次性部署令牌，再把命令拼出来。
-            // 令牌明文只在这一次响应里出现，服务端只存哈希——
-            // 所以面板必须立刻让用户复制走。
-            this.showToast('正在生成部署命令…');
-            API.post(`/api/modules/servers/${encodeURIComponent(server.id)}/enroll-token`)
-                .then(res => {
-                    const origin = location.origin;
-                    const mode = res.mode === 'push' ? 'push' : 'pull';
-                    // 自签服务端要在命令里带上 CA，否则 agent 的 TLS 握手会失败
-                    // （Go 在 macOS 上不读 SSL_CERT_FILE，Linux 上自签也不在
-                    // 系统根池里）。默认不勾：多数人用 certbot。
-                    const parts = [
-                        `curl -fsSL ${origin}/agent/install.sh | sudo bash -s --`,
-                        `  --server ${origin}`,
-                        `  --enroll ${res.token}`
-                    ];
-                    if (mode === 'push') parts.push('  --mode push');
-                    // 自签时用户得自己给证书路径——我们不知道他装在哪，
-                    // 而猜一个路径比让用户改一行更糟。
-                    if (this.selfSignedCert === true) {
-                        parts.push('  --server-ca /etc/ssl/certs/你的证书.crt');
-                    }
-                    const command = parts.join(' \\\n');
-                    const mins = Math.max(1, Math.round((res.expiresAt - Date.now()) / 60000));
-
-                    // 升级命令：与部署命令**并列**，而不是替代它。
-                    //
-                    // 两者不是一回事，走的路径不同：
-                    //   部署 → 重新注册，服务端**换掉 token**、证书也重签
-                    //   升级 → 只替换二进制，凭据与证书都不动
-                    // 所以日常升级用下面这条；上面那条留给「首次安装」
-                    // 与「这台机器的凭据要重新配」的情况。
-                    //
-                    // ⚠️ 别把升级做成部署的别名：那会让用户每升级一次就换一次
-                    // token，凭据白白轮换，而旧进程在重启前一直 401。
-                    // ⚠️ 路径写死 /usr/local/bin/nav-agent：它必须与 agent/install.sh 里的
-                    // BIN_PATH 一致。改成从服务端读的话，多一次请求只为一个
-                    // 不会变的常量——而两处不一致时用户会拿到一条跑不通的命令。
-                    const upgradeCommand =
-                        `sudo /usr/local/bin/nav-agent upgrade --server ${origin}`
-                        + (this.selfSignedCert === true
-                            ? ' \\\n  --server-ca /etc/ssl/certs/你的证书.crt'
-                            : '');
-
-                    this.showCommandPanel(`部署到「${name}」`, [
-                        {
-                            title: '1. 复制并执行',
-                            note: '在目标机的终端执行（需要 sudo）。这一行会装好 agent、'
-                                + '生成证书、注册到本服务并配置开机自启',
-                            code: command
-                        },
-                        {
-                            title: '2. 已经装过了？只升级用这条',
-                            // ⚠️ 措辞里不要用 Markdown 强调：这个面板的 note 与
-                            // plain 都经过 esc()，`**…**` 会原样显示星号
-                            // （浏览器实测确认，同 richIntro 的那条约束）。
-                            note: '下面这条只替换 agent 程序本身，不重新注册：'
-                                + '凭据、证书都不动，token 不会变。'
-                                + '本服务出新版本后在目标机执行它即可，'
-                                + '结束时它会自动重启服务，无需再手动 systemctl restart。'
-                                + '（上一条部署命令也能升级，但会顺便换掉 token，'
-                                + '没必要。）',
-                            code: upgradeCommand
-                        },
-                        {
-                            title: '3. 回到这里刷新',
-                            // ⚠️ 按模式分开说（plain 也是）：push 没有自动翻牌——
-                            // 探测轮询显式排除推送机器，注册成功是唯一路径，
-                            // 所以 note 不能对 push 许诺「自动变成已就绪」。
-                            note: mode === 'push'
-                                ? '目标机执行完后，关掉这个面板重开一次：'
-                                  + '注册成功它就会显示「已就绪」'
-                                : '目标机执行完后，这张卡片会自动变成「已就绪」，也能读到指标了',
-                            // 没有可复制的命令，所以不放代码块——
-                            // 放一个装注释的代码块只会让用户以为要复制它，
-                            // 而复制到终端里什么也不会发生。
-                            //
-                            // ⚠️ 这个面板是 fixed 覆盖层（z-index 1100），盖在管理弹窗
-                            // （1000）之上，正对着服务器卡片那一块——用户在这里看不到
-                            // 任何按钮。原文案「点上面的「检测」」因此是条**看不见的
-                            // 入口**：面板开着时那个按钮在它下面。
-                            //
-                            // ⚠️ 而且 push 模式压根没有那个按钮（renderServerList
-                            // 对 isPush 直接不渲染）。push 机器恰恰是最需要确认
-                            // 部署结果的那种——它一个端口都不开，只靠注册与上报时间。
-                            // 所以必须按模式分开说，不能给一句两处都不成立的话。
-                            //
-                            // ⚠️ 也不要再写「每 60 秒自动探测」：那个轮询
-                            // （schedulePendingProbe）只覆盖 `!s.enrolled` 的机器，
-                            // 已注册的那台永远不会被自动探测——照原文案读，用户
-                            // 执行完部署却等不到卡片自己变。
-                            // ⚠️ 引号里必须是**屏幕上的字**：
-                            //   · push 失败首发是「尚未收到推送」（未上报），
-                            //     断线态是「已 N 分钟未收到推送」——两个不同的原因，
-                            //     文案要分开，不能压成一个；
-                            //   · 「已就绪」是后台管理卡的状态位字样；
-                            //   · 首页卡片在 push 正常态不显示错误，只在未上/断线时出错误框。
-                            plain: mode === 'push'
-                                ? '无需命令 —— 推送模式下目标机不开放端口，'
-                                  + '探测不到主机在不在线，部署结果看它有没有注册上来。'
-                                  + '关掉这个面板后：后台这张卡显示「已就绪」即装好了；'
-                                  + '首页那张卡显示「尚未收到推送」说明 agent 没起来，'
-                                  + '显示「已 N 分钟未收到推送」说明起来了又断线。'
-                                : '无需命令 —— 未部署的机器本页面每 60 秒自动探测一次，'
-                                  + '状态变了会自动刷新。'
-                                  + '这台已注册的机器不会自动探测，'
-                                  + '关掉这个面板后点它卡片上的「检测」可以立刻试一次。'
-                        }
-                    ], {
-                        // ⚠️ 不要用 Markdown 强调：intro 经过 esc() 转义后是纯文本，
-                        // `**目标机**` 会原样显示星号（浏览器实测确认）。
-                        // 要强调就用 <strong>——它是这面板里唯一允许的 HTML。
-                        intro: `在<strong>目标机</strong>上执行，不是在这台服务器上。\n`
-                            + `这枚令牌 ${mins} 分钟内有效、只能用一次，执行完就作废——`
-                            + `所以它只出现在这条命令里，不会被写进目标机的任何持久配置。`
-                    });
-                })
-                .catch(e => {
-                    console.error('Issue enroll token failed:', e);
-                    this.showToast('生成部署命令失败，请重试', 'error');
-                });
-        }
-
-
-        /**
-         * 可复制的命令面板。
-         *
-         * 每一步有两种形态：
-         *   { title, note, code }  —— 有命令，带「复制」按钮
-         *   { title, note, plain } —— 只是说明，**不给复制按钮**
-         *
-         * 第二种是必要的：早先把「无需命令」也塞进一个装注释的代码块，
-         * 于是用户看到两个一模一样的「复制」按钮，复制到终端里什么也不会发生
-         * （浏览器实测发现）。
-         *
-         * ⚠️ title / note / code 一律走 esc()，它们是纯文本；
-         * intro 例外，由 richIntro() 做白名单净化（只放行 <strong>）。
-         * 早先在 intro 里用 Markdown 的 `**目标机**`，转义后星号原样显示。
-         */
-        richIntro(text) {
-            return this.esc(text).replace(/&lt;strong&gt;/g, '<strong>')
-                .replace(/&lt;\/strong&gt;/g, '</strong>');
-        }
-
-        showCommandPanel(title, steps, { intro = '' } = {}) {
-            document.querySelectorAll('.command-panel-overlay').forEach(o => o.remove());
-            const overlay = html(`
-                <div class="command-panel-overlay">
-                    <div class="command-panel" role="dialog" aria-modal="true" aria-label="${this.esc(title)}">
-                        <div class="command-panel-head">
-                            <h3>${this.esc(title)}</h3>
-                            <button type="button" class="command-panel-close" aria-label="关闭">×</button>
-                        </div>
-                        <div class="command-panel-body">
-                            ${intro ? `<p class="command-intro">${this.richIntro(intro)}</p>` : ''}
-                            ${steps.map(s => `
-                                <section class="command-step">
-                                    <h4>${this.esc(s.title)}</h4>
-                                    ${s.note ? `<p class="command-note">${this.esc(s.note)}</p>` : ''}
-                                    ${s.plain
-                                        ? `<p class="command-plain">${this.esc(s.plain)}</p>`
-                                        : `<div class="command-row">
-                                            <pre class="command-code">${this.esc(s.code)}</pre>
-                                            <button type="button" class="btn btn-sm command-copy">复制</button>
-                                          </div>`}
-                                </section>
-                            `).join('')}
-                        </div>
-                    </div>
-                </div>
-            `);
-            document.body.appendChild(overlay);
-
-            const close = () => {
-                overlay.remove();
-                document.removeEventListener('keydown', onKey);
-            };
-            const onKey = e => { if (e.key === 'Escape') close(); };
-            document.addEventListener('keydown', onKey);
-            overlay.querySelector('.command-panel-close').addEventListener('click', close);
-            overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-
-            for (const btn of overlay.querySelectorAll('.command-copy')) {
-                btn.addEventListener('click', async () => {
-                    const code = btn.closest('.command-row').querySelector('.command-code').textContent;
-                    try {
-                        await navigator.clipboard.writeText(code);
-                        btn.textContent = '已复制';
-                    } catch {
-                        // 剪贴板不可用（http 页面、非用户手势）时退回选中
-                        const range = document.createRange();
-                        range.selectNodeContents(btn.closest('.command-row').querySelector('.command-code'));
-                        const sel = window.getSelection();
-                        sel.removeAllRanges();
-                        sel.addRange(range);
-                        btn.textContent = '已选中，按 ⌘C';
-                    }
-                    setTimeout(() => { btn.textContent = '复制'; }, 2400);
-                });
-            }
-        }
-
-        /**
-         * 添加 / 编辑一台服务器。
-         *
-         * 字段从「名称 + 地址（带协议和端口）+ token + 采集方式」收敛成
-         * 「名称 + 地址（只填 IP）+ 一个连通性问题」——这是本次改版的核心：
-         * 上一版要用户自己拼协议、自己发明 token、自己在「拉取/推送」两个
-         * 技术词之间选，而这三个值本服务全都知道。
-         *
-         * token 与证书都不再由用户填：它们由「部署」流程里的注册步骤带回。
-         * 编辑时留空表示保持原值（与 WebDAV 的「留空保持原密码」同一形状）。
-         *
-         * 单独一个端点而不是走 /api/modules/config——token 必须由服务端加密，
-         * 前端提交的明文不能经那条路径落盘。
-         */
-        async showServerDialog(server, onDone) {
-            const isEdit = !!server;
-            // 用户答的是「本服务能否直接连到它」，而不是「局域网/公网」。
-            // 后者描述的是机器的位置，前者才是决定能不能 pull 的那个事实；
-            // 而「局域网/公网」组合起来有四格，用户要自己推导哪一格。
-            const currentReachable = server ? server.reachable !== false : true;
-            const result = await this.showUiDialog({
-                title: isEdit ? '编辑服务器' : '添加服务器',
-                message: isEdit
-                    ? '改了地址或连通方向后，需要重新部署一次才能生效。'
-                    : '保存后会自动检测这台机器的状态。token 与证书会在你部署时自动配置，不用在这里填。',
-                fields: [
-                    { label: '名称', type: 'text', value: server ? server.name : '', placeholder: '例如：家用 NAS' },
-                    {
-                        label: '地址',
-                        type: 'text',
-                        value: server ? this.displayUrlOf(server) : '',
-                        placeholder: '192.168.1.10'
-                    }
-                ],
-                options: [
-                    {
-                        name: 'reachable', kind: 'radio', value: 'yes',
-                        label: '能：同一局域网，或公网可达',
-                        checked: currentReachable,
-                        hint: '本服务会主动去连这台机器采集数据（拉取方式）'
-                    },
-                    {
-                        name: 'reachable', kind: 'radio', value: 'no',
-                        label: '不能：它在家里的内网，本服务在公网',
-                        checked: !currentReachable,
-                        hint: '目标机主动把数据送上来（推送方式），它不需要开放任何端口'
-                    }
-                ],
-                validate: (values) => {
-                    const raw = (values[1] || '').trim();
-                    if (!raw) return '请填写服务器地址';
-                    // 只填 IP 也接受：补上 https:// 与默认端口再校验。
-                    // ⚠️ 但 http:// 一律拒——token 是那台机器的只读监控凭据，
-                    // 明文传输等于把它公开。与服务端那条校验同一裁决，
-                    // 免得用户填完了才被拒。
-                    if (/^http:\/\//i.test(raw)) {
-                        return '必须用 https：token 是那台机器的只读监控凭据，'
-                            + '明文传输等于把它公开。目标机上的 agent 自己起 HTTPS。';
-                    }
-                    const normalized = /^https:\/\//i.test(raw) ? raw : `https://${raw}`;
-                    let parsed;
-                    try {
-                        parsed = new URL(normalized);
-                    } catch {
-                        return '地址格式不正确。填 IP 或域名即可，例如 192.168.1.10';
-                    }
-                    if (!parsed.hostname) return '地址缺少主机名';
-                    // 反过来要拦：用户填了 http://host 但漏了冒号，或写了别的协议
-                    if (!/^https:\/\//i.test(raw) && raw.includes('://')) {
-                        return '只支持 https，agent 自己起的就是 HTTPS';
-                    }
-                    return null;
-                }
-            });
-            if (!result) return;
-
-            const name = (result.values[0] || '').trim();
-            const rawAddr = (result.values[1] || '').trim();
-            // 补全成完整 URL：默认 https、默认端口 4195。
-            // 用户只填 IP 也能存——这是「只填 IP 就行」那个诉求的关键。
-            let url;
-            if (/^https:\/\//i.test(rawAddr)) {
-                url = rawAddr;
-                // 没写端口就补上默认的，否则后台会连 443 而 agent 听在 4195
-                try {
-                    const u = new URL(url);
-                    if (!u.port) u.port = '4195';
-                    url = u.toString().replace(/\/$/, '');
-                } catch { /* 交给服务端去拒 */ }
-            } else {
-                const withScheme = `https://${rawAddr}`;
-                try {
-                    const u = new URL(withScheme);
-                    if (!u.port) u.port = '4195';
-                    url = u.toString().replace(/\/$/, '');
-                } catch {
-                    url = withScheme;
-                }
-            }
-            const reachable = result.choices.reachable !== 'no';
-            const mode = reachable ? 'pull' : 'push';
-
-            try {
-                const saved = await API.post('/api/modules/servers', {
-                    id: server ? server.id : undefined,
-                    name,
-                    url,
-                    mode,
-                    reachable
-                });
-                this.showToast(isEdit ? '服务器已更新' : '服务器已添加，正在检测…');
-                await onDone();
-
-                // 保存后立刻探一次，用户不用再点「检测」才知道结果。
-                // 编辑时**不**自动打开部署面板：那条命令会签发一枚新令牌，
-                // 而「改个名字」这种无害操作不该产生一枚用户看不见的令牌。
-                if (saved && saved.id) {
-                    const fresh = await this.findServerById(saved.id);
-                    if (fresh) {
-                        const res = await API.post(`/api/modules/servers/${encodeURIComponent(saved.id)}/probe`);
-                        if (res.deployState === 'not_deployed') {
-                            await this.notice('这台机器还缺 agent',
-                                (res.hint || '') + '\n\n点这行右侧的「部署」，把命令复制到目标机上执行就行。');
-                            // 新建且还没部署时直接给命令——用户的下一步几乎必然是它
-                            if (!isEdit) {
-                                this.showDeployDialog({ ...fresh, id: saved.id, name, url });
-                            }
-                        }
-                        await onDone();
-                    }
-                }
-            } catch (e) {
-                console.error('Save server failed:', e);
-                this.showToast('保存失败，请重试', 'error');
-            }
-        }
-
-        /** 从已加载的模块配置里找一台机器。找不到返回 null 而不是抛错。 */
-        async findServerById(id) {
-            if (!this.modulesConfig) await this.loadModulesConfig();
-            const list = (this.modulesConfig && this.modulesConfig.servers) || [];
-            return list.find(s => s.id === id) || null;
         }
 
         renderAdminPanel() {
@@ -4714,8 +4011,9 @@
                 </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelModules" aria-labelledby="adminTabModules" hidden>
                 <div class="section">
-                    <div class="section-title">模块</div>
-                    <p class="fav-hint">模块配置独立保存，不随上方的「保存」按钮提交。</p>
+                    <!-- ⚠️ 这里**不**放标题与说明：它们由 renderModulesEditorContent 与
+                         模块块一起渲染（那块内容会被重渲染覆盖）。两边各写一份时，
+                         屏幕上会出现两组「模块 / 模块配置独立保存…」（浏览器实测见到过）。 -->
                     <div id="modulesEditor">
                         <div class="webdav-loading">加载中...</div>
                     </div>
@@ -4765,6 +4063,10 @@
             // 只剩模板里那句「加载中...」，而 webdavConfig 还在内存里——
             // 不复位「已渲染」闩锁，展开时就不会再去加载，也就没人把它画出来。
             this.webdavRendered = false;
+            // 展开状态同理（面板是新的，上次展开过的那一块不该默认还是展开的）。
+            // ⚠️ 它必须排在**上面那三行之后**：那三行是一条被测试钉住的「成组复位」，
+            // 中间插语句会破坏那个形状（tests/login-guard.test.js）。
+            this.expandedDisabled.clear();
             // 回到上次停留的分区，而不是每次都弹回第一个。
             // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。

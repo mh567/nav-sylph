@@ -681,23 +681,42 @@
 
 /* 模块列表行：名称与说明在左，开关与状态文字紧贴右侧。
    状态文字必须与开关同行——它紧贴开关，一不一致最刺眼。 */
-.modal .module-setting-row { align-items: center; }
-.modal .module-setting-row > label { display: flex; align-items: center; gap: 12px; width: 100%; }
-.modal .module-setting-label { flex: 0 0 auto; font-size: 13px; font-weight: 500; color: var(--text); }
-.modal .module-setting-hint { flex: 1 1 auto; min-width: 0; color: var(--text-muted); font-size: 11px; }
+/* 模块分区：**一个模块一块**。块头是「名称 + 说明 + 开关」，块内是它自己的配置
+   （模块通过 renderAdminSection 自己渲染）；平台级设置在末尾的 .platform-block 里。
+   形态见 docs/mockup-admin-modules.html（版式 C）。 */
+.modal .module-block {
+    margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--glass); overflow: hidden;
+}
+.modal .module-block-head { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; }
+.modal .module-block-copy { flex: 1 1 auto; min-width: 0; }
+.modal .module-block-title { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
+.modal .module-block-summary { display: block; margin-top: 2px; font-size: 11px; line-height: 1.5; color: var(--text-muted); }
 .modal .module-setting-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; }
 .modal .module-setting-state { min-width: 44px; color: var(--text-muted); font-size: 11px; text-align: left; }
-/* 窄屏：说明文字换到名称下方一行，不与开关抢横向空间 */
-@media (max-width: 600px) {
-    .modal .module-setting-row > label { flex-wrap: wrap; }
-    .modal .module-setting-hint { flex: 1 1 100%; order: 3; }
+.modal .module-block-body { padding: 12px 14px 14px; border-top: 1px solid var(--border); background: var(--glass-strong); }
+.modal .module-block-sub { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.modal .module-admin-section { margin-top: 8px; }
+/* 未启用：配置收起，留一行说明 + 展开入口 */
+.modal .module-block-off-note {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    background: var(--glass-strong); color: var(--text-muted); font-size: 11px;
 }
-
-/* 模块分区里保存按钮与下一段标题之间的间距。
-   按钮是 inline-block，「保存模块配置」六个字在 1200px 弹窗里也放得下，
-   但窄一点就会换行，而换行后紧贴下一段标题——两行文字糊在一起。
-   给出确定的下方间距，与按钮是否换行无关。 */
-.modal #saveModulesBtn { display: block; margin-bottom: 22px; }
+.modal .module-block-off-note button {
+    min-height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px;
+    background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
+    color: var(--text-secondary); font: inherit; font-size: 11px; cursor: pointer;
+}
+.modal .module-block-off-note button:hover { color: var(--text); }
+/* 平台级设置：明确与模块分开，别让用户以为它属于上面某个模块 */
+.modal .platform-block { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* 窄屏：开关换到名称/说明下方一行，不与它们抢横向空间 */
+@media (max-width: 600px) {
+    .modal .module-block-head { flex-wrap: wrap; }
+    .modal .module-block-copy { flex: 1 1 100%; }
+    .modal .module-setting-toggle { flex: 1 1 100%; }
+}
 .modal #serverList + #addServerBtn { margin-top: 4px; }
 /* 监控目标列表。名称与地址一行、徽章一行、操作一行的卡片。
    单行紧凑排布：地址与名称并排、字号更小、行高更紧。
@@ -722,10 +741,11 @@
 }
 .modal .server-item-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .modal .server-item-name { flex: 0 1 auto; min-width: 0; color: var(--text); font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.modal .server-item-name::after { content: '·'; margin-left: 6px; color: var(--text-muted); font-weight: 400; }
+/* 分隔点挂在 url 上而不是名字的 ::after：本机卡的名字后面没有 url，
+   挂在名字上会让它孤零零跟着一个「·」（实测截图可见）。 */
+.modal .server-item-url::before { content: '·'; margin-right: 6px; color: var(--text-muted); font-weight: 400; }
 .modal .server-item-url { flex: 1 1 auto; min-width: 0; color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal .server-item-badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.modal .server-item-token { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; padding: 1px 6px; border: 1px solid var(--admin-edge); border-radius: 4px; }
 /* 采集方式徽章。与 token 徽章同一形状，但它回答的是另一个问题
    （谁主动、要不要开端口），两者都要留着——排查离线时缺一个就得靠猜。 */
 .modal .server-item-mode { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; padding: 1px 6px; border: 1px solid var(--admin-edge); border-radius: 4px; }
@@ -756,19 +776,9 @@
 /* unknown = 「没探测过」。刻意比 not_deployed 还弱：
    「不知道」不该看起来像「查过了，没装」。 */
 .modal .server-item-status[data-kind="unknown"] { color: var(--text-muted); opacity: .75; }
-.modal .server-item-status .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: currentColor; flex: 0 0 auto;
-}
-/* 「等待部署」是唯一一个状态会自己变——对面正在执行命令。
-   动效告诉用户「在等」而不是「卡住了」。 */
-@keyframes navDeployPulse { 0%, 100% { opacity: 1; } 50% { opacity: .32; } }
-.modal .server-item-status[data-kind="pending"] .dot {
-    animation: navDeployPulse 1.6s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-    .modal .server-item-status[data-kind="pending"] .dot { animation: none; }
-}
+/* ⚠️ 这里曾有 `.server-item-status .dot` + navDeployPulse 呼吸动效：状态位现在
+   只渲染纯文字 span（圆点子元素早就不产出了），因而它从来没被看见过。
+   留着会让人以为「等待部署有个动画」，实际元素不存在——一并删掉。 */
 /* 深色下要提亮，否则这些色在近黑背景上几乎看不见 */
 :root[data-theme="dark"] .modal .server-item-status[data-kind="pending"] { color: #e0bd7a; }
 @media (prefers-color-scheme: dark) {
@@ -859,7 +869,6 @@
    （这与「桌面降到 36px」不是同一个决定，别顺手把这里的 44 改成 36。） */
 @media (max-width: 700px) {
     .modal #serverList { grid-template-columns: 1fr; }
-    .modal .server-item-token { font-size: 9px; padding: 0 4px; }
     .modal .server-item-mode { font-size: 9px; padding: 0 4px; }
     .modal .server-item-actions .btn,
     .modal .server-item-show { min-height: 44px; }
@@ -882,7 +891,8 @@
     .admin-tabs { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
     .admin-tabs::-webkit-scrollbar { display: none; }
     .admin-tab { flex: 0 0 auto; min-height: 44px; font-size: 16px; padding: 0 14px; }
-    .modal #modulesEditor .btn { min-height: 44px; }
+    .modal #modulesEditor .btn,
+    .modal .module-block-off-note button { min-height: 44px; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
