@@ -100,6 +100,11 @@
         return syncState === 'synced' && lastSync ? hm(lastSync) : '';
     }
 
+    /**
+     * 头部状态。只给**临时**状态：同步中 / 同步失败（带重试）。
+     * 稳态不再显示「已同步」这类描述——顶部只留最近同步时间（用户要求）。
+     * 失败必须保留：它带一个动作（重试），去掉就没有下一步了。
+     */
     function statusHTML() {
         if (syncState === 'syncing') {
             return '<span class="special-line-pill" data-kind="pending"><span class="special-line-spinner"></span>同步中</span>';
@@ -108,7 +113,7 @@
             return '<span class="special-line-pill" data-kind="alert">同步失败</span>' +
                 '<button class="special-line-retry" type="button" data-action="retry">重试</button>';
         }
-        return '<span class="special-line-pill" data-kind="ready">已同步</span>';
+        return '';
     }
 
     function symbolOf(event) {
@@ -188,8 +193,9 @@
         lastKey = key;
 
         if (headStatus) {
+            // 用户要求：顶部只留最近同步时间（去掉「动态 · 稍后阅读」「已同步」「未读 N」）。
+            // 同步中 / 同步失败·重试 是带动作的**临时**状态，保留。
             headStatus.innerHTML = statusHTML() +
-                (unreadCount > 0 ? `<span class="special-line-pill" data-kind="unread">未读 ${unreadCount}</span>` : '') +
                 (syncTimeText() ? `<span class="special-line-time-note">${syncTimeText()} 同步</span>` : '');
         }
 
@@ -238,15 +244,11 @@
                     : emptyHTML()));
 
         if (footEl) {
-            // 与仿真样例一致：居中的「加载更早事件」按钮（还有更早时才出现），
-            // 下面一行居中的说明。早先做成角落里的下划线小链接，与设计不符。
-            footEl.innerHTML =
-                (hasMore
-                    ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>'
-                    : '') +
-                `<p class="special-line-footnote">共 ${events.length} 条` +
-                `${hasMore ? '（还有更早的）' : ''}` +
-                `${syncTimeText() ? ` · 更新于 ${syncTimeText()}` : ''}</p>`;
+            // 用户要求：底部不再显示条数与更新时间，只留「加载更早事件」。
+            // 更新时间在顶部已经有一处，重复只会让人以为是两个不同的时刻。
+            footEl.innerHTML = hasMore
+                ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>'
+                : '';
         }
 
         listEl.scrollTop = scrollTop;
@@ -551,34 +553,39 @@
 
     function ensureSaveDialog() {
         if (saveDialog) return saveDialog;
-        const dlg = document.createElement('dialog');
-        dlg.className = 'special-line-dialog';
-        dlg.setAttribute('aria-labelledby', 'specialLineDialogTitle');
+        // 用平台设置弹窗那一套（.ui-dialog-overlay + .ui-dialog）：居中面板 + 同款遮罩，
+        // 点遮罩或按 Esc 关闭。此前是原生 <dialog> + showModal()，位置与观感都和
+        // 后台设置弹窗不一致（用户要求「和其他设置弹窗一样」）。
+        const dlg = document.createElement('div');
+        dlg.className = 'ui-dialog-overlay';
+        dlg.hidden = true;
         dlg.innerHTML = `
-            <h2 id="specialLineDialogTitle">保存文章</h2>
-            <p class="special-line-dialog-hint">粘贴链接，再填写标题；不自动获取网页内容。</p>
+            <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="specialLineDialogTitle">
+            <h2 id="specialLineDialogTitle">保存到稍后阅读</h2>
+            <p class="special-line-dialog-hint">只填链接就行；标题与摘要留空时会自动抓取，抓不到就用链接本身当标题。</p>
             <form class="special-line-form" novalidate>
                 <label>文章链接（必填）
                     <input id="specialLineUrl" name="url" type="url" inputmode="url" autocomplete="url"
                            placeholder="https://…" maxlength="2048" required>
                 </label>
-                <label>文章标题（必填）
+                <label>标题（选填）
                     <input id="specialLineTitle" name="title" autocomplete="off"
-                           placeholder="输入文章标题" maxlength="${TITLE_MAX}" required>
+                           placeholder="留空自动获取" maxlength="${TITLE_MAX}">
                 </label>
                 <details id="specialLineSummaryDetails">
-                    <summary>添加摘要（可选）</summary>
+                    <summary>摘要（选填）</summary>
                     <label>摘要
                         <textarea id="specialLineSummary" name="summary" rows="3"
-                                  maxlength="${SUMMARY_MAX}" placeholder="稍后阅读时快速回想内容"></textarea>
+                                  maxlength="${SUMMARY_MAX}" placeholder="留空自动获取"></textarea>
                     </label>
                 </details>
                 <p class="special-line-form-error" role="alert" hidden></p>
                 <footer class="special-line-form-actions">
                     <button class="btn" type="button" data-action="cancel-save">取消</button>
-                    <button class="btn btn-primary" type="submit">保存到稍后阅读</button>
+                    <button class="btn btn-primary" type="submit">保存</button>
                 </footer>
-            </form>`;
+            </form>
+            </div>`;
         document.body.appendChild(dlg);
 
         const urlEl = dlg.querySelector('#specialLineUrl');
@@ -586,17 +593,25 @@
         const summaryEl = dlg.querySelector('#specialLineSummary');
         const errEl = dlg.querySelector('.special-line-form-error');
 
+        function closeSaveDialog() {
+            if (dlg.hidden) return;
+            // 草稿留下：取消 / Esc / 点遮罩关掉再打开，内容还在
+            saveDraft = { url: urlEl.value, title: titleEl.value, summary: summaryEl.value };
+            dlg.hidden = true;
+            if (saveTrigger && document.contains(saveTrigger)) saveTrigger.focus();
+        }
+
         dlg.addEventListener('input', () => {
             errEl.hidden = true;
             dlg.querySelectorAll('[aria-invalid]').forEach(el => el.removeAttribute('aria-invalid'));
         });
 
-        dlg.querySelector('[data-action="cancel-save"]').addEventListener('click', () => dlg.close());
-
-        dlg.addEventListener('close', () => {
-            // 草稿留下：取消 / Esc 关掉再打开，内容还在
-            saveDraft = { url: urlEl.value, title: titleEl.value, summary: summaryEl.value };
-            if (saveTrigger && document.contains(saveTrigger)) saveTrigger.focus();
+        dlg.querySelector('[data-action="cancel-save"]').addEventListener('click', closeSaveDialog);
+        // 与平台弹窗一致：点面板以外（遮罩）关闭
+        dlg.addEventListener('pointerdown', event => { if (event.target === dlg) closeSaveDialog(); });
+        // Esc 关闭。挂在 document 上：焦点可能不在面板内（面板不是模态 <dialog>，没有焦点陷阱）
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && !dlg.hidden) closeSaveDialog();
         });
 
         function fail(message, field) {
@@ -618,10 +633,7 @@
                 fail('请填写有效的 http 或 https 文章链接。', urlEl);
                 return;
             }
-            if (!title) {
-                fail('请填写文章标题。', titleEl);
-                return;
-            }
+            // 标题改为选填：留空时由服务端抓取（用户要求「只需填链接就行」）
             const submit = dlg.querySelector('button[type="submit"]');
             submit.disabled = true;
             try {
@@ -639,8 +651,10 @@
                 titleEl.value = '';
                 summaryEl.value = '';
                 saveDraft = { url: '', title: '', summary: '' };
-                dlg.close();
-                window.app?.showToast('已保存到稍后阅读');
+                closeSaveDialog();
+                window.app?.showToast(data && data.titleFromUrl
+                    ? '已保存；未能自动获取标题，暂用链接当标题'
+                    : '已保存到稍后阅读');
                 refresh();
             } catch (e) {
                 fail(e && e.status === 429 ? '请求过于频繁，请稍后再试' : '保存失败，请重试');
@@ -663,8 +677,7 @@
         const errEl = dlg.querySelector('.special-line-form-error');
         errEl.hidden = true;
         errEl.textContent = '';
-        if (typeof dlg.showModal === 'function') dlg.showModal();
-        else dlg.setAttribute('open', '');
+        dlg.hidden = false;
         dlg.querySelector('#specialLineUrl').focus();
     }
 
@@ -948,9 +961,7 @@
         label.className = 'module-widget-title';
         label.textContent = 'Special Line';
 
-        const sub = document.createElement('span');
-        sub.className = 'special-line-sub';
-        sub.textContent = '动态 · 稍后阅读';
+        // 副标题「动态 · 稍后阅读」已按用户要求去掉：顶部只留最近同步时间。
 
         headStatus = document.createElement('span');
         headStatus.className = 'special-line-status';
@@ -978,7 +989,7 @@
         handle.setAttribute('aria-label', '拖拽调整 Special Line 的位置');
         // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
 
-        head.append(label, sub, headStatus, syncBtn, saveBtn, handle);
+        head.append(label, headStatus, syncBtn, saveBtn, handle);
 
         // ---- 筛选 chips（只建容器，内容随来源变化）----
         chipsEl = document.createElement('nav');

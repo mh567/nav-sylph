@@ -83,6 +83,10 @@ syncState 之所以不进卡片指纹：含进去等于每轮必然重写一次�
 
 **「有没有配置可折叠」不认模块 id，只看它有没有声明 `renderAdminSection`**：声明了就有配置区（未启用时收起成一行「未启用，配置先收起来。[展开配置]」，点开就地重渲染这一块——不重新拉配置、也不改开关状态）；没声明就只给一行淡字说明，不给折叠入口。**收起态不渲染配置容器**，模块自己的接口因此不会被拉（关掉的模块不该还在后台打请求）。版式与交互以 `docs/mockup-admin-modules.html`（已确认的设计稿）为准。
 
+**时间线卡片的头与底只留功能件。** 头部**只显示最近同步时间**，外加两个带动作的临时状态（同步中 / 同步失败+重试）——稳态的「已同步」「未读 N」与副标题「动态 · 稍后阅读」都已按用户要求删除；底部只留「加载更早事件」按钮，条数与更新时间不再显示（时间在头部已经有一处）。要恢复这三处描述前先问：它们各自带了什么动作？没有动作的不该占位置。
+
+**保存到稍后阅读：只填链接。** 弹窗复用平台的 `.ui-dialog-overlay` + `.ui-dialog`（与后台设置弹窗同一套居中面板与遮罩，点遮罩或 Esc 关闭）——⚠️ 这两个类定义在 `admin.css`，而 `index.html` 是**异步**加载它（`media="print"` 再切 `all`），所以这层观感依赖它到位；此前模块自带一份 `<dialog>` 样式在 `styles.css`（同步加载）。标题与摘要是**选填**：留空时由**服务端**抓目标页（浏览器跨域抓不到），依次取 `og:title`/`twitter:title`/`<title>` 与 `og:description`/`description`/`twitter:description`，容属性顺序、解 HTML 实体；SSRF 面按老规矩收：先过 `safeHttpUrl`（只允许 http/https），再叠 12s 超时、256KB 上限与 content-type 判断，**任何失败都返回空对象、不让保存失败**，退回「域名+路径」当标题并用 `titleFromUrl` 让界面提示用户。抓取函数 `fetchMeta` **可注入**，测试不会真发网络请求。
+
 **开关宿主必须是 `<label>`。** `.toggle-switch input` 是 `opacity:0`、`width:0`、`height:0` 的隐藏框，可见的 `.toggle-slider` 是它的**兄弟**，两者之间只有 label 的关联语义。宿主退化成 `<span>` 时点滑块既不改 `checked` 也不触发 `change`——表面看是「按钮点不动」，而且渲染出的 HTML 与 handler 源码都仍然正确，形状断言全绿。回归实例：`e1d1262` 分组改版把整行的 `<label>` 外壳写成了 `<span class="module-setting-toggle">`，随 v1.14.0 发布，后台每个模块的启停一起失效。守卫见 `tests/admin-modules.test.js` 里「模块开关宿主是 label」那条用例。
 
 **后台区块的契约是一个服务包**（`moduleServices()`，平台侧一处构造）：

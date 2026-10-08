@@ -3354,7 +3354,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* ---------- 头：标题 + 副标题 + 状态 + 同步 / 保存 + 拖拽把手 ---------- */
 .special-line-head { flex-wrap: wrap; margin-bottom: 0; }
-.special-line-sub { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 .special-line-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 .special-line-pill {
@@ -3365,7 +3364,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     font-size: 10px;
     white-space: nowrap;
 }
-.special-line-pill[data-kind="ready"] { color: var(--accent); }
 .special-line-pill[data-kind="pending"] { color: #a2762c; }
 .special-line-pill[data-kind="alert"] { color: #a44c46; }
 .special-line-pill[data-kind="unread"] { color: var(--text-secondary); }
@@ -3646,7 +3644,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-time { display: block; padding: 6px 0 6px 24px; }
     .special-line-time strong { display: inline; margin-right: 6px; }
     .special-line-event { margin-left: 24px; }
-    .special-line-sub { display: none; }     /* 窄列那一行留给状态与两个按钮 */
+    /* 窄列那一行留给状态与两个按钮 */
 }
 
 /* ---------- 提示 / 空态 / 骨架 / 底 ---------- */
@@ -3714,26 +3712,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     font-weight: 600;
 }
 .special-line-btn--primary:hover { color: #fff; }
-.special-line-footnote { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; text-align: center; }
 
-/* ---------- 保存文章对话框 ---------- */
-.special-line-dialog {
-    width: min(440px, calc(100vw - 32px));
-    max-height: calc(100dvh - 32px);
-    overflow: auto;
-    padding: 22px;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--glass-strong);
-    color: var(--text);
-    box-shadow: var(--shadow-lg);
-}
-.special-line-dialog::backdrop {
-    background: rgba(18, 16, 14, .58);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-}
-.special-line-dialog h2 { margin: 0 0 6px; font-size: 18px; }
+/* ---------- 保存文章对话框：复用平台 .ui-dialog-overlay / .ui-dialog（见模块文件） ---------- */
 .special-line-dialog-hint { margin: 0 0 14px; color: var(--text-muted); font-size: 11px; line-height: 1.65; }
 
 .special-line-form { display: grid; gap: 12px; }

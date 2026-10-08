@@ -152,14 +152,15 @@ test('同一个 dedupe_key 二次摄入不重复，且不重置已读/归档', (
     }
 });
 
-test('手动保存：同一 URL 是更新而不是新增，且保留首次保存时间', () => {
+test('手动保存：同一 URL 是更新而不是新增，且保留首次保存时间', async () => {
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const service = createService(createRepository(db), { getPasswordHash: async () => OLD_HASH });
+        const service = createService(createRepository(db), {
+            getPasswordHash: async () => OLD_HASH, fetchMeta: async () => ({}) });
 
-        const first = service.saveArticle({ url: 'https://example.com/a', title: '标题一', summary: 's1' });
-        const again = service.saveArticle({ url: 'https://example.com/a', title: '标题二' });
+        const first = await service.saveArticle({ url: 'https://example.com/a', title: '标题一', summary: 's1' });
+        const again = await service.saveArticle({ url: 'https://example.com/a', title: '标题二' });
         assert.equal(service.listTimeline({}).events.length, 1, '同一链接只留一条');
         const only = service.listTimeline({}).events[0];
         assert.equal(only.title, '标题二', '再次保存更新标题');
@@ -168,7 +169,7 @@ test('手动保存：同一 URL 是更新而不是新增，且保留首次保存
         assert.equal(again.id, first.id, '返回的是同一条');
 
         // 不同 URL 是两条
-        service.saveArticle({ url: 'https://example.com/b', title: '另一篇' });
+        await service.saveArticle({ url: 'https://example.com/b', title: '另一篇' });
         assert.equal(service.listTimeline({}).events.length, 2);
     } finally {
         db.close();
@@ -464,7 +465,8 @@ test('api 层不回传凭据：列表只有 hasCredentials，任何响应形状�
     try {
         const repo = createRepository(db);
         repo.ensureManualSource();
-        const service = createService(repo, { getPasswordHash: async () => OLD_HASH });
+        const service = createService(repo, {
+            getPasswordHash: async () => OLD_HASH, fetchMeta: async () => ({}) });
         const src = repo.createSource({
             providerType: 'x', name: 'X · a', externalKey: 'a',
             settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
@@ -1152,10 +1154,67 @@ test('窄屏（below 停靠）纵向堆叠，不再左右横滑', () => {
     for (const m of mediaCap) assert.equal(Number(m[1]), railMin, '媒体块的封顶值也要同值');
 });
 
-test('底部与仿真一致：居中的「加载更早事件」按钮 + 一行说明，状态按钮都是真按钮', () => {
+test('只填链接：解析网页标题与摘要（meta 属性顺序随意、解 HTML 实体、取不到给空串）', () => {
+    const { parsePageMeta } = require('../lib/timeline/http');
+
+    // og: 优先；同时演示 content 在 property 之前（真实网页两种顺序都有）
+    const a = parsePageMeta(`<html><head>
+        <title>页面标题</title>
+        <meta name="description" content="普通描述">
+        <meta property="og:title" content="OG 标题">
+        <meta content="OG 描述" property="og:description">
+        </head></html>`);
+    assert.equal(a.title, 'OG 标题', 'og:title 优先于 <title>');
+    assert.equal(a.summary, 'OG 描述', 'og:description 优先，且属性顺序不影响');
+
+    // 退回 <title> 与 name=description；实体要解、空白要压
+    const b = parsePageMeta('<title>A &amp; B\n   C</title><meta name="description" content="含 &quot;引号&quot; 的描述">');
+    assert.equal(b.title, 'A & B C', '退回 title 且解实体、压空白');
+    assert.equal(b.summary, '含 "引号" 的描述', '解 HTML 实体');
+
+    // 取不到就是空串，由调用方决定怎么退（服务端会退回「用链接当标题」）
+    const c = parsePageMeta('<html><body>什么都没有</body></html>');
+    assert.deepEqual(c, { title: '', summary: '' }, '取不到给空串，不抛错');
+});
+
+test('顶部只留同步时间、底部只留按钮：旧的三段描述与页脚统计都不得回来', () => {
+    const code = stripComments(moduleSource);
+    // 顶部：稳态不给「已同步」，也不再显示未读数与副标题
+    assert.doesNotMatch(code, /data-kind="ready"/, '不再渲染「已同步」胶囊');
+    assert.doesNotMatch(code, /data-kind="unread"/, '不再渲染「未读 N」胶囊');
+    assert.doesNotMatch(code, /动态 · 稍后阅读/, '不再渲染副标题');
+    assert.doesNotMatch(code, /special-line-sub/, '副标题元素已删');
+    // 但临时状态必须留着（它们带动作）
+    assert.match(code, /data-kind="pending"[\s\S]*?同步中/, '同步中保留');
+    assert.match(code, /data-kind="alert"[\s\S]*?data-action="retry"/, '同步失败 + 重试保留');
+    assert.match(code, /special-line-time-note/, '同步时间保留');
+    // 底部
+    assert.doesNotMatch(code, /special-line-footnote/, '页脚统计行已删');
+
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    assert.doesNotMatch(css, /\.special-line-footnote\s*\{/, '页脚统计的 CSS 也删了');
+    assert.doesNotMatch(css, /\.special-line-sub\s*\{/, '副标题 CSS 也删了');
+});
+
+test('保存弹窗用平台那套（居中 + 遮罩），且标题与摘要都是选填', () => {
+    const code = stripComments(moduleSource);
+    assert.match(code, /className = 'ui-dialog-overlay'/, '外面是平台弹窗的遮罩层');
+    assert.match(code, /class="ui-dialog" role="dialog" aria-modal="true"/, '面板用 .ui-dialog（与设置弹窗同一套观感）');
+    assert.doesNotMatch(code, /class="special-line-dialog"/, '不再用自己那套 <dialog> 样式');
+    assert.doesNotMatch(code, /showModal\(/, '不再用 showModal（那会自带另一套遮罩与定位）');
+    // 只填链接：标题/摘要不得带 required，且提交前不再校验标题
+    assert.match(code, /<input id="specialLineTitle"[^>]*>/, '标题输入框还在');
+    assert.doesNotMatch(code, /id="specialLineTitle"[^>]*required/, '标题不再必填');
+    assert.doesNotMatch(code, /请填写文章标题。/, '提交前不再卡标题');
+    assert.match(code, /classList\.add\('is-filtering'\)[\s\S]*?正在切换…/,
+        '（既有行为未受影响：筛选过渡仍在）');
+});
+
+test('底部只留「加载更早事件」：条数与更新时间已按用户要求去掉', () => {
     const code = stripComments(moduleSource);
     assert.match(code, /class="special-line-btn" type="button" data-action="more">加载更早事件</, '是真按钮、文案与仿真一致');
-    assert.match(code, /class="special-line-footnote"/, '说明单独一行');
+    assert.doesNotMatch(code, /class="special-line-footnote"/, '底部不再有「共 N 条 / 更新于」那一行');
+    assert.doesNotMatch(code, /共 \$\{events\.length\} 条/, '不再显示条数');
     // 仿真里底部区每种状态各有一个真按钮：正常→加载更早事件（quiet）、
     // 筛选无结果→清除筛选（quiet）、空状态→＋保存文章（实心主按钮）。
     // 早先这三处都写成了下划线小链接。
@@ -1345,8 +1404,9 @@ test('真跑时间线路由处理器：读回完整载荷，写把校验错误�
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const timeline = createTimeline(db, { getPasswordHash: async () => OLD_HASH });
-        timeline.service.saveArticle({ url: 'https://example.com/x', title: '一篇' });
+        const timeline = createTimeline(db, {
+            getPasswordHash: async () => OLD_HASH, fetchMeta: async () => ({}) });
+        await timeline.service.saveArticle({ url: 'https://example.com/x', title: '一篇' });
         const routes = loadTimelineRoutes(timeline);
 
         const read = await callRoute(routes, 'GET /api/timeline/events');
@@ -1367,9 +1427,13 @@ test('真跑时间线路由处理器：读回完整载荷，写把校验错误�
             { body: { url: 'javascript:alert(1)', title: 'x' } });
         assert.equal(badUrl.statusCode, 400);
         assert.match(badUrl.body.error, /http/);
+        // 标题留空不再报错：「只填链接」现在是设计内的主路径——服务端自动取标题，
+        // 抓不到就用链接本身当标题，并用 titleFromUrl 让界面提示用户。
         const noTitle = await callRoute(routes, 'POST /api/timeline/articles',
             { body: { url: 'https://example.com/y', title: '   ' } });
-        assert.equal(noTitle.statusCode, 400);
+        assert.equal(noTitle.statusCode, 200, '留空标题也能保存');
+        assert.equal(noTitle.body.event.titleFromUrl, true, '抓不到标题时回落用链接当标题');
+        assert.match(noTitle.body.event.title, /example\.com\/y/, '标题取自链接');
 
         const missing = await callRoute(routes, 'POST /api/timeline/events/:id/read',
             { params: { id: 'nope' }, body: { read: true } });
@@ -1386,7 +1450,9 @@ test('真跑时间线路由处理器：读回完整载荷，写把校验错误�
         assert.equal(marked.statusCode, 200);
         assert.equal(marked.body.unread, false);
         const after = await callRoute(routes, 'GET /api/timeline/events');
-        assert.equal(after.body.unreadCount, 0);
+        // 1 而不是 0：上面那条「留空标题」的保存现在会成功落一条（自动用链接当标题），
+        // 它没被标为已读。这里钉的是「标已读只影响那一条」，所以期望值是剩下的未读数。
+        assert.equal(after.body.unreadCount, 1, '只有被标记的那条变成已读');
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });

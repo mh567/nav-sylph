@@ -3443,11 +3443,12 @@ app.get('/api/timeline/events', modulePollLimit, requireAdmin, async (req, res) 
 });
 
 // 保存文章（稍后阅读）。同一 URL 重复保存是更新而不是新增。
-app.post('/api/timeline/articles', rateLimit, requireAdmin, (req, res) => {
+app.post('/api/timeline/articles', rateLimit, requireAdmin, async (req, res) => {
     try {
         const body = req.body || {};
+        // 标题/摘要留空时，saveArticle 会自己去抓目标页（服务端代抓，见 lib/timeline/http.js）
         res.json({
-            event: timeline.service.saveArticle({
+            event: await timeline.service.saveArticle({
                 url: body.url, title: body.title, summary: body.summary
             })
         });

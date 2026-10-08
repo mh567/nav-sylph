@@ -59,10 +59,10 @@ function offlineBackup(config, client) {
 }
 
 /** 一个带来源、事件、用户状态与凭据的时间线。 */
-function seedService(db) {
+async function seedService(db) {
     const repo = createRepository(db);
     repo.ensureManualSource();
-    const service = createService(repo, { getPasswordHash: async () => HASH });
+    const service = createService(repo, { getPasswordHash: async () => HASH, fetchMeta: async () => ({}) });
     const src = repo.createSource({
         providerType: 'x', name: 'X · alice', externalKey: 'alice',
         settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
@@ -78,7 +78,7 @@ function seedService(db) {
     const ev = repo.listEvents({}).rows[0];
     repo.setRead(ev.id, true, Date.now());
     repo.setArchive(ev.id, true, Date.now());
-    service.saveArticle({ url: 'https://example.com/saved', title: '保存的文章' });
+    await service.saveArticle({ url: 'https://example.com/saved', title: '保存的文章' });
     return { repo, service, sourceId: src.id };
 }
 
@@ -88,7 +88,7 @@ test('备份文件是版本化时间线类型，且**不含凭据**（明文与�
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const { service } = seedService(db);
+        const { service } = await seedService(db);
         const dump = service.exportTimeline();
         const text = JSON.stringify(dump);
 
@@ -121,7 +121,7 @@ test('没有时间线内容时不生成该文件；有内容时独立参与「�
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const { service } = seedService(db);
+        const { service } = await seedService(db);
         const files = new Map();
         const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
 
@@ -223,7 +223,7 @@ test('破坏性往返：备份 → 清库 → 恢复，事件与用户状态回�
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const { service } = seedService(db);
+        const { service } = await seedService(db);
         const before = service.listTimeline({});
         const archivedBefore = service.listTimeline({ view: 'archived' }).events.length;
         const sourcesBefore = service.listSources().filter(s => s.providerType !== 'manual').length;
@@ -344,7 +344,7 @@ test('校验和不对的时间线备份拒绝恢复；没有时间线文件的�
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
-        const { service } = seedService(db);
+        const { service } = await seedService(db);
         const files = new Map();
         const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
         const result = await backup.createBackup(
