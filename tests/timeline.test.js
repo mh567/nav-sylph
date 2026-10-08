@@ -662,35 +662,144 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     assert.match(code, /closeMenus\(/, '打开一个菜单时先收起别的');
 });
 
-test('平台宽栏机制：背板为 wideRail 模块让位，且让位发生在判停靠之前', () => {
+test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（真跑 railLayoutFor）', () => {
     const app = stripComments(appSource);
+    const body = extractFunction(app, 'railLayoutFor(content) {');
+    const layoutFor = new Function(`return ({ ${body} }).railLayoutFor;`)();
+
+    // ⚠️ 这条断言直接对应用户报的那个现象：「缩窄一点窗口后，该模块宽度反而变大」。
+    // 旧实现是写死的 CSS calc + 一个阈值，窗口缩 1px 会让时间线从 420 掉到 132、
+    // 再缩一点又跳到 190。新实现是连续的：content 变大时三列都不缩小。
+    let prev = null;
+    let seen = 0;
+    for (let content = 900; content <= 1700; content += 1) {
+        const layout = layoutFor(content);
+        if (!layout) { prev = null; continue; }
+        seen++;
+        if (prev) {
+            assert.ok(layout.rail >= prev.rail, `${content}: 时间线不得随可用宽度增加而变窄（${prev.rail} → ${layout.rail}）`);
+            assert.ok(layout.side >= prev.side, `${content}: 左列不得变窄`);
+            assert.ok(layout.board >= prev.board, `${content}: 背板不得变窄`);
+        }
+        assert.ok(layout.side >= 180, `${content}: 左列不低于 180（132px 实测监控卡排版错乱）`);
+        assert.ok(layout.rail >= 400, `${content}: 时间线不低于 400（不然仿真那套版式立不住）`);
+        assert.ok(layout.board >= 600, `${content}: 背板不低于 600`);
+        assert.ok(layout.side + layout.board + layout.rail + 40 <= content + 1,
+            `${content}: 三列 + 两个间距不得超过可用宽度（${layout.side}+${layout.board}+${layout.rail}）`);
+        prev = layout;
+    }
+    assert.ok(seen > 100, `大部分宽度档都应进入宽栏模式（实测 ${seen}/801）`);
+
+    // 常见桌面宽度：时间线拿满、左列不被压
+    const wide = layoutFor(1396);   // 1440 视口（#app 上限 1440，内容宽 = 1440 - 44）
+    assert.ok(wide && wide.rail >= 400 && wide.side >= 180,
+        `1440 视口下应进宽栏且两列都够：${JSON.stringify(wide)}`);
+    // 放不下就返回 null——调用方退回普通布局，模块按容器宽度降级成窄版
+    assert.equal(layoutFor(900), null, '放不下时不硬塞');
+    // ⚠️ 阈值必须正好落在「三个下限 + 两个间距」上，不能更高。高出的那一段里
+    // 时间线会退化成普通布局那个很窄的值（旧版就是 132px「内容显示不全」）。
+    // 上半段只检查了非 null 档之间的单调性，单独加「阈值偏高」这个变异是不会红的。
+    const need = 180 + 2 * 20 + 600 + 400;
+    assert.equal(layoutFor(need - 1), null, `${need - 1} 还放不下`);
+    assert.ok(layoutFor(need), `${need}（左列下限 + 两间距 + 背板下限 + 时间线下限）必须已经能进宽栏`);
+    // 阈值附近不能有悬崖：进宽栏的第一档，时间线就已经 ≥400
+    let firstWide = null;
+    for (let c = 900; c <= 1700; c += 1) {
+        const l = layoutFor(c);
+        if (l) { firstWide = { c, l }; break; }
+    }
+    assert.ok(firstWide, '存在进入宽栏模式的宽度档');
+    assert.ok(firstWide.l.rail >= 400,
+        `进宽栏的第一档（content ${firstWide.c}）时间线就有 ${firstWide.l.rail}px（不得先给一个很窄的值）`);
+});
+
+test('平台宽栏机制：三列宽度由 JS 算出写进 #app 的变量，且让位发生在判停靠之前', () => {
+    const app = stripComments(appSource);
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     // 模块声明它要一条宽列
     assert.match(stripComments(moduleSource), /wideRail: true/, '模块声明 wideRail');
 
-    // 平台侧：判定 + 应用到 #app + 顺序
-    assert.match(app, /wideRailAvailable\(\) \{/, '有宽栏可用性判定');
+    // 平台侧：判定 + 应用 + 顺序
     assert.match(app, /wantsWideRail\(\) \{/, '只看已启用且声明了 wideRail 的模块');
-    assert.match(app, /syncRail\(\) \{[\s\S]*?dataset\.rail = wide \? 'wide' : 'narrow'/, '把结论写到 #app');
+    assert.match(app, /railLayoutFor\(content\) \{/, '三列宽度由纯函数算');
+    assert.match(app, /syncRail\(\) \{[\s\S]*?dataset\.rail = layout \? 'wide' : 'narrow'/, '把结论写到 #app');
+    // 宽度写进 CSS 变量 → CSS 只消费、不再自己算（旧版写死 calc，出过阈值悬崖）
+    for (const v of ['--rail-w', '--side-w', '--board-max']) {
+        assert.ok(app.includes(`'${v}':`), `syncRail 的变量表里有 ${v}`);
+        assert.ok(css.includes(`var(${v}`), `CSS 消费 ${v}`);
+    }
+    assert.match(app, /syncRail\(\) \{[\s\S]{0,700}?setProperty\(key,/, '变量由同一个循环写出');
+    assert.match(app, /syncRail\(\) \{[\s\S]{0,700}?removeProperty\(key\)/, '不进宽栏时清掉');
     // ⚠️ 顺序：sideDockAvailable 读的是背板**实际**宽度，让位必须先发生
     const zone = app.slice(app.indexOf('async renderModuleZone()'),
         app.indexOf('async renderModuleZone()') + 4000);
     assert.ok(zone.indexOf('this.syncRail()') > 0 && zone.indexOf('this.syncRail()') < zone.indexOf('this.sideDockAvailable()'),
         'syncRail 必须排在 sideDockAvailable 之前');
-    // 未登录不该让背板一直窄着
-    assert.match(app, /if \(!this\.authenticated\) \{[\s\S]{0,220}?dataset\.rail = 'narrow'/, '登出时复位');
+    // 未登录不该让背板一直窄着。复位走 syncRail 这一条路径（它自己判未登录、
+    // 并清掉宽度变量），而不是在登出分支里手写第二份 'narrow'。
+    assert.match(app, /if \(!this\.authenticated\) \{[\s\S]{0,260}?this\.syncRail\(\);/, '登出时走 syncRail 复位');
+    assert.match(app, /const layout = \(this\.authenticated && this\.wantsWideRail\(\)\)/, '未登录一律不进宽栏');
+    assert.match(app, /else app\.style\.removeProperty\(key\);/, '不进宽栏时清掉宽度变量，不留残留状态');
 
-    // CSS 侧：背板让位 + 右侧 420 + 左列按剩余空间
-    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    // CSS 侧：背板让位 + 两列都用变量
     const board = /#app\[data-rail="wide"\] \.backboard \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(board, '宽栏下背板有自己的规则');
-    assert.match(board[1], /max-width: min\(936px, calc\(100% - 592px\)\)/, '背板让出 592px（152 + 420 + 20）');
-    // ⚠️ 必须改掉默认的居中：否则背板右半边会被那 420px 的列压住（实测压 124px）
-    assert.match(board[1], /margin-left: 152px/, '背板靠左排，左边正好留出左侧那一列');
+    assert.match(board[1], /max-width: var\(--board-max/, '背板宽度取变量');
+    // ⚠️ 必须改掉默认的居中：否则背板右半边会被时间线那一列压住（实测压 124px）
+    // 而且左边要把**列间距**一起算进去（`--side-w + 20px`）：只写 --side-w 时
+    // 左列与背板贴在一起，左右两处间距不对称（左边 0、右边 40）。
+    assert.match(board[1], /margin-left: calc\(var\(--side-w[^)]*\) \+ 20px\)/,
+        '背板靠左排，左边留出左侧那一列 + 一个列间距');
     assert.match(board[1], /margin-right: auto/, '右侧不再居中');
-    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="right"\] \{ width: 420px; \}/,
-        '右侧那一列固定 420px');
-    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="left"\] \{/,
-        '左侧那一列按剩余空间给（132～220）');
+    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="right"\] \{ width: var\(--rail-w/,
+        '右侧那一列取 --rail-w');
+    assert.match(css, /#app\[data-rail="wide"\] \.module-widget\[data-side="left"\] \{ width: var\(--side-w/,
+        '左侧那一列取 --side-w');
+});
+
+test('窄屏（below 停靠）纵向堆叠，不再左右横滑', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const inner = /\.module-zone\[data-dock="below"\] \.module-zone-inner \{([^}]*)\}/.exec(css);
+    assert.ok(inner, '切出 below 的 inner 规则');
+    assert.match(inner[1], /display: grid/, '纵向堆叠（grid 单列）');
+    assert.doesNotMatch(inner[1], /overflow-x: auto/, '不再是横向滑条');
+    assert.doesNotMatch(inner[1], /scroll-snap-type/, '横滑的 snap 与淡出遮罩一并去掉');
+    const widget = /\.module-zone\[data-dock="below"\] \.module-widget \{([^}]*)\}/.exec(css);
+    assert.ok(widget, '切出 below 的卡片规则');
+    assert.match(widget[1], /width: min\(100%, \d+px\)/, '每张卡拿到整行宽度（封顶并居中）');
+    assert.doesNotMatch(widget[1], /width: 190px/, '不再固定 190px 的横滑卡');
+
+    // ⚠️ 封顶值必须**等于宽栏的 RAIL_MIN**：两边相等时跨过边界只有位置变化
+    // （右侧那一列 ↔ 导航下方），宽度是连续的。先前封顶 560，于是窗口缩到
+    // 1263px 时模块从 400 跳到 560——正是用户报的「缩窄窗口后模块反而变宽」。
+    const railMin = Number(/const RAIL_MIN = (\d+)/.exec(stripComments(appSource))?.[1]);
+    const cap = Number(/width: min\(100%, (\d+)px\)/.exec(widget[1])?.[1]);
+    assert.ok(Number.isFinite(railMin), '解析出 railLayoutFor 的 RAIL_MIN');
+    assert.equal(cap, railMin, `窄屏卡片封顶（${cap}）必须等于宽栏下限（${railMin}），否则跨界时宽度会跳`);
+    // 媒体块里那份重复声明也要同一个值（两处说法不一 = 死代码）
+    const mediaCap = [...css.matchAll(/\.module-widget\[data-side\] \{ position: static; width: min\(100%, (\d+)px\)/g)];
+    assert.ok(mediaCap.length >= 1, '媒体块里有窄屏卡片规则');
+    for (const m of mediaCap) assert.equal(Number(m[1]), railMin, '媒体块的封顶值也要同值');
+});
+
+test('底部与仿真一致：居中的「加载更早事件」按钮 + 一行说明，状态按钮都是真按钮', () => {
+    const code = stripComments(moduleSource);
+    assert.match(code, /class="special-line-btn" type="button" data-action="more">加载更早事件</, '是真按钮、文案与仿真一致');
+    assert.match(code, /class="special-line-footnote"/, '说明单独一行');
+    // 仿真里底部区每种状态各有一个真按钮：正常→加载更早事件（quiet）、
+    // 筛选无结果→清除筛选（quiet）、空状态→＋保存文章（实心主按钮）。
+    // 早先这三处都写成了下划线小链接。
+    assert.match(code, /data-action="reset-filters">清除筛选</, '筛选无结果有清除筛选');
+    assert.match(code, /class="special-line-btn special-line-btn--primary" type="button" data-action="save">＋ 保存文章</,
+        '空状态的保存文章是实心主按钮');
+    assert.doesNotMatch(code, /special-line-linkbtn/, '下划线小链接那套已删除（不留死类名）');
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const foot = /\.special-line-foot \{([\s\S]*?)\n\}/.exec(css);
+    assert.match(foot[1], /flex-direction: column/, '按钮在上、说明在下');
+    assert.match(foot[1], /align-items: center/, '居中（仿真里是居中的 quiet-button）');
+    assert.match(css, /\.special-line-btn \{[\s\S]*?min-height: 34px/, '按钮有实体样式，不是下划线小链接');
+    assert.match(css, /\.special-line-btn--primary \{[\s\S]*?color: #fff/, '主按钮是实心的');
+    assert.doesNotMatch(css, /\.special-line-linkbtn/, '样式表里那套下划线按钮规则也要删掉，不留死规则');
 });
 
 test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按容器宽度切换', () => {
@@ -702,11 +811,15 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按�
     assert.match(card[1], /container-type: inline-size/, '卡片是容器查询的容器');
 
     // 两套版式：宽列用仿真的桌面版（日期在左），窄列用仿真 ≤700px 那套（时间在卡上方）
-    const wide = /@container \(min-width: 340px\) \{([\s\S]*?)\n\}/.exec(css);
+    // ⚠️ 阈值按**内容盒**算，不是外框：容器查询量的是内容盒，而卡片有
+    // 2×13px 内边距 + 2×1px 边框，所以 RAIL_MIN=400 那一档实际只有 372px 参与
+    // 匹配——阈值写 400（甚至 390）都会让它误判成窄版（实测：1280 视口下卡片
+    // 400 却渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px）。
+    const wide = /@container \(min-width: 360px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(wide, '有宽列版式');
     assert.match(wide[1], /grid-template-columns: 84px minmax\(0, 1fr\)/, '桌面版：左侧日期轨道 + 事件卡');
     assert.match(wide[1], /text-align: right/, '桌面版时间靠右（贴近竖线）');
-    const narrow = /@container \(max-width: 339\.98px\) \{([\s\S]*?)\n\}/.exec(css);
+    const narrow = /@container \(max-width: 359\.98px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(narrow, '有窄列版式');
     assert.match(narrow[1], /display: block/, '窄版：单列');
     assert.match(narrow[1], /margin-left: 24px/, '窄版：事件卡缩进让开竖线');

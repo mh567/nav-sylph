@@ -162,11 +162,11 @@
         const filtered = filterSource !== '' || filterView !== 'all';
         if (filtered) {
             return '<div class="special-line-empty"><p>当前筛选下没有内容。清除筛选后可查看完整时间线。</p>' +
-                '<button class="special-line-linkbtn" type="button" data-action="reset-filters">清除筛选</button></div>';
+                '<button class="special-line-btn" type="button" data-action="reset-filters">清除筛选</button></div>';
         }
         return '<div class="special-line-empty"><p>时间线还没有内容。订阅来源请在后台「模块」分区配置，' +
             '也可以先保存一篇文章。这里会按发生时间汇集各类事件。</p>' +
-            '<button class="special-line-linkbtn" type="button" data-action="save">＋ 保存文章</button></div>';
+            '<button class="special-line-btn special-line-btn--primary" type="button" data-action="save">＋ 保存文章</button></div>';
     }
 
     /** 数据指纹：没变就不重写 DOM（保住滚动位置与展开的菜单） */
@@ -200,7 +200,7 @@
             : '';
         const err = listError
             ? `<div class="special-line-notice" role="alert"><strong>读取失败</strong><span>${esc(listError)}</span>` +
-              `<button class="special-line-linkbtn" type="button" data-action="reload">重试</button></div>`
+              `<button class="special-line-btn" type="button" data-action="reload">重试</button></div>`
             : '';
 
         listEl.innerHTML = err + notice +
@@ -210,11 +210,15 @@
                     : emptyHTML()));
 
         if (footEl) {
+            // 与仿真样例一致：居中的「加载更早事件」按钮（还有更早时才出现），
+            // 下面一行居中的说明。早先做成角落里的下划线小链接，与设计不符。
             footEl.innerHTML =
-                `<span>共 ${events.length} 条${hasMore ? '（还有更早的）' : ''}</span>` +
                 (hasMore
-                    ? '<button class="special-line-linkbtn" type="button" data-action="more">加载更早</button>'
-                    : `<span>${syncTimeText() ? '更新于 ' + syncTimeText() : ''}</span>`);
+                    ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>'
+                    : '') +
+                `<p class="special-line-footnote">共 ${events.length} 条` +
+                `${hasMore ? '（还有更早的）' : ''}` +
+                `${syncTimeText() ? ` · 更新于 ${syncTimeText()}` : ''}</p>`;
         }
 
         listEl.scrollTop = scrollTop;
@@ -929,7 +933,7 @@
         // 启用后默认停靠在首页右侧空白区；用户拖过之后以保存的位置为准。
         defaultSide: 'right',
         // 内容不是一张摘要卡而是一条时间线：需要一条**宽**列才用得上仿真那套版式
-        // （左侧日期轨道 + 事件卡）。平台据此让背板让位，见 app.js 的 wideRailAvailable。
+        // （左侧日期轨道 + 事件卡）。平台据此让背板让位，见 app.js 的 railLayoutFor / syncRail。
         wideRail: true,
         adminSectionTitle: 'Special Line · 订阅来源',
         mountWidget,

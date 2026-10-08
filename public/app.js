@@ -323,38 +323,77 @@
         }
 
         /**
-         * 放得下**宽**模块列吗？放得下就让背板让位。
+         * 宽栏模式下三列各占多宽。**纯函数**（不碰 DOM），由 `syncRail()` 把结果写成
+         * `#app` 上的三个 CSS 变量（`--rail-w` / `--side-w` / `--board-max`）。
          *
-         * 有些模块的内容不是一张摘要卡而是一条时间线（Special Line）：仿真里那套
-         * 版式（左侧日期轨道 + 事件卡）需要 340px 以上才有意义，而两侧均分只给到
-         * ~210px。做法是右侧固定留 `RAIL_WIDE`，背板收成「剩下的宽度」，但不得低于
-         * `MIN_BOARD`（再窄分类网格就没法看），左侧那一列也至少要 `MIN_SIDE`。
+         * 为什么用 JS 算而不是写死在 CSS 里：三列的宽度是**相互挤**出来的，用嵌套的
+         * `calc()` 表达会出现「阈值悬崖」——实测过一版，窗口缩 1px 该模块从 420 掉到
+         * 132（反而更窄），再缩一点又跳到 190（反而更宽）。这里是连续的：随着 content
+         * 变大，rail 400→440、side 180→220、board 600→936 单调变化，没有跳变。
          *
-         * 放不下就返回 false——退回普通布局，模块自己再按容器宽度降级成窄版
-         * （两套版式由容器查询切换，见 styles.css 的 @container）。
+         * 分配顺序按「谁更需要」来：
+         *   1. 时间线（声明了 wideRail 的那个）先拿上限 440——它是被让位的对象，
+         *      太窄就没有存在意义（实测左列 132px 时监控卡的三行数值会挤乱）；
+         *   2. 背板拿余量并封顶 936（首页导航不该无限宽）；
+         *   3. 背板不足 600 时按「背板 → 时间线 → 左列」依次让步，都让到下限还不够
+         *      就返回 null——调用方退回普通布局，模块自己按容器宽度降级成窄版。
+         *
+         * 左边的监控卡最低给 180：132px 那版实测排版错乱，180 起才正常。
          */
-        wideRailAvailable() {
-            const RAIL_WIDE = 420;
-            const MIN_SIDE = 132;
+        railLayoutFor(content) {
             const GAP = 20;
-            const MIN_BOARD = 640;
-            const app = $('#app');
-            if (!app) return false;
-            const content = app.getBoundingClientRect().width - 22 * 2;
-            return content >= MIN_SIDE + GAP + MIN_BOARD + GAP + RAIL_WIDE;
+            const SIDE_MIN = 180;
+            const SIDE_MAX = 220;
+            const BOARD_MIN = 600;
+            const BOARD_MAX = 936;
+            const RAIL_MIN = 400;
+            const RAIL_MAX = 440;
+
+            let side = SIDE_MAX;
+            let rail = RAIL_MAX;
+            let board = content - 2 * GAP - side - rail;
+
+            if (board > BOARD_MAX) {
+                board = BOARD_MAX;
+                rail = Math.min(RAIL_MAX, content - 2 * GAP - side - board);
+            }
+            if (board < BOARD_MIN) {
+                rail = Math.max(RAIL_MIN, content - 2 * GAP - side - BOARD_MIN);
+                board = content - 2 * GAP - side - rail;
+            }
+            if (board < BOARD_MIN) {
+                side = Math.max(SIDE_MIN, content - 2 * GAP - BOARD_MIN - rail);
+                board = content - 2 * GAP - side - rail;
+            }
+            if (board < BOARD_MIN || rail < RAIL_MIN) return null;
+            return { side, board, rail };
         }
 
         /**
-         * 决定 `#app` 的 data-rail，并返回它。
+         * 决定 `#app` 的 data-rail 与三个宽度变量，返回是否进了宽栏模式。
          *
          * ⚠️ 必须在 `sideDockAvailable()` **之前**调：后者读的是背板的实际宽度，
          * 而宽栏模式会把背板收窄——顺序反了就会按旧宽度判停靠。
+         *
+         * 未登录也算「不进宽栏」——让位是给登录后那条时间线的，登出后不该让背板
+         * 继续窄着。这条判断放在这里而不是调用方，登出路径才只需要调一次本方法。
          */
         syncRail() {
             const app = $('#app');
-            const wide = this.wantsWideRail() && this.wideRailAvailable();
-            if (app) app.dataset.rail = wide ? 'wide' : 'narrow';
-            return wide;
+            if (!app) return false;
+            const content = app.getBoundingClientRect().width - 22 * 2;
+            const layout = (this.authenticated && this.wantsWideRail())
+                ? this.railLayoutFor(content) : null;
+            app.dataset.rail = layout ? 'wide' : 'narrow';
+            // 三个变量只在宽栏下有定义；不进宽栏就**清掉**，不要把上一档的宽度
+            // 留在 #app 的行内样式上。CSS 只在 [data-rail="wide"] 下消费它们，
+            // 所以留着不出症状——但那是一份读起来像「还在生效」的残留状态。
+            const vars = { '--rail-w': layout && layout.rail, '--side-w': layout && layout.side, '--board-max': layout && layout.board };
+            for (const key of Object.keys(vars)) {
+                if (vars[key]) app.style.setProperty(key, vars[key] + 'px');
+                else app.style.removeProperty(key);
+            }
+            return !!layout;
         }
 
         /**
@@ -371,9 +410,9 @@
             if (!this.authenticated) {
                 zone.hidden = true;
                 zone.replaceChildren();
-                // 未登录不该让背板继续收窄——让位是给登录后那条时间线的
-                const app = $('#app');
-                if (app) app.dataset.rail = 'narrow';
+                // 未登录不该让背板继续收窄——让位是给登录后那条时间线的。
+                // 走 syncRail（它自己判未登录 + 清宽度变量），别再手写一份 'narrow'。
+                this.syncRail();
                 return;
             }
             if (!this.modulesConfig) await this.loadModulesConfig();

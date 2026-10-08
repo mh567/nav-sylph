@@ -202,12 +202,12 @@ test('模块区的窄屏覆盖写在基础规则之后', () => {
     // 断言必须比较两处的源码位置，光断言存在永远为真。
     //
     // 宽屏形态已从「两栏网格」改为「背板外侧绝对定位」（display:contents），
-    // 所以这里钉的是 flex 那条窄屏声明的位置。
+    // 窄屏形态则从「横向滑条」改成了「纵向堆叠」（grid），这里钉的是后者的位置。
     const baseAt = code.search(/^\.module-zone-inner\s*\{[^}]*display:\s*contents/m);
     assert.ok(baseAt >= 0, '.module-zone-inner 有基础规则（display:contents，让子节点直接参与外层定位）');
 
-    const narrowAt = code.search(/\.module-zone-inner\s*\{[^}]*display:\s*flex/);
-    assert.ok(narrowAt >= 0, '窄屏段把 module-zone-inner 改为 flex');
+    const narrowAt = code.search(/\.module-zone-inner\s*\{[^}]*display:\s*grid/);
+    assert.ok(narrowAt >= 0, '窄屏段把 module-zone-inner 改为 grid（纵向堆叠）');
 
     assert.ok(narrowAt > baseAt,
         `窄屏覆盖必须写在基础规则之后（base@${baseAt} → narrow@${narrowAt}），`
@@ -236,8 +236,13 @@ test('宽屏模块区绝对定位在背板外侧，放不下时退回网格下�
         'data-dock=below 时模块区回到文档流');
     assert.match(code, /\.module-zone\[data-dock="below"\] \.module-widget\s*\{[^}]*position:\s*static/,
         'data-dock=below 时 widget 也撤掉绝对定位');
-    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/,
-        'data-dock=below 时横向滚动');
+    // 窄屏是**纵向堆叠**，不是横向滑条：模块是纵向内容，横滑意味着「要左右滑才看得见」。
+    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-zone-inner\s*\{[^}]*display:\s*grid/,
+        'data-dock=below 时纵向堆叠');
+    assert.doesNotMatch(code, /\.module-zone\[data-dock="below"\] \.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/,
+        'data-dock=below 不再横向滚动');
+    assert.doesNotMatch(code, /\.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/,
+        '整份样式表里都不该再有横滑条（媒体块里那份重复声明也要一起改，否则两处说法不一）');
 
     const narrow = mediaBlocks(code, '@media (max-width: 1023px)')
         .filter(b => /module-zone/.test(b));
@@ -246,8 +251,15 @@ test('宽屏模块区绝对定位在背板外侧，放不下时退回网格下�
     assert.match(block, /\.module-zone\s*\{[^}]*position:\s*static/, '窄屏模块区回到文档流');
     assert.match(block, /\.module-widget\[data-side\]\s*\{[^}]*position:\s*static/, '窄屏 widget 也撤掉绝对定位');
     assert.match(block, /\.module-widget\[data-side\]\s*\{[^}]*margin-top:\s*0/, '窄屏清掉 --i 带来的纵向偏移');
-    assert.match(block, /\.module-zone-inner\s*\{[^}]*overflow-x:\s*auto/, '窄屏横向滚动');
-    assert.match(block, /\.module-widget\s*\{[^}]*flex:\s*0 0 auto/, '窄屏 widget 固定宽度，不参与网格分配');
+    // 窄屏形态已从「横向滑条」改成「纵向堆叠」，媒体块这份声明必须与
+    // `[data-dock="below"]` 那份说同一件事（两处说法不一时，高特异性的那份胜出，
+    // 另一份就成了一份读起来像生效中的死代码）。
+    assert.match(block, /\.module-zone-inner\s*\{[^}]*display:\s*grid/, '窄屏纵向堆叠');
+    assert.doesNotMatch(block, /overflow-x:\s*auto/, '窄屏不再横向滚动');
+    // 封顶值本身（必须等于宽栏的 RAIL_MIN，跨界才不跳宽度）钉在 timeline.test.js
+    // 那条「两处同值」的用例里，这里只钉形态。
+    assert.match(block, /\.module-widget\[data-side\]\s*\{[^}]*width:\s*min\(100%,\s*\d+px\)/,
+        '窄屏卡片吃满整行（封顶并居中）');
 });
 
 test('背板外侧放得下：.app 宽度足够容纳 936 背板 + 两侧模块', () => {

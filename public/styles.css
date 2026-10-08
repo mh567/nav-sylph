@@ -2925,10 +2925,18 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* 两侧放不下时（视口 < ~1180px）退回网格下方横滑。
    判据由 JS 写入 data-dock，不用媒体查询——936 背板在 1024 下只留 44px、
-   在 1440 下留 252px，固定断点表达不了这个连续量。 */
+   在 1440 下留 252px，固定断点表达不了这个连续量。
+   ⚠️ 这里与下面的 ≤1023px 媒体块都声明同一个 inner 的布局，两处必须说同一件事。 */
 .module-zone[data-dock="below"] { position: static; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); pointer-events: auto; }
-.module-zone[data-dock="below"] .module-zone-inner { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; padding-bottom: 4px; mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); -webkit-mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); }
-.module-zone[data-dock="below"] .module-widget { position: static; flex: 0 0 auto; width: 190px; scroll-snap-align: start; margin-top: 0; }
+/* ⚠️ 窄屏（与「两侧放不下」）不再是一条横向滑条，而是**纵向堆叠**：
+   横向滑条在手机上意味着「模块要左右滑动才看得见」，而模块（尤其时间线）是
+   纵向内容；堆叠后每张卡拿到整行宽度，模块自己也从窄版切到桌面版。
+   ⚠️ 封顶值必须等于宽栏的 RAIL_MIN（400，见 app.js 的 railLayoutFor）：边界两边
+   都是 400 时，跨过边界只有「位置」变化（右侧那一列 ↔ 导航下方）而**宽度连续**
+   ——先前封顶 560，于是窗口缩到 1263px 时模块从 400 跳到 560，正是用户报的
+   「缩窄窗口后模块反而变宽」。有测试钉这两个数相等。 */
+.module-zone[data-dock="below"] .module-zone-inner { display: grid; gap: 14px; justify-items: center; }
+.module-zone[data-dock="below"] .module-widget { position: static; width: min(100%, 400px); margin-top: 0; }
 
 /* 让位动画。基准（--stack-top）一变，卡片就换到新位置；给一个短过渡，
    让它「滑过去」而不是瞬移。没有过渡时其余卡片是硬跳的——用户说「生硬」
@@ -3254,9 +3262,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
        绝对定位会一路带到手机上，模块区脱离文档流、页面高度塌掉。 */
     .app { max-width: 1200px; }
     .module-zone { position: static; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); pointer-events: auto; }
-    .module-zone-inner { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; padding-bottom: 4px; mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); -webkit-mask-image: linear-gradient(90deg,#000 0,#000 88%,transparent 100%); }
-    .module-widget { flex: 0 0 auto; width: 190px; scroll-snap-align: start; }
-    .module-widget[data-side] { position: static; width: 190px; margin-top: 0; right: auto; left: auto; top: auto; }
+    /* ⚠️ 这里与 `[data-dock="below"]`（上面的权威声明）必须说同一件事：两处都声明
+       `.module-zone-inner` 的布局，说法不一致时后者被高特异性压住、变成一份读起来
+       像「生效中」的死代码——本文件已经栽过两次。形态是**纵向堆叠**，不是横滑条。 */
+    .module-zone-inner { display: grid; gap: 14px; justify-items: center; }
+    .module-widget { width: min(100%, 400px); }
+    .module-widget[data-side] { position: static; width: min(100%, 400px); margin-top: 0; right: auto; left: auto; top: auto; }
     .module-overlay { padding: 12px; }
     .module-panel { max-height: calc(100dvh - var(--kb-inset, 0px) - 24px); }
 }
@@ -3300,21 +3311,24 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* ---------- 宽栏模式（平台机制，由 #app[data-rail] 驱动） ----------
    声明了 `wideRail: true` 的模块（今天只有 Special Line）需要一条真宽度的列，
    否则仿真那套「日期轨道 + 事件卡」在 210px 里没法成立。做法：右侧固定留 420px，
-   背板收成「剩下的宽度」（仍以 936 为上限），左侧那一列按剩余空间给 132～220。
-   是否进入这个模式由 app.js 的 wideRailAvailable() 判定——放不下就不进，
+   背板收成「剩下的宽度」，左侧那一列也拿一份。三个值一律由 app.js 的
+   railLayoutFor() 算好后写成 CSS 变量——这里不再自己算宽度（自己算会做出阈值
+   悬崖：窗口缩 1px 模块就从 440 掉到 400 以下）。放不下就不进这个模式，
    模块自己再按容器宽度降级成窄版。 */
-/* ⚠️ 背板默认是 `margin: 0 auto` 居中的——宽栏下必须让它**靠左**排，否则右侧那条
-   420px 的列会压上来（实测压 124px）。左边留 152px = 左侧那一列的 132 + 20 间距；
-   背板宽度公式里的 592 正是「152 + 420 + 20」，两者对得上。 */
+/* 三个宽度由 app.js 的 railLayoutFor() 算好后写在 #app 的行内变量上
+   （--rail-w / --side-w / --board-max）——三列是「一起挤出来」的连续值，
+   不会出现「窗口缩 1px 模块从 420 掉到 132」那种阈值悬崖。
+   ⚠️ 背板默认是 `margin: 0 auto` **居中**的，必须显式改成靠左（`margin-left` 取
+   左侧那一列的宽度），否则右侧那条时间线列会压在背板上——实测压 124px，而只看
+   宽度公式是看不出来的。左边的 margin 必须把**列间距**一起算进去
+   （`--side-w + 20px`），只写 `--side-w` 会让左列与背板贴在一起、左右间距不对称。 */
 #app[data-rail="wide"] .backboard {
-    max-width: min(936px, calc(100% - 592px));
-    margin-left: 152px;
+    max-width: var(--board-max, 936px);
+    margin-left: calc(var(--side-w, 180px) + 20px);
     margin-right: auto;
 }
-#app[data-rail="wide"] .module-widget[data-side="right"] { width: 420px; }
-#app[data-rail="wide"] .module-widget[data-side="left"] {
-    width: clamp(132px, calc(100% - 936px - 440px), 220px);
-}
+#app[data-rail="wide"] .module-widget[data-side="right"] { width: var(--rail-w, 420px); }
+#app[data-rail="wide"] .module-widget[data-side="left"] { width: var(--side-w, 180px); }
 
 /* ---------- 卡片：纵向四段（头 / 筛选 / 列表 / 底） ---------- */
 .special-line-card {
@@ -3576,8 +3590,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 .special-line-stamp { margin-top: 5px; color: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
 
-/* ---------- 宽列（≥340px）：仿真里的桌面版——日期在左、事件卡在右 ---------- */
-@container (min-width: 340px) {
+/* ---------- 宽列（≥360px）：仿真里的桌面版——日期在左、事件卡在右 ----------
+   ⚠️ 阈值要按**内容盒**算，不是卡片的外框：容器查询量的是内容盒，而卡片有
+   2×13px 内边距 + 2×1px 边框，所以 RAIL_MIN=400 那一档实际只有 372px 参与匹配
+   ——阈值写 400（甚至 390）都会让它误判成窄版（实测：1280 视口下卡片 400 却
+   渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px），正好落在窄版。 */
+@container (min-width: 360px) {
     .special-line-list::before { left: 80px; }
     .special-line-item { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; padding: 8px 0 14px; }
     .special-line-item::before { top: 21px; left: 76px; }
@@ -3587,8 +3605,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-stamp { display: none; }   /* 桌面版时间在左轨道上，卡内不重复 */
 }
 
-/* ---------- 窄列（<340px）：仿真 ≤700px 那套——时间移到卡上方、竖线贴左、单列 ---------- */
-@container (max-width: 339.98px) {
+/* ---------- 窄列（<360px）：仿真 ≤700px 那套——时间移到卡上方、竖线贴左、单列 ---------- */
+@container (max-width: 359.98px) {
     .special-line-list::before { left: 10px; }
     .special-line-item { display: block; padding: 8px 0 14px; }
     .special-line-item::before { top: 30px; left: 5px; }
@@ -3630,25 +3648,42 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 @keyframes specialLineShimmer { to { background-position: -200% 0; } }
 
+/* 底部与仿真一致：居中的「加载更早事件」按钮 + 一行居中的说明 */
 .special-line-foot {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding-top: 8px;
+    gap: 7px;
+    padding-top: 9px;
     border-top: 1px solid var(--border);
-    color: var(--text-muted);
-    font-size: 10px;
 }
-.special-line-linkbtn {
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--accent);
-    font: inherit;
-    text-decoration: underline;
+/* 卡片里的实体按钮。仿真底部区那几种状态各有一个真按钮（正常「加载更早事件」、
+   筛选无结果「清除筛选」、空状态实心的「＋ 保存文章」），早先都写成了下划线小链接。 */
+.special-line-btn {
+    min-height: 34px;
+    padding: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: linear-gradient(180deg, var(--control-top), var(--control-bottom));
+    box-shadow: var(--shadow);
+    color: var(--text-secondary);
+    font-size: 11px;
     cursor: pointer;
+    transition: transform 120ms, box-shadow 120ms, color 120ms;
 }
+.special-line-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); color: var(--text); }
+.special-line-btn:active { transform: translateY(1px) scale(.985); }
+.special-line-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* 空状态那个「＋ 保存文章」在仿真里是实心主按钮 */
+.special-line-btn--primary {
+    border-color: transparent;
+    background: linear-gradient(180deg, #8a5a3c, #6d4327);
+    box-shadow: 0 1px 2px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.18);
+    color: #fff;
+    font-weight: 600;
+}
+.special-line-btn--primary:hover { color: #fff; }
+.special-line-footnote { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; text-align: center; }
 
 /* ---------- 保存文章对话框 ---------- */
 .special-line-dialog {
@@ -3708,8 +3743,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-action { min-height: 44px; font-size: 12px; }
     .special-line-event h3 { font-size: 14px; }
     .special-line-event p { font-size: 12px; }
-    .special-line-foot { font-size: 10px; }
-    .special-line-linkbtn { min-height: 30px; }
+    .special-line-btn { min-height: 44px; font-size: 12px; }
     .special-line-dialog { width: min(100vw - 24px, 420px); padding: 18px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }

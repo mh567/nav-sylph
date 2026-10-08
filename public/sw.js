@@ -3,6 +3,16 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v79：布局自适应 + 窄屏纵向堆叠 + 补回底部按钮。
+// ① 三列宽度（左列 / 背板 / 时间线）改由 app.js 的 railLayoutFor() 算好后写进
+//    #app 的 --side-w / --board-max / --rail-w，CSS 只消费——写死的 calc + 硬阈值
+//    会做出「窗口缩 1px 时间线从 420 掉到 132、再缩又跳到 190」的悬崖，而且左列
+//    被压到 132px 时监控卡排版错乱。现在连续单调：rail 400→440、side 180→220。
+// ② data-dock="below"（窄屏 / 两侧放不下）从横向滑条改成**纵向堆叠**
+//    （grid + 卡片 min(100%,560px)），模块不再需要左右滑动才看得见。
+// ③ 卡片底部按仿真补回居中的「加载更早事件」按钮 + 一行居中说明。
+// ④ 容器查询的阈值按内容盒定（360）：卡片有 13px 内边距 + 1px 边框，写 400 会让
+//    最窄那一档误判成窄版。改了 app.js、styles.css、modules/special-line.js。
 // nav-v78：Special Line 的形态改成与仿真样例一致 —— 左侧日期轨道 + 贯穿节点线 +
 // 事件卡 + chips 筛选 + 「⋯」菜单（v1.13.1 那版是紧凑列表 + 原生下拉，用户否掉了
 // 「界面完全变了」）。为此给平台加了**宽栏机制**：模块可声明 wideRail，平台据此让
@@ -155,7 +165,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v78';
+const CACHE = 'nav-v79';
 const ASSETS = [
     '/',
     '/index.html',
