@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v86：Special Line 菜单加「夹取」兜底——列表很矮时上翻也会越出滚动容器顶边被裁掉，
+// 而那条带正是「全部/未读/已归档」那一行（实测视口 1280×400）。越界就夹回容器内。改了
+// special-line.js、tests/timeline.test.js。
 // nav-v85：Special Line 菜单的抬升改为 JS 加类（is-menu-open），不再用 CSS 的 :has()
 // ——不支持 :has() 的浏览器会整条忽略那条规则，短条目的菜单又被下一张事件卡盖住。改了
 // special-line.js、styles.css。
@@ -190,7 +193,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v85';
+const CACHE = 'nav-v86';
 const ASSETS = [
     '/',
     '/index.html',

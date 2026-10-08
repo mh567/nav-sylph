@@ -451,20 +451,38 @@
      * 列表是**滚动容器**（卡片高度有上限），菜单是绝对定位的——朝下弹到容器外
      * 会被 overflow 裁掉。所以打开后量一次，超出就翻上去。
      */
+    // 菜单与容器边界之间留的间隙（翻上去与夹取两处共用同一个值）
+    const MENU_EDGE = 4;
+
     function adjustMenu(details) {
         if (!details || !listEl) return;
         // ⚠️ 打开菜单的那一行必须抬到相邻事件卡之上，而且**不能**靠 CSS 的 :has()：
-        // 不支持 :has() 的浏览器会整条忽略那条规则，于是短条目（手动保存的文章，
-        // 比菜单还矮）的菜单又被下一张事件卡盖住——用户报的「被模块本身遮挡」。
-        // 由 JS 加/摘类，任何浏览器都成立；CSS 只负责消费这个类。
+        // 不支持 :has() 的浏览器会整条忽略那条规则。由 JS 加/摘类，任何浏览器都成立。
         const item = details.closest('.special-line-item');
         if (item) item.classList.toggle('is-menu-open', details.open);
         details.classList.remove('is-up');
-        if (!details.open) return;
-        const wrap = listEl.getBoundingClientRect();
         const menu = details.querySelector('.special-line-actions');
-        if (!menu) return;
-        if (menu.getBoundingClientRect().bottom > wrap.bottom - 4) details.classList.add('is-up');
+        if (menu) { menu.style.top = ''; menu.style.bottom = ''; }   // 清掉上一次的夹取
+        if (!details.open || !menu) return;
+
+        const wrap = listEl.getBoundingClientRect();
+        // 先按朝下量：越出容器底边就翻上去
+        if (menu.getBoundingClientRect().bottom > wrap.bottom - MENU_EDGE) details.classList.add('is-up');
+
+        // ⚠️ 兜底：列表很矮时（62vh 受限、窗口不高），上翻也会越出**顶边**，
+        // 被滚动容器的 overflow:auto 裁掉；那条带正是「全部/未读/已归档」那一行所在处，
+        // 用户看到的就是「菜单被那行遮挡」。所以量一次最终位置，越界就**夹回容器内**
+        // ——夹取后菜单可能压住本条目的正文，但完整可见、点得到。
+        // 实测触发：视口 1280×400（列表 131px）时上翻的菜单 `.top < 列表顶`，命中落在 chips 行。
+        // 唯一的例外：容器**比菜单还矮**时夹取也无处可放（max 取容器顶），那一格仍会被裁。
+        const menuRect = menu.getBoundingClientRect();
+        if (menuRect.top < wrap.top + MENU_EDGE || menuRect.bottom > wrap.bottom - MENU_EDGE) {
+            const detailsRect = details.getBoundingClientRect();
+            const clamped = Math.max(wrap.top + MENU_EDGE,
+                Math.min(menuRect.top, wrap.bottom - MENU_EDGE - menuRect.height));
+            menu.style.top = (clamped - detailsRect.top) + 'px';
+            menu.style.bottom = 'auto';
+        }
     }
 
     function closeMenus(except) {
@@ -473,6 +491,10 @@
             if (d !== except) {
                 d.open = false;
                 d.closest('.special-line-item')?.classList.remove('is-menu-open');
+                // 与 adjustMenu 对称：清掉夹取留下的 inline 定位，
+                // 别让一个关着的菜单揣着上一轮的 top（虽然看不见，但没人想读这份状态）
+                const m = d.querySelector('.special-line-actions');
+                if (m) { m.style.top = ''; m.style.bottom = ''; }
             }
         }
     }

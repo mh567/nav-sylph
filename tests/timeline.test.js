@@ -650,8 +650,10 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
     //    这条机制此前写成 CSS 的 :has()，而不支持它的浏览器会整条忽略该规则，
     //    于是短条目（手动保存的文章）的菜单被下一张事件卡盖住——
     //    用户报的「被 specialline 模块本身遮挡」正是这个，真机复现过。
-    const makeDom = ({ open, menuBottom, wrapBottom }) => {
-        const state = { toggles: [], classes: [] };
+    // 每一处 getBoundingClientRect 依次取一个预置值（取完则复用最后一个），
+    // 这样能分别模拟「朝下量」「上翻后量」两次测量。
+    const makeDom = ({ open, menuRects, wrapTop = 100, wrapBottom = 500, detailsTop = 90 }) => {
+        const state = { toggles: [], classes: [], style: {} };
         state.item = {
             set: new Set(),
             classList: {
@@ -661,7 +663,11 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
                 }
             }
         };
-        const menu = { getBoundingClientRect: () => ({ bottom: menuBottom }) };
+        const queue = menuRects.slice();
+        const menu = {
+            style: state.style,
+            getBoundingClientRect: () => (queue.length > 1 ? queue.shift() : queue[0])
+        };
         state.details = {
             open,
             classList: {
@@ -669,27 +675,45 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
                 remove: c => state.classes.push(['remove', c])
             },
             closest: sel => (sel === '.special-line-item' ? state.item : null),
-            querySelector: sel => (sel === '.special-line-actions' ? menu : null)
+            querySelector: sel => (sel === '.special-line-actions' ? menu : null),
+            getBoundingClientRect: () => ({ top: detailsTop })
         };
-        state.listEl = { getBoundingClientRect: () => ({ bottom: wrapBottom }) };
+        state.listEl = { getBoundingClientRect: () => ({ top: wrapTop, bottom: wrapBottom }) };
         return state;
     };
-    const run = state => new Function('listEl',
-        `${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl)(state.details);
+    // adjustMenu 引用模块级的 MENU_EDGE，抽出来执行时必须把它一起注入——
+    // 否则桩里 ReferenceError，守卫会「因为抛错」而不是「因为断言」变红（假红）。
+    const edge = Number(/const MENU_EDGE = (\d+);/.exec(code)?.[1]);
+    assert.ok(Number.isFinite(edge), '能从源码读出 MENU_EDGE');
+    const run = state => new Function('listEl', 'MENU_EDGE',
+        `${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl, edge)(state.details);
 
-    const opened = makeDom({ open: true, menuBottom: 100, wrapBottom: 500 });
+    const opened = makeDom({ open: true, menuRects: [{ top: 110, bottom: 180, height: 70 }] });
     run(opened);
     assert.deepEqual(opened.toggles, [['is-menu-open', true]], '打开时给所在行加上抬升类');
-    assert.deepEqual(opened.classes.filter(c => c[0] === 'add'), [], '没超出底边时不翻上去');
+    assert.deepEqual(opened.classes.filter(c => c[0] === 'add'), [], '放得下时不翻上去');
+    assert.equal(opened.style.top, '', '放得下时不做夹取');
 
-    const closed = makeDom({ open: false, menuBottom: 100, wrapBottom: 500 });
+    const closed = makeDom({ open: false, menuRects: [{ top: 110, bottom: 180, height: 70 }] });
     run(closed);
     assert.deepEqual(closed.toggles, [['is-menu-open', false]], '关闭时把抬升类摘掉');
 
-    const overflow = makeDom({ open: true, menuBottom: 600, wrapBottom: 500 });
+    const overflow = makeDom({ open: true,
+        menuRects: [{ top: 430, bottom: 500, height: 70 }, { top: 300, bottom: 370, height: 70 }] });
     run(overflow);
     assert.deepEqual(overflow.classes.filter(c => c[0] === 'add'), [['add', 'is-up']],
         '超出容器底边时仍然翻上去（滚动容器会裁掉朝下的菜单）');
+    assert.equal(overflow.style.top, '', '上翻后放得下就不夹取');
+
+    // ⭐ 用户报的形态：列表很矮时上翻也越出**顶边**，被滚动容器裁掉，
+    //    而那条带正是「全部/未读/已归档」那行所在处（实测视口 1280×400）。
+    //    这里模拟：容器 100..200，上翻后菜单 60..130 → 顶边越界，应被夹回容器内。
+    const clamped = makeDom({ open: true, wrapTop: 100, wrapBottom: 200, detailsTop: 90,
+        menuRects: [{ top: 140, bottom: 210, height: 70 }, { top: 60, bottom: 130, height: 70 }] });
+    run(clamped);
+    assert.equal(clamped.style.top, '14px',
+        '上翻仍越出顶边时夹回容器内（容器顶 100+4=104，相对 details 顶 90 得 14px）');
+    assert.equal(clamped.style.bottom, 'auto', '夹取时显式取消 bottom，避免 top/bottom 同时生效');
 
     // ② CSS 只消费这个类；菜单本身仍要压在卡片内容之上
     const rule = /\.special-line-item\.is-menu-open\s*\{([^}]*)\}/.exec(css);
@@ -705,7 +729,13 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
     const mkRow = () => {
         const item = { set: new Set(['is-menu-open']),
             classList: { remove: name => item.set.delete(name) } };
-        return { item, details: { open: true, closest: sel => (sel === '.special-line-item' ? item : null) } };
+        const style = { top: '14px', bottom: 'auto' };   // 假定上一轮留下了夹取
+        const details = {
+            open: true,
+            closest: sel => (sel === '.special-line-item' ? item : null),
+            querySelector: sel => (sel === '.special-line-actions' ? { style } : null)
+        };
+        return { item, style, details };
     };
     const rowA = mkRow();
     const rowB = mkRow();
@@ -714,6 +744,7 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
         `${extractFunction(code, 'function closeMenus(except)')}; return closeMenus;`)(listStub)(rowB.details);
     assert.equal(rowA.details.open, false, '别的菜单被收起');
     assert.equal(rowA.item.set.has('is-menu-open'), false, '收起的那一行摘掉了抬升类');
+    assert.equal(rowA.style.top, '', '收起时也清掉夹取的 inline 定位');
     assert.equal(rowB.details.open, true, '被点的那一个不动');
     assert.equal(rowB.item.set.has('is-menu-open'), true, '被点的那一行保留抬升类');
 
