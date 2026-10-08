@@ -56,7 +56,11 @@
 
 ### 发布记录
 
-（发布后回填。）
+- 内容提交 `917a028`（代码 + 测试 + 文档），版本账 `765e914`，tag / Release **v1.13.4**：
+  https://github.com/mh567/nav-sylph/releases/tag/v1.13.4
+- 预检：改动集 ∩ 打包路径 = `public/app.js` + `public/sw.js` → `CACHE` 已同步升到 `nav-v80`（这次同样是「确认」而非「抓到漏升」）；工作树无私有文件。
+- 产物核对（下载 tarball 后在树外解包）：`version.json` = 1.13.4、`CACHE` = nav-v80、`preloadModuleDefs` 在且顺序正确（登录路径里 preload 先于 syncRail）、`railLayoutFor` 与窄屏封顶 400 仍在、无探针残留、四类私有文件未夹带。
+- `scripts/release.sh` 只推 tag，分支手工推送（`ca5dc81..765e914`）。
 
 ## 上一轮：布局自适应 + 窄屏纵向堆叠 + 补回底部按钮（内容提交 `f9f6077`，版本账 `e7e8ea8`，已发布 **v1.13.3**）
 
