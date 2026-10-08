@@ -3,6 +3,12 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v80：修首屏布局判定读不到模块声明。
+// 宽栏判定（要不要给时间线让出宽列）读的是模块定义里的 wideRail，而定义由模块
+// 脚本执行时才注册，脚本又只有 mountModule 会加载——syncRail 排在它前面，于是
+// 首屏第一次判定永远读到 undefined，时间线按普通窄卡（210px）出生，直到手动缩放
+// 窗口触发第二次判定才恢复正常。改为在 syncRail 之前先 preloadModuleDefs(ids)
+// （loadScript 按 src 缓存，不会重复下载）。只改了 public/app.js。
 // nav-v79：布局自适应 + 窄屏纵向堆叠 + 补回底部按钮。
 // ① 三列宽度（左列 / 背板 / 时间线）改由 app.js 的 railLayoutFor() 算好后写进
 //    #app 的 --side-w / --board-max / --rail-w，CSS 只消费——写死的 calc + 硬阈值
@@ -165,7 +171,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v79';
+const CACHE = 'nav-v80';
 const ASSETS = [
     '/',
     '/index.html',

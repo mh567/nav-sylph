@@ -397,6 +397,26 @@
         }
 
         /**
+         * 先把要挂载的模块脚本加载好（脚本执行时注册自己的定义）。
+         *
+         * ⚠️ 必须在 `syncRail()` 之前调用：平台判定「要不要为某个模块让出宽栏」读的是
+         * 定义里的 `wideRail`，而定义只有脚本执行后才存在。早先这一步发生在 syncRail
+         * 之后（那时只有 mountModule 会加载脚本），于是**首屏第一次判定永远读不到声明**，
+         * 宽栏判定为假、时间线按普通窄卡渲染；直到用户手动缩放窗口触发第二次判定才
+         * 恢复正常。实测探针：首屏 syncRail 只被调用一次，`wants:false`，而 appW/
+         * content 都是对的（1440 / 1396）——所以问题不在测量，在顺序。
+         *
+         * 这里 **不抛异常**：单个模块加载失败由 mountModule 渲染那张卡的错误态，
+         * 不该让整个模块区跟着挂掉。加载失败时 loadScript 会清掉缓存，mountModule
+         * 那一趟还能重试。
+         */
+        async preloadModuleDefs(ids) {
+            await Promise.all(ids.map(id => this.loadModule(id).catch(e => {
+                console.error(`Load module ${id} failed:`, e);
+            })));
+        }
+
+        /**
          * 加载并渲染模块区。
          * 单个模块加载失败不影响其它模块——失败的那个渲染出错误与重试按钮。
          */
@@ -416,6 +436,21 @@
                 return;
             }
             if (!this.modulesConfig) await this.loadModulesConfig();
+
+            // ⚠️ 定义必须在 `syncRail()` **之前**注册好：宽栏判定读的是模块定义里的
+            // `wideRail`，而定义是模块脚本执行时才注册的。首屏第一次渲染时脚本还没
+            // 加载，判定因此必然拿到 undefined → 时间线按普通窄卡出生（实测 210px），
+            // 直到窗口 resize 触发第二次判定才变宽——用户看到的就是「首次加载显示
+            // 不全，手动缩放一下才恢复正常」。
+            // 脚本本来在 mountModule 里躲不掉（loadScript 按 src 缓存，同一份只下载
+            // 一次），提前加载只是把顺序摆正。
+            // ⚠️ 代价要说清楚：让位（syncRail）仍然发生在挂载与首轮数据**之前**，所以
+            // 右侧那一列会先空着若干帧才出现卡片（模块区本身要等首轮数据才
+            // zone.hidden = false）。反过来把让位挪到卡片之后，卡片会先以窄列出生
+            // 再跳宽，那更难看。判定也因此被模块脚本的下载门控住了——总耗时与改前
+            // 相当（脚本本来就要下），只是这段等待现在落在布局判定上。
+            const ids = this.enabledModuleIds();
+            await this.preloadModuleDefs(ids);
 
             // 宽栏模块先让背板让位，再量余量（顺序不能反，见 syncRail 的注释）
             this.syncRail();
@@ -441,7 +476,6 @@
                 return;
             }
 
-            const ids = this.enabledModuleIds();
             if (!ids.length) {
                 zone.hidden = true;
                 zone.replaceChildren();

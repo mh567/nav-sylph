@@ -3568,16 +3568,20 @@ test('模块轮询接口有自己的限流桶，不占管理操作的额度', ()
 test('模块配置加载失败要渲染错误，不能静默收起模块区', () => {
     // 用户报「模块加载不出来」时，模块区其实是**静默消失**的：config 没拿到时
     // `enabledModuleIds()` 返回空数组，函数在更早处就 `hidden` 返回了，于是
-    // 下面那段错误 UI 永远走不到（是死代码）。实测把 /api/modules/config 打成
+    // 下面那段错误 UI 在**首次加载时**走不到（config 还没有过成功记录时）。实测把 /api/modules/config 打成
     // 429 复现：模块区文案为空、也没有重试按钮。
     const code = stripComments(appSource);
     const body = methodBodyOf(code, 'renderModuleZone');
     assert.ok(body.length > 300, `切出 renderModuleZone（${body.length}）`);
+    // ⚠️ 钉的是**那个会提前 return 的判空分支**，不是 ids 的声明位置：声明后来被
+    // 提到前面去了（宽栏判定要先加载模块定义才读得到 wideRail），而这条断言原本
+    // 用声明的下标当代理指标，于是对着一份仍然正确的代码报错。承重的事实是
+    // 「判空分支不能挡在错误分支前面」，就断言这个。
     const errAt = body.indexOf('if (this.modulesError)');
-    const idsAt = body.indexOf('const ids = this.enabledModuleIds()');
-    assert.ok(errAt > 0 && idsAt > 0, `两处都在（err=${errAt} ids=${idsAt}）`);
-    assert.ok(errAt < idsAt, 'modulesError 必须排在「没有已启用模块」判空之前');
-    assert.match(body.slice(errAt, idsAt), /renderModuleZoneError\(\)/,
+    const emptyAt = body.indexOf('if (!ids.length)');
+    assert.ok(errAt > 0 && emptyAt > 0, `两处都在（err=${errAt} empty=${emptyAt}）`);
+    assert.ok(errAt < emptyAt, 'modulesError 必须排在「没有已启用模块」判空之前');
+    assert.match(body.slice(errAt, emptyAt), /renderModuleZoneError\(\)/,
         '失败要渲染错误与重试，而不是换个姿势 hidden');
     // 那条文案本身要能区分 429——否则用户只会一直刷新
     assert.match(code, /this\.modulesError = e && e\.status === 429/, '429 与普通失败分开说');

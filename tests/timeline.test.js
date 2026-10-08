@@ -713,6 +713,67 @@ test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（�
         `进宽栏的第一档（content ${firstWide.c}）时间线就有 ${firstWide.l.rail}px（不得先给一个很窄的值）`);
 });
 
+test('首屏宽栏判定：模块定义必须在 syncRail 之前注册（真跑 renderModuleZone）', async () => {
+    // 用户报的现象：「首页初次加载时该模块依然显示不全，需要手动缩窄再变宽才正常」。
+    // 根因是顺序：宽栏判定读模块定义里的 wideRail，而定义由模块脚本执行时才注册，
+    // 脚本又只有 mountModule 会加载——而 syncRail 排在 mountModule 前面，于是首屏
+    // 第一次判定永远读到 undefined，时间线按普通窄卡出生；resize 触发第二次判定时
+    // 定义已注册，才变宽。所以这条用例**执行** renderModuleZone，并断言 syncRail
+    // 被调用那一刻定义已经存在——只断言「有 preloadModuleDefs」会漏掉顺序本身。
+    const body = extractFunction(stripComments(appSource), 'async renderModuleZone() {');
+    const defs = new Map();
+    const seen = [];
+    const fakeZone = () => ({
+        hidden: true, dataset: {}, offsetHeight: 0,
+        classList: { add() {}, remove() {} },
+        replaceChildren() {}, appendChild() {}, querySelector: () => null
+    });
+    const loadModuleCalls = [];
+    const ctx = {
+        authenticated: true,
+        modulesConfig: { enabledModules: ['special-line'], widgets: [] },
+        modulesError: null,
+        loadModulesConfig: async () => {},
+        enabledModuleIds: () => ['special-line'],
+        // 平台侧：脚本加载 = 定义注册（真实的注册就发生在脚本执行时）
+        loadModule: async id => { loadModuleCalls.push(id); defs.set(id, { id, wideRail: true }); },
+        getModule: id => defs.get(id),
+        // 真实实现读 getModule，这里记下「判定那一刻定义在不在」
+        wantsWideRail() { return [...defs.values()].some(d => d.wideRail === true); },
+        syncRail() { seen.push({ at: 'syncRail', defRegistered: !!this.getModule('special-line') }); return true; },
+        sideDockAvailable: () => true,
+        mountModule: async () => fakeZone(),
+        waitFirstRound: async () => {},
+        applyWidgetLayout() {},
+        playModuleEntrance() {}
+    };
+    // preloadModuleDefs 用**真实实现**（切出来接上），不能在测试里重写一遍——
+    // 那样测的就是测试自己的逻辑，「先加载定义」这件事根本没被验证。
+    const preloadBody = extractFunction(stripComments(appSource), 'async preloadModuleDefs(ids) {');
+    ctx.preloadModuleDefs = new Function(`return ({ ${preloadBody} }).preloadModuleDefs;`)();
+    // 方法体的两个自由名是 `$` 与 `document`（其余都挂在 this 上），一并注入。
+    const method = new Function('$', 'document', `return ({ ${body} }).renderModuleZone;`)(
+        () => fakeZone(), { createElement: fakeZone, head: { appendChild() {} } });
+    await method.call(ctx);
+
+    assert.deepEqual(loadModuleCalls, ['special-line'], '先加载了启用模块的脚本');
+    assert.equal(seen.length, 1, 'syncRail 恰好被调用一次');
+    assert.equal(seen[0].defRegistered, true,
+        'syncRail 执行时模块定义必须已注册——否则首屏判定读不到 wideRail，时间线按窄卡出生');
+    // 源码顺序是同一件事的第二道钉（行为断言已经覆盖它，这里只是让它更难被改回去）。
+    // ⚠️ 只在**登录后那条路径**的窗口里比：整段方法体里 `this.syncRail()` 还出现在
+    // 未登录分支（那处在 preload 之前），按首个匹配去比会得到相反的结论。
+    const src = stripComments(appSource);
+    const from = src.indexOf('if (!this.modulesConfig) await this.loadModulesConfig();');
+    const to = src.indexOf('const sideDock = this.sideDockAvailable();');
+    assert.ok(from > 0 && to > from, '切出登录后的那段路径');
+    const path = src.slice(from, to);
+    assert.ok(path.includes('this.preloadModuleDefs(ids)') && path.includes('this.syncRail()'),
+        '这段路径里同时有 preload 与 syncRail');
+    assert.ok(path.indexOf('this.preloadModuleDefs(ids)') < path.indexOf('this.syncRail()'),
+        'preloadModuleDefs 必须排在 syncRail 之前');
+});
+
 test('平台宽栏机制：三列宽度由 JS 算出写进 #app 的变量，且让位发生在判停靠之前', () => {
     const app = stripComments(appSource);
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
@@ -730,10 +791,18 @@ test('平台宽栏机制：三列宽度由 JS 算出写进 #app 的变量，且�
     }
     assert.match(app, /syncRail\(\) \{[\s\S]{0,700}?setProperty\(key,/, '变量由同一个循环写出');
     assert.match(app, /syncRail\(\) \{[\s\S]{0,700}?removeProperty\(key\)/, '不进宽栏时清掉');
-    // ⚠️ 顺序：sideDockAvailable 读的是背板**实际**宽度，让位必须先发生
-    const zone = app.slice(app.indexOf('async renderModuleZone()'),
-        app.indexOf('async renderModuleZone()') + 4000);
-    assert.ok(zone.indexOf('this.syncRail()') > 0 && zone.indexOf('this.syncRail()') < zone.indexOf('this.sideDockAvailable()'),
+    // ⚠️ 顺序：sideDockAvailable 读的是背板**实际**宽度，让位必须先发生。
+    // ⚠️ 只在**登录后那条路径**里比：整段方法体里 `this.syncRail()` 还出现在未登录
+    // 分支（那是第一处匹配），按首个匹配去比会恒真——把登录路径里的 syncRail 挪到
+    // sideDockAvailable 之后，这条断言照样绿（实测）。两端都要有锚点。
+    const from = app.indexOf('if (!this.modulesConfig) await this.loadModulesConfig();');
+    const dockLine = 'const sideDock = this.sideDockAvailable();';
+    const to = app.indexOf(dockLine) + dockLine.length;   // 含这一行，否则那个调用被切在外面
+    assert.ok(from > 0 && to > from, '切出登录后的那段路径');
+    const loginPath = app.slice(from, to);
+    assert.ok(loginPath.includes('this.syncRail()') && loginPath.includes('this.sideDockAvailable()'),
+        '这段路径里同时有 syncRail 与 sideDockAvailable');
+    assert.ok(loginPath.indexOf('this.syncRail()') < loginPath.indexOf('this.sideDockAvailable()'),
         'syncRail 必须排在 sideDockAvailable 之前');
     // 未登录不该让背板一直窄着。复位走 syncRail 这一条路径（它自己判未登录、
     // 并清掉宽度变量），而不是在登出分支里手写第二份 'narrow'。
