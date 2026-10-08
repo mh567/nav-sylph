@@ -647,8 +647,11 @@ test('打开的事件菜单提升所在事件行，避免被后续事件卡遮�
     assert.ok(rule, '打开菜单时提升其事件行');
     assert.ok(Number(/z-index:\s*(\d+)/.exec(rule[1])?.[1]) > 0,
         '菜单所在事件行进入高于普通行的堆叠层级');
-    assert.match(css, /\.special-line-actions\s*\{[\s\S]*?z-index:\s*3/,
-        '菜单本身仍在卡片内容之上');
+    // 把断言钉在该规则自己的花括号内：整文件惰性匹配会跨过 `}` 落到后面的
+    // 任意 z-index:3 上，删掉这条声明仍会假绿（本仓库反复踩过的边界缺陷）。
+    const actions = /\.special-line-actions\s*\{([^}]*)\}/.exec(css);
+    assert.ok(actions, '菜单容器 .special-line-actions 规则存在');
+    assert.match(actions[1], /z-index:\s*3/, '菜单本身仍在卡片内容之上');
 });
 
 test('筛选不先清空事件，进行中的筛选只补拉最后一次选择', async () => {
