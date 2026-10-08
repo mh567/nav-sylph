@@ -209,18 +209,25 @@ test('服务端把 .modules.json 传进备份并写回', () => {
     const performFn = code.slice(code.indexOf('async function performBackup('),
         code.indexOf('async function runAutoSync('));
     assert.ok(performFn.length > 200, 'performBackup 切片完整');
+    // 时间线的逻辑导出同样挂在 collectBackupPayload 上（不含凭据，见
+    // lib/webdav-backup.js 的常量注释），并随 options 一起交给 createBackup——
+    // 它把 timelineData 放进 options 而不是再加一个位置参数。
+    assert.match(payloadFn, /timeline\.service\.exportTimeline\(\)/,
+        '时间线数据由 service 导出（不含凭据）');
     assert.match(performFn,
-        /createBackup\(\s*configData, favoritesData, appVersion, generateBookmarkHtml, modulesData, options\s*\)/,
-        '传给 createBackup，且把 options 透传下去（自动/手动由它决定文件名与校验和）');
+        /createBackup\(\s*configData, favoritesData, appVersion, generateBookmarkHtml, modulesData,\s*\{ \.\.\.options, timelineData \}\s*\)/,
+        '传给 createBackup，且把 options（含 timelineData）透传下去');
 
     const restoreRoute = code.slice(code.indexOf("app.post('/api/webdav/restore'"),
         code.indexOf("app.post('/api/webdav/delete'"));
     assert.match(restoreRoute, /writeJSON\(MODULES_FILE, result\.data\.modules\)/,
         '恢复时写回 .modules.json');
     assert.match(restoreRoute, /restoreModules = true/, '默认恢复模块配置');
-    // 缺失的 modules 文件不能被当成「没选」，否则整个恢复被 400 挡下
-    assert.match(restoreRoute, /!configFile && !bookmarksFile && !modulesFile && !legacyFile/,
+    // 缺失的 modules（或 timeline）文件不能被当成「没选」，否则整个恢复被 400 挡下
+    assert.match(restoreRoute, /!configFile && !bookmarksFile && !modulesFile && !timelineFile && !legacyFile/,
         '只选模块文件也能恢复');
+    assert.match(restoreRoute, /timeline\.service\.importTimeline\(result\.data\.timeline\)/,
+        '时间线在恢复流程里整表替换（一个事务）');
 });
 
 // ========== 凭据加密 ==========

@@ -896,3 +896,86 @@
     .fav-dialog,
     .ui-dialog { background: var(--bg-card); }
 }
+
+/* ==================== Special Line · 订阅来源（后台模块分区） ====================
+   挂点在 app.js 的模块编辑器里（renderAdminSection），这里只管排版。 */
+
+.special-line-source-list { display: grid; gap: 8px; margin: 4px 0 10px; }
+
+.special-line-source-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--glass);
+}
+
+.special-line-source-copy { display: grid; gap: 3px; min-width: 0; }
+.special-line-source-copy strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.special-line-source-copy small { color: var(--text-muted); font-size: 10px; }
+.special-line-source-error { color: var(--danger); font-size: 10px; line-height: 1.5; }
+
+.special-line-source-state { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
+.special-line-source-state[data-status="ok"] { color: var(--success); }
+.special-line-source-state[data-status="expired"] { color: var(--warning); }
+.special-line-source-state[data-status="failed"] { color: var(--danger); }
+
+.special-line-source-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.special-line-source-actions .btn { min-height: 30px; padding-inline: 10px; font-size: 11px; }
+.special-line-source-actions .btn-danger { color: var(--danger); }
+
+.special-line-source-form {
+    display: grid;
+    gap: 10px;
+    margin: 10px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-hover);
+}
+.special-line-source-form label { display: grid; gap: 5px; color: var(--text-muted); font-size: 10px; }
+.special-line-source-form input,
+.special-line-source-form select {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text);
+    /* 16px：窄屏聚焦时 iOS 不会把页面整体放大 */
+    font-size: 16px;
+}
+.special-line-source-form .special-line-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.special-line-source-form .btn { min-height: 36px; }
+
+.special-line-source-note { margin: 6px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+
+.modal .special-line-source-row .special-line-icon {
+    display: inline-grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+@media (max-width: 480px) {
+    .special-line-source-row { grid-template-columns: auto minmax(0, 1fr); }
+    .special-line-source-state { grid-column: 2; justify-self: start; }
+    .special-line-source-actions .btn { min-height: 40px; }
+}

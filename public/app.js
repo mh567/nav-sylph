@@ -221,7 +221,7 @@
         // 首页首屏因此不因模块变重——未登录访客一个模块文件都不下载。
 
         /** 已知模块 id 白名单。loadModule 只加载这里有的，避免任意路径被当成脚本请求。 */
-        static KNOWN_MODULES = ['server-monitor', 'memo'];
+        static KNOWN_MODULES = ['server-monitor', 'memo', 'special-line'];
 
         /**
          * 等模块首轮数据的上限。
@@ -625,9 +625,18 @@
                 const item = (this.modulesConfig.widgets || []).find(w => w.id === id);
                 return item && Number.isFinite(item.order) ? item.order : Number.MAX_SAFE_INTEGER;
             };
+            // 没有已保存布局项的模块，回落到它自己声明的 defaultSide。
+            // special-line 声明 'right'：启用后默认停靠在首页右侧空白区。
+            // 一旦用户拖过并保存，widgets[].side 就是唯一真相——默认值不再参与，
+            // 所以它永远不会覆盖用户自己摆好的位置。
+            const defaultSideOf = key => {
+                const def = this.getModule(String(key).split(':')[0]);
+                return def && def.defaultSide === 'right' ? 'right' : 'left';
+            };
             const sideOf = id => {
                 const item = (this.modulesConfig.widgets || []).find(w => w.id === id);
-                return item && item.side === 'right' ? 'right' : 'left';
+                if (item && item.side) return item.side === 'right' ? 'right' : 'left';
+                return defaultSideOf(id);
             };
 
             const nodes = [...inner.querySelectorAll('.module-widget')];
@@ -2104,7 +2113,16 @@
             const widgets = this.modulesConfig.widgets;
             // 配置里还没有这条（首次启用、布局从未保存过）时补一条
             if (!widgets.some(w => w.id === id)) {
-                widgets.push({ id, enabled: true, side: 'left', order: widgets.length, collapsed: false });
+                // 新建条目用该模块的默认边（special-line 是 right），不写死 left：
+                // 否则第一次在右栏内拖动它时会把 side 记成 left，松手就跳到左栏。
+                const def = this.getModule(String(id).split(':')[0]);
+                widgets.push({
+                    id,
+                    enabled: true,
+                    side: def && def.defaultSide === 'right' ? 'right' : 'left',
+                    order: widgets.length,
+                    collapsed: false
+                });
             }
             const entry = widgets.find(w => w.id === id);
             if (entry && targetSide) entry.side = targetSide;
@@ -3525,6 +3543,21 @@
             }
         }
 
+        /**
+         * 各模块自己的后台区块挂点。
+         *
+         * 平台只给容器与标题，provider 专属的表单/文案留在模块文件里——
+         * 否则每加一种来源，app.js 都要跟着认识它的字段与状态。
+         */
+        moduleAdminSections() {
+            return App.KNOWN_MODULES
+                .map(id => this.getModule(id))
+                .filter(def => def && typeof def.renderAdminSection === 'function')
+                .map(def => `<div class="section-title">${this.esc(def.adminSectionTitle || def.title)}</div>
+                    <div class="module-admin-section" data-module-admin="${this.esc(def.id)}"></div>`)
+                .join('');
+        }
+
         renderModulesEditorContent(host, config) {
             const known = App.KNOWN_MODULES.map(id => this.getModule(id)).filter(Boolean);
             // 每行：左侧「名称 + 说明」，右侧开关。
@@ -3550,6 +3583,7 @@
 
             host.innerHTML = `
                 ${rows || '<p class="fav-hint">暂无已注册模块。</p>'}
+                ${this.moduleAdminSections()}
                 <div class="section-title">监控目标</div>
                 <p class="fav-hint">每个方块是一台机器。改动即时生效；
                     单台机器的配置在它的「编辑」里保存。</p>
@@ -3625,6 +3659,22 @@
                 }
             };
             this.renderServerList($('#serverList'), config);
+
+            // 模块自己的后台区块：先把容器落进 DOM，再交给模块渲染
+            //（它要绑事件、要读自己的数据，拿字符串做不到）。
+            // 单个模块渲染失败不能让整个分区空白，所以逐个 try。
+            for (const el of host.querySelectorAll('[data-module-admin]')) {
+                const def = this.getModule(el.dataset.moduleAdmin);
+                if (!def || typeof def.renderAdminSection !== 'function') continue;
+                try {
+                    // 注入 API：后台区块渲染时模块可能并未挂载（模块未启用），
+                    // 所以它不能指望 mountWidget 那一次注入留下的 api 变量。
+                    def.renderAdminSection(el, { api: API });
+                } catch (err) {
+                    console.error(`Render admin section ${def.id} failed:`, err);
+                    el.innerHTML = '<p class="fav-hint">该模块的后台区块渲染失败，请重开面板重试。</p>';
+                }
+            }
 
             $('#addServerBtn').onclick = () => this.showServerDialog(null, async () => {
                 await this.renderModulesEditor();
@@ -4881,7 +4931,8 @@
                         msgEl.textContent = res.message || '配置和书签没有变化，无需备份';
                         msgEl.className = 'webdav-message';
                     } else {
-                        const files = [res.configFilename, res.bookmarksFilename, res.modulesFilename].filter(Boolean);
+                        const files = [res.configFilename, res.bookmarksFilename, res.modulesFilename,
+                            res.timelineFilename].filter(Boolean);
                         msgEl.textContent = `备份成功: ${files.join(', ')}`;
                         msgEl.className = 'webdav-message success';
                         await this.loadWebDAVConfig();
@@ -4931,6 +4982,7 @@
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
                                     const hasModules = !!b.modulesFile;
+                                    const hasTimeline = !!b.timelineFile;
                                     // 自动槽位不是历史还原点，单独标出来，免得用户
                                     // 把它当成某个时间点的手动备份。
                                     const displayName = b.isAuto
@@ -4941,11 +4993,13 @@
                                     if (hasConfig) files.push('配置');
                                     if (hasBookmarks) files.push('书签');
                                     if (hasModules) files.push('模块');
+                                    if (hasTimeline) files.push('时间线');
                                     return `
                                     <div class="webdav-backup-item${b.isAuto ? ' is-auto' : ''}"
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
                                          data-modules="${this.esc(b.modulesFile || '')}"
+                                         data-timeline="${this.esc(b.timelineFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
                                          data-created-at="${this.esc(b.createdAt || '')}">
                                         <div class="webdav-backup-info">
@@ -4979,12 +5033,14 @@
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
                         const modulesFile = item.dataset.modules;
+                        const timelineFile = item.dataset.timeline;
                         const legacyFile = item.dataset.legacy;
 
                         this.showRestoreOptionsDialog({
                             configFile,
                             bookmarksFile,
                             modulesFile,
+                            timelineFile,
                             legacyFile
                         }, dialog);
                     };
@@ -4997,6 +5053,7 @@
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
                         const modulesFile = item.dataset.modules;
+                        const timelineFile = item.dataset.timeline;
                         const legacyFile = item.dataset.legacy;
                         // 用列表里**渲染出来的那串名字**，而不是按 createdAt 重算：
                         // 自动槽位的显示名是「自动同步 · 时间」，重算会退化成光秃秃的
@@ -5010,8 +5067,10 @@
                         btn.textContent = '删除中...';
 
                         try {
-                            // 模块文件必须一起删，否则远端会留下孤儿文件
-                            const filesToDelete = [configFile, bookmarksFile, modulesFile, legacyFile].filter(Boolean);
+                            // 同组的每个文件都必须一起删，否则远端会留下孤儿文件
+                            //（时间线文件同样在内：删了配置却留下它，恢复时会出现
+                            // 「配置是旧的、时间线是新的」这种半新半旧的分组）。
+                            const filesToDelete = [configFile, bookmarksFile, modulesFile, timelineFile, legacyFile].filter(Boolean);
                             for (const file of filesToDelete) {
                                 await API.post('/api/webdav/delete', { filename: file });
                             }
@@ -5041,6 +5100,14 @@
             const hasConfig = !!(backup.configFile || backup.legacyFile);
             const hasBookmarks = !!(backup.bookmarksFile || backup.legacyFile);
             const hasModules = !!backup.modulesFile;
+            const hasTimeline = !!backup.timelineFile;
+            // 「只恢复 X」那一组里只剩一项可选时（例如只含时间线的自动槽位），
+            // 把它默认选中。⚠️ 判据是**可选项恰好一个**，不是「四项全无」——
+            // 后者恒为假（能渲染出单选就说明至少有一项），于是两个 radio 都不
+            // checked，`:checked` 取到 null、`.value` 抛在 handler 里，
+            // 表现是「点『确认恢复』什么都不发生」。
+            const optionCount = [hasConfig, hasBookmarks, hasModules, hasTimeline].filter(Boolean).length;
+            const soleOptionChecked = optionCount === 1 ? 'checked' : '';
 
             const optionsDialog = html(`
                 <div class="fav-dialog-overlay" id="restoreOptionsDialog">
@@ -5050,7 +5117,7 @@
                             ${hasConfig && hasBookmarks ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="all" checked>
-                                <span>同时恢复配置和书签${hasModules ? '（含模块设置）' : ''}</span>
+                                <span>同时恢复配置和书签${(hasModules || hasTimeline) ? `（含${[hasModules && '模块设置', hasTimeline && '时间线'].filter(Boolean).join('与')}）` : ''}</span>
                             </label>
                             ` : ''}
                             ${hasConfig ? `
@@ -5067,8 +5134,14 @@
                             ` : ''}
                             ${hasModules ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="modules" ${hasConfig || hasBookmarks ? '' : 'checked'}>
+                                <input type="radio" name="restoreType" value="modules" ${soleOptionChecked}>
                                 <span>只恢复模块设置（监控目标、布局、token）</span>
+                            </label>
+                            ` : ''}
+                            ${hasTimeline ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="timeline" ${soleOptionChecked}>
+                                <span>只恢复时间线（事件与已读 / 归档状态；凭据需重新填写）</span>
                             </label>
                             ` : ''}
                         </div>
@@ -5088,6 +5161,9 @@
                 const restoreConfig = restoreType === 'all' || restoreType === 'config';
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
                 const restoreModules = restoreType === 'all' || restoreType === 'modules';
+                // 时间线是「整表替换」：选了 all 就一起恢复；只想动时间线时也有单独一项。
+                // 凭据不随备份，恢复后来源显示「待授权」。
+                const restoreTimeline = restoreType === 'all' || restoreType === 'timeline';
                 if (!await this.confirmAction('恢复将覆盖当前对应的数据，确定继续吗？', '确认恢复')) return;
 
                 optionsDialog.querySelector('.btn-primary').disabled = true;
@@ -5098,10 +5174,12 @@
                         configFile: backup.configFile,
                         bookmarksFile: backup.bookmarksFile,
                         modulesFile: backup.modulesFile,
+                        timelineFile: backup.timelineFile,
                         legacyFile: backup.legacyFile,
                         restoreConfig,
                         restoreBookmarks,
-                        restoreModules
+                        restoreModules,
+                        restoreTimeline
                     });
 
                     if (restoreRes.success) {

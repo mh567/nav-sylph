@@ -134,7 +134,12 @@ test('条目改称书签：收藏夹内的操作文案用「书签」', () => {
     assert.match(src, /`确定删除选中的 \$\{count\} 个书签？`/, '批量删除确认');
     assert.match(src, /'确定删除此书签？', '删除书签', true/, '单条删除确认');
     assert.match(src, /<span>只恢复书签<\/span>/, 'WebDAV 恢复选项');
-    assert.match(src, /<span>同时恢复配置和书签\$\{hasModules \? '（含模块设置）' : ''\}<\/span>/, 'WebDAV 恢复选项（含模块）');
+    // 括号里的内容按「这一组里实际有哪些文件」拼：只放模块时是「（含模块设置）」，
+    // 时间线也在时是「（含模块设置与时间线）」——两者都不在时完全不显示括号。
+    assert.match(src, /同时恢复配置和书签\$\{\(hasModules \|\| hasTimeline\)/,
+        'WebDAV 恢复选项（含模块与时间线）');
+    assert.match(src, /<span>只恢复时间线（事件与已读 \/ 归档状态；凭据需重新填写）<\/span>/,
+        'WebDAV 恢复选项含时间线');
 });
 
 test('首页网格条目改称「导航」，与收藏夹的「书签」分层', () => {
@@ -161,12 +166,12 @@ test('placeholder 在 index.html 与 app.js 两层一致（搜索网页或书签
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v75，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v75';/);
-    assert.match(swJs, /nav-v75：后台「远程备份」区块两件事/);
+test('sw.js：CACHE 升到 nav-v76，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v76';/);
+    assert.match(swJs, /nav-v76：新增「Special Line」时间线模块/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v75', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v76', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });

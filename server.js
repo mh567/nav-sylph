@@ -271,14 +271,19 @@ function publicReadLimit(req, res, next) {
 // 单独计数而**不是**提高 rateLimit：rateLimit 同时是
 // /api/verify-password 的第一层防爆破，放宽它等于把暴力破解的额度一起
 // 放宽 4 倍。这与 publicReadLimit 早先为 /api/session 做过的是同一件事。
-// 阈值按轮询推导：2 个接口 × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 120。
+// 阈值按轮询推导：**3 个接口** × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 180。
+// ⚠️ 每新增一条「每个标签页每周期各打一次」的接口，这个乘数就要重算一次：
+// v1.11.7 定这个数是按 2 个接口推的（120），v1.13.0 加入
+// GET /api/timeline/events 之后必须抬到 180——留着 120 的话，「三个模块
+// 全开 + 十个标签页」会把桶打满，复现的正是 v1.11.7 修过的那类故障
+//（429 → 模块区渲染不出来 / 时间线读取失败）。
 //
-// 代价：这两条是 requireAdmin 门控，无会话时它会跑一次 bcrypt（正常会话
-// 命中不走）。所以伪造 X-Admin-Password 打这两个接口时，可触发的 bcrypt
-// 上限从 30 次/分钟升到 120 次/分钟；仍是有界的，且不必放宽登录那条路径。
+// 代价：这几条是 requireAdmin 门控，无会话时它会跑一次 bcrypt（正常会话
+// 命中不走）。所以伪造 X-Admin-Password 打这些接口时，可触发的 bcrypt
+// 上限从 30 次/分钟升到 180 次/分钟；仍是有界的，且不必放宽登录那条路径。
 const modulePollLimitMap = new Map();
 const MODULE_POLL_WINDOW = 60000;
-const MODULE_POLL_MAX = 120;
+const MODULE_POLL_MAX = 180;
 
 function modulePollLimit(req, res, next) {
     const ip = resolveClientIp(req);
@@ -371,6 +376,9 @@ const { createSqliteBackend } = require('./lib/session-sqlite');
 const {
     readLocalMetrics, fetchRemoteMetrics, probeTcp, probeAgentHealth
 } = require('./lib/monitor');
+// Special Line 时间线：repository / service / scheduler 的装配入口。
+// 凭据加解密需要密码哈希，构造放在 init() 里（那时 getPasswordHash 已可用）。
+const { createTimeline, ServiceError } = require('./lib/timeline');
 
 // 推送凭据的随机数与哈希需要 Node 的 crypto。
 // **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
@@ -835,6 +843,8 @@ function isHttps(req) {
 // 这里只声明，实例在 init() 打开数据库后创建——路由闭包与 60 秒清扫定时器
 // 都在 init() 完成之后才读它（定时器只在首次触发时读取）。
 let db;
+/** 时间线模块的装配结果（repo/service/scheduler）。init() 里创建，关停时先停调度器。 */
+let timeline = null;
 let sessionStore;
 
 // 会话相关的响应带 Accept-CH（高熵 Client Hints 需要它才会被发送）。
@@ -924,6 +934,19 @@ async function init() {
         geoDatabase: config.security.geoDatabase,
         backend: createSqliteBackend(db)
     });
+
+    // 时间线模块。装配顺序要紧：先建 repo（ensureManualSource 会写库），
+    // 再建 service（它需要 getPasswordHash），最后起调度器。
+    //
+    // onDurableChange 只在**不可再生**的数据变更时触发自动同步——保存文章、
+    // 已读/归档、来源增删改。社交事件的轮询摄入刻意不挂钩：那是可再从提供方
+    // 取回的、机器节奏的高频写入，挂钩会把远端上传变成每轮一次。
+    timeline = createTimeline(db, {
+        getPasswordHash,
+        onDurableChange: () => scheduleAutoSync()
+    });
+    // 调度器在开始监听之前启动：升级/重启后已到期的来源立刻补拉一次。
+    timeline.scheduler.start();
 
     // 初始化完成，之后的数据文件写入才算「用户改动」。
     // 置在这里而不是更早：上面几个 ensureFile 在全新安装时也会写文件，
@@ -1198,9 +1221,46 @@ async function reencryptCredentials(oldHash, newHash) {
         }
     }
 
+    // 3) 时间线 provider 凭据。它们在 SQLite 里，不在 JSON 文件里——
+    // 所以这一段走 repository，而不是像上面两段那样读文件再整体写回。
+    //
+    // ⚠️ **先全部算完，再统一落库**，与上面两段同一纪律：在循环里逐条写
+    // 会让「中途抛错」留下一半新密钥、一半旧密钥的凭据，而那一半事后
+    // **永久解不开**（架构文档里反复写过的「边解密边写」）。所以这里只
+    // 收集，落到数据库放到最后、且在一个事务里。
+    const timelinePending = [];
+    if (timeline) {
+        for (const source of timeline.repo.listSources()) {
+            const envelope = timeline.repo.getCredentials(source.id);
+            if (!isEnvelope(envelope)) continue;
+            try {
+                const plain = decrypt(envelope, oldHash, 'timeline');
+                timelinePending.push({
+                    id: source.id,
+                    envelope: encrypt(plain, newHash, 'timeline')
+                });
+                details.push(`${source.name || source.id} 的时间线凭据`);
+            } catch (e) {
+                // 单条解不开（可能更早改过密码）：保留原值并记录，
+                // 绝不因此挡住改密码——只是那一行需要用户重新授权。
+                details.push(`${source.name || source.id} 的时间线凭据（无法解密，已保留原值）`);
+            }
+        }
+    }
+
     // 全部算完才写。writeJSON 各自 chmod 600，与首次创建时同一套收紧。
     if (webdavRaw) await writeJSON(WEBDAV_CONFIG_FILE, webdavRaw);
     if (modulesRaw) await writeJSON(MODULES_FILE, modulesRaw);
+
+    // 时间线那一批最后写，且在一个事务里：要么全部换新密钥，要么一条不动。
+    // 计数也等到真正落库之后再算——「算出来」不等于「写进去了」。
+    if (timelinePending.length) {
+        const applyReencrypted = db.transaction(rows => {
+            for (const row of rows) timeline.repo.setCredentials(row.id, row.envelope);
+        });
+        applyReencrypted(timelinePending);
+        reencrypted += timelinePending.length;
+    }
 
     return { reencrypted, details };
 }
@@ -1810,7 +1870,19 @@ async function collectBackupPayload() {
         const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
         appVersion = versionData.version;
     } catch {}
-    return { configData, favoritesData, modulesData, appVersion };
+    // 时间线的逻辑导出（来源 / 事件 / 用户状态）。**不含凭据**——
+    // 密钥派生自管理员密码哈希，跨安装解不开，放进远端备份只增加暴露面；
+    // 恢复后来源标为「待授权」，由用户重新填写 token。
+    //
+    // 完全没有时间线内容时传 null：不为一个空模块在远端生成一个文件。
+    let timelineData = null;
+    if (timeline) {
+        const dump = timeline.service.exportTimeline();
+        const hasContent = dump.events.length > 0
+            || dump.sources.some(s => s.provider_type !== 'manual');
+        timelineData = hasContent ? dump : null;
+    }
+    return { configData, favoritesData, modulesData, timelineData, appVersion };
 }
 
 /**
@@ -1818,9 +1890,12 @@ async function collectBackupPayload() {
  * 「写哪个文件名、比对哪一组校验和」。
  */
 async function performBackup(webdav, options = {}) {
-    const { configData, favoritesData, modulesData, appVersion } = await collectBackupPayload();
+    const { configData, favoritesData, modulesData, timelineData, appVersion } = await collectBackupPayload();
+    // timelineData 放进 options 而不是再加一个位置参数：createBackup 的
+    // 位置参数已有五个，再加一个会让「谁对应谁」只能靠数数。
     const result = await webdav.createBackup(
-        configData, favoritesData, appVersion, generateBookmarkHtml, modulesData, options
+        configData, favoritesData, appVersion, generateBookmarkHtml, modulesData,
+        { ...options, timelineData }
     );
     // 自动清理：手动备份只留最新 5 组。自动槽位不参与这个轮换（见 cleanupOldBackups）
     if (!result.noChanges) {
@@ -2000,13 +2075,15 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             configFile,
             bookmarksFile,
             modulesFile,
+            timelineFile,
             legacyFile,
             restoreConfig = true,
             restoreBookmarks = true,
-            restoreModules = true
+            restoreModules = true,
+            restoreTimeline = true
         } = req.body;
 
-        if (!configFile && !bookmarksFile && !modulesFile && !legacyFile) {
+        if (!configFile && !bookmarksFile && !modulesFile && !timelineFile && !legacyFile) {
             return res.status(400).json({ error: '请选择要恢复的备份文件' });
         }
 
@@ -2022,10 +2099,12 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             configFile,
             bookmarksFile,
             modulesFile,
+            timelineFile,
             legacyFile,
             restoreConfig,
             restoreBookmarks,
-            restoreModules
+            restoreModules,
+            restoreTimeline
         });
 
         // 恢复期间抑制自动同步：这里的 writeJSON 会被钩子当成「用户改了配置」。
@@ -2035,6 +2114,7 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         // 递减放在 finally 里：中间任何一步抛错都不能让抑制永久留在开状态
         //（那会让自动同步从此静默失效，而界面上开关还是「已开启」）。
         let modulesRestored = false;
+        let timelineRestored = false;
         cancelScheduledAutoSync();
         autoSyncSuppressed++;
         try {
@@ -2060,16 +2140,26 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
                 await writeJSON(MODULES_FILE, result.data.modules);
                 modulesRestored = true;
             }
+            // 时间线：整表替换（service 里是一个事务），凭据表随之清空——
+            // 备份不带凭据，所以恢复后的来源是「待授权」，用户重新填 token。
+            if (result.data.timeline && restoreTimeline) {
+                timeline.service.importTimeline(result.data.timeline);
+                timelineRestored = true;
+            }
         } finally {
             autoSyncSuppressed--;
         }
 
+        const parts = [];
+        if (modulesRestored) parts.push('模块配置');
+        if (timelineRestored) parts.push('时间线');
         res.json({
             success: true,
-            message: modulesRestored ? '恢复成功（含模块配置）' : '恢复成功',
+            message: parts.length ? `恢复成功（含${parts.join('、')}）` : '恢复成功',
             restoredConfig: !!(result.data.config && restoreConfig),
             restoredBookmarks: !!(result.data.favorites || result.data.bookmarksHtml) && restoreBookmarks,
             restoredModules: modulesRestored,
+            restoredTimeline: timelineRestored,
             createdAt: result.createdAt,
             appVersion: result.appVersion
         });
@@ -3320,6 +3410,137 @@ app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
     }
 });
 
+// ========== Special Line 时间线 API ==========
+//
+// 读走轮询桶（前台 15 秒一轮，按标签页数线性增长，算进管理桶会自己打满），
+// 写走管理桶。**provider 凭据只存在于服务端**：列表接口只回 hasCredentials，
+// 任何响应里都不出现 token（明文或密文都不出现）。
+//
+// 路由只做鉴权与调用，校验与业务判断都在 lib/timeline 的 service 里。
+
+function timelineError(res, err) {
+    if (err instanceof ServiceError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    console.error('时间线接口失败:', err);
+    return res.status(500).json({ error: '操作失败' });
+}
+
+// 轮询读：与 /api/memos 同理，回当前生效的周期，后台改过之后不必刷新页面
+app.get('/api/timeline/events', modulePollLimit, requireAdmin, async (req, res) => {
+    try {
+        const payload = timeline.service.listTimeline({
+            sourceId: req.query.source || null,
+            view: req.query.view || 'all',
+            cursor: req.query.cursor || null,
+            limit: req.query.limit
+        });
+        payload.pollInterval = await readPollInterval();
+        res.json(payload);
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+// 保存文章（稍后阅读）。同一 URL 重复保存是更新而不是新增。
+app.post('/api/timeline/articles', rateLimit, requireAdmin, (req, res) => {
+    try {
+        const body = req.body || {};
+        res.json({
+            event: timeline.service.saveArticle({
+                url: body.url, title: body.title, summary: body.summary
+            })
+        });
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+app.post('/api/timeline/events/:id/read', rateLimit, requireAdmin, (req, res) => {
+    try {
+        const read = !!(req.body && req.body.read);
+        res.json(timeline.service.markRead(req.params.id, read));
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+app.post('/api/timeline/events/:id/archive', rateLimit, requireAdmin, (req, res) => {
+    try {
+        const archived = !!(req.body && req.body.archived);
+        res.json(timeline.service.archive(req.params.id, archived));
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+app.get('/api/timeline/sources', rateLimit, requireAdmin, (req, res) => {
+    try {
+        res.json({
+            sources: timeline.service.listSources(),
+            providers: timeline.service.selectableProviders()
+        });
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+// 新建来源：service 里**先测连通再落库**，填错了当场返回 400 与原因
+app.post('/api/timeline/sources', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        const body = req.body || {};
+        const source = await timeline.service.createSource({
+            providerType: body.providerType,
+            name: body.name,
+            externalKey: body.externalKey,
+            token: body.token
+        });
+        res.json({ source });
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+// token 留空 = 保留原值（与后台 WebDAV 密码字段同一约定）
+app.put('/api/timeline/sources/:id', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        const body = req.body || {};
+        const source = await timeline.service.updateSource(req.params.id, {
+            name: body.name,
+            externalKey: body.externalKey,
+            token: body.token,
+            enabled: body.enabled
+        });
+        res.json({ source });
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+app.delete('/api/timeline/sources/:id', rateLimit, requireAdmin, (req, res) => {
+    try {
+        res.json(timeline.service.deleteSource(req.params.id));
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+app.post('/api/timeline/sources/:id/test', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        res.json(await timeline.service.testSource(req.params.id));
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
+// 「立即同步」：force 让它对已暂停的来源也生效（用户明确点了这一下）
+app.post('/api/timeline/sources/:id/sync', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        res.json(await timeline.service.syncSource(req.params.id, { force: true }));
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
 // ========== Paste API ==========
 
 // 生成分享码（用于客户端加密）
@@ -3765,6 +3986,13 @@ function gracefulShutdown(signal) {
         clearTimeout(autoSyncTimer);
         autoSyncTimer = null;
     }
+    // 调度器必须先停：它可能正打第三方 API 并在回调里写库，
+    // 先关库会让那一次写入抛错（而且错误出现在关停路径上，很难看清）。
+    if (timeline) {
+        timeline.scheduler.stop();
+        timeline = null;
+    }
+
     // 关库会把 WAL 合并回主文件（checkpoint），于是升级/备份只需处理一个 .db 文件。
     if (db) {
         try {

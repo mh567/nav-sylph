@@ -104,7 +104,11 @@ test('备忘录限流桶登记进 60 秒 sweep 定时器（无界 Map 不能只�
  */
 function loadMemoRoutes(db) {
     const begin = server.indexOf('const MEMO_LIMIT_WINDOW');
-    const end = server.indexOf('// ========== Paste API ==========', begin);
+    // 端锚点用**下一节自己的标题**，不要用 Paste API：时间线 API 小节就排在
+    // 备忘录之后、Paste 之前，用 Paste 当端点会把整节时间线路由拖进这个 vm，
+    // 于是注册期就要求桩出 app.put / ServiceError / timeline——与本用例无关的
+    // 一串失败。切片到这里，恰好只剩备忘录那一节。
+    const end = server.indexOf('// ========== Special Line 时间线 API ==========', begin);
     assert.ok(begin >= 0 && end > begin, '备忘录 API 小节存在');
 
     const routes = new Map();

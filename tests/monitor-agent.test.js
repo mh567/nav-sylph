@@ -1355,7 +1355,10 @@ test('拖拽落位：配置里没登记过的卡片也要补条目，否则落�
     let layoutCalls = 0;
     const app = {
         modulesConfig: config,
-        applyWidgetLayout() { layoutCalls++; }
+        applyWidgetLayout() { layoutCalls++; },
+        // 平台方法：commitWidgetDrag 用它取模块定义的 defaultSide（无已保存布局
+        // 时按它停靠）。桩里没有 defaultSide 的模块一律回落 'left'。
+        getModule: id => (id === 'special-line' ? { id, defaultSide: 'right' } : { id })
     };
     const drag = { id: 'memo:main', widget: nodes[3], targetSide: null };
 
@@ -3509,7 +3512,13 @@ test('模块轮询接口有自己的限流桶，不占管理操作的额度', ()
     const intervals = (/const POLL_INTERVALS = \[([^\]]*)\]/.exec(code)?.[1] || '')
         .split(',').map(s => Number(s.trim())).filter(Number.isFinite);
     assert.ok(intervals.length >= 3, `解析出轮询周期白名单（${intervals.join(',')}）`);
-    const perTabPerMin = Math.ceil(60000 / (Math.min(...intervals) * 1000)) * 2;  // 两个轮询接口
+    // 「每个标签页每周期各打一次」的接口有几个？**从源码数**，不写死——
+    // 写死 2 的话，新增一条轮询接口（v1.13.0 的 /api/timeline/events）时
+    // 这个推导会悄悄失效，而阈值仍能满足旧的下限断言。
+    const polledRoutes = [...code.matchAll(/app\.get\('(\/api\/[^']+)', modulePollLimit/g)]
+        .map(m => m[1]);
+    assert.ok(polledRoutes.length >= 3, `数出轮询接口：${polledRoutes.join(', ')}`);
+    const perTabPerMin = Math.ceil(60000 / (Math.min(...intervals) * 1000)) * polledRoutes.length;
     const max = Number(/const MODULE_POLL_MAX = (\d+)/.exec(code)?.[1]);
     assert.ok(Number.isFinite(max), '阈值是显式常量');
     assert.ok(max % perTabPerMin === 0, `阈值 ${max} 应是「每标签页每分钟 ${perTabPerMin} 次」的整数倍`);
@@ -3528,7 +3537,8 @@ test('模块轮询接口有自己的限流桶，不占管理操作的额度', ()
         assert.ok(end > at, `${route} 的守卫链可切片（${at}/${end}）`);
         return code.slice(at, end);
     };
-    for (const route of ["app.get('/api/modules/metrics'", "app.get('/api/memos'"]) {
+    for (const route of ["app.get('/api/modules/metrics'", "app.get('/api/memos'",
+        "app.get('/api/timeline/events'"]) {
         const chain = chainOf(route);
         assert.match(chain, /modulePollLimit/, `${route} 走轮询桶`);
         assert.doesNotMatch(chain, /rateLimit,/, `${route} 不得再占管理桶`);
