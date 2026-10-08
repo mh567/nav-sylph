@@ -1208,6 +1208,10 @@ test('保存弹窗用平台那套（居中 + 遮罩），且标题与摘要都�
     assert.doesNotMatch(code, /请填写文章标题。/, '提交前不再卡标题');
     assert.match(code, /classList\.add\('is-filtering'\)[\s\S]*?正在切换…/,
         '（既有行为未受影响：筛选过渡仍在）');
+    // ⚠️ 服务端把 titleFromUrl 挂在 `event` 上（见 server.js 的 res.json({event: …})）。
+    // 写成 data.titleFromUrl 永远取不到，用户就永远收不到「未能自动获取标题」的提示。
+    assert.match(code, /data\.event\.titleFromUrl/, '提示读的是 event 上的标记（不是 data 上的）');
+    assert.doesNotMatch(code, /data\.titleFromUrl/, '不存在 data.titleFromUrl 这种形状');
 });
 
 test('底部只留「加载更早事件」：条数与更新时间已按用户要求去掉', () => {

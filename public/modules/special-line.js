@@ -652,7 +652,7 @@
                 summaryEl.value = '';
                 saveDraft = { url: '', title: '', summary: '' };
                 closeSaveDialog();
-                window.app?.showToast(data && data.titleFromUrl
+                window.app?.showToast(data && data.event && data.event.titleFromUrl
                     ? '已保存；未能自动获取标题，暂用链接当标题'
                     : '已保存到稍后阅读');
                 refresh();
