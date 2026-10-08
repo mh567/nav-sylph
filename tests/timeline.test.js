@@ -686,7 +686,8 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
     const edge = Number(/const MENU_EDGE = (\d+);/.exec(code)?.[1]);
     assert.ok(Number.isFinite(edge), '能从源码读出 MENU_EDGE');
     const run = state => new Function('listEl', 'MENU_EDGE',
-        `${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl, edge)(state.details);
+        `${extractFunction(code, 'function hideMenuPopover(menu)')}
+         ${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl, edge)(state.details);
 
     const opened = makeDom({ open: true, menuRects: [{ top: 110, bottom: 180, height: 70 }] });
     run(opened);
@@ -741,7 +742,8 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
     const rowB = mkRow();
     const listStub = { querySelectorAll: () => [rowA.details, rowB.details] };
     new Function('listEl',
-        `${extractFunction(code, 'function closeMenus(except)')}; return closeMenus;`)(listStub)(rowB.details);
+        `${extractFunction(code, 'function hideMenuPopover(menu)')}
+         ${extractFunction(code, 'function closeMenus(except)')}; return closeMenus;`)(listStub)(rowB.details);
     assert.equal(rowA.details.open, false, '别的菜单被收起');
     assert.equal(rowA.item.set.has('is-menu-open'), false, '收起的那一行摘掉了抬升类');
     assert.equal(rowA.style.top, '', '收起时也清掉夹取的 inline 定位');
@@ -750,6 +752,63 @@ test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has(
 
     // ④ 不得退回 :has()：那是「只在支持的浏览器里成立」的机制，正是回归的来源。
     assert.doesNotMatch(css, /\.special-line-item:has\(/, '不用 :has()（老浏览器整条忽略）');
+});
+
+test('支持 popover 时菜单进 top layer：打开 showPopover、关闭 hidePopover', () => {
+    const code = stripComments(moduleSource);
+    const calls = [];
+    const menu = {
+        style: {},
+        matches: () => true,
+        showPopover: () => calls.push('show'),
+        hidePopover: () => calls.push('hide'),
+        getBoundingClientRect: () => ({ top: 130, bottom: 200, left: 100, right: 200, width: 100, height: 70 })
+    };
+    const details = {
+        open: true,
+        classList: { add: () => {}, remove: () => {} },
+        closest: () => ({ classList: { toggle: () => {} } }),
+        querySelector: () => menu,
+        getBoundingClientRect: () => ({ top: 100, bottom: 120, right: 300 })
+    };
+    const listEl = { getBoundingClientRect: () => ({ top: 0, bottom: 500 }) };
+    const win = { innerHeight: 800, innerWidth: 1200 };
+    const run = d => new Function('listEl', 'MENU_EDGE', 'window',
+        `${extractFunction(code, 'function hideMenuPopover(menu)')}
+         ${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(listEl, 4, win)(d);
+
+    run(details);
+    assert.deepEqual(calls, ['show'], '打开时把菜单放进 top layer（任何祖先的 overflow 都裁不到）');
+    details.open = false;
+    run(details);
+    assert.deepEqual(calls, ['show', 'hide'], '关闭时收起 popover');
+});
+
+test('外部点击与 Esc 关闭菜单：执行真实的文档级处理器', () => {
+    const code = stripComments(moduleSource);
+    const calls = [];
+    const mkList = () => ({
+        querySelector: () => ({ open: true }),          // 有一个开着的菜单
+        closest: () => null
+    });
+    const run = (name, listEl) => new Function('listEl', 'closeMenus',
+        `${extractFunction(code, `function ${name}(event)`)}; return ${name};`)(listEl, () => calls.push(name));
+
+    // 点在菜单/按钮内部不关；点空白处关
+    run('onDocPointerDown', mkList())({ target: { closest: sel => (sel === '.special-line-tools' ? {} : null) } });
+    assert.deepEqual(calls, [], '点在 ⋯ 或菜单里不关闭');
+    run('onDocPointerDown', mkList())({ target: { closest: () => null } });
+    assert.deepEqual(calls, ['onDocPointerDown'], '点空白处关闭（用户报的「点击空白处也不会消失」）');
+
+    calls.length = 0;
+    run('onDocKeyDown', mkList())({ key: 'a' });
+    assert.deepEqual(calls, [], '其它按键不关闭');
+    run('onDocKeyDown', mkList())({ key: 'Escape' });
+    assert.deepEqual(calls, ['onDocKeyDown'], 'Esc 关闭');
+
+    // 接线：mountWidget 里真的挂上了这两个处理器（执行级断言之外的「有没有接上」）
+    assert.match(code, /document\.addEventListener\('pointerdown', onDocPointerDown, true\)/, '挂了外部点击');
+    assert.match(code, /document\.addEventListener\('keydown', onDocKeyDown\)/, '挂了 Esc');
 });
 
 test('筛选不先清空事件，进行中的筛选只补拉最后一次选择', async () => {
@@ -893,7 +952,8 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     assert.match(code, /chip\('manual', '稍后阅读', 'filter-source'\)/, '「稍后阅读」是固定入口');
     assert.match(code, /chip\('all', '全部', 'filter-view'\)/, '状态 chips');
     assert.match(code, /<details class="special-line-tools">/, '「⋯」菜单（与仿真同款）');
-    assert.match(code, /<div class="special-line-actions">/, '菜单里是操作列表');
+    assert.match(code, /<div class="special-line-actions"[^>]*popover="manual"/,
+        '菜单里是操作列表，且是 top-layer 的 popover（不被滚动容器裁）');
     assert.match(code, /data-action="read"/, '标为已读 / 未读');
     assert.match(code, /data-action="archive"/, '归档 / 取消归档');
 

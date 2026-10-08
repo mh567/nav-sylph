@@ -147,7 +147,7 @@
                     `<span class="sr-only">${e.unread ? '未读' : '已读'}</span>` +
                     `<details class="special-line-tools">` +
                         `<summary aria-label="事件操作" title="事件操作">⋯</summary>` +
-                        `<div class="special-line-actions">` +
+                        `<div class="special-line-actions" popover="manual">` +
                             `<button class="special-line-action" type="button" data-action="read" data-id="${esc(e.id)}"` +
                                 ` aria-pressed="${e.unread ? 'false' : 'true'}">${e.unread ? '标为已读' : '标为未读'}</button>` +
                             `<button class="special-line-action" type="button" data-action="archive" data-id="${esc(e.id)}"` +
@@ -451,30 +451,55 @@
      * 列表是**滚动容器**（卡片高度有上限），菜单是绝对定位的——朝下弹到容器外
      * 会被 overflow 裁掉。所以打开后量一次，超出就翻上去。
      */
-    // 菜单与容器边界之间留的间隙（翻上去与夹取两处共用同一个值）
+    // 菜单与容器边界之间留的间隙（回退路径的上翻与夹取共用同一个值）
     const MENU_EDGE = 4;
+    // 文档级关闭路径的处理器（重复挂载时先摘旧的，避免叠加）
+    let docHandlers = null;
+
+    /** 收起菜单里的 popover（不支持 popover 的浏览器是空操作）。 */
+    function hideMenuPopover(menu) {
+        if (!menu || typeof menu.hidePopover !== 'function') return;
+        try { if (menu.matches(':popover-open')) menu.hidePopover(); } catch { /* 视为已关闭 */ }
+    }
 
     function adjustMenu(details) {
         if (!details || !listEl) return;
-        // ⚠️ 打开菜单的那一行必须抬到相邻事件卡之上，而且**不能**靠 CSS 的 :has()：
-        // 不支持 :has() 的浏览器会整条忽略那条规则。由 JS 加/摘类，任何浏览器都成立。
         const item = details.closest('.special-line-item');
         if (item) item.classList.toggle('is-menu-open', details.open);
         details.classList.remove('is-up');
         const menu = details.querySelector('.special-line-actions');
-        if (menu) { menu.style.top = ''; menu.style.bottom = ''; }   // 清掉上一次的夹取
-        if (!details.open || !menu) return;
+        if (menu) {
+            menu.style.position = ''; menu.style.top = ''; menu.style.left = '';
+            menu.style.right = ''; menu.style.bottom = '';
+        }
+        if (!details.open || !menu) { hideMenuPopover(menu); return; }
 
+        // ⚠️ 首选把菜单放进 **top layer**（popover）：top layer 不被任何祖先的 overflow 裁剪，
+        // 于是菜单可以保持「紧贴按钮」的位置。这正是问题所在——滚动容器（overflow:auto）会裁掉
+        // 越界的菜单；此前的两种补救都有副作用：上翻会在列表矮时越出顶边被裁（被筛选行那条带
+        // 「遮挡」），往容器内夹又会把菜单顶到离按钮很远的地方（用户报的「位置很奇怪」）。
+        // popover 一次解决两件事，且不动 DOM（点击委托仍挂在卡片上）。
+        if (typeof menu.showPopover === 'function') {
+            try { menu.showPopover(); } catch { /* 已打开 */ }
+            // ⚠️ top layer 的包含块是**视口**（UA 还会带 inset:0 + margin:auto），
+            //    所以坐标必须显式给：贴按钮下方，放不下就翻上去，最后按视口夹取。
+            const btn = details.getBoundingClientRect();
+            const box = menu.getBoundingClientRect();
+            const vh = window.innerHeight, vw = window.innerWidth;
+            let top = btn.bottom + MENU_EDGE;
+            if (top + box.height > vh - MENU_EDGE) top = Math.max(MENU_EDGE, btn.top - MENU_EDGE - box.height);
+            const left = Math.max(MENU_EDGE, Math.min(btn.right - box.width, vw - MENU_EDGE - box.width));
+            menu.style.position = 'fixed';
+            menu.style.top = top + 'px';
+            menu.style.left = left + 'px';
+            menu.style.right = 'auto';
+            menu.style.bottom = 'auto';
+            return;
+        }
+
+        // 回退（不支持 popover 的浏览器）：保持原有的上翻 + 夹取
         const wrap = listEl.getBoundingClientRect();
-        // 先按朝下量：越出容器底边就翻上去
         if (menu.getBoundingClientRect().bottom > wrap.bottom - MENU_EDGE) details.classList.add('is-up');
-
-        // ⚠️ 兜底：列表很矮时（62vh 受限、窗口不高），上翻也会越出**顶边**，
-        // 被滚动容器的 overflow:auto 裁掉；那条带正是「全部/未读/已归档」那一行所在处，
-        // 用户看到的就是「菜单被那行遮挡」。所以量一次最终位置，越界就**夹回容器内**
-        // ——夹取后菜单可能压住本条目的正文，但完整可见、点得到。
-        // 实测触发：视口 1280×400（列表 131px）时上翻的菜单 `.top < 列表顶`，命中落在 chips 行。
-        // 唯一的例外：容器**比菜单还矮**时夹取也无处可放（max 取容器顶），那一格仍会被裁。
         const menuRect = menu.getBoundingClientRect();
         if (menuRect.top < wrap.top + MENU_EDGE || menuRect.bottom > wrap.bottom - MENU_EDGE) {
             const detailsRect = details.getBoundingClientRect();
@@ -488,15 +513,38 @@
     function closeMenus(except) {
         if (!listEl) return;
         for (const d of listEl.querySelectorAll('.special-line-tools[open]')) {
-            if (d !== except) {
-                d.open = false;
-                d.closest('.special-line-item')?.classList.remove('is-menu-open');
-                // 与 adjustMenu 对称：清掉夹取留下的 inline 定位，
-                // 别让一个关着的菜单揣着上一轮的 top（虽然看不见，但没人想读这份状态）
-                const m = d.querySelector('.special-line-actions');
-                if (m) { m.style.top = ''; m.style.bottom = ''; }
+            if (d === except) continue;
+            d.open = false;
+            d.closest('.special-line-item')?.classList.remove('is-menu-open');
+            // 与 adjustMenu 对称：清掉 inline 定位，并收起 popover
+            const m = d.querySelector('.special-line-actions');
+            if (m) {
+                m.style.position = ''; m.style.top = ''; m.style.left = '';
+                m.style.right = ''; m.style.bottom = '';
+                hideMenuPopover(m);
             }
         }
+    }
+
+    /**
+     * 文档级的关闭路径。此前只有「再点一次 ⋯」「点别的 ⋯」「切筛选」「重渲染」四条，
+     * 于是**点空白处与按 Esc 都关不掉**（用户报的「点击空白处也不会消失」）。
+     * 用 pointerdown 的捕获阶段：先于 click，不至于让同一次点击又把它打开。
+     */
+    function onDocPointerDown(event) {
+        if (!listEl) return;
+        const open = listEl.querySelector('.special-line-tools[open]');
+        if (!open) return;
+        if (event.target && event.target.closest('.special-line-tools')) return;   // 点在按钮或菜单里
+        closeMenus();
+    }
+
+    function onDocKeyDown(event) {
+        if (event.key !== 'Escape' || !listEl) return;
+        if (!listEl.querySelector('.special-line-tools[open]')) return;
+        closeMenus();
+        const chip = listEl.closest('.special-line-card')?.querySelector('.special-line-chip');
+        chip?.focus?.();   // 焦点别留在被收起的按钮上
     }
 
     // ================= 保存文章对话框 =================
@@ -1010,6 +1058,15 @@
                 }
             }
         });
+
+        // 外部点击与 Esc 关闭菜单（此前只有「再点 ⋯ / 点别的 ⋯ / 切筛选 / 重渲染」四条路径）
+        if (docHandlers) {
+            document.removeEventListener('pointerdown', docHandlers.pointerdown, true);
+            document.removeEventListener('keydown', docHandlers.keydown);
+        }
+        docHandlers = { pointerdown: onDocPointerDown, keydown: onDocKeyDown };
+        document.addEventListener('pointerdown', onDocPointerDown, true);
+        document.addEventListener('keydown', onDocKeyDown);
 
         renderChips();
         render();
