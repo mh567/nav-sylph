@@ -539,6 +539,14 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 | 首页网格的分类与链接 | `config.json` 的 `categories[].bookmarks[]` | 首页**导航**（「编辑首页导航」「添加导航」「删除导航」） |
 | 平铺书签 | `favorites.json` 的 `favorites[]` | 后台「**收藏夹**」里的**书签**（「导入书签」「全部书签」「搜索书签」） |
 
+⚠️ **保存进行中必须允许关闭面板，但只跳过「放弃修改」这一步。** `closeAdmin()` 原先在 `configSaving` 时**直接 `return false`**，而「取消」按钮并没有被禁用（点遮罩、按 Esc 走的是同一条路）——于是保存请求慢或卡住时，右上角那一对**看着完好却什么都点不动**，请求返回后又「自己好了」。用户报的「后台管理界面右上角的保存取消按钮无法点击了」正是它，而这不是模块的问题：`app.js` 一直如此。
+
+改成的形态是 `const saving = this.configSaving; if (!saving && this.configDirty) { …确认 + 回滚… }` —— **只跳过这一整段**（确认与回滚），其余收尾（`configDirty`/`configSnapshot` 清理、`closeModuleAdminSections()`、隐藏面板、归还焦点）照旧。
+
+⚠️ **不要写成 `if (this.configSaving) force = true;`。** 那是「一路放行」：`configDirty` 在保存在途时**仍为 true**，于是 `if (this.configDirty)` 那段照常执行，把内存里的 `this.config` **回滚成提交前的快照**——服务端存下的是新配置，页面却按旧配置渲染，而且 `openAdmin()` 不重拉 `config`（只在 `init()` 取一次），这个分叉会一直保持到整页刷新；期间再保存一次就会用旧配置覆盖服务端。这条错法在本轮真实出现过，两个审查轴独立指到了它。
+
+配套三条：配置保存加 **20 秒超时**（`AbortSignal.timeout`，特性检测缺失时退回无超时，行为与改动前一致）——没有超时时一个卡住的请求会让 `finally` 永不执行，`configSaving` 一直为 true、「保存」一直是灰色的「保存中...」，只能刷新；面板已被关掉时保存失败要用 **toast** 说出来（行内状态那时看不见）；失败后**不回滚**内存里的 `config`（静默回滚等于把用户刚改的东西抹掉，不一致由 toast 交代）。`API.post` 因此多了可选的第三个参数用于传 `signal`。
+
 **分区切换与懒渲染。** `selectAdminTab(panel)` 记住当前分区（`this.adminTab`），`renderAdminPanel()` 每次重建面板 DOM 后据此恢复——不复位会让「切走再切回」弹回第一个分区。模块分区与收藏夹分区都**只在首次进入时渲染**（`modulesEditorRendered` / `favManagerRendered`），两个标记都必须在 `renderAdminPanel()` 里复位；否则面板 DOM 重建后该分区会跳过渲染，停在模板里的「加载中...」。
 
 ⚠️ **折叠区（远程备份）的判据是「有没有渲染进当前这块 DOM」，不是「配置在不在内存里」。** 三个标记 `modulesEditorRendered` / `favManagerRendered` / `webdavRendered` 都在构造函数里**显式初始化**（本文件自己的规矩：不靠 `undefined` 的隐式比较），也都在 `renderAdminPanel()` 里同批复位。远程备份此前用 `!this.webdavConfig` 当条件——`renderAdminPanel()` 每次重建 `#modalBody` 都会产生一个只写着「加载中...」的新 `#webdavSection`，而 `webdavConfig` 还在内存里，于是条件为假、不发请求，占位符永久留在页面上（用户报的「改完配置手动去同步时，展开会失败」；**第二次打开管理面板起必然复现**，不是偶发）。这与模块分区当初的 `!this.modulesConfig` 是同一个缺陷类：判据要落在**输出**（画出来没有），不是**输入**（拉回来没有）。`tests/login-guard.test.js` 钉住这条，并反向断言该处不得再出现 `!this.webdavConfig`；断言必须钉「三行复位同处一段连续语句」（`[^;]*` 连接），因为 logout 处理器就在 `renderAdminPanel` 方法体之内、也有一行同样的复位，用 `[\s\S]*?` 会跨过去匹配到它——**变异实测两次都是这样绿的**。
