@@ -2,7 +2,57 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：更新周期改为「按本轮开始」计时 + 后台补「下次 HH:MM」（随 **v1.15.6** 发布；功能提交 `6d4a811`、发布提交 `f7a95f0`，基线 `0730522`）
+## 最新一轮：删掉已读/未读，卡片改「归档 + 收藏」（未提交，工作树；基线 `02a6f95`）
+
+用户原话：「删掉已读未读的功能吧，这块就留两个功能，归档和收藏，卡片右下角可以放一个收藏按钮（五角星那种），收藏后的内容可以长期保存没有 30 天限制，并继续保持在原时间线。归档按钮放在右上角，右上角不再设置菜单按钮，归档逻辑和现在保持一致。」看完仿真样例后补充：「确认已归档的事件卡片不会在原时间线显示，只能在已归档里面看。其他的没问题」。
+
+### 两个已确认的选择
+
+- 加一个「收藏」筛选：筛选行由 `全部 / 未读 / 已归档` 改为 `全部 / 收藏 / 已归档`。
+- 界面上就叫「收藏」；README 与架构文档里写明它与首页那个「收藏夹」（书签）不是一回事。
+
+### 语义（四条）
+
+1. 收藏 = 单条事件的标记（`timeline_event_state.favorited_at`），与归档同表同写法（乐观更新 + 失败回滚 + `onDurableChange('state')`）。
+2. 收藏后**仍留在原时间线**，多做的一件事是**豁免 30 天清理**（`sweepRetention` 里 `NOT IN (… favorited_at != 0)`）。
+3. 归档语义**完全不变**：从其余视图收起，且**不**豁免清理。
+4. ⚠️ **实施时修正**：计划里原写「收藏视图包含已归档项」；用户看样例时明确「已归档的只能在已归档里看」，所以 `favorited` 视图的判据改成 `favorited_at != 0 AND archived_at = 0`——一条既收藏又归档的事件只在「已归档」里出现（星标仍亮，取消归档就回到原时间线）。
+
+### 改法（逐层）
+
+- **数据**：`lib/db.js` 尾部追加 **v6**（`ADD COLUMN favorited_at INTEGER` + `DROP COLUMN read_at`；better-sqlite3 13 自带 SQLite 3.53.4，实测 DROP COLUMN 可用且数据保留）。`repository`：删 `countUnread` / `unreadCount()` / `setRead` / `upsertStateRead`，加 `upsertStateFavorite` / `setFavorite`；`sweepRetention` 加收藏豁免；`insertStateRaw` 改列名并**给老备份补 null 键**（否则升级前导出的备份会因缺命名参数直接抛错、再也恢复不进来）；`listEvents` 三条视图判据见语义 4。
+- **服务**：删 `markRead` / `eventView.unread` / `listTimeline.unreadCount`；`safeView` 白名单换成 `all|favorited|archived`；加 `favorite(id, favorited)`。
+- **路由**：删 `POST /api/timeline/events/:id/read`，加 `POST /api/timeline/events/:id/favorite`（同一管理桶）。
+- **前端**：卡片**右上角改成归档按钮**（原「⋯」的位置）、**底部新增一行**（左「查看原文/展开全文」、右收藏星标；这一行**无条件渲染**，否则没有左侧操作的卡片就没有收藏按钮的落脚点）。星标是**一个** SVG，靠 `aria-pressed` 切实心/线框——**不重写按钮内容**（那种写法会把按钮上别的东西一起抹掉，本仓库踩过）。
+- **整套「⋯」菜单机件删除**：`MENU_EDGE` / `adjustMenu` / `closeMenus` / `hideMenuPopover` / `is-menu-open` / `.is-up` / `.special-line-tools` / `.special-line-actions` / `.special-line-action`（弹层用原生 `menu.showPopover()`，本仓库从没有过 `showMenuPopover` 这个自写函数），以及 CSS 里的**四条** `[data-unread]`（基础节点光圈、`h3` 字重、宽列节点、窄列节点）与两个容器查询里的未读规则。⚠️ `onDocPointerDown` / `onDocKeyDown` **只删菜单那一半**，渠道菜单那半必须留着（它是另一套：`openChannel` + `renderChips`）。
+- **文案**：底部「仅保留最近 30 天」补成「（收藏过的除外）」——收藏豁免之后只写 30 天就是错文案；`app.js` 恢复对话框里「事件与已读 / 归档状态」改为「事件与归档 / 收藏状态」。
+- **命名撞车**：每条的底部行用 **`.special-line-item-foot`**，不能复用 `.special-line-foot`（那是卡片级页脚、30 天提示在用）。小样里我第一版就写错过这个名字。
+- 缓存 `nav-v95 → nav-v96`。
+
+### 实际验证
+
+- **真实浏览器（隔离夹具，三视图 + 三态）**：视图 chips = 全部/收藏/已归档；「全部」3 条（2 条带星）、「收藏」2 条（**不含**那条既收藏又归档的）、「已归档」2 条（一条带星且按钮为「取消归档」）；`.special-line-tools` / `.special-line-actions` 计数均为 0；卡片里无「未读」字样。
+- **几何**：归档按钮右缘与 meta 行右缘差 0px（贴右上）且在 meta 行内；星标距事件卡内容盒右/下缘各 1px（贴右下），26×26；窄列（390 视口）下归档按钮按 ≤700px 规则到 44px。
+- **交互**：点星标 → `POST /api/timeline/events/<id>/favorite`，body `{"favorited":true}`；重新取新节点读回 `aria-pressed=true` / `label=已收藏` / `fill=rgb(194,141,112)`（未收藏时 `fill=none`、色 `rgb(168,156,144)`）；再点一次回到未收藏。点「归档」→ 该卡从当前视图消失（3→2）。截图核对了宽列（1440）与窄列（390）两种版式。
+- **清理豁免（端到端）**：库里放一条 40 天前**已收藏**、一条 45 天前**未收藏** → `sweepRetention(now-30d)` 清掉 1 条（未收藏的那条），已收藏的留下且仍在「收藏」视图里。
+- **测试**：新增 3 条（v6 迁移：用**已发布的台阶**手工升到 v5 → `openDatabase` → 断言 `user_version = MIGRATIONS.length`、`favorited_at` 在、`read_at` 不在、既有 `archived_at` **原样保留**；收藏豁免清理 + 归档不豁免；执行真实 `eventHTML` 断言两个按钮的位置与状态）。改写：两条只针对已删菜单机件的用例整条删除，「文档级关闭」那条改写成只覆盖渠道菜单，「形态与源码形状」那条改为断言新按钮 + 断言菜单机件不再出现。全套 **565/565**。
+- **变异验证七条全红**：清理不再豁免收藏、收藏视图不再排除已归档、去掉右上角归档按钮、去掉右下角星标、迁移不再加 `favorited_at`、星标不再实心、「⋯」菜单重新出现。每次改前验锚点唯一、改后跑测试；收尾 `diff` 与四份备份逐字节一致。
+
+### 验证边界 / 我自己的失误
+
+- 「已读」数据**没有迁移**（列已删）——计划里写明的取舍；**新备份无法被旧版本还原**（旧版只认 `read_at`，会以 `Missing named parameter` 失败），而老备份可以导入新版（缺失键补 null，`tests/timeline-backup.test.js` 有专门用例）。这条单向不兼容已写进 `docs/architecture.md` 的 WebDAV 段。
+- ⚠️ 变异脚本第一版把模块的**模板字符串**塞进 shell 引号里的 `node -e`，三条变异直接语法错。改用独立 `.js` 文件写变异才跑通（与仓库里记过的坑同一条）。
+- ⚠️ 探针里我把属性名写成 `out.还有⋯菜单吗`：`⋯`（U+22EF）不是合法标识符字符，整段探针语法错；改名后通过。
+- ⚠️ 探针读的是**被重渲染替换掉的旧节点**（`fill` 读成空串），一度像是「点了没生效」；实际上请求与服务端计数都正常。改成用 `data-id` 重新取节点读回才对。
+- ⚠️ 夹具的状态脚本两次找错对象（一次按 title 找，实际长正文在 summary；一次找的那条已被归档、不在默认视图里），中途状态不是我想摆的样子。都在同一轮内自查并重跑。
+- 未在用户自己的浏览器上复跑；窄列截图只到 390 视口那一档。
+
+### 下一步
+
+1. 本次未提交、未发布。要发布按仓库规矩走两轴审查 + `scripts/release.sh`（缓存号已升 `nav-v96`）。
+2. 遗留不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
+
+## 上一轮：更新周期改为「按本轮开始」计时 + 后台补「下次 HH:MM」（随 **v1.15.6** 发布；功能提交 `6d4a811`、发布提交 `f7a95f0`，基线 `0730522`）
 
 用户原话：「x 的订阅，后台管理设置为了 30 分钟更新周期，为什么下面一行字写最近更新 31 分钟前，这里是不是不太合理」。追问后选定：周期口径改「开始到开始」、那行补「下次 15:50」。
 
@@ -857,7 +907,7 @@
 
 ### 先做仿真对比，再动手
 
-按「改动前先给仿真样例」的惯例，先做了 `docs/mockup-special-line-inline.html`（可切版式 A/B、视口 1440/1280/390、主题、内容态），把两种可行版式摆出来：
+按「改动前先给仿真样例」的惯例，先做了 `docs/mockup-special-line-inline.html`（可切版式 A/B、视口 1440/1280/390、主题、内容态），把两种可行版式摆出来：（⚠️ 该文件已在 v1.15.7 随「删掉已读/未读、归档移到右上、新增收藏星标」一起删除——它画的旧交互会误导人。现行样例见 `docs/mockup-special-line-actions.html`，它直接引用真实 `styles.css`，不会走形。）
 
 - **A**：背板让位（右侧固定 420px）→ 能完整还原仿真的桌面版（左侧日期轨道 + 事件卡）
 - **B**：背板不动（右侧仍 210px）→ 只能走窄版
@@ -953,7 +1003,7 @@
 
 ## 上一轮：Special Line 时间线模块（内容提交 `c54bf41`，版本账 `ed9f709`，已发布 **v1.13.0**）
 
-用户原话：「可以，开始实现。默认模块启用后放在导航首页右侧空白部分，可拖拽」。在此之前方案与仿真样例都已确认（设计基线 `~/.commandcode/plans/special-line-timeline.md`，实施计划 `special-line-timeline-implementation.md`，仿真 `docs/mockup-special-line.html`，本轮随代码入库）。
+用户原话：「可以，开始实现。默认模块启用后放在导航首页右侧空白部分，可拖拽」。在此之前方案与仿真样例都已确认（设计基线 `~/.commandcode/plans/special-line-timeline.md`，实施计划 `special-line-timeline-implementation.md`，仿真 `docs/mockup-special-line.html`（⚠️ 已于 v1.15.7 删除，见上；现行样例 `docs/mockup-special-line-actions.html`），本轮随代码入库）。
 
 ### 交付了什么
 

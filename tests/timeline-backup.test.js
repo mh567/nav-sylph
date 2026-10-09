@@ -76,13 +76,40 @@ async function seedService(db) {
         }
     ], Date.now());
     const ev = repo.listEvents({}).rows[0];
-    repo.setRead(ev.id, true, Date.now());
+    repo.setFavorite(ev.id, true, Date.now());
     repo.setArchive(ev.id, true, Date.now());
     await service.saveArticle({ url: 'https://example.com/saved', title: '保存的文章' });
     return { repo, service, sourceId: src.id };
 }
 
 // ========== 导出内容 ==========
+
+test('老备份（状态行只有 read_at、没有 favorited_at）也能导入：归档保留、收藏补 NULL', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    try {
+        const { service, repo } = await seedService(db);
+        const dump = repo.exportAll();
+        // v1.15.6 之前导出的形状：状态行是 (event_id, read_at, archived_at)
+        const legacy = {
+            formatVersion: 1,
+            sources: dump.sources,
+            events: dump.events,
+            eventState: [{ event_id: dump.events[0].id, read_at: 12345, archived_at: 67890 }]
+        };
+        assert.ok(!('favorited_at' in legacy.eventState[0]), '老形状里确实没有 favorited_at');
+        // ⚠️ better-sqlite3 对**缺**命名参数会抛 "Missing named parameter"，
+        // 所以 importAll 必须自己补齐缺失的键——否则升级前的备份再也恢复不进来。
+        assert.doesNotThrow(() => service.importTimeline(legacy), '导入不得因缺命名参数抛错');
+        const archived = repo.listEvents({ view: 'archived' }).rows;
+        assert.equal(archived.length, 1, '归档状态照原样回来');
+        assert.equal(archived[0].archivedAt, 67890, '归档时刻原样保留');
+        assert.equal(archived[0].favoritedAt, null, '收藏补齐为 NULL（老备份里没有这个概念）');
+    } finally {
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
 
 test('备份文件是版本化时间线类型，且**不含凭据**（明文与密文都不含）', async () => {
     const { dir, file } = tempDb();
@@ -110,7 +137,7 @@ test('备份文件是版本化时间线类型，且**不含凭据**（明文与�
         assert.ok(!JSON.stringify(stored).includes('provider-secret'));
         assert.equal(stored.checksum.length, 64, '带校验和');
         assert.equal(stored.data.events.length, dump.events.length);
-        assert.equal(stored.data.eventState.length, dump.eventState.length, '用户状态（已读/归档）也在');
+        assert.equal(stored.data.eventState.length, dump.eventState.length, '用户状态（归档/收藏）也在');
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
@@ -252,7 +279,12 @@ test('破坏性往返：备份 → 清库 → 恢复，事件与用户状态回�
         assert.equal(after.events.length, before.events.length, '事件条数回位');
         assert.equal(service.listTimeline({ view: 'archived' }).events.length, archivedBefore,
             '用户状态（归档）也回位');
-        assert.equal(after.unreadCount, before.unreadCount, '未读数一致');
+        // v6 起「已读」换成「收藏」：同一条既收藏又归档的事件只在「已归档」里可见，
+        // 顺带证明状态行的 favorited_at 也过了备份往返。
+        assert.equal(service.listTimeline({ view: 'archived' }).events[0].favorited, true,
+            '收藏状态回位（同时归档的那条只出现在「已归档」，星标仍然亮着）');
+        assert.equal(service.listTimeline({ view: 'favorited' }).events.length, 0,
+            '既收藏又归档的不出现在「收藏」视图里');
         assert.equal(service.listSources().filter(s => s.providerType !== 'manual').length, sourcesBefore,
             '来源回位');
         assert.equal(service.listSources().filter(s => s.hasCredentials).length, 0,
@@ -407,7 +439,8 @@ test('恢复保留周期启停和历史状态，X 可无凭据同步，微博仍
         assert.equal(repo.getSource(sourceId).enabled, false);
         assert.equal((await service.syncSource(activeX.id)).ok, true);
         const history = repo.listEvents({ view: 'archived' }).rows[0];
-        assert.ok(history.readAt && history.archivedAt);
+        assert.ok(history.favoritedAt && history.archivedAt,
+            '用户状态（收藏 + 归档）在强制同步后仍然保留');
         await service.updateSource(weibo.id, { enabled: false });
         await service.updateSource(weibo.id, { token: 'fresh' });
         assert.equal(repo.getSource(weibo.id).enabled, false);

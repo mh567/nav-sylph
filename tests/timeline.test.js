@@ -121,9 +121,47 @@ test('v5 迁移建出四张时间线表与索引，且在数组尾部追加（�
     }
 });
 
+test('v6 迁移：老库加上 favorited_at、删掉 read_at，既有归档状态原样保留', () => {
+    const { dir, file } = tempDb();
+    const Database = require('better-sqlite3');
+    // 用**已发布**的迁移台阶手工升到 v5，得到「升级前」的库形状——不另抄一份 DDL，
+    // 否则抄的那份会与真台阶漂移。
+    const old = new Database(file);
+    for (let i = 0; i < 5; i++) MIGRATIONS[i](old);
+    old.pragma('user_version = 5');
+    old.exec(`
+        INSERT INTO timeline_sources (id, provider_type, name, external_key, settings_json, enabled,
+            sync_cursor, sync_interval_ms, next_sync_at, last_attempt_at, last_success_at, last_error,
+            created_at, updated_at)
+        VALUES ('s1', 'x', 'X · a', 'a', '{}', 1, NULL, 900000, 0, NULL, NULL, NULL, 1, 1);
+        INSERT INTO timeline_events (id, source_id, event_type, provider_event_id, dedupe_key,
+            occurred_at, ingested_at, author, title, summary, url, metadata_json)
+        VALUES ('e1', 's1', 'social_post', 'p1', 'p1', 1000, 1000, '@a', '标题', '', '', '{}');
+        INSERT INTO timeline_event_state (event_id, read_at, archived_at) VALUES ('e1', 12345, 67890);
+    `);
+    assert.deepEqual(old.prepare('PRAGMA table_info(timeline_event_state)').all().map(r => r.name),
+        ['event_id', 'read_at', 'archived_at'], '升级前确实是 v5 的列（含 read_at）');
+    old.close();
+
+    const db = openDatabase(file);
+    try {
+        assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length);
+        const cols = db.prepare('PRAGMA table_info(timeline_event_state)').all().map(r => r.name);
+        assert.ok(cols.includes('favorited_at'), '加上 favorited_at');
+        assert.ok(!cols.includes('read_at'), '删掉 read_at（已读整条功能都不要了）');
+        const row = db.prepare('SELECT * FROM timeline_event_state WHERE event_id = ?').get('e1');
+        assert.equal(row.archived_at, 67890, '既有归档状态原样保留——迁移不能顺手清掉用户数据');
+        assert.equal(row.favorited_at, null, '收藏默认空');
+        assert.equal(db.prepare('SELECT COUNT(*) AS c FROM timeline_events').get().c, 1, '事件没动');
+    } finally {
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 // ========== 去重 / 状态 ==========
 
-test('同一个 dedupe_key 二次摄入不重复，且不重置已读/归档', () => {
+test('同一个 dedupe_key 二次摄入不重复，且不重置收藏/归档', () => {
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
@@ -139,15 +177,15 @@ test('同一个 dedupe_key 二次摄入不重复，且不重置已读/归档', (
         assert.equal(repo.countSourceEvents(src.id), 1);
 
         const first = repo.listEvents({}).rows[0];
-        repo.setRead(first.id, true, Date.now());
+        repo.setFavorite(first.id, true, Date.now());
         repo.setArchive(first.id, true, Date.now());
 
         // 再来一轮（模拟下一轮同步把同一条又拉回来）
         assert.equal(seedEvents(repo, src.id, [socialEvent(1, 1000)]), 0);
         const after = repo.listEvents({ view: 'archived' }).rows[0];
         assert.ok(after, '归档那条还在归档视图里');
-        assert.ok(after.readAt && after.archivedAt,
-            '重复摄入不得把用户标过的已读/归档重置回默认');
+        assert.ok(after.favoritedAt && after.archivedAt,
+            '重复摄入不得把用户标过的收藏/归档重置回默认');
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
@@ -224,7 +262,7 @@ test('游标分页稳定：不重不漏，hasMore 与 nextCursor 一致', () => 
     }
 });
 
-test('视图筛选：默认不含已归档，未读与归档各成一组', () => {
+test('视图筛选：默认与「收藏」都不含已归档，归档自成一组', () => {
     const { dir, file } = tempDb();
     const db = openDatabase(file);
     try {
@@ -236,12 +274,52 @@ test('视图筛选：默认不含已归档，未读与归档各成一组', () =>
         });
         seedEvents(repo, src.id, [socialEvent(1, 3000), socialEvent(2, 2000), socialEvent(3, 1000)]);
         const rows = repo.listEvents({}).rows;
-        repo.setRead(rows[0].id, true, Date.now());
+        repo.setFavorite(rows[0].id, true, Date.now());
         repo.setArchive(rows[2].id, true, Date.now());
 
         assert.equal(repo.listEvents({ view: 'all' }).rows.length, 2, '默认视图排除已归档');
-        assert.equal(repo.listEvents({ view: 'unread' }).rows.length, 1, '未读只剩一条');
+        assert.equal(repo.listEvents({ view: 'favorited' }).rows.length, 1, '「收藏」只剩收藏的那条');
         assert.equal(repo.listEvents({ view: 'archived' }).rows.length, 1, '归档视图只有那一条');
+
+        // ⚠️ 用户明确要求：归档的只能在「已归档」里看。所以同一条既收藏又归档时，
+        // 「收藏」视图也必须看不到它——归档就是从其余视图收起。
+        repo.setFavorite(rows[2].id, true, Date.now());
+        assert.equal(repo.listEvents({ view: 'favorited' }).rows.length, 1,
+            '既收藏又归档的不进「收藏」视图');
+        const archivedRow = repo.listEvents({ view: 'archived' }).rows[0];
+        assert.ok(archivedRow.favoritedAt, '但收藏状态还在（取消归档就回到原时间线）');
+    } finally {
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('30 天清理：收藏过的不清，归档的不豁免——这正是两者的区别', () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    try {
+        const repo = createRepository(db);
+        repo.ensureManualSource();
+        const src = repo.createSource({
+            providerType: 'x', name: 'X · a', externalKey: 'a',
+            settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
+        });
+        const day = 86400000;
+        const now = Date.now();
+        // 三条都超出保留期：一条收藏、一条归档、一条什么都不标
+        seedEvents(repo, src.id, [socialEvent(1, now - 40 * day), socialEvent(2, now - 41 * day),
+            socialEvent(3, now - 42 * day)]);
+        const rows = repo.listEvents({}).rows;
+        repo.setFavorite(rows[0].id, true, now);
+        repo.setArchive(rows[1].id, true, now);
+
+        const removed = repo.sweepRetention(now - SOCIAL_RETENTION_DAYS * day);
+        assert.equal(removed, 2, '清掉两条——归档的那条也在其中');
+        assert.ok(repo.getEvent(rows[0].id), '收藏过的留在库里（「长期保存」就是这一条）');
+        assert.equal(repo.getEvent(rows[1].id), null, '归档过的**不**豁免：归档只是从视图收起');
+        assert.equal(repo.getEvent(rows[2].id), null, '没标记的照常清');
+        // 也真的还在「收藏」视图里（不是只留在表里）
+        assert.deepEqual(repo.listEvents({ view: 'favorited' }).rows.map(r => r.id), [rows[0].id]);
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
@@ -1119,193 +1197,38 @@ test('后台来源表单与行：X 只填用户名与周期，微博才要求 Ac
     assert.match(live, /最近成功 刚刚[\s\S]*下次 15:50/, '运行中的来源把「下次」接在「最近成功」后面');
 });
 
-test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has() 的浏览器里菜单会被下一张卡盖住）', () => {
-    const code = stripComments(moduleSource);
-    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
-
-    // ① 跑**真实的** adjustMenu（DOM 用桩）：按 details.open 加/摘 is-menu-open，
-    //    并保留「超出容器底边就翻上去」的旧行为。
-    //    这条机制此前写成 CSS 的 :has()，而不支持它的浏览器会整条忽略该规则，
-    //    于是短条目（手动保存的文章）的菜单被下一张事件卡盖住——
-    //    用户报的「被 specialline 模块本身遮挡」正是这个，真机复现过。
-    // 每一处 getBoundingClientRect 依次取一个预置值（取完则复用最后一个），
-    // 这样能分别模拟「朝下量」「上翻后量」两次测量。
-    const makeDom = ({ open, menuRects, wrapTop = 100, wrapBottom = 500, detailsTop = 90 }) => {
-        const state = { toggles: [], classes: [], style: {} };
-        state.item = {
-            set: new Set(),
-            classList: {
-                toggle: (name, on) => {
-                    state.toggles.push([name, on]);
-                    if (on) state.item.set.add(name); else state.item.set.delete(name);
-                }
-            }
-        };
-        const queue = menuRects.slice();
-        const menu = {
-            style: state.style,
-            getBoundingClientRect: () => (queue.length > 1 ? queue.shift() : queue[0])
-        };
-        state.details = {
-            open,
-            classList: {
-                add: c => state.classes.push(['add', c]),
-                remove: c => state.classes.push(['remove', c])
-            },
-            closest: sel => (sel === '.special-line-item' ? state.item : null),
-            querySelector: sel => (sel === '.special-line-actions' ? menu : null),
-            getBoundingClientRect: () => ({ top: detailsTop })
-        };
-        state.listEl = { getBoundingClientRect: () => ({ top: wrapTop, bottom: wrapBottom }) };
-        return state;
-    };
-    // adjustMenu 引用模块级的 MENU_EDGE，抽出来执行时必须把它一起注入——
-    // 否则桩里 ReferenceError，守卫会「因为抛错」而不是「因为断言」变红（假红）。
-    const edge = Number(/const MENU_EDGE = (\d+);/.exec(code)?.[1]);
-    assert.ok(Number.isFinite(edge), '能从源码读出 MENU_EDGE');
-    const run = state => new Function('listEl', 'MENU_EDGE',
-        `${extractFunction(code, 'function hideMenuPopover(menu)')}
-         ${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(state.listEl, edge)(state.details);
-
-    const opened = makeDom({ open: true, menuRects: [{ top: 110, bottom: 180, height: 70 }] });
-    run(opened);
-    assert.deepEqual(opened.toggles, [['is-menu-open', true]], '打开时给所在行加上抬升类');
-    assert.deepEqual(opened.classes.filter(c => c[0] === 'add'), [], '放得下时不翻上去');
-    assert.equal(opened.style.top, '', '放得下时不做夹取');
-
-    const closed = makeDom({ open: false, menuRects: [{ top: 110, bottom: 180, height: 70 }] });
-    run(closed);
-    assert.deepEqual(closed.toggles, [['is-menu-open', false]], '关闭时把抬升类摘掉');
-
-    const overflow = makeDom({ open: true,
-        menuRects: [{ top: 430, bottom: 500, height: 70 }, { top: 300, bottom: 370, height: 70 }] });
-    run(overflow);
-    assert.deepEqual(overflow.classes.filter(c => c[0] === 'add'), [['add', 'is-up']],
-        '超出容器底边时仍然翻上去（滚动容器会裁掉朝下的菜单）');
-    assert.equal(overflow.style.top, '', '上翻后放得下就不夹取');
-
-    // ⭐ 用户报的形态：列表很矮时上翻也越出**顶边**，被滚动容器裁掉，
-    //    而那条带正是「全部/未读/已归档」那行所在处（实测视口 1280×400）。
-    //    这里模拟：容器 100..200，上翻后菜单 60..130 → 顶边越界，应被夹回容器内。
-    const clamped = makeDom({ open: true, wrapTop: 100, wrapBottom: 200, detailsTop: 90,
-        menuRects: [{ top: 140, bottom: 210, height: 70 }, { top: 60, bottom: 130, height: 70 }] });
-    run(clamped);
-    assert.equal(clamped.style.top, '14px',
-        '上翻仍越出顶边时夹回容器内（容器顶 100+4=104，相对 details 顶 90 得 14px）');
-    assert.equal(clamped.style.bottom, 'auto', '夹取时显式取消 bottom，避免 top/bottom 同时生效');
-
-    // ② CSS 只消费这个类；菜单本身仍要压在卡片内容之上
-    const rule = /\.special-line-item\.is-menu-open\s*\{([^}]*)\}/.exec(css);
-    assert.ok(rule, '有 .special-line-item.is-menu-open 规则');
-    assert.ok(Number(/z-index:\s*(\d+)/.exec(rule[1])?.[1]) > 0, '抬升到高于普通行的层级');
-    const actions = /\.special-line-actions\s*\{([^}]*)\}/.exec(css);
-    assert.ok(actions, '菜单容器 .special-line-actions 规则存在');
-    assert.match(actions[1], /z-index:\s*3/, '菜单本身仍在卡片内容之上');
-
-    // ③ 收起别的菜单时也要摘掉它们所在行的类。这一段同样**执行**（不只比源码）：
-    //    closeMenus 是另一条关菜单的路径（切筛选、点开另一个菜单都走它），
-    //    漏摘会让那一行一直停在 z-index:2。
-    const mkRow = () => {
-        const item = { set: new Set(['is-menu-open']),
-            classList: { remove: name => item.set.delete(name) } };
-        const style = { top: '14px', bottom: 'auto' };   // 假定上一轮留下了夹取
-        const details = {
-            open: true,
-            closest: sel => (sel === '.special-line-item' ? item : null),
-            querySelector: sel => (sel === '.special-line-actions' ? { style } : null)
-        };
-        return { item, style, details };
-    };
-    const rowA = mkRow();
-    const rowB = mkRow();
-    const listStub = { querySelectorAll: () => [rowA.details, rowB.details] };
-    new Function('listEl',
-        `${extractFunction(code, 'function hideMenuPopover(menu)')}
-         ${extractFunction(code, 'function closeMenus(except)')}; return closeMenus;`)(listStub)(rowB.details);
-    assert.equal(rowA.details.open, false, '别的菜单被收起');
-    assert.equal(rowA.item.set.has('is-menu-open'), false, '收起的那一行摘掉了抬升类');
-    assert.equal(rowA.style.top, '', '收起时也清掉夹取的 inline 定位');
-    assert.equal(rowB.details.open, true, '被点的那一个不动');
-    assert.equal(rowB.item.set.has('is-menu-open'), true, '被点的那一行保留抬升类');
-
-    // ④ 不得退回 :has()：那是「只在支持的浏览器里成立」的机制，正是回归的来源。
-    assert.doesNotMatch(css, /\.special-line-item:has\(/, '不用 :has()（老浏览器整条忽略）');
-});
-
-test('支持 popover 时菜单进 top layer：打开 showPopover、关闭 hidePopover', () => {
+test('外部点击与 Esc 收起渠道菜单：执行真实的文档级处理器', () => {
     const code = stripComments(moduleSource);
     const calls = [];
-    const menu = {
-        style: {},
-        matches: () => true,
-        showPopover: () => calls.push('show'),
-        hidePopover: () => calls.push('hide'),
-        getBoundingClientRect: () => ({ top: 130, bottom: 200, left: 100, right: 200, width: 100, height: 70 })
-    };
-    const details = {
-        open: true,
-        classList: { add: () => {}, remove: () => {} },
-        closest: () => ({ classList: { toggle: () => {} } }),
-        querySelector: () => menu,
-        getBoundingClientRect: () => ({ top: 100, bottom: 120, right: 300 })
-    };
-    const listEl = { getBoundingClientRect: () => ({ top: 0, bottom: 500 }) };
-    const win = { innerHeight: 800, innerWidth: 1200 };
-    const run = d => new Function('listEl', 'MENU_EDGE', 'window',
-        `${extractFunction(code, 'function hideMenuPopover(menu)')}
-         ${extractFunction(code, 'function adjustMenu(details)')}; return adjustMenu;`)(listEl, 4, win)(d);
-
-    run(details);
-    assert.deepEqual(calls, ['show'], '打开时把菜单放进 top layer（任何祖先的 overflow 都裁不到）');
-    details.open = false;
-    run(details);
-    assert.deepEqual(calls, ['show', 'hide'], '关闭时收起 popover');
-});
-
-test('外部点击与 Esc 关闭菜单：执行真实的文档级处理器', () => {
-    const code = stripComments(moduleSource);
-    const calls = [];
-    const mkList = () => ({
-        querySelector: () => ({ open: true }),          // 有一个开着的菜单
-        closest: () => null
-    });
-    // 处理器闭包里还有渠道菜单那几个绑定，一并注入（缺一个就是 ReferenceError）
-    const run = (name, listEl, opts = {}) => new Function(
-        'listEl', 'closeMenus', 'openChannel', 'lastChipsKey', 'renderChips', 'chipsEl',
+    // 处理器闭包里现在只剩渠道菜单那几个绑定（「⋯」菜单的机件已随菜单一起删除）。
+    // 缺一个就是 ReferenceError——沙箱漏注入会当场红，不是静默通过。
+    const run = (name, opts = {}) => new Function(
+        'openChannel', 'lastChipsKey', 'renderChips', 'chipsEl',
         `${extractFunction(code, `function ${name}(event)`)}; return ${name};`
-    )(listEl, () => calls.push(name),
-        opts.openChannel === undefined ? null : opts.openChannel,
+    )(opts.openChannel === undefined ? null : opts.openChannel,
         '', () => calls.push('renderChips'),
         { querySelector: () => ({ focus: () => calls.push('focus') }) });
 
-    // 点在菜单/按钮内部不关；点空白处关
-    run('onDocPointerDown', mkList())({ target: { closest: sel => (sel === '.special-line-tools' ? {} : null) } });
-    assert.deepEqual(calls, [], '点在 ⋯ 或菜单里不关闭');
-    run('onDocPointerDown', mkList())({ target: { closest: () => null } });
-    assert.deepEqual(calls, ['onDocPointerDown'], '点空白处关闭（用户报的「点击空白处也不会消失」）');
-
-    // 渠道菜单：点筛选行以外收起并重绘；点在筛选行内部不收起
-    calls.length = 0;
-    run('onDocPointerDown', mkList(), { openChannel: 'x' })({ target: { closest: () => null } });
+    // 点筛选行以外收起并重绘；点在筛选行内部不收起（那一下是它自己的 click）
+    run('onDocPointerDown', { openChannel: 'x' })({ target: { closest: () => null } });
     assert.ok(calls.includes('renderChips'), '点空白处收起渠道菜单并重绘');
     calls.length = 0;
-    run('onDocPointerDown', mkList(), { openChannel: 'x' })(
+    run('onDocPointerDown', { openChannel: 'x' })(
         { target: { closest: sel => (sel === '.special-line-filters' ? {} : null) } });
-    assert.ok(!calls.includes('renderChips'), '点在筛选行内部不收起（那一下是它自己的 click）');
+    assert.ok(!calls.includes('renderChips'), '点在筛选行内部不收起');
 
     calls.length = 0;
-    run('onDocKeyDown', mkList())({ key: 'a' });
+    run('onDocKeyDown', { openChannel: 'x' })({ key: 'a' });
     assert.deepEqual(calls, [], '其它按键不关闭');
-    run('onDocKeyDown', mkList())({ key: 'Escape' });
-    assert.deepEqual(calls, ['onDocKeyDown'], 'Esc 关闭');
-
-    // 渠道菜单开着时，Esc 先收它并把焦点还给那个按钮
-    calls.length = 0;
-    run('onDocKeyDown', mkList(), { openChannel: 'x' })({ key: 'Escape' });
+    run('onDocKeyDown', { openChannel: 'x' })({ key: 'Escape' });
     assert.ok(calls.includes('renderChips') && calls.includes('focus'), 'Esc 收起渠道菜单并把焦点还回按钮');
-    assert.ok(!calls.includes('onDocKeyDown'), '不越过去关 ⋯ 菜单');
 
-    // 接线：mountWidget 里真的挂上了这两个处理器（执行级断言之外的「有没有接上」）
+    // 「⋯」菜单那套机件不许回来（用户要求：右上角不再有菜单）
+    assert.doesNotMatch(code, /MENU_EDGE|adjustMenu|closeMenus|is-menu-open/,
+        '菜单的定位/抬升/关闭机件已删除');
+    assert.doesNotMatch(code, /special-line-tools|special-line-actions/,
+        '菜单的标记不再出现');
+    // 接线上仍挂着两个文档级处理器（渠道菜单靠它们关）
     assert.match(code, /document\.addEventListener\('pointerdown', onDocPointerDown, true\)/, '挂了外部点击');
     assert.match(code, /document\.addEventListener\('keydown', onDocKeyDown\)/, '挂了 Esc');
 });
@@ -1333,11 +1256,11 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
     const refresh = new Function('initial', 'api', `
         const PAGE_SIZE = 20;
         const URLSearchParams = globalThis.URLSearchParams;
-        let events = initial.slice(), sources = [], unreadCount = events.length;
+        let events = initial.slice(), sources = [];
         let nextCursor = 'old-cursor', hasMore = true, syncFailed = [], lastSync = null;
         let syncState = 'synced', listError = null, busy = false;
-        let filterSource = 'manual', filterView = 'unread', inFlight = false;
-        let appliedFilterSource = 'manual', appliedFilterView = 'unread';
+        let filterSource = 'manual', filterView = 'favorited', inFlight = false;
+        let appliedFilterSource = 'manual', appliedFilterView = 'favorited';
         let filterTransition = false, filterRefreshPending = false;
         let lastKey = '', lastChipsKey = '', pollMs = 15000, pollTimer = null;
         const renderChips = () => {};
@@ -1363,7 +1286,7 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
     assert.deepEqual(refresh.events.map(e => e.id), ['manual-old-1', 'manual-old-2'],
         '筛选请求等待时不先清空旧数据');
     assert.match(requested[0], /source=manual/);
-    assert.match(requested[0], /view=unread/);
+    assert.match(requested[0], /view=favorited/);
 
     refresh.setFilter('source-x', 'all');
     await refresh.refresh({ filterChange: true });
@@ -1372,7 +1295,7 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
     assert.equal(requested.length, 1, '不并发重复打相同列表请求');
     assert.equal(refresh.cursor, 'old-cursor', '切换筛选时暂留原分页游标，失败可回到原结果继续翻页');
 
-    resolvers[0]({ events: [{ id: 'stale-filter-response' }], unreadCount: 1, sources: [], sync: { failed: [] },
+    resolvers[0]({ events: [{ id: 'stale-filter-response' }], sources: [], sync: { failed: [] },
         nextCursor: null, hasMore: false, pollInterval: 15 });
     await Promise.resolve();
     await Promise.resolve();
@@ -1381,13 +1304,13 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
     assert.match(requested[1], /view=all/, '补拉使用最后选择的状态');
     assert.equal(refresh.transition, true, '中间过期结果不结束过渡态');
 
-    resolvers[1]({ events: [{ id: 'latest-filter-result' }], unreadCount: 1, sources: [], sync: { failed: [] },
+    resolvers[1]({ events: [{ id: 'latest-filter-result' }], sources: [], sync: { failed: [] },
         nextCursor: 'latest-cursor', hasMore: true, pollInterval: 15 });
     await first;
     assert.deepEqual(refresh.events.map(e => e.id), ['latest-filter-result'], '最终采用最后筛选的响应');
     assert.equal(refresh.transition, false, '最终结果到达后清除过渡态');
     assert.deepEqual(refresh.appliedFilters, ['source-x', 'all'], '成功结果记录与内容匹配的筛选');
-    refresh.setFilter('manual', 'unread');
+    refresh.setFilter('manual', 'favorited');
     const failed = refresh.refresh({ filterChange: true });
     await Promise.resolve();
     rejectors[2](Object.assign(new Error('offline'), { status: 503 }));
@@ -1406,7 +1329,7 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
     const filterCases = [
         ["case 'filter-source':", "case 'filter-view':"],
         ["case 'filter-view':", "case 'reset-filters':"],
-        ["case 'reset-filters':", "case 'read':"]
+        ["case 'reset-filters':", "case 'favorite':"]
     ];
     for (const [start, end] of filterCases) {
         const from = code.indexOf(start);
@@ -1430,7 +1353,7 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
         '过渡期间显示明确的切换状态');
 });
 
-test('时间线内联在首页那一列里：没有弹窗，形态与仿真一致（轨道 / 事件卡 / ⋯ / chips）', () => {
+test('时间线内联在首页那一列里：没有弹窗，形态与仿真一致（轨道 / 事件卡 / 归档 + 收藏 / chips）', () => {
     const code = stripComments(moduleSource);
 
     // ① 不再有弹窗面板（用户的明确要求：「不是单独弹出一个框再显示」）
@@ -1441,7 +1364,7 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     // ② 卡片本身就是时间线：四段都挂在 card 上
     assert.match(code, /card\.append\(head, chipsEl, listEl, footEl\)/, '头 / 筛选 / 列表 / 底部都在卡片里');
 
-    // ③ 形态对齐仿真：日期轨道（time）+ 事件卡（article）+ chips 筛选 + 「⋯」菜单
+    // ③ 形态对齐仿真：日期轨道（time）+ 事件卡（article）+ chips 筛选
     assert.match(code, /<time class="special-line-time">/, '左侧日期轨道');
     assert.match(code, /<article class="special-line-event">/, '事件卡');
     assert.match(code, /class="special-line-mark"/, '来源标记');
@@ -1451,20 +1374,77 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     assert.match(code, /class="special-line-menu" role="menu"/, '渠道按钮带子菜单');
     assert.match(code, /全部渠道<\/button>|'全部渠道'/, '「全部渠道」清空来源筛选');
     assert.match(code, /该渠道全部/, '子菜单里可以只看该渠道');
-    assert.match(code, /chip\('all', '全部', 'filter-view'\)|viewChip\('all', '全部'\)/, '状态 chips');
+    assert.match(code, /viewChip\('all', '全部'\)[\s\S]{0,80}viewChip\('favorited', '收藏'\)[\s\S]{0,80}viewChip\('archived', '已归档'\)/,
+        '三个视图 chips：全部 / 收藏 / 已归档（未读已删）');
     // ⚠️ 这一行**不能**再有横向滚动：滚动容器会把渠道子菜单裁掉，
     // 而扁平化 + 隐藏滚动条正是「已归档被推出可视区」的原因
     assert.doesNotMatch(code, /special-line-sep/, '扁平分隔线已随分组一起删除');
-    assert.match(code, /<details class="special-line-tools">/, '「⋯」菜单（与仿真同款）');
-    assert.match(code, /<div class="special-line-actions"[^>]*popover="manual"/,
-        '菜单里是操作列表，且是 top-layer 的 popover（不被滚动容器裁）');
-    assert.match(code, /data-action="read"/, '标为已读 / 未读');
-    assert.match(code, /data-action="archive"/, '归档 / 取消归档');
 
-    // ④ 「⋯」菜单会被滚动容器裁掉，所以要有量一次、必要时往上弹的处理
-    assert.match(code, /function adjustMenu\(details\)/, '有翻转逻辑');
-    assert.match(code, /classList\.add\('is-up'\)/, '超出底边时往上弹');
-    assert.match(code, /closeMenus\(/, '打开一个菜单时先收起别的');
+    // ④ 卡片上就两个动作：右上角归档（原来「⋯」的位置）、右下角收藏星标
+    assert.match(code, /class="special-line-archive"[^>]*data-action="archive"/, '右上角是归档按钮');
+    assert.match(code, /class="special-line-star"[^>]*data-action="favorite"/, '右下角是收藏按钮');
+    assert.match(code, /data-action="favorite"/, '收藏动作在');
+    assert.match(code, /STAR_SVG/, '星标用内联 SVG（不引第三方资源）');
+    // 底部那一行必须**无条件**渲染，否则没有「查看原文」的卡片就没有收藏按钮
+    assert.match(code, /<div class="special-line-item-foot">/, '底部一行始终存在');
+    assert.match(code, /actions\.length \? `<div class="special-line-row-actions">/,
+        '左侧操作可为空，但底部那一行照样渲染');
+
+    // ⑤ 「⋯」菜单整套必须走干净（用户要求：右上角不再设置菜单按钮）
+    assert.doesNotMatch(code, /<details class="special-line-tools">/, '不再有「⋯」');
+    assert.doesNotMatch(code, /special-line-actions|popover="manual"/, '不再有菜单面板');
+    assert.doesNotMatch(code, /adjustMenu|closeMenus|MENU_EDGE|is-menu-open|is-up/, '菜单的定位/抬升机件已删');
+    assert.doesNotMatch(code, /data-action="read"|标为已读|标为未读|unread/, '已读/未读整条删除');
+});
+
+test('事件卡渲染（执行真实 eventHTML）：右上角归档、右下角收藏，已无「⋯」', () => {
+    const code = stripComments(moduleSource);
+    const star = /const STAR_SVG = '([^']*)' \+\s*\n\s*'([^']*)';/.exec(code);
+    assert.ok(star, '能从源码读出 STAR_SVG（两段拼接）');
+    const starSvg = star[1] + star[2];
+    // 依赖逐项注入；缺一个就是 ReferenceError，不会静默通过。
+    const make = (opts = {}) => new Function(
+        'esc', 'showOriginalIds', 'expandedIds', 'authorHTML', 'hm', 'dayLabel', 'relTime',
+        'STAR_SVG', 'TITLE_MAX', 'SUMMARY_LINES', 'CLAMP_MIN',
+        `${extractFunction(code, 'function eventHTML(e) {')}; return eventHTML;`
+    )(
+        v => String(v === null || v === undefined ? '' : v),
+        new Set(opts.showOriginal || []), new Set(opts.expanded || []),
+        () => '<span class="special-line-mark">作者</span>',
+        () => '15:20', () => '今天', () => '3 小时前',
+        starSvg, 80, 6, 90
+    );
+    const base = {
+        id: 'e1', title: '标题', summary: '正文', url: 'https://x.com/a/1',
+        occurredAt: Date.now(), eventTypeLabel: '博主推文', author: '@jack'
+    };
+
+    const plain = make()({ ...base, favorited: false, archived: false });
+    assert.match(plain, /class="special-line-star"[^>]*aria-pressed="false"[^>]*aria-label="收藏"/,
+        '右下角是未点亮的星标');
+    assert.match(plain, /class="special-line-archive"[^>]*aria-pressed="false"[^>]*>归档</,
+        '右上角是「归档」按钮');
+    assert.match(plain, /<div class="special-line-item-foot">/, '底部那一行始终渲染');
+    assert.ok(plain.includes(starSvg), '星标是真的内联 SVG');
+    assert.doesNotMatch(plain, /special-line-row-actions/, '没有左侧操作时底部行只剩收藏');
+    assert.doesNotMatch(plain, /<details|special-line-tools|special-line-actions|⋯/,
+        '不再有「⋯」菜单（用户要求右上角不设菜单）');
+    // 状态只由按钮自己的 aria-pressed 承载：不在 <li> 上再挂一个没人读的属性（死属性）
+    assert.doesNotMatch(plain, /<li[^>]*data-favorited/, '不在行上挂无人消费的状态属性');
+
+    const faved = make()({ ...base, favorited: true, archived: true });
+    assert.match(faved, /class="special-line-star"[^>]*aria-pressed="true"[^>]*aria-label="收藏"/,
+        '已收藏时 aria-pressed 为真，可访问名保持恒定的「收藏」（开关按钮的惯例）');
+    assert.match(faved, /title="已收藏，点击取消"/, '状态提示走 title');
+    assert.match(faved, /aria-pressed="true"[^>]*>取消归档</, '已归档时按钮变「取消归档」');
+    // 星标必须排在时间戳**之后**：窄列下时间戳可见，否则星标不是卡片最底一行
+    assert.ok(faved.indexOf('special-line-stamp') < faved.indexOf('special-line-item-foot'),
+        '时间戳在前、收藏行在后，星标才是卡片右下角');
+
+    const withActions = make()({ ...base, favorited: false, archived: false, translation: '译文。' });
+    assert.match(withActions,
+        /<div class="special-line-row-actions"><button class="special-line-ghost"[^>]*>查看原文<\/button><\/div>/,
+        '有译文时左侧给「查看原文」，与右侧收藏并存');
 });
 
 test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（真跑 railLayoutFor）', () => {
@@ -1726,7 +1706,11 @@ test('底部只留一行说明（不再放「加载更早事件」按钮）：�
     assert.match(code, /listEl\.tabIndex = 0/, '列表可聚焦（键盘滚动 → 触发哨兵）');
     assert.match(code, /listEl\.setAttribute\('role', 'region'\)/, '滚动区域有 region 语义');
     assert.match(code, /class="special-line-footnote">向下滚动会自动加载更早事件</, '还有更早时给一行自动加载说明');
-    assert.match(code, /class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</, '到底时说明保留窗口');
+    assert.match(code, /class="special-line-footnote">已到最早一条 · 仅保留最近 30 天（收藏过的除外）</,
+        '到底时说明保留窗口，并点明收藏过的例外');
+    // ⚠️ 括号里那半句是必须的：收藏豁免清理（见 repository 的 sweepRetention），
+    // 只写「仅保留 30 天」在用户收藏了一条之后就是错的文案。
+    assert.doesNotMatch(code, /仅保留最近 30 天<\/div>/, '不能退回不带例外说明的旧文案');
     // ⚠️ 那句话只对社交订阅成立：「稍后阅读」不参与时限清理，空列表也谈不上「已到最早一条」
     assert.match(code, /const socialView = filterSource !== 'manual'/, '「稍后阅读」视图不算社交窗口');
     assert.match(code, /events\.length && socialView[\s\S]{0,80}仅保留最近 30 天/,
@@ -1750,7 +1734,7 @@ test('底部只留一行说明（不再放「加载更早事件」按钮）：�
     assert.doesNotMatch(css, /\.special-line-linkbtn/, '样式表里那套下划线按钮规则也要删掉，不留死规则');
 });
 
-test('宽版日期栏不侵入节点光圈，轨道居中且正文起点紧凑', () => {
+test('宽版日期栏不侵入节点，轨道居中且正文起点紧凑', () => {
     const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
     const at = css.indexOf('@container (min-width: 360px) {');
     assert.ok(at >= 0, '宽版容器查询存在');
@@ -1784,18 +1768,16 @@ test('宽版日期栏不侵入节点光圈，轨道居中且正文起点紧凑',
     const gap = px(item, 'gap');
     const track = px(rule(wide, '.special-line-list::before'), 'left');
     const node = { ...rule(base, '.special-line-item::before'), ...rule(wide, '.special-line-item::before') };
-    const unread = { ...node, ...rule(base, '.special-line-item[data-unread="true"]::before'),
-        ...rule(wide, '.special-line-item[data-unread="true"]::before') };
-    for (const [name, declarations] of [['普通节点', node], ['未读节点', unread]]) {
-        const halo = declarations['box-shadow'] ? /^0 0 0 ([\d.]+)px /.exec(declarations['box-shadow']) : null;
-        if (declarations['box-shadow']) assert.ok(halo, `${name} 的有效光圈尺寸可解析`);
-        const radius = px(declarations, 'width') / 2 + (halo ? Number(halo[1]) : 0);
-        assert.equal(px(declarations, 'left'), track, `${name} 与轨道中心一致`);
-        assert.equal(declarations.transform, 'translate(-50%, -50%)', `${name} 最终仍以中心定位`);
-        assert.ok(track - radius - timeWidth >= 6, `${name} 光圈与日期框至少留 6px`);
-        assert.ok(timeWidth + gap - track - radius >= 6, `${name} 光圈与正文卡至少留 6px`);
+    {
+        const name = '节点';
+        const radius = px(node, 'width') / 2;
+        assert.equal(px(node, 'left'), track, `${name} 与轨道中心一致`);
+        assert.equal(node.transform, 'translate(-50%, -50%)', `${name} 最终仍以中心定位`);
+        assert.ok(track - radius - timeWidth >= 6, `${name} 与日期框至少留 6px`);
+        assert.ok(timeWidth + gap - track - radius >= 6, `${name} 与正文卡至少留 6px`);
     }
-    assert.equal(px(node, 'top'), px(unread, 'top'), '已读与未读节点不偏移');
+    // 「未读」整个功能已删除：那套放大 + 光圈规则不许留下（留下就是死规则）
+    assert.doesNotMatch(css, /data-unread/, '不再有未读节点的样式');
     assert.ok(timeWidth + gap <= 80, '正文左起点不超过 80px');
     assert.equal(rule(wide, '.special-line-time')['white-space'], 'nowrap', '日期与时刻不被挤断');
     assert.ok(px(rule(wide, '.special-line-time strong'), 'font-size') <= 10,
@@ -1842,9 +1824,13 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按�
     assert.match(wrap[1], /overflow-y: auto/, '列表自己滚');
     assert.match(wrap[1], /min-height: 0/, 'flex 子项必须 min-height:0 才会真的滚（否则被内容撑开）');
 
-    // 「⋯」菜单在滚动容器里要能往上弹
-    assert.match(css, /\.special-line-tools\.is-up \.special-line-actions \{ top: auto; bottom: calc\(100% \+ 4px\); \}/,
-        '菜单贴底时往上弹');
+    // 右上角归档 + 右下角收藏：两个按钮的规则都要在，且旧菜单的规则不许留下
+    assert.match(css, /\.special-line-archive \{/, '归档按钮的规则存在');
+    assert.match(css, /\.special-line-star \{/, '收藏星标的规则存在');
+    assert.match(css, /\.special-line-star\[aria-pressed="true"\] svg \{[^}]*fill: currentColor/,
+        '已收藏时星标实心（由 aria-pressed 驱动，不重写按钮内容）');
+    assert.doesNotMatch(css, /\.special-line-tools|\.special-line-actions|\.special-line-action\b/,
+        '「⋯」菜单的规则已整条删除');
 
     // 颜色 token：本仓库**没有** --danger / --warning / --success，
     // 引用它们不会报错，只会静默丢掉那条声明（观感像「样式没生效」）
@@ -1931,7 +1917,6 @@ test('真跑时间线路由处理器：读回完整载荷，写把校验错误�
         const read = await callRoute(routes, 'GET /api/timeline/events');
         assert.equal(read.statusCode, 200);
         assert.equal(read.body.events.length, 1, '读到刚保存的那条');
-        assert.equal(read.body.unreadCount, 1);
         assert.equal(read.body.pollInterval, 15, '轮询周期随响应下发（后台改过不必刷新页面）');
         assert.ok(read.body.sources.some(s => s.providerType === 'manual'), '含内置「稍后阅读」');
         assert.ok(!JSON.stringify(read.body).includes('token'), '响应里连凭据字段名都没有');
@@ -1954,24 +1939,28 @@ test('真跑时间线路由处理器：读回完整载荷，写把校验错误�
         assert.equal(noTitle.body.event.titleFromUrl, true, '抓不到标题时回落用链接当标题');
         assert.match(noTitle.body.event.title, /example\.com\/y/, '标题取自链接');
 
-        const missing = await callRoute(routes, 'POST /api/timeline/events/:id/read',
-            { params: { id: 'nope' }, body: { read: true } });
+        const missing = await callRoute(routes, 'POST /api/timeline/events/:id/favorite',
+            { params: { id: 'nope' }, body: { favorited: true } });
         assert.equal(missing.statusCode, 404, '不存在的事件回 404 而不是静默成功');
 
         const delManual = await callRoute(routes, 'DELETE /api/timeline/sources/:id',
             { params: { id: 'manual' } });
         assert.equal(delManual.statusCode, 400, '内置来源不可删');
 
-        // read 的布尔来自请求体，真的落库
+        // favorited 的布尔来自请求体，真的落库
         const id = read.body.events[0].id;
-        const marked = await callRoute(routes, 'POST /api/timeline/events/:id/read',
-            { params: { id }, body: { read: true } });
-        assert.equal(marked.statusCode, 200);
-        assert.equal(marked.body.unread, false);
-        const after = await callRoute(routes, 'GET /api/timeline/events');
-        // 1 而不是 0：上面那条「留空标题」的保存现在会成功落一条（自动用链接当标题），
-        // 它没被标为已读。这里钉的是「标已读只影响那一条」，所以期望值是剩下的未读数。
-        assert.equal(after.body.unreadCount, 1, '只有被标记的那条变成已读');
+        const starred = await callRoute(routes, 'POST /api/timeline/events/:id/favorite',
+            { params: { id }, body: { favorited: true } });
+        assert.equal(starred.statusCode, 200);
+        assert.equal(starred.body.favorited, true);
+        // 收藏后进得了「收藏」视图（归档的不进——那条另有断言）
+        const faved = await callRoute(routes, 'GET /api/timeline/events', { query: { view: 'favorited' } });
+        assert.deepEqual(faved.body.events.map(e => e.id), [id], '只有被收藏的那条出现在「收藏」里');
+        // 取消收藏后就出去了
+        await callRoute(routes, 'POST /api/timeline/events/:id/favorite',
+            { params: { id }, body: { favorited: false } });
+        const none = await callRoute(routes, 'GET /api/timeline/events', { query: { view: 'favorited' } });
+        assert.equal(none.body.events.length, 0, '取消收藏后「收藏」视图为空');
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
@@ -2073,7 +2062,7 @@ test('真实路由→服务→数据库：周期白名单、无 token、启停�
         assert.equal((await timeline.service.testSource(id)).ok, true);
         assert.equal((await timeline.service.syncSource(id)).inserted, 1);
         const event = timeline.repo.listEvents({ sourceId: id }).rows[0];
-        timeline.service.markRead(event.id, true);
+        timeline.service.favorite(event.id, true);
         timeline.service.archive(event.id, true);
         assert.equal((await timeline.service.syncSource(id)).inserted, 0);
         for (const interval of [60000, 300000, 900000, 1800000, 3600000]) {
@@ -2115,7 +2104,8 @@ test('真实路由→服务→数据库：周期白名单、无 token、启停�
         assert.equal((await callRoute(routes, 'POST /api/timeline/sources/:id/sync', { params: { id } })).body.ok, true);
         assert.ok(requests.length > n);
         assert.equal(timeline.repo.getSource(id).enabled, false);
-        assert.ok(timeline.repo.listEvents({ view: 'archived' }).rows[0].readAt);
+        assert.ok(timeline.repo.listEvents({ view: 'archived' }).rows[0].favoritedAt,
+            '手动同步不重置用户标过的收藏');
         await callRoute(routes, 'PUT /api/timeline/sources/:id', { params: { id }, body: { enabled: true } });
         assert.equal(timeline.repo.dueSources(Date.now(), 10).length, 1);
         const before = requests.length;

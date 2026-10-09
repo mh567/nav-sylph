@@ -138,7 +138,7 @@ test('条目改称书签：收藏夹内的操作文案用「书签」', () => {
     // 时间线也在时是「（含模块设置与时间线）」——两者都不在时完全不显示括号。
     assert.match(src, /同时恢复配置和书签\$\{\(hasModules \|\| hasTimeline\)/,
         'WebDAV 恢复选项（含模块与时间线）');
-    assert.match(src, /<span>只恢复时间线（事件与已读 \/ 归档状态；凭据需重新填写）<\/span>/,
+    assert.match(src, /<span>只恢复时间线（事件与归档 \/ 收藏状态；凭据需重新填写）<\/span>/,
         'WebDAV 恢复选项含时间线');
 });
 
@@ -166,12 +166,12 @@ test('placeholder 在 index.html 与 app.js 两层一致（搜索网页或书签
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v95，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v95';/);
-    assert.match(swJs, /nav-v95：更新周期改为「按本轮开始」计时/);
+test('sw.js：CACHE 升到 nav-v96，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v96';/);
+    assert.match(swJs, /nav-v96：时间线事件去掉「已读\/未读」/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v95', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v96', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });

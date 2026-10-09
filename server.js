@@ -942,7 +942,7 @@ async function init() {
     // 再建 service（它需要 getPasswordHash），最后起调度器。
     //
     // onDurableChange 只在**不可再生**的数据变更时触发自动同步——保存文章、
-    // 已读/归档、来源增删改。社交事件的轮询摄入刻意不挂钩：那是可再从提供方
+    // 归档/收藏、来源增删改。社交事件的轮询摄入刻意不挂钩：那是可再从提供方
     // 取回的、机器节奏的高频写入，挂钩会把远端上传变成每轮一次。
     timeline = createTimeline(db, {
         getPasswordHash,
@@ -3460,10 +3460,11 @@ app.post('/api/timeline/articles', rateLimit, requireAdmin, async (req, res) => 
     }
 });
 
-app.post('/api/timeline/events/:id/read', rateLimit, requireAdmin, (req, res) => {
+// 收藏：语义是「长期保存」——sweepRetention 会跳过它（见 repository 里那条 SQL）。
+app.post('/api/timeline/events/:id/favorite', rateLimit, requireAdmin, (req, res) => {
     try {
-        const read = !!(req.body && req.body.read);
-        res.json(timeline.service.markRead(req.params.id, read));
+        const favorited = !!(req.body && req.body.favorited);
+        res.json(timeline.service.favorite(req.params.id, favorited));
     } catch (err) {
         timelineError(res, err);
     }

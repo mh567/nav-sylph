@@ -1,8 +1,9 @@
 /**
  * Special Line 时间线模块。
  *
- * 时间线**内联显示在首页右侧那一列里**，形态与仿真样例（docs/mockup-special-line.html）
- * 一致：左侧日期轨道 + 贯穿节点线 + 事件卡 + chips 筛选；不是「摘要卡 + 点开弹窗」。
+ * 时间线**内联显示在首页右侧那一列里**，形态与仿真样例（docs/mockup-special-line-actions.html）
+ * 一致：左侧日期轨道 + 贯穿节点线 + 事件卡（右上角归档、右下角收藏星标）+ chips 筛选；
+ * 不是「摘要卡 + 点开弹窗」。
  *
  * 两套版式由**容器查询**切换（见 styles.css 的 @container special-line-card）：
  *  - 宽列（≥340px，平台让背板让位后拿到的就是它）：桌面版，日期在左、事件卡在右；
@@ -27,7 +28,14 @@
 
     let events = [];
     let sources = [];
-    let unreadCount = 0;
+    /**
+     * 收藏星标。**一个** SVG，实心/线框由 CSS 按 `aria-pressed` 切。
+     *
+     * 刻意不「按状态重写按钮内容」：那种写法会把按钮上其它东西一起抹掉
+     *（仓库里踩过——一次 textContent 重写让一个模式按钮永久失效）。
+     */
+    const STAR_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+        '<path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>';
     let nextCursor = null;
     let hasMore = false;
     let syncState = 'synced';   // syncing | synced | failed
@@ -37,7 +45,7 @@
     let busy = false;
 
     let filterSource = '';      // '' = 全部来源
-    let filterView = 'all';     // all | unread | archived
+    let filterView = 'all';     // all | favorited | archived
     let appliedFilterSource = '';
     let appliedFilterView = 'all';
     let filterTransition = false;
@@ -223,29 +231,35 @@
                 `${expanded ? '收起' : '展开全文'}</button>`);
         }
 
-        return `<li class="special-line-item" data-unread="${e.unread ? 'true' : 'false'}">` +
+        return `<li class="special-line-item">` +
             `<time class="special-line-time"><strong>${esc(dayLabel(e.occurredAt))}</strong>${hm(e.occurredAt)}</time>` +
             `<article class="special-line-event">` +
                 `<div class="special-line-meta">` +
                     authorHTML(e) +
                     `<span class="special-line-type">${esc(e.eventTypeLabel || '')}` +
                         `${useZh ? '<span class="special-line-badge">译</span>' : ''}</span>` +
-                    `<span class="sr-only">${e.unread ? '未读' : '已读'}</span>` +
-                    `<details class="special-line-tools">` +
-                        `<summary aria-label="事件操作" title="事件操作">⋯</summary>` +
-                        `<div class="special-line-actions" popover="manual">` +
-                            `<button class="special-line-action" type="button" data-action="read" data-id="${esc(e.id)}"` +
-                                ` aria-pressed="${e.unread ? 'false' : 'true'}">${e.unread ? '标为已读' : '标为未读'}</button>` +
-                            `<button class="special-line-action" type="button" data-action="archive" data-id="${esc(e.id)}"` +
-                                ` aria-pressed="${e.archived ? 'true' : 'false'}">${e.archived ? '取消归档' : '归档'}</button>` +
-                        `</div>` +
-                    `</details>` +
+                    // 归档按钮就在原来「⋯」的位置（右上角）。归档的语义**照旧**：
+                    // 从默认视图与「收藏」里收起，只在「已归档」筛选可见；也**不**豁免清理
+                    // ——豁免 30 天的是收藏，两者是两件事。
+                    `<button class="special-line-archive" type="button" data-action="archive" data-id="${esc(e.id)}"` +
+                        ` aria-pressed="${e.archived ? 'true' : 'false'}">${e.archived ? '取消归档' : '归档'}</button>` +
                 `</div>` +
                 `<h3>${linked}</h3>` +
                 bodyHTML +
                 (e.quote ? `<blockquote>${esc(e.quote)}</blockquote>` : '') +
-                (actions.length ? `<div class="special-line-row-actions">${actions.join('')}</div>` : '') +
                 `<div class="special-line-stamp">${relTime(e.occurredAt)}</div>` +
+                // 底部这一行**始终存在**（即使没有「查看原文/展开全文」），而且排在时间戳**之后**：
+                // 用户要求「收藏按钮放在卡片右下角」——窄列下时间戳是可见的，若它排在收藏之后，
+                // 星标就不是卡片最底那一行了（只有宽列下藏着时间戳时才恰好贴底）。
+                `<div class="special-line-item-foot">` +
+                    (actions.length ? `<div class="special-line-row-actions">${actions.join('')}</div>` : '') +
+                    // ⚠️ 开关按钮的可访问名保持**恒定**（「收藏」），状态交给 aria-pressed 承载；
+                    // 名字随状态改写会让读屏念成「已收藏，已按下」——重复且别扭。状态提示放 title。
+                    `<button class="special-line-star" type="button" data-action="favorite" data-id="${esc(e.id)}"` +
+                        ` aria-pressed="${e.favorited ? 'true' : 'false'}"` +
+                        ` aria-label="收藏"` +
+                        ` title="${e.favorited ? '已收藏，点击取消' : '收藏'}">${STAR_SVG}</button>` +
+                `</div>` +
             `</article></li>`;
     }
 
@@ -282,7 +296,7 @@
     function viewKey() {
         return [
             filterSource, filterView, syncState, listError || '', busy ? 'b' : '',
-            events.map(e => `${e.id}:${e.unread}:${e.archived}:${relTime(e.occurredAt)}` +
+            events.map(e => `${e.id}:${e.favorited}:${e.archived}:${relTime(e.occurredAt)}` +
                 `:${showOriginalIds.has(e.id) ? 'o' : ''}${expandedIds.has(e.id) ? 'x' : ''}`).join('|')
         ].join('>');
     }
@@ -302,7 +316,7 @@
 
         // 筛选结果在途时保留当前事件 DOM：先给 chips 即时反馈、轻微淡化旧结果，
         // 等新载荷到达再一次性替换列表。旧逻辑先 events=[] 再画骨架，
-        // 每次点「已读 / 未读 / 全部来源 / 稍后阅读」都会闪空；更糟的是
+        // 每次切「全部 / 收藏 / 已归档」或换渠道都会闪空；更糟的是
         // render 内还保留滚动位置，再将它写回到一份全新的骨架上。
         if (filterTransition && listEl.querySelector('.special-line-list')) {
             listEl.classList.add('is-filtering');
@@ -356,11 +370,13 @@
             // 列表本身可聚焦（tabindex=0），方向键/PageDown 滚动同样会触发哨兵。
             // ⚠️ 「仅保留最近 30 天」只对社交订阅成立——「稍后阅读」不参与时限清理，
             // 空列表也谈不上「已到最早一条」，这两种情况都不能显示这句话。
+            // 括号里那句是**必须**的：收藏过的不会被清理（sweepRetention 豁免），
+            // 只写「仅保留 30 天」在用户收藏了一条之后就是错的。
             const socialView = filterSource !== 'manual';
             footEl.innerHTML = hasMore
                 ? '<div class="special-line-footnote">向下滚动会自动加载更早事件</div>'
                 : (events.length && socialView
-                    ? '<div class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</div>'
+                    ? '<div class="special-line-footnote">已到最早一条 · 仅保留最近 30 天（收藏过的除外）</div>'
                     : '');
         }
 
@@ -466,7 +482,7 @@
         }
 
         html += '<div class="special-line-views">' +
-            viewChip('all', '全部') + viewChip('unread', '未读') + viewChip('archived', '已归档') +
+            viewChip('all', '全部') + viewChip('favorited', '收藏') + viewChip('archived', '已归档') +
             '</div>';
         chipsEl.innerHTML = html;
     }
@@ -475,7 +491,6 @@
 
     function applyPayload(data) {
         events = Array.isArray(data.events) ? data.events : [];
-        unreadCount = Number(data.unreadCount) || 0;
         if (Array.isArray(data.sources)) sources = data.sources;
         syncFailed = (data.sync && Array.isArray(data.sync.failed)) ? data.sync.failed : [];
         nextCursor = data.nextCursor || null;
@@ -520,7 +535,6 @@
             } else if (append) {
                 const seen = new Set(events.map(e => e.id));
                 events = events.concat(data.events.filter(e => !seen.has(e.id)));
-                unreadCount = Number(data.unreadCount) || unreadCount;
                 if (Array.isArray(data.sources)) sources = data.sources;
                 syncFailed = (data.sync && Array.isArray(data.sync.failed)) ? data.sync.failed : syncFailed;
                 nextCursor = data.nextCursor || null;
@@ -599,20 +613,24 @@
 
     // ================= 写操作 =================
 
-    async function setRead(event, read) {
-        const before = event.unread;
-        event.unread = !read;
-        unreadCount = Math.max(0, unreadCount + (read ? -1 : 1));
+    /**
+     * 收藏 / 取消收藏。语义是「长期保存」：服务端 `sweepRetention` 会跳过它
+     * （见 repository 里那条 SQL），而归档不豁免清理。
+     *
+     * 乐观更新 + 失败回滚，与 setArchived 同一套写法。
+     */
+    async function setFavorite(event, favorited) {
+        const before = event.favorited;
+        event.favorited = favorited;
         lastKey = '';
         render();
         try {
-            await api.post(`/api/timeline/events/${encodeURIComponent(event.id)}/read`, { read });
+            await api.post(`/api/timeline/events/${encodeURIComponent(event.id)}/favorite`, { favorited });
         } catch (e) {
-            event.unread = before;
-            unreadCount = Math.max(0, unreadCount + (read ? 1 : -1));
+            event.favorited = before;
             lastKey = '';
             render();
-            window.app?.showToast('标记失败，请重试', 'error');
+            window.app?.showToast('收藏失败，请重试', 'error');
         }
     }
 
@@ -632,122 +650,33 @@
         }
     }
 
-    /**
-     * 「⋯」菜单贴着列表底边时要往上弹。
-     *
-     * 列表是**滚动容器**（卡片高度有上限），菜单是绝对定位的——朝下弹到容器外
-     * 会被 overflow 裁掉。所以打开后量一次，超出就翻上去。
-     */
-    // 菜单与容器边界之间留的间隙（回退路径的上翻与夹取共用同一个值）
-    const MENU_EDGE = 4;
     // 文档级关闭路径的处理器（重复挂载时先摘旧的，避免叠加）
     let docHandlers = null;
 
-    /** 收起菜单里的 popover（不支持 popover 的浏览器是空操作）。 */
-    function hideMenuPopover(menu) {
-        if (!menu || typeof menu.hidePopover !== 'function') return;
-        try { if (menu.matches(':popover-open')) menu.hidePopover(); } catch { /* 视为已关闭 */ }
-    }
-
-    function adjustMenu(details) {
-        if (!details || !listEl) return;
-        const item = details.closest('.special-line-item');
-        if (item) item.classList.toggle('is-menu-open', details.open);
-        details.classList.remove('is-up');
-        const menu = details.querySelector('.special-line-actions');
-        if (menu) {
-            menu.style.position = ''; menu.style.top = ''; menu.style.left = '';
-            menu.style.right = ''; menu.style.bottom = '';
-        }
-        if (!details.open || !menu) { hideMenuPopover(menu); return; }
-
-        // ⚠️ 首选把菜单放进 **top layer**（popover）：top layer 不被任何祖先的 overflow 裁剪，
-        // 于是菜单可以保持「紧贴按钮」的位置。这正是问题所在——滚动容器（overflow:auto）会裁掉
-        // 越界的菜单；此前的两种补救都有副作用：上翻会在列表矮时越出顶边被裁（被筛选行那条带
-        // 「遮挡」），往容器内夹又会把菜单顶到离按钮很远的地方（用户报的「位置很奇怪」）。
-        // popover 一次解决两件事，且不动 DOM（点击委托仍挂在卡片上）。
-        if (typeof menu.showPopover === 'function') {
-            try { menu.showPopover(); } catch { /* 已打开 */ }
-            // ⚠️ top layer 的包含块是**视口**（UA 还会带 inset:0 + margin:auto），
-            //    所以坐标必须显式给：贴按钮下方，放不下就翻上去，最后按视口夹取。
-            const btn = details.getBoundingClientRect();
-            const box = menu.getBoundingClientRect();
-            const vh = window.innerHeight, vw = window.innerWidth;
-            let top = btn.bottom + MENU_EDGE;
-            if (top + box.height > vh - MENU_EDGE) top = Math.max(MENU_EDGE, btn.top - MENU_EDGE - box.height);
-            const left = Math.max(MENU_EDGE, Math.min(btn.right - box.width, vw - MENU_EDGE - box.width));
-            menu.style.position = 'fixed';
-            menu.style.top = top + 'px';
-            menu.style.left = left + 'px';
-            menu.style.right = 'auto';
-            menu.style.bottom = 'auto';
-            return;
-        }
-
-        // 回退（不支持 popover 的浏览器）：保持原有的上翻 + 夹取
-        const wrap = listEl.getBoundingClientRect();
-        if (menu.getBoundingClientRect().bottom > wrap.bottom - MENU_EDGE) details.classList.add('is-up');
-        const menuRect = menu.getBoundingClientRect();
-        if (menuRect.top < wrap.top + MENU_EDGE || menuRect.bottom > wrap.bottom - MENU_EDGE) {
-            const detailsRect = details.getBoundingClientRect();
-            const clamped = Math.max(wrap.top + MENU_EDGE,
-                Math.min(menuRect.top, wrap.bottom - MENU_EDGE - menuRect.height));
-            menu.style.top = (clamped - detailsRect.top) + 'px';
-            menu.style.bottom = 'auto';
-        }
-    }
-
-    function closeMenus(except) {
-        if (!listEl) return;
-        for (const d of listEl.querySelectorAll('.special-line-tools[open]')) {
-            if (d === except) continue;
-            d.open = false;
-            d.closest('.special-line-item')?.classList.remove('is-menu-open');
-            // 与 adjustMenu 对称：清掉 inline 定位，并收起 popover
-            const m = d.querySelector('.special-line-actions');
-            if (m) {
-                m.style.position = ''; m.style.top = ''; m.style.left = '';
-                m.style.right = ''; m.style.bottom = '';
-                hideMenuPopover(m);
-            }
-        }
-    }
-
     /**
-     * 文档级的关闭路径。此前只有「再点一次 ⋯」「点别的 ⋯」「切筛选」「重渲染」四条，
-     * 于是**点空白处与按 Esc 都关不掉**（用户报的「点击空白处也不会消失」）。
-     * 用 pointerdown 的捕获阶段：先于 click，不至于让同一次点击又把它打开。
+     * 文档级的关闭路径：**只剩渠道菜单**。点在筛选行以外就收起它。
+     *
+     * 原来这里还管着一套「⋯」菜单（列表里的定位/抬升/popover 关闭）——那个菜单已经
+     * 删掉了（归档改成右上角一个按钮），相关机件（MENU_EDGE / adjustMenu /
+     * closeMenus / is-menu-open 抬升）一并删除。⚠️ 别把渠道菜单这一套一起删了。
      */
     function onDocPointerDown(event) {
         const target = event.target;
-        // 渠道菜单：点在筛选行以外就收起（点在筛选行内交给它自己的 click 处理）
         if (openChannel && !(target && target.closest && target.closest('.special-line-filters'))) {
             openChannel = null;
             lastChipsKey = '';
             renderChips();
         }
-        if (!listEl) return;
-        const open = listEl.querySelector('.special-line-tools[open]');
-        if (!open) return;
-        if (target && target.closest('.special-line-tools')) return;   // 点在按钮或菜单里
-        closeMenus();
     }
 
     function onDocKeyDown(event) {
-        if (event.key !== 'Escape') return;
-        if (openChannel) {
-            const type = openChannel;
-            openChannel = null;
-            lastChipsKey = '';
-            renderChips();
-            // 焦点别留在被收起的按钮上
-            chipsEl?.querySelector(`[data-action="channel"][data-value="${type}"]`)?.focus?.();
-            return;
-        }
-        if (!listEl || !listEl.querySelector('.special-line-tools[open]')) return;
-        closeMenus();
-        const chip = listEl.closest('.special-line-card')?.querySelector('.special-line-chip');
-        chip?.focus?.();
+        if (event.key !== 'Escape' || !openChannel) return;
+        const type = openChannel;
+        openChannel = null;
+        lastChipsKey = '';
+        renderChips();
+        // 焦点别留在被收起的按钮上
+        chipsEl?.querySelector(`[data-action="channel"][data-value="${type}"]`)?.focus?.();
     }
 
     // ================= 保存文章对话框 =================
@@ -1269,17 +1198,8 @@
 
         // 事件委托挂在**整张卡**上：列表内部会重写，委托在卡上才不会被换掉
         card.addEventListener('click', event => {
-            const target = event.target.closest('[data-action], summary');
+            const target = event.target.closest('[data-action]');
             if (!target) return;
-
-            // 点「⋯」：开着的时候先把别的收起来，开完再量一次要不要往上弹
-            if (target.tagName === 'SUMMARY') {
-                const details = target.closest('details');
-                closeMenus(details);
-                // 开与关都要跑一次：adjustMenu 按 details.open 同步那一行的抬升类。
-                setTimeout(() => adjustMenu(details), 0);
-                return;
-            }
 
             const action = target.dataset.action;
             const id = target.dataset.id;
@@ -1313,12 +1233,10 @@
                 case 'channel':
                     // 再点一次收起；点另一个渠道则改开它（只留一个展开）
                     openChannel = openChannel === target.dataset.value ? null : target.dataset.value;
-                    closeMenus();
                     lastChipsKey = '';
                     renderChips();
                     break;
                 case 'filter-source':
-                    closeMenus();
                     openChannel = null;
                     filterSource = target.dataset.value || '';
                     lastChipsKey = '';
@@ -1326,7 +1244,6 @@
                     refresh({ filterChange: true });
                     break;
                 case 'filter-view':
-                    closeMenus();
                     openChannel = null;
                     filterView = target.dataset.value || 'all';
                     lastChipsKey = '';
@@ -1334,7 +1251,6 @@
                     refresh({ filterChange: true });
                     break;
                 case 'reset-filters':
-                    closeMenus();
                     openChannel = null;
                     filterSource = '';
                     filterView = 'all';
@@ -1342,9 +1258,9 @@
                     renderChips();
                     refresh({ filterChange: true });
                     break;
-                case 'read': {
+                case 'favorite': {
                     const e = events.find(x => x.id === id);
-                    if (e) setRead(e, e.unread);
+                    if (e) setFavorite(e, !e.favorited);
                     break;
                 }
                 case 'archive': {

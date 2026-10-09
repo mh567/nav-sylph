@@ -3580,11 +3580,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 .special-line-item { position: relative; }
-/* 打开菜单的整行抬到相邻事件卡之上。
-   ⚠️ 由 JS 加/摘 is-menu-open（见 special-line.js 的 adjustMenu），**不用 `:has()`**：
-   不支持 :has() 的浏览器会整条忽略那条规则，于是短条目（手动保存的文章，
-   条目比菜单还矮）的菜单又被下一张事件卡盖住——用户报的「被模块本身遮挡」。 */
-.special-line-item.is-menu-open { z-index: 2; }
 .special-line-item::before {
     position: absolute;
     z-index: 1;
@@ -3595,12 +3590,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     background: var(--accent);
     content: "";
 }
-.special-line-item[data-unread="true"]::before {
-    width: 11px;
-    height: 11px;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
 .special-line-time { color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .special-line-time strong { color: var(--text-secondary); font-weight: 570; }
 
@@ -3662,60 +3651,66 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 .special-line-type { color: var(--text-muted); font-size: 9px; }
 
-/* 「⋯」菜单：与仿真同款。⚠️ 列表是滚动容器，朝下弹到容器外会被裁掉，
-   所以 render 后由 JS 量一次、必要时加 .is-up 往上弹。 */
-.special-line-tools { position: relative; margin-left: auto; }
-.special-line-tools summary {
+/* 右上角：归档按钮（替代原来的「⋯」菜单，菜单那套机件已整条删除）。
+   归档的语义不变：从默认视图与「收藏」里收起，只在「已归档」筛选可见；
+   它**不**豁免 30 天清理——豁免的是收藏。 */
+.special-line-archive {
+    margin-left: auto;
+    min-height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 9px;
+    line-height: 1;
+    cursor: pointer;
+}
+.special-line-archive:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.special-line-archive:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.special-line-archive[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 卡片底部一行：左是「查看原文 / 展开全文」，右是收藏。
+   ⚠️ 这一行**始终存在**（左侧没有按钮时也留着），否则收藏按钮没有落脚点。
+   ⚠️ 名字不能叫 `.special-line-foot`——那是**卡片级页脚**（30 天提示）在用。 */
+.special-line-item-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.special-line-item-foot .special-line-row-actions { margin-top: 0; }
+
+/* 右下角：收藏星标。**一个** SVG，实心/线框由 aria-pressed 驱动——
+   不按状态重写按钮内容（那会把按钮上别的东西一起抹掉）。 */
+.special-line-star {
+    margin-left: auto;
     display: grid;
     place-items: center;
     width: 26px;
     height: 26px;
-    border-radius: 6px;
-    color: var(--text-muted);
-    font-size: 16px;
-    line-height: 1;
-    list-style: none;
-    cursor: pointer;
-}
-.special-line-tools summary::-webkit-details-marker { display: none; }
-.special-line-tools summary:hover,
-.special-line-tools[open] summary { background: var(--bg-hover); color: var(--text-secondary); }
-.special-line-tools summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-
-.special-line-actions {
-    position: absolute;
-    z-index: 3;
-    top: calc(100% + 4px);
-    right: 0;
-    display: grid;
-    min-width: 112px;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--glass-strong);
-    box-shadow: var(--shadow-lg);
-}
-.special-line-tools.is-up .special-line-actions { top: auto; bottom: calc(100% + 4px); }
-
-.special-line-action {
-    min-height: 30px;
-    padding: 0 10px;
+    padding: 0;
     border: 0;
-    border-radius: 5px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--text-secondary);
-    font-size: 11px;
-    text-align: left;
-    white-space: nowrap;
+    color: var(--text-muted);
     cursor: pointer;
 }
-.special-line-action:hover { background: var(--bg-hover); color: var(--accent); }
-.special-line-action[aria-pressed="true"] { color: var(--accent); }
+.special-line-star:hover { background: var(--bg-hover); color: var(--text-secondary); }
+.special-line-star:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.special-line-star svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linejoin: round;
+}
+.special-line-star[aria-pressed="true"] { color: var(--accent); }
+.special-line-star[aria-pressed="true"] svg { fill: currentColor; stroke-width: 0; }
 
 .special-line-event h3 { margin: 0 0 6px; font-size: 13px; line-height: 1.45; font-weight: 610; overflow-wrap: anywhere; }
 .special-line-title { color: inherit; text-decoration: none; }
 .special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-.special-line-item[data-unread="true"] .special-line-event h3 { font-weight: 640; }
 .special-line-event p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
 /* 长文折叠：默认 6 行，渲染后量过确实溢出才显示「展开全文」 */
 .special-line-body.is-clamped {
@@ -3756,13 +3751,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px），正好落在窄版。 */
 @container (min-width: 360px) {
     /* 时间轨 44px：实测最宽的日期「11月30日」在 10px 字号下需要 43px，
-       再窄就会折行。原来是 48px；节点线随之从 64 移到 60——这个位置必须同时
-       满足「未读节点光圈（半径 8.5px）两侧各留 ≥6px」，所以只能跟着缩 4px
-       （列间距保持不变）。 */
+       再窄就会折行。节点线随之从 64 移到 60——圆点（9px 本体 + 2px 描边）
+       两侧要同时留出与时间列、与事件卡的空档，所以只能跟着缩 4px，
+       再窄就会贴上时间文字。 */
     .special-line-list::before { left: 60px; }
     .special-line-item { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 32px; padding: 8px 0 14px; }
     .special-line-item::before { top: 24px; left: 60px; transform: translate(-50%, -50%); }
-    .special-line-item[data-unread="true"]::before { top: 24px; left: 60px; }
     .special-line-time { min-width: 0; padding-top: 16px; text-align: right; white-space: nowrap; }
     .special-line-time strong { display: block; margin-bottom: 3px; font-size: 10px; }
     .special-line-stamp { display: none; }   /* 桌面版时间在左轨道上，卡内不重复 */
@@ -3773,7 +3767,6 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-list::before { left: 10px; }
     .special-line-item { display: block; padding: 8px 0 14px; }
     .special-line-item::before { top: 30px; left: 5px; }
-    .special-line-item[data-unread="true"]::before { top: 29px; left: 4px; }
     /* <time> 默认是行内元素：不显式 block，它的 padding 盒会压到下面那张卡的上沿 */
     .special-line-time { display: block; padding: 6px 0 6px 24px; }
     .special-line-time strong { display: inline; margin-right: 6px; }
@@ -3812,7 +3805,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 @keyframes specialLineShimmer { to { background-position: -200% 0; } }
 
 /* 底部：居中的「加载更早事件」按钮（键盘路径）+ 一行说明。
-   没有更多时只留说明：「已到最早一条 · 仅保留最近 30 天」。 */
+   没有更多时只留说明：「已到最早一条 · 仅保留最近 30 天（收藏过的除外）」。 */
 .special-line-foot {
     display: flex;
     /* 同 head / filters：不许被卡片压缩 */
@@ -3891,8 +3884,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-chip { min-height: 44px; padding: 0 12px; }
     .special-line-menu button { min-height: 44px; font-size: 12px; }
     .special-line-iconbtn { height: 44px; padding: 0 11px; }
-    .special-line-tools summary { width: 44px; height: 44px; }
-    .special-line-action { min-height: 44px; font-size: 12px; }
+    /* 归档与收藏同属窄屏手指操作，也要到 44px 触控下限（26px 的星标点不中）。
+       星标靠 min-height 撑高、宽度一并给到 44px；归档按钮加高加大字号。 */
+    .special-line-archive { min-height: 44px; padding: 0 12px; font-size: 12px; }
+    .special-line-star { width: 44px; height: 44px; }
+    .special-line-star svg { width: 18px; height: 18px; }
     .special-line-event h3 { font-size: 14px; }
     .special-line-event p { font-size: 12px; }
     .special-line-btn { min-height: 44px; font-size: 12px; }

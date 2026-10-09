@@ -3,6 +3,11 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v96：时间线事件去掉「已读/未读」，只留「归档 + 收藏」——归档按钮移到卡片右上角
+//（原来的「⋯」菜单整条删除），卡片右下角新增收藏星标；收藏过的豁免 30 天清理，归档
+// 仍然不豁免。筛选行由「全部 / 未读 / 已归档」改为「全部 / 收藏 / 已归档」。
+// 数据库 v5 → v6：timeline_event_state 加 favorited_at、删 read_at。改了
+// special-line.js、styles.css、app.js、lib/db.js、lib/timeline/*、server.js。
 // nav-v95：更新周期改为「按本轮开始」计时（此前按本轮结束，端到端间隔会被本轮
 // 耗时推长，用户设 30 分钟却在后台读到「最近成功 30 出头分钟」），并在后台来源行
 // 补上「下次 15:50」——超过周期 5 分钟仍未被调度才改说「已到期，等待调度」。
@@ -226,7 +231,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v95';
+const CACHE = 'nav-v96';
 const ASSETS = [
     '/',
     '/index.html',

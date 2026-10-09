@@ -4583,7 +4583,7 @@
                             ${hasTimeline ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="timeline" ${soleOptionChecked}>
-                                <span>只恢复时间线（事件与已读 / 归档状态；凭据需重新填写）</span>
+                                <span>只恢复时间线（事件与归档 / 收藏状态；凭据需重新填写）</span>
                             </label>
                             ` : ''}
                         </div>

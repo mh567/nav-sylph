@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Special Line · 归档 + 收藏 仿真样例</title>
+<!--
+  仿真样例：Special Line 事件卡的「归档（右上）+ 收藏星标（右下）」。
+  ⚠️ 本页**直接引用 ../public/styles.css**（只把新增规则写在页内），所以卡片表面、内边距、
+  字号与两套版式（容器查询）都取真实实现那一份，不会像手抄设计令牌的样例那样走形。
+  对应实现：v1.15.7 —— 删掉已读/未读、归档移到右上角、右下角新增收藏星标。
+  打开：open docs/mockup-special-line-actions.html
+-->
+<!-- ⚠️ 故意**引用真实的样式表**（不是手抄一份令牌）：卡片外观、容器查询、字号间距
+     都直接取真模块的那份，避免「小样好看、真卡片不是这样」。本页只额外写**新增**的规则。 -->
+<link rel="stylesheet" href="../public/styles.css">
+<style>
+    /* ================= 页外框（只为演示，不属于模块） ================= */
+    body {
+        margin: 0;
+        padding: 18px 18px 60px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .toolbar {
+        position: sticky; top: 0; z-index: 50;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+        margin: -18px -18px 18px; padding: 12px 18px;
+        background: var(--bg-card);
+        border-bottom: 1px solid var(--border);
+    }
+    .toolbar b { font-size: 12px; font-weight: 620; }
+    .toolbar .group { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .toolbar button {
+        min-height: 26px; padding: 0 10px;
+        border: 1px solid var(--border); border-radius: 6px;
+        background: transparent; color: var(--text); font-size: 11px; cursor: pointer;
+    }
+    .toolbar button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+    .stage { display: flex; justify-content: center; }
+    /* 卡的表面、内边距、圆角、阴影全部由真实的 .module-widget 规则给（不手抄）。
+       这里只把「模块区里靠 data-side 绝对定位」那一层压掉，让小样自己控制宽度。 */
+    .stage .module-widget { position: static; width: 100%; margin-top: 0; }
+    /* min-width: 0 是必需的：flex 项默认 min-width:auto，会被内容撑到 ~420px，
+       于是「切窄列」点了没反应，小样会假装自己在演示窄列。 */
+    .mock-frame { flex: 0 0 auto; min-width: 0; width: 420px; transition: width .15s ease; }
+    .note { max-width: 640px; margin: 14px auto 0; color: var(--text-muted); font-size: 11px; line-height: 1.7; }
+
+    /* ================= 本次新增的模块规则（就是将来要写进 styles.css 的那些） ================= */
+
+    /* 右上角：归档按钮（替代原来的「⋯」菜单；菜单机件整条删掉） */
+    .special-line-archive {
+        margin-left: auto;
+        min-height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-muted);
+        font: inherit;
+        font-size: 9px;
+        line-height: 1;
+        cursor: pointer;
+    }
+    .special-line-archive:hover { background: var(--bg-hover); color: var(--text-secondary); }
+    .special-line-archive:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .special-line-archive[aria-pressed="true"] {
+        color: var(--accent);
+        border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+    }
+
+    /* 卡片底部一行：左边是既有操作（查看原文 / 展开全文），右边是收藏。
+       这一行**始终存在**，否则收藏按钮就没有落脚点。
+       ⚠️ 不能叫 .special-line-foot —— 那个名字是**卡片级页脚**（30 天提示）在用。 */
+    .special-line-item-foot { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .special-line-item-foot .special-line-row-actions { margin-top: 0; }
+
+    /* 右下角：收藏星标。一个 SVG，两副样子都由 aria-pressed 驱动（不重写按钮内容） */
+    .special-line-star {
+        margin-left: auto;
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+    }
+    .special-line-star:hover { background: var(--bg-hover); color: var(--text-secondary); }
+    .special-line-star:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .special-line-star svg {
+        width: 15px; height: 15px;
+        fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round;
+    }
+    .special-line-star[aria-pressed="true"] { color: var(--accent); }
+    .special-line-star[aria-pressed="true"] svg { fill: currentColor; stroke-width: 0; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <b>Special Line 仿真</b>
+    <span class="group">布局
+        <button type="button" data-w="420" aria-pressed="true">宽列 420</button>
+        <button type="button" data-w="320" aria-pressed="false">窄列 320</button>
+    </span>
+    <span class="group">主题
+        <button type="button" data-theme-set="light" aria-pressed="false">浅色</button>
+        <button type="button" data-theme-set="dark" aria-pressed="true">深色</button>
+    </span>
+    <span class="group">筛选行
+        <button type="button" data-chipset="new" aria-pressed="true">新（全部/收藏/已归档）</button>
+        <button type="button" data-chipset="old" aria-pressed="false">旧（全部/未读/已归档）</button>
+    </span>
+    <span class="group">卡片状态
+        <button type="button" data-toggle-star>切换第 1 张的收藏</button>
+        <button type="button" data-toggle-archive>切换第 2 张的归档</button>
+    </span>
+</div>
+
+<div class="stage">
+<div class="mock-frame" id="frame">
+<section class="module-card special-line-card module-widget" data-module-id="special-line" data-instance-id="special-line:main">
+    <div class="module-widget-head special-line-head">
+        <span class="module-widget-title">Special Line</span>
+        <span class="special-line-status"><span class="special-line-time-note">19:46 同步</span></span>
+        <button type="button" class="special-line-iconbtn" title="立即同步" aria-label="立即同步">↻</button>
+        <button type="button" class="special-line-iconbtn special-line-save" title="保存文章到稍后阅读" aria-label="保存文章到稍后阅读">＋ 保存</button>
+    </div>
+
+    <nav class="special-line-filters" aria-label="时间线筛选">
+        <button class="special-line-chip" type="button" aria-pressed="true">全部渠道</button>
+        <div class="special-line-chan" data-open="0">
+            <button class="special-line-chip" type="button" aria-haspopup="true" aria-expanded="false" aria-pressed="false">X<span class="special-line-caret" aria-hidden="true">▾</span></button>
+            <div class="special-line-menu" role="menu">
+                <button type="button" role="menuitemradio" aria-checked="true">该渠道全部</button>
+                <button type="button" role="menuitemradio" aria-checked="false">jack</button>
+                <button type="button" role="menuitemradio" aria-checked="false">alice</button>
+            </div>
+        </div>
+        <button class="special-line-chip" type="button" aria-pressed="false">稍后阅读</button>
+        <div class="special-line-views" id="views">
+            <button class="special-line-chip" type="button" aria-pressed="true">全部</button>
+            <button class="special-line-chip" type="button" aria-pressed="false">收藏</button>
+            <button class="special-line-chip" type="button" aria-pressed="false">已归档</button>
+        </div>
+    </nav>
+
+    <div class="special-line-listwrap" tabindex="0" role="region" aria-label="时间线事件列表">
+    <ol class="special-line-list" aria-label="按时间倒序排列的事件">
+
+        <!-- ① 未收藏未归档：最平常的样子 -->
+        <li class="special-line-item" data-favorited="false">
+            <time class="special-line-time"><strong>今天</strong>19:15</time>
+            <article class="special-line-event">
+                <div class="special-line-meta">
+                    <span class="special-line-mark"><span class="special-line-icon" aria-hidden="true">↗</span>稍后阅读</span>
+                    <span class="special-line-type">保存的文章</span>
+                    <button class="special-line-archive" type="button" aria-pressed="false">归档</button>
+                </div>
+                <h3><a class="special-line-title" href="#">保存的一篇文章（稍后阅读）</a></h3>
+                <p class="special-line-body" style="--clamp-lines:6">手动保存的文章不按时限清理。</p>
+                <div class="special-line-item-foot">
+                    <div class="special-line-row-actions"></div>
+                    <button class="special-line-star" type="button" aria-pressed="false" aria-label="收藏" title="收藏">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>
+                    </button>
+                </div>
+                <div class="special-line-stamp">30 分钟前</div>
+            </article>
+        </li>
+
+        <!-- ② 已收藏 + 已归档：两个标记同时在场的样子（也在「收藏」筛选里可见） -->
+        <li class="special-line-item" data-favorited="true">
+            <time class="special-line-time"><strong>今天</strong>17:30</time>
+            <article class="special-line-event">
+                <div class="special-line-meta">
+                    <span class="special-line-mark special-line-author">
+                        <span class="special-line-avatar" aria-hidden="true">A</span>
+                        <span class="special-line-author-name">alice</span>
+                        <span class="special-line-handle">@alice</span>
+                    </span>
+                    <span class="special-line-type">博主推文<span class="special-line-badge">译</span></span>
+                    <button class="special-line-archive" type="button" aria-pressed="true">取消归档</button>
+                </div>
+                <h3><a class="special-line-title" href="#">来自另一个订阅人的内容。</a></h3>
+                <p class="special-line-body" style="--clamp-lines:6">这是中文译文，默认显示中文，点「查看原文」可切回原文。</p>
+                <div class="special-line-item-foot">
+                    <div class="special-line-row-actions">
+                        <button class="special-line-ghost" type="button">查看原文</button>
+                    </div>
+                    <button class="special-line-star" type="button" aria-pressed="true" aria-label="已收藏" title="已收藏">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>
+                    </button>
+                </div>
+                <div class="special-line-stamp">2 小时前</div>
+            </article>
+        </li>
+
+        <!-- ③ 长正文：折叠 + 展开全文 + 未收藏 -->
+        <li class="special-line-item" data-favorited="false">
+            <time class="special-line-time"><strong>今天</strong>16:45</time>
+            <article class="special-line-event">
+                <div class="special-line-meta">
+                    <span class="special-line-mark special-line-author">
+                        <span class="special-line-avatar" aria-hidden="true">J</span>
+                        <span class="special-line-author-name">jack</span>
+                        <span class="special-line-handle">@jack</span>
+                    </span>
+                    <span class="special-line-type">博主推文<span class="special-line-badge">译</span></span>
+                    <button class="special-line-archive" type="button" aria-pressed="false">归档</button>
+                </div>
+                <h3><a class="special-line-title" href="#">第 2 条订阅内容标题</a></h3>
+                <p class="special-line-body is-clamped" style="--clamp-lines:6">这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。这是一条很长的正文，用来演示超过六行之后的折叠效果。</p>
+                <div class="special-line-item-foot">
+                    <div class="special-line-row-actions">
+                        <button class="special-line-ghost" type="button">查看原文</button>
+                        <button class="special-line-ghost" type="button">展开全文</button>
+                    </div>
+                    <button class="special-line-star" type="button" aria-pressed="false" aria-label="收藏" title="收藏">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.8z"/></svg>
+                    </button>
+                </div>
+                <div class="special-line-stamp">3 小时前</div>
+            </article>
+        </li>
+
+    </ol>
+    </div>
+
+    <div class="special-line-foot">
+        <div class="special-line-footnote">已到最早一条 · 仅保留最近 30 天（收藏过的除外）</div>
+    </div>
+</section>
+</div>
+</div>
+
+<div class="note">
+    <p><b>这个页面上能做的：</b></p>
+    <p>· <b>布局</b>：在 420px（宽列：日期在左轨道、卡内不重复时间）与 320px（窄列：时间移到卡上方）之间切。版式按卡片自己的宽度走，与真实模块同一套容器查询。</p>
+    <p>· <b>主题</b>：浅色 / 深色。星标与归档按钮都取 <code>currentColor</code>，两套主题下自动跟着变。</p>
+    <p>· <b>筛选行</b>：新（全部 / 收藏 / 已归档）↔ 旧（全部 / 未读 / 已归档），只看字面差别。</p>
+    <p>· <b>卡片状态</b>：切换第 1 张的收藏、第 2 张的归档，看按钮在两种状态下的样子。</p>
+    <p>· 第 2 张同时是「已收藏 + 已归档」，用来看两个标记并存会不会打架；按新判据它仍会出现在「收藏」筛选里。</p>
+    <p>· 右上角不再有「⋯」菜单；归档按钮就在原来那个位置。</p>
+</div>
+
+<script>
+    const $ = s => document.querySelector(s);
+    const $$ = s => [...document.querySelectorAll(s)];
+
+    // 布局
+    $$('[data-w]').forEach(b => b.addEventListener('click', () => {
+        $('#frame').style.width = b.dataset.w + 'px';
+        $$('[data-w]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+
+    // 主题（真实应用用 <html data-theme>）
+    $$('[data-theme-set]').forEach(b => b.addEventListener('click', () => {
+        document.documentElement.dataset.theme = b.dataset.themeSet;
+        $$('[data-theme-set]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+    document.documentElement.dataset.theme = 'dark';
+
+    // 筛选行新旧对比
+    const NEW = ['全部', '收藏', '已归档'], OLD = ['全部', '未读', '已归档'];
+    $$('[data-chipset]').forEach(b => b.addEventListener('click', () => {
+        const labels = b.dataset.chipset === 'new' ? NEW : OLD;
+        $('#views').innerHTML = labels.map((t, i) =>
+            `<button class="special-line-chip" type="button" aria-pressed="${i === 0}">${t}</button>`).join('');
+        $$('[data-chipset]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+
+    // 卡片状态开关
+    $('[data-toggle-star]').addEventListener('click', () => {
+        const li = $$('.special-line-item')[0];
+        const btn = li.querySelector('.special-line-star');
+        const on = btn.getAttribute('aria-pressed') === 'true';
+        btn.setAttribute('aria-pressed', String(!on));
+        btn.setAttribute('aria-label', on ? '收藏' : '已收藏');
+        btn.title = on ? '收藏' : '已收藏';
+        li.dataset.favorited = String(!on);
+    });
+    $('[data-toggle-archive]').addEventListener('click', () => {
+        const li = $$('.special-line-item')[1];
+        const btn = li.querySelector('.special-line-archive');
+        const on = btn.getAttribute('aria-pressed') === 'true';
+        btn.setAttribute('aria-pressed', String(!on));
+        btn.textContent = on ? '归档' : '取消归档';
+    });
+</script>
+</body>
+</html>
