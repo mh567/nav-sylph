@@ -334,13 +334,14 @@
         syncMoreObserver();
 
         if (footEl) {
-            // 底部只留一行：还有更早就给按钮（键盘路径），到底了说明保留窗口。
+            // 底部只留一行说明，**不再放「加载更早事件」按钮**：滚到底部就会自动
+            // 加载，按钮与它重复（用户原话「好像没什么用」）。键盘路径不靠按钮——
+            // 列表本身可聚焦（tabindex=0），方向键/PageDown 滚动同样会触发哨兵。
             // ⚠️ 「仅保留最近 30 天」只对社交订阅成立——「稍后阅读」不参与时限清理，
             // 空列表也谈不上「已到最早一条」，这两种情况都不能显示这句话。
             const socialView = filterSource !== 'manual';
             footEl.innerHTML = hasMore
-                ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>' +
-                  '<div class="special-line-footnote">向下滚动会自动加载更早事件</div>'
+                ? '<div class="special-line-footnote">向下滚动会自动加载更早事件</div>'
                 : (events.length && socialView
                     ? '<div class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</div>'
                     : '');
@@ -1237,6 +1238,11 @@
         // ---- 列表（自身滚动，卡片高度有上限）----
         listEl = document.createElement('div');
         listEl.className = 'special-line-listwrap';
+        // 可聚焦的滚动区域：底部没有「加载更早事件」按钮后，键盘用户靠它滚动，
+        // 滚到底部照样触发懒加载（WAI-ARIA 也建议滚动区域可聚焦）。
+        listEl.tabIndex = 0;
+        listEl.setAttribute('role', 'region');
+        listEl.setAttribute('aria-label', '时间线事件列表');
 
         footEl = document.createElement('div');
         footEl.className = 'special-line-foot';
@@ -1269,9 +1275,6 @@
                     break;
                 case 'save':
                     openSaveDialog(target);
-                    break;
-                case 'more':
-                    loadMore();
                     break;
                 case 'original': {
                     if (!id) break;

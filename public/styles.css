@@ -3343,6 +3343,15 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     container-type: inline-size;
 }
 
+/* 时间线的左侧留白收紧一点：平台卡片的 13px 内边距 + 时间轨右对齐留下的空档
+   叠起来，时间左侧实测有 32px 空白（用户原话「时间左侧还有一些空白」）。
+   这里把左右内边距收到 9px，配合时间轨 48→44px，时间左侧降到 24px。 */
+.module-widget[data-module-id="special-line"] { padding-inline: 9px; }
+
+/* 列表自身可聚焦：底部不再有「加载更早事件」按钮之后，键盘用户靠聚焦列表
+   （方向键 / PageDown）滚动，滚到底部同样触发自动加载。 */
+.special-line-listwrap:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
 /* ⚠️ 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块。
    below 停靠下卡片是 position: static，那些 1×1 的盒子会以 .module-zone
    （它本身是 position: absolute）为包含块，逐行累积的溢出逃出横滑条的裁剪，
@@ -3476,14 +3485,24 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     top: 100%;
     left: 0;
     display: none;
-    min-width: 172px;
+    /* 按内容收窄：固定 min-width 会让只有一个短账号名的菜单空出一大截
+       （用户原话「下拉框太宽了」）。上下限只兜住极端情况。 */
+    width: max-content;
+    min-width: 104px;
+    max-width: min(240px, 70vw);
     max-height: min(46vh, 320px);
     overflow-y: auto;
+    overflow-x: hidden;
     overscroll-behavior: contain;
     padding: 4px;
     border: 1px solid var(--border);
     border-radius: 9px;
-    background: var(--glass-strong);
+    /* ⚠️ 用 `--bg-card` 这个**不透明**表面色，不要用 `--glass-strong`：后者是给
+       「同材质卡面上的小菜单」准备的半透明层（深色下只有 6% 白），下拉浮在事件
+       列表上时底下的正文会透上来、读起来发糊。`--bg-card` 在四个主题块里都是
+       不透明色（#ffffff / #161616 / #faf8f4 / #3a3530），实测浅色与深色下
+       计算值都不带 alpha。 */
+    background: var(--bg-card);
     box-shadow: var(--shadow-lg);
 }
 .special-line-chan:hover .special-line-menu,
@@ -3500,6 +3519,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     font-size: 11px;
     text-align: left;
     white-space: nowrap;
+    /* 账号名过长时截断，而不是把菜单撑到 max-width 再溢出 */
+    overflow: hidden;
+    text-overflow: ellipsis;
     cursor: pointer;
 }
 .special-line-menu button:hover { background: var(--bg-hover); color: var(--text); }
@@ -3733,10 +3755,14 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    ——阈值写 400（甚至 390）都会让它误判成窄版（实测：1280 视口下卡片 400 却
    渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px），正好落在窄版。 */
 @container (min-width: 360px) {
-    .special-line-list::before { left: 64px; }
-    .special-line-item { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 32px; padding: 8px 0 14px; }
-    .special-line-item::before { top: 24px; left: 64px; transform: translate(-50%, -50%); }
-    .special-line-item[data-unread="true"]::before { top: 24px; left: 64px; }
+    /* 时间轨 44px：实测最宽的日期「11月30日」在 10px 字号下需要 43px，
+       再窄就会折行。原来是 48px；节点线随之从 64 移到 60——这个位置必须同时
+       满足「未读节点光圈（半径 8.5px）两侧各留 ≥6px」，所以只能跟着缩 4px
+       （列间距保持不变）。 */
+    .special-line-list::before { left: 60px; }
+    .special-line-item { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 32px; padding: 8px 0 14px; }
+    .special-line-item::before { top: 24px; left: 60px; transform: translate(-50%, -50%); }
+    .special-line-item[data-unread="true"]::before { top: 24px; left: 60px; }
     .special-line-time { min-width: 0; padding-top: 16px; text-align: right; white-space: nowrap; }
     .special-line-time strong { display: block; margin-bottom: 3px; font-size: 10px; }
     .special-line-stamp { display: none; }   /* 桌面版时间在左轨道上，卡内不重复 */

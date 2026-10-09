@@ -1625,9 +1625,14 @@ test('保存弹窗用平台那套（居中 + 遮罩），且标题与摘要都�
     assert.doesNotMatch(code, /data\.titleFromUrl/, '不存在 data.titleFromUrl 这种形状');
 });
 
-test('底部只留「加载更早事件」：条数与更新时间已按用户要求去掉', () => {
+test('底部只留一行说明（不再放「加载更早事件」按钮）：条数与更新时间也不显示', () => {
     const code = stripComments(moduleSource);
-    assert.match(code, /class="special-line-btn" type="button" data-action="more">加载更早事件</, '是真按钮、文案与仿真一致');
+    // 滚到底部会自动加载，按钮与它重复（用户原话「好像没什么用」），已删除
+    assert.doesNotMatch(code, /data-action="more"/, '底部不再有「加载更早事件」按钮');
+    assert.doesNotMatch(code, />加载更早事件</, '那句按钮文案也一并删掉，不留死字符串');
+    // 键盘路径改为「列表自身可聚焦」，滚到底部照样触发懒加载
+    assert.match(code, /listEl\.tabIndex = 0/, '列表可聚焦（键盘滚动 → 触发哨兵）');
+    assert.match(code, /listEl\.setAttribute\('role', 'region'\)/, '滚动区域有 region 语义');
     assert.match(code, /class="special-line-footnote">向下滚动会自动加载更早事件</, '还有更早时给一行自动加载说明');
     assert.match(code, /class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</, '到底时说明保留窗口');
     // ⚠️ 那句话只对社交订阅成立：「稍后阅读」不参与时限清理，空列表也谈不上「已到最早一条」
@@ -1644,6 +1649,7 @@ test('底部只留「加载更早事件」：条数与更新时间已按用户�
         '空状态的保存文章是实心主按钮');
     assert.doesNotMatch(code, /special-line-linkbtn/, '下划线小链接那套已删除（不留死类名）');
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    assert.match(css, /\.special-line-listwrap:focus-visible/, '列表聚焦时有可见轮廓（键盘路径）');
     const foot = /\.special-line-foot \{([\s\S]*?)\n\}/.exec(css);
     assert.match(foot[1], /flex-direction: column/, '按钮在上、说明在下');
     assert.match(foot[1], /align-items: center/, '居中（仿真里是居中的 quiet-button）');
@@ -1719,7 +1725,7 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按�
     // 400 却渲染成窄版）。360 之下是手机竖屏那种整行卡片（约 323px）。
     const wide = /@container \(min-width: 360px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(wide, '有宽列版式');
-    assert.match(wide[1], /grid-template-columns: 48px minmax\(0, 1fr\)/, '桌面版：紧凑日期栏 + 事件卡');
+    assert.match(wide[1], /grid-template-columns: 44px minmax\(0, 1fr\)/, '桌面版：紧凑日期栏 + 事件卡');
     assert.match(wide[1], /text-align: right/, '桌面版时间靠右（贴近竖线）');
     const narrow = /@container \(max-width: 359\.98px\) \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(narrow, '有窄列版式');
