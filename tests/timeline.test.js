@@ -25,6 +25,7 @@ const { openDatabase, MIGRATIONS } = require(path.join(ROOT, 'lib', 'db.js'));
 const { createRepository } = require(path.join(ROOT, 'lib', 'timeline', 'repository.js'));
 const { createService, ServiceError } = require(path.join(ROOT, 'lib', 'timeline', 'service.js'));
 const { createTimeline } = require(path.join(ROOT, 'lib', 'timeline', 'index.js'));
+const { createScheduler } = require(path.join(ROOT, 'lib', 'timeline', 'sync.js'));
 const { getProvider, eventTypeLabel, isEventType } = require(path.join(ROOT, 'lib', 'timeline', 'registry.js'));
 const xAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'x.js'));
 const weiboAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'weibo.js'));
@@ -119,6 +120,289 @@ test('v5 迁移建出四张时间线表与索引，且在数组尾部追加（�
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
+});
+
+test('手动同步全部启用订阅：跳过已停止/manual、有界并发、单源故障不挡整批', async () => {
+    const sources = [
+        { id: 'x1', name: 'X · one', providerType: 'x', enabled: true },
+        { id: 'x2', name: 'X · two', providerType: 'x', enabled: true },
+        { id: 'x3', name: 'X · three', providerType: 'x', enabled: true },
+        { id: 'wb1', name: '微博 · four', providerType: 'weibo', enabled: true },
+        { id: 'paused', name: 'X · paused', providerType: 'x', enabled: false },
+        { id: 'manual', name: '稍后阅读', providerType: 'manual', enabled: true }
+    ];
+    const started = [];
+    let active = 0;
+    let peak = 0;
+    const service = {
+        listSources: () => sources,
+        dueSources: () => [],
+        sweepRetention() {},
+        async syncSource(id, ...options) {
+            started.push({ id, options });
+            active++;
+            peak = Math.max(peak, active);
+            await new Promise(resolve => setTimeout(resolve, 8));
+            active--;
+            if (id === 'x2') throw new Error('fixture failure');
+            if (id === 'x3') throw Object.create(null);
+            return { ok: true, inserted: id === 'x1' ? 2 : 1, fetched: 3, skipped: id === 'x1' ? 1 : 0 };
+        }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+    const result = await scheduler.syncEnabledSources();
+
+    assert.deepEqual(started.map(x => x.id).sort(), ['wb1', 'x1', 'x2', 'x3'],
+        '只触发启用的订阅 provider，跳过已停止与 manual');
+    assert.ok(started.every(x => x.options.length === 0), '不传 force：来源不会因批量同步被重新启用');
+    assert.equal(peak, 2, '批量同步复用全局并发上限 2');
+    assert.equal(result.total, 4);
+    assert.equal(result.succeeded, 2, 'syncSource.skipped=1 是过滤的事件数，不代表来源被跳过');
+    assert.equal(result.failed, 2);
+    assert.equal(result.skipped, 0);
+    assert.equal(result.discarded, 1, '单个无效事件另计为 discarded，不混入来源 skipped 数');
+    assert.equal(result.inserted, 3);
+    assert.equal(result.results.find(x => x.id === 'x1').skipped, false, '成功但过滤掉一条的来源仍算成功');
+    assert.equal(result.results.find(x => x.id === 'x1').discarded, 1);
+    assert.equal(result.results.find(x => x.id === 'x2').ok, false, '单源 Error 异常变成逐源失败结果');
+    assert.equal(result.results.find(x => x.id === 'x3').error, '同步执行异常', '非 Error rejection 也隔离成安全错误');
+});
+
+test('手动批次遇到定时任务已在途的来源时复用同一结果，不重复请求', async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    let calls = 0;
+    const source = { id: 'x1', name: 'X · one', providerType: 'x', enabled: true };
+    const service = {
+        listSources: () => [source],
+        dueSources: () => [source],
+        sweepRetention() {},
+        async syncSource() { calls++; return gate; }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+
+    await scheduler.tickNow();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(scheduler.isRunning('x1'), true, '定时 tick 已把来源放入共享在途表');
+    const batch = scheduler.syncEnabledSources();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1, '手动批次复用已有 Promise，不重复抓同一来源');
+    release({ ok: true, inserted: 4, fetched: 4 });
+    const result = await batch;
+    assert.equal(result.succeeded, 1);
+    assert.equal(result.inserted, 4);
+    assert.equal(scheduler.isRunning('x1'), false, '结果完成后从共享在途表移除');
+});
+
+test('手动批次与定时 tick 共享全局并发上限，不会从两路扩成四路', async () => {
+    const sources = [1, 2, 3].map(n => ({
+        id: `x${n}`, name: `X · ${n}`, providerType: 'x', enabled: true
+    }));
+    const releases = new Map();
+    const started = [];
+    let active = 0;
+    let peak = 0;
+    const service = {
+        listSources: () => sources,
+        dueSources: () => sources,
+        sweepRetention() {},
+        syncSource(id) {
+            started.push(id);
+            active++;
+            peak = Math.max(peak, active);
+            return new Promise(resolve => releases.set(id, result => {
+                active--;
+                resolve(result);
+            }));
+        }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+    await scheduler.tickNow();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 2, '定时 tick 先占满共享两路并发');
+
+    const batch = scheduler.syncEnabledSources();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 2, '批量 workers 等共享闸门，不额外开并发');
+    const releaseFirst = releases.get(started[0]);
+    releases.delete(started[0]);
+    releaseFirst({ ok: true, inserted: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 3, '空出一路后批量队列继续');
+    assert.ok(peak <= 2, `定时 + 手动总并发最多 2（实测 ${peak}）`);
+
+    for (const release of releases.values()) release({ ok: true, inserted: 1 });
+    const result = await batch;
+    assert.equal(result.total, 3);
+    assert.equal(result.succeeded, 3);
+    assert.equal(peak, 2);
+});
+
+test('等待共享空位时其他来源失败，不应把本来源误判失败或跳过', async () => {
+    const scheduled = { id: 'scheduled', name: 'X · scheduled', providerType: 'x', enabled: true };
+    const one = { id: 'x1', name: 'X · one', providerType: 'x', enabled: true };
+    const two = { id: 'x2', name: 'X · two', providerType: 'x', enabled: true };
+    const sources = [scheduled, one, two];
+    const started = [];
+    const pending = new Map();
+    const service = {
+        listSources: () => sources,
+        dueSources: () => [scheduled, one],
+        sweepRetention() {},
+        syncSource(id) {
+            started.push(id);
+            return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+        }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+    await scheduler.tickNow();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started.sort(), ['scheduled', 'x1'], '先让两条定时同步占满并发');
+
+    // 定时同步已在途后，来源被停止；全量手动批次因此不把它算进候选，但它仍占一个槽。
+    scheduled.enabled = false;
+    const batch = scheduler.syncEnabledSources();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.includes('x2'), false, '两路占满时第三来源先等待');
+
+    pending.get('scheduled').reject(new Error('unrelated scheduled source failed'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.includes('x2'), true,
+        '与当前候选无关的 rejection 只释放槽位，不得把 x2 误记失败而不启动');
+    pending.get('x1').resolve({ ok: true, inserted: 1 });
+    pending.get('x2').resolve({ ok: true, inserted: 2 });
+    const result = await batch;
+    assert.equal(result.total, 2);
+    assert.equal(result.succeeded, 2);
+    assert.equal(result.failed, 0);
+});
+
+test('后台单来源强制同步也经过共享并发闸门，且不会重启已停止来源', async () => {
+    let active = 0, peak = 0;
+    const seen = [];
+    const paused = { id: 'paused', name: 'X · paused', providerType: 'x', enabled: false };
+    const service = {
+        listSources: () => [paused],
+        dueSources: () => [],
+        sweepRetention() {},
+        async syncSource(id, options) {
+            seen.push({ id, options });
+            active++;
+            peak = Math.max(peak, active);
+            await new Promise(resolve => setTimeout(resolve, 8));
+            active--;
+            return { ok: true, inserted: 1 };
+        }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+    const [a, b, c] = await Promise.all([
+        scheduler.syncSource(paused.id, { force: true }),
+        scheduler.syncSource(paused.id, { force: true }),
+        scheduler.syncSource(paused.id, { force: true })
+    ]);
+    assert.equal(seen.length, 1, '同来源在途时复用同一个同步 Promise');
+    assert.equal(seen[0].options.force, true, '单来源手动入口仍携带 force');
+    assert.deepEqual([a, b, c].map(r => r.inserted), [1, 1, 1]);
+    assert.equal(peak, 1, '相同来源并发点击不重复请求');
+    assert.equal(paused.enabled, false, '强制手动同步不改启用状态');
+});
+
+test('批量同步的最新页读取失败时报告读取失败，不误报采集成功', async () => {
+    const code = stripComments(moduleSource);
+    const body = extractFunction(code, 'async function syncAllSources() {');
+    const make = (refreshMode, postPromise) => {
+        const toasts = [], refreshCalls = [];
+        const create = new Function('postPromise', 'refreshMode', 'toasts', 'refreshCalls', `
+            let syncAllInFlight = false;
+            let filterSelectionRevision = 0;
+            let syncState = 'synced', lastKey = '', lastChipsKey = '';
+            let filterSource = '', filterView = 'all', openChannel = null;
+            let listError = null;
+            const api = { post: () => postPromise };
+            const render = () => {};
+            const renderChips = () => {};
+            const refresh = async options => {
+                refreshCalls.push(options);
+                if (refreshMode === 'fail') listError = '时间线读取失败';
+            };
+            const window = { app: { showToast: (...args) => toasts.push(args) } };
+            ${body}
+            return {
+                run: syncAllSources,
+                chooseFilter() { filterSelectionRevision++; filterSource = 'x'; filterView = 'favorited'; },
+                get filters() { return [filterSource, filterView]; },
+                get running() { return syncAllInFlight; }
+            };
+        `)(postPromise, refreshMode, toasts, refreshCalls);
+        return {
+            run: create.run,
+            chooseFilter: create.chooseFilter,
+            get filters() { return create.filters; },
+            get running() { return create.running; },
+            toasts,
+            refreshCalls
+        };
+    };
+
+    let resolvePost;
+    const postPromise = new Promise(resolve => { resolvePost = resolve; });
+    const during = make('ok', postPromise);
+    const running = during.run();
+    during.chooseFilter();
+    resolvePost({ total: 2, succeeded: 2, failed: 0, skipped: 0, inserted: 4, results: [] });
+    await running;
+    assert.deepEqual(during.filters, ['x', 'favorited'], '用户在批次期间新选的筛选不被按钮复位覆盖');
+    assert.equal(during.refreshCalls[0].scrollToTop, true, '批次结束仍将最终列表置顶');
+
+    const refreshFailed = make('fail', Promise.resolve({
+        total: 1, succeeded: 1, failed: 0, skipped: 0, inserted: 1, results: []
+    }));
+    await refreshFailed.run();
+    assert.match(refreshFailed.toasts.at(-1)[0], /最新时间线读取失败/,
+        'refresh 内部吞掉 GET 异常时，批量按钮仍要报告最新列表读取失败');
+    assert.notEqual(refreshFailed.toasts.at(-1)[0], '同步完成：成功 1 个，失败 0 个，跳过 0 个，新增 1 条',
+        'GET 失败不得误报最终页面已刷新成功');
+});
+
+test('后台单来源 force 在定时 tick 占满两路时等空位，不突破全局并发', async () => {
+    const enabled = [1, 2].map(n => ({ id: `x${n}`, name: `X · ${n}`, providerType: 'x', enabled: true }));
+    const paused = { id: 'paused', name: 'X · paused', providerType: 'x', enabled: false };
+    const releases = new Map();
+    const started = [];
+    let active = 0, peak = 0;
+    const service = {
+        listSources: () => [...enabled, paused],
+        dueSources: () => enabled,
+        sweepRetention() {},
+        syncSource(id, options) {
+            started.push({ id, options });
+            active++;
+            peak = Math.max(peak, active);
+            return new Promise(resolve => releases.set(id, result => {
+                active--;
+                resolve(result);
+            }));
+        }
+    };
+    const scheduler = createScheduler({ service, log: { warn() {} } });
+    await scheduler.tickNow();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 2, '定时 tick 已占满两路');
+
+    const forced = scheduler.syncSource(paused.id, { force: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 2, '单来源强制同步也须等待共享闸门，不会成为第三路');
+    const first = started[0].id;
+    releases.get(first)({ ok: true, inserted: 1 });
+    releases.delete(first);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started.length, 3, '空出一路后暂停来源的手动强制同步开始');
+    assert.equal(started[2].id, 'paused');
+    assert.equal(started[2].options.force, true, 'force 语义仍保留');
+    assert.ok(peak <= 2, `包含 force 的全入口峰值仍 <= 2（${peak}）`);
+    for (const [id, release] of releases) { release({ ok: true, inserted: 1 }); releases.delete(id); }
+    await forced;
+    assert.equal(paused.enabled, false, '强制同步不改 enabled');
 });
 
 test('v6 迁移：老库加上 favorited_at、删掉 read_at，既有归档状态原样保留', () => {
@@ -922,10 +1206,10 @@ test('weibo adapter：normalize 与 error_code 分类（HTTP 200 里报错也要
 
 // ========== 路由形状 ==========
 
-test('十条 /api/timeline 路由：全部 requireAdmin；读走轮询桶、写走管理桶', () => {
+test('十一条 /api/timeline 路由：全部 requireAdmin；读走轮询桶、写走管理桶', () => {
     const code = stripComments(server);
     const routes = [...code.matchAll(/app\.(get|post|put|delete)\('(\/api\/timeline[^']*)'/g)];
-    assert.equal(routes.length, 10, `应有 10 条时间线路由，实测 ${routes.length}`);
+    assert.equal(routes.length, 11, `应有 11 条时间线路由，实测 ${routes.length}`);
 
     for (const m of routes) {
         const [, method, route] = m;
@@ -1197,6 +1481,79 @@ test('后台来源表单与行：X 只填用户名与周期，微博才要求 Ac
     assert.match(live, /最近成功 刚刚[\s\S]*下次 15:50/, '运行中的来源把「下次」接在「最近成功」后面');
 });
 
+test('同步结束时第一页刷新若遇到旧 GET 在途，会补拉最新页并在真正重绘后置顶', async () => {
+    const code = stripComments(moduleSource);
+    // refresh 的第一个 `{` 是解构参数，不是函数体；按 `) {` 锚定函数体，和下面同文件
+    // 那条真实筛选测试共用相同边界纪律。
+    const signature = code.indexOf('async function refresh(');
+    assert.ok(signature >= 0, 'refresh 函数定义存在');
+    const open = code.indexOf(') {', signature) + 2;
+    assert.ok(open > signature, 'refresh 函数体开括号存在');
+    let depth = 0, end = -1;
+    for (let i = open; i < code.length; i++) {
+        if (code[i] === '{') depth++;
+        else if (code[i] === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    assert.ok(end > open, 'refresh 函数体括号配对成功');
+    const body = code.slice(signature, end);
+    const apply = extractFunction(code, 'function applyPayload(data)');
+    const resolvers = [];
+    const requested = [];
+    const refresh = new Function('initial', 'api', `
+        const PAGE_SIZE = 20;
+        const URLSearchParams = globalThis.URLSearchParams;
+        let events = initial.slice(), sources = [];
+        let nextCursor = 'old-cursor', hasMore = true, syncFailed = [], lastSync = null;
+        let syncState = 'synced', listError = null, busy = false;
+        let filterSource = 'source-x', filterView = 'archived', inFlight = false;
+        let appliedFilterSource = 'source-x', appliedFilterView = 'archived';
+        let filterTransition = false, filterRefreshPending = false;
+        let scrollToTopPending = false, scrollRefreshWaiters = [];
+        let syncAllInFlight = false;
+        let lastKey = '', lastChipsKey = '', pollMs = 15000, pollTimer = null;
+        const listEl = { scrollTop: 480 };
+        const renderedScrolls = [];
+        const renderChips = () => {};
+        const render = () => renderedScrolls.push(listEl.scrollTop);
+        const console = { error() {} };
+        ${apply}
+        ${body}
+        return {
+            refresh,
+            setFilters(source, view) { filterSource = source; filterView = view; },
+            get events() { return events; },
+            get scrollTop() { return listEl.scrollTop; },
+            get renderedScrolls() { return renderedScrolls; }
+        };
+    `)([{ id: 'old' }], { get: url => {
+        requested.push(url);
+        return new Promise(resolve => resolvers.push(resolve));
+    } });
+
+    const oldRequest = refresh.refresh();
+    await Promise.resolve();
+    assert.equal(requested.length, 1, '已有旧筛选 GET 在途');
+    refresh.setFilters('', 'all');
+    const latestRequest = refresh.refresh({ manual: true, filterChange: true, scrollToTop: true });
+    assert.equal(requested.length, 1, '置顶刷新排队，不与旧 GET 并发');
+
+    resolvers[0]({ events: [{ id: 'stale-archived-page' }], sources: [], sync: { failed: [] },
+        nextCursor: 'stale-cursor', hasMore: true, pollInterval: 15 });
+    await Promise.resolve();
+    await Promise.resolve();
+    // 排队的请求必须是「全部 + 第一页」，不能带旧 cursor。
+    assert.equal(requested.length, 2, '旧请求收尾后补拉第一页');
+    assert.match(requested[1], /view=all/);
+    assert.doesNotMatch(requested[1], /cursor=/, '最新页请求不复用旧分页游标');
+    resolvers[1]({ events: [{ id: 'global-newest' }], sources: [], sync: { failed: [] },
+        nextCursor: null, hasMore: false, pollInterval: 15 });
+    await Promise.all([oldRequest, latestRequest]);
+
+    assert.deepEqual(refresh.events.map(e => e.id), ['global-newest'], '最终列表是最新响应而非旧页');
+    assert.equal(refresh.scrollTop, 0, '直到最新第一页真正重绘后才置顶');
+    assert.equal(refresh.renderedScrolls.at(-1), 0, '最后一次 render 观察到的 scrollTop 已是 0');
+});
+
 test('外部点击与 Esc 收起渠道菜单：执行真实的文档级处理器', () => {
     const code = stripComments(moduleSource);
     const calls = [];
@@ -1262,7 +1619,10 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
         let filterSource = 'manual', filterView = 'favorited', inFlight = false;
         let appliedFilterSource = 'manual', appliedFilterView = 'favorited';
         let filterTransition = false, filterRefreshPending = false;
+        let scrollToTopPending = false, scrollRefreshWaiters = [];
+        let syncAllInFlight = false;
         let lastKey = '', lastChipsKey = '', pollMs = 15000, pollTimer = null;
+        const listEl = { scrollTop: 420 };
         const renderChips = () => {};
         const render = () => {};
         const console = { error() {} };
@@ -1389,6 +1749,11 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     assert.match(code, /<div class="special-line-item-foot">/, '底部一行始终存在');
     assert.match(code, /actions\.length \? `<div class="special-line-row-actions">/,
         '左侧操作可为空，但底部那一行照样渲染');
+
+    // 首页头部的 ↻ 是全局手动同步，不是只重拉列表；实现入口与无障碍名都要明确。
+    assert.match(code, /syncBtn\.title = '立即同步所有已启用的订阅'/, '按钮提示说明同步范围');
+    assert.match(code, /case 'sync':[\s\S]{0,100}syncAllSources\(\)/, '头部按钮触发批量同步');
+    assert.match(code, /api\.post\('\/api\/timeline\/sync-all'/, '前端调用批量同步接口');
 
     // ⑤ 「⋯」菜单整套必须走干净（用户要求：右上角不再设置菜单按钮）
     assert.doesNotMatch(code, /<details class="special-line-tools">/, '不再有「⋯」');
@@ -1905,6 +2270,39 @@ async function callRoute(routes, key, req = {}) {
     return { statusCode, body };
 }
 
+test('POST /api/timeline/sync-all 调调度器批量入口并回传逐来源汇总', async () => {
+    const summary = {
+        total: 2, succeeded: 1, failed: 1, skipped: 0, inserted: 3,
+        results: [
+            { id: 'x1', name: 'X · one', providerType: 'x', ok: true, skipped: false, inserted: 3 },
+            { id: 'x2', name: 'X · two', providerType: 'x', ok: false, skipped: false, code: 'rate', error: '限流', inserted: 0 }
+        ]
+    };
+    let calls = 0;
+    const routes = loadTimelineRoutes({ scheduler: { async syncEnabledSources() { calls++; return summary; } } });
+    const response = await callRoute(routes, 'POST /api/timeline/sync-all');
+    assert.equal(calls, 1, '路由只调一次共享调度器批量入口');
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, summary, '逐来源失败与汇总都传回客户端');
+});
+
+test('单来源 force 路由也走 scheduler 共享闸门（force 仍为 true）', async () => {
+    const calls = [];
+    const routes = loadTimelineRoutes({
+        service: {},
+        scheduler: { async syncSource(id, options) {
+            calls.push({ id, options });
+            return { ok: true, inserted: 0 };
+        } }
+    });
+    const result = await callRoute(routes, 'POST /api/timeline/sources/:id/sync', { params: { id: 'paused-id' } });
+    assert.equal(result.statusCode, 200);
+    assert.equal(calls.length, 1, '单源同步经过 scheduler 而不是直接调用 service');
+    assert.equal(calls[0].id, 'paused-id');
+    assert.equal(calls[0].options.force, true,
+        '暂停来源的单源手动同步仍然 force，但共用并发闸门');
+});
+
 test('真跑时间线路由处理器：读回完整载荷，写把校验错误映射成 400/404', async () => {
     const { dir, file } = tempDb();
     const db = openDatabase(file);
@@ -2044,6 +2442,9 @@ test('真实路由→服务→数据库：周期白名单、无 token、启停�
             getPasswordHash: async () => { throw new Error('X must not decrypt'); }, log: { warn() {} }
         });
         const routes = loadTimelineRoutes(timeline);
+        const missingSync = await callRoute(routes, 'POST /api/timeline/sources/:id/sync',
+            { params: { id: 'missing-source' } });
+        assert.equal(missingSync.statusCode, 404, 'scheduler 闸门不能把 ServiceError 404 吞成 HTTP 200');
         const providers = (await callRoute(routes, 'GET /api/timeline/sources')).body.providers;
         assert.deepEqual(Array.from(providers.find(p => p.id === 'x').syncIntervalsMs), [60000, 300000, 900000, 1800000, 3600000]);
         assert.equal(providers.find(p => p.id === 'x').requiresCredentials, false);

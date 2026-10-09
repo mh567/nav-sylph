@@ -50,6 +50,12 @@
     let appliedFilterView = 'all';
     let filterTransition = false;
     let filterRefreshPending = false;
+    // 批量同步完成后必须等最后那次第一页刷新再置顶；如果当时另一个 GET 在途，
+    // scrollToTopPending 会跟着 latest-wins 补拉走，不能被旧响应消费掉。
+    let scrollToTopPending = false;
+    let scrollRefreshWaiters = [];
+    let filterSelectionRevision = 0;
+    let syncAllInFlight = false;
 
     let pollTimer = null;
     let pollMs = DEFAULT_POLL_MS;
@@ -401,7 +407,7 @@
 
     /** 懒加载与按钮共用同一条路径，避免两处各发一次请求。 */
     function loadMore() {
-        if (loadingMore || inFlight || !hasMore) return;
+        if (loadingMore || inFlight || syncAllInFlight || !hasMore) return;
         loadingMore = true;
         refresh({ append: true }).finally(() => { loadingMore = false; });
     }
@@ -501,14 +507,19 @@
     }
 
     /** @param {{append?: boolean, manual?: boolean, filterChange?: boolean}} [opts] */
-    async function refresh({ append = false, manual = false, filterChange = false } = {}) {
+    async function refresh({ append = false, manual = false, filterChange = false, scrollToTop = false } = {}) {
+        if (scrollToTop) scrollToTopPending = true;
+        // 全来源批次在飞时暂停普通轮询：否则轮询可能先把手动「同步中」态刷回稳态，
+        // 也会让列表与批次结果交错。批次后的 filterChange/manual 刷新仍可通过。
+        if (syncAllInFlight && !manual && !filterChange && !scrollToTop) return;
         if (inFlight) {
-            if (filterChange) {
+            if (filterChange || scrollToTop) {
                 filterRefreshPending = true;
                 filterTransition = true;
                 lastKey = '';
                 render();
             }
+            if (scrollToTop) return new Promise(resolve => scrollRefreshWaiters.push(resolve));
             return;
         }
         inFlight = true;
@@ -573,10 +584,10 @@
             lastChipsKey = '';
             renderChips();
             if (filterRefreshPending) {
-                // 用户在上一次筛选请求尚未完成时又点了别的 chips：丢弃过时响应后
-                // 立即只拉**最后选择**的条件，不闪回中间筛选的旧结果。
+                // 用户在上一次筛选请求尚未完成时又点了别的 chips（或全量同步刚结束）：
+                // 丢弃过时响应后只拉**最后选择**的第一页；置顶标志随这次补拉走。
                 filterRefreshPending = false;
-                return refresh({ filterChange: true });
+                return refresh({ filterChange: true, scrollToTop: scrollToTopPending });
             }
             if (filterChange && listError) {
                 // 新筛选读取失败时，旧列表仍留在 DOM；把 chips 也退回最后一次
@@ -587,7 +598,76 @@
                 renderChips();
             }
             filterTransition = false;
+            if (scrollToTopPending) {
+                if (listEl) listEl.scrollTop = 0;
+                scrollToTopPending = false;
+            }
             render();
+            if (scrollRefreshWaiters.length) {
+                const waiters = scrollRefreshWaiters;
+                scrollRefreshWaiters = [];
+                waiters.forEach(resolve => resolve());
+            }
+        }
+    }
+
+    /**
+     * 首页卡头部的「立即同步」：同步所有启用中的外部订阅，然后回到全局最新页并置顶。
+     *
+     * 不传 force：停止来源不会因此重启。批次期间如果用户自己切了筛选，保留其最后选择；
+     * 否则回到「全部渠道 / 全部」，以便刚抓到的全局最新事件可见。
+     */
+    async function syncAllSources() {
+        if (syncAllInFlight) return;
+        syncAllInFlight = true;
+        const selectionAtStart = filterSelectionRevision;
+        syncState = 'syncing';
+        lastKey = '';
+        render();
+
+        let summary = null;
+        let requestFailed = false;
+        try {
+            summary = await api.post('/api/timeline/sync-all', {});
+        } catch (err) {
+            requestFailed = true;
+            console.error('Special line sync-all failed:', err);
+        }
+
+        if (filterSelectionRevision === selectionAtStart) {
+            filterSource = '';
+            filterView = 'all';
+        }
+        openChannel = null;
+        lastChipsKey = '';
+        renderChips();
+
+        // non-append 不带旧 cursor；若 GET 在途，refresh 会排队重拉最后选择的第一页。
+        // 只有那次新列表真正落到 DOM 后，refresh 才会把 scrollTop 置为 0。
+        let refreshFailed = false;
+        try {
+            await refresh({ manual: true, filterChange: true, scrollToTop: true });
+            // refresh 把 GET 错误收进 listError，不会向这里 throw；必须读回状态，
+            // 否则采集成功但列表没读到时仍会 toast「同步完成」。
+            refreshFailed = !!listError;
+        } catch (err) {
+            refreshFailed = true;
+            console.error('Special line post-sync refresh failed:', err);
+        } finally {
+            syncAllInFlight = false;
+            lastKey = '';
+            render();
+        }
+
+        if (requestFailed) {
+            window.app?.showToast('同步全部订阅失败，请重试', 'error');
+        } else if (refreshFailed) {
+            window.app?.showToast('同步已完成，但最新时间线读取失败，请重试', 'error');
+        } else if (!summary || !summary.total) {
+            window.app?.showToast('没有启用的订阅来源');
+        } else {
+            const text = `同步完成：成功 ${summary.succeeded} 个，失败 ${summary.failed} 个，跳过 ${summary.skipped} 个，新增 ${summary.inserted} 条`;
+            window.app?.showToast(text, summary.failed ? 'error' : 'success');
         }
     }
 
@@ -1156,8 +1236,8 @@
         syncBtn.type = 'button';
         syncBtn.className = 'special-line-iconbtn';
         syncBtn.dataset.action = 'sync';
-        syncBtn.title = '立即同步';
-        syncBtn.setAttribute('aria-label', '立即同步');
+        syncBtn.title = '立即同步所有已启用的订阅';
+        syncBtn.setAttribute('aria-label', '立即同步所有已启用的订阅');
         syncBtn.textContent = '↻';
 
         const saveBtn = document.createElement('button');
@@ -1205,6 +1285,8 @@
             const id = target.dataset.id;
             switch (action) {
                 case 'sync':
+                    syncAllSources();
+                    break;
                 case 'retry':
                     refresh({ manual: true });
                     break;
@@ -1237,6 +1319,7 @@
                     renderChips();
                     break;
                 case 'filter-source':
+                    filterSelectionRevision++;
                     openChannel = null;
                     filterSource = target.dataset.value || '';
                     lastChipsKey = '';
@@ -1244,6 +1327,7 @@
                     refresh({ filterChange: true });
                     break;
                 case 'filter-view':
+                    filterSelectionRevision++;
                     openChannel = null;
                     filterView = target.dataset.value || 'all';
                     lastChipsKey = '';
@@ -1251,6 +1335,7 @@
                     refresh({ filterChange: true });
                     break;
                 case 'reset-filters':
+                    filterSelectionRevision++;
                     openChannel = null;
                     filterSource = '';
                     filterView = 'all';

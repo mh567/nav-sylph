@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v97：首页时间线的 ↻ 从「只重拉当前列表」改为立即同步所有启用的订阅（停止来源与稍后阅读
+// 不参与），并与定时调度共享两路并发闸门；完成后重拉全局最新第一页并置顶。改了
+// special-line.js、server.js、lib/timeline/sync.js。
 // nav-v96：时间线事件去掉「已读/未读」，只留「归档 + 收藏」——归档按钮移到卡片右上角
 //（原来的「⋯」菜单整条删除），卡片右下角新增收藏星标；收藏过的豁免 30 天清理，归档
 // 仍然不豁免。筛选行由「全部 / 未读 / 已归档」改为「全部 / 收藏 / 已归档」。
@@ -231,7 +234,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v96';
+const CACHE = 'nav-v97';
 const ASSETS = [
     '/',
     '/index.html',

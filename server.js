@@ -3445,6 +3445,15 @@ app.get('/api/timeline/events', modulePollLimit, requireAdmin, async (req, res) 
     }
 });
 
+// 首页卡片的「立即同步」：同步所有**已启用**的外部订阅，服务层/调度器逐源隔离失败并限并发。
+app.post('/api/timeline/sync-all', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        res.json(await timeline.scheduler.syncEnabledSources());
+    } catch (err) {
+        timelineError(res, err);
+    }
+});
+
 // 保存文章（稍后阅读）。同一 URL 重复保存是更新而不是新增。
 app.post('/api/timeline/articles', rateLimit, requireAdmin, async (req, res) => {
     try {
@@ -3543,7 +3552,7 @@ app.post('/api/timeline/sources/:id/test', rateLimit, requireAdmin, async (req, 
 // 「立即同步」：force 让它对已暂停的来源也生效（用户明确点了这一下）
 app.post('/api/timeline/sources/:id/sync', rateLimit, requireAdmin, async (req, res) => {
     try {
-        res.json(await timeline.service.syncSource(req.params.id, { force: true }));
+        res.json(await timeline.scheduler.syncSource(req.params.id, { force: true }));
     } catch (err) {
         timelineError(res, err);
     }

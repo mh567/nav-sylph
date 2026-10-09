@@ -2,7 +2,92 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：删掉已读/未读，卡片改「归档 + 收藏」（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
+## 最新一轮：首页「立即同步」同步所有启用订阅并回到最新（未提交，工作树；基线 `42b623d`）
+
+用户原话：「点击模块的立即同步按钮后，应该触发所有订阅更新并将时间线拉回到最顶部，最新一条。」确认过范围：**只同步后台启用中的来源**；已停止来源跳过，后台每行「立即同步」仍可手动拉已停止来源（原语义不变）。
+
+### 根因
+
+卡头部 ↻ 原来只执行 `refresh({ manual:true })` → `GET /api/timeline/events`：**只读 SQLite，没有触发 `syncSource`**。真正采集上游的是后台每个来源行的 `POST /api/timeline/sources/:id/sync`，每次只打一个来源。
+
+即使拿到新数据，普通 `refresh()` 也会把旧 `listEl.scrollTop` 保存后写回；而 GET 在途时普通 refresh 直接 return，所以「拉最新」与「滚回最新」是两个独立缺口。
+
+### 改法
+
+- `lib/timeline/sync.js`：把 `inFlight` 从 Set 改成来源→Promise Map，抽 `runSource()` / `scheduleSource()`；定时 tick、手动批量、后台单来源强制同步共用同一在途 Map / `MAX_CONCURRENT_SYNCS=2`，避免同源重复请求或总并发超过 2。`syncEnabledSources()` 从 `service.listSources()` 选 `enabled && providerType !== 'manual'`，不传 `force`；各来源失败隔离并汇总。后台单源路由仍传 `{force:true}`（保留已停止来源可手动同步的语义），只收进共享并发闸门。
+- `server.js` 新增 `POST /api/timeline/sync-all`，守卫沿用 `rateLimit, requireAdmin`。原单来源路由仍传 `force:true`、用户语义不变，但接到 `scheduler.syncSource()` 共用闸门。
+- 首页 ↻ 改调批量 API：批次期间显示「同步中」、停普通轮询、懒加载暂停；防重复点击。结束后没有新的用户筛选操作则重置为「全部渠道 / 全部」，否则保留用户最后选择；非 append 重拉当前筛选第一页（不带 cursor），新列表渲染完置顶。GET 若已在途，latest-wins 丢旧响应并补拉最后条件，置顶标志只在最终渲染时消费。
+- README / `docs/architecture.md` 加同步范围与并发契约；`public/sw.js` 缓存升 `nav-v96 → nav-v97`。
+
+### 实际验证
+
+- **单测（scheduler 公共方法）**：4 个启用外部来源被纳入；停用与 `manual` 被跳过；不传 `force`；峰值并发 2；单源异常（含 `throw Object.create(null)`）只记单源失败，其他来源继续；成功来源的数字 `skipped`（无效事件数）另计为 `discarded`，不误算成跳过来源。
+- **交错并发**：定时 tick 已占满两路后启动批量，同源复用现有 Promise、不重复打上游；第三来源等空位；定时 + 手动的总并发仍不超过 2。
+- **HTTP**：新增 `POST /api/timeline/sync-all` 调 scheduler 一次并回传逐源结果 + 汇总；路由总数 11 条、全部 `requireAdmin`，写操作走管理限流桶。
+- **refresh 在途竞态**：旧筛选 GET 在途时排队批量后的最新页请求；旧响应丢弃；后续请求 `view=all` 且不带旧 `cursor`；第一条是最新响应，最终 `scrollTop=0`。
+- **真实浏览器 + 隔离服务 + mock FxEmbed**：真实登录并从后台「模块」开关启用 Special Line；选「收藏」后滚到 `scrollTop=1100` 点击 ↻。浏览器请求 `POST /api/timeline/sync-all` 200；mock 上游只记录 `alpha`、`beta`，暂停来源 `paused` **0 次**，本地 DB 中它的 `last_attempt_at` 仍为 NULL；成功 toast「同步完成：成功 2 个，失败 0 个，跳过 0 个，新增 2 条」；筛选回到全部渠道 / 全部，首条 `beta 最新动态`，`scrollTop=0`。清空早先日志后复验，浏览器 console 无错误。
+- **最终代码（含 scheduleSource 竞态修复）重跑同一浏览器流程**：fixture 与工作树关键文件 `cmp` 一致后重跑，Network 顺序为旧 `GET ?view=favorited` → `POST /sync-all` 200 → 新 `GET ?view=all&limit=30`；结果同上（top=0、首条 beta 最新动态、toast 成功 2/失败 0/跳过 0/新增 2），上游仍只 alpha/beta，paused `last_attempt_at` 为 NULL。另点后台 paused 行的单条「立即同步」：`POST /api/timeline/sources/:id/sync` 200，paused 上游被调用 2 次、`last_attempt_at` 已写入、`enabled` 仍为 0、toast「同步完成，新增 1 条」，console 无错误——单源 force 路径与批量路径共用闸门后语义都保持。
+- **全套 576/576**；变更 JS `node --check` 与 `git diff --check` 通过。
+- **变异验证（5 条审查修复各自能变红）**：来源 skipped/discarded 拆分、`Object.create(null)` rejection 隔离、单源路由走 scheduler、GET 失败不误报成功、最新页实际置顶——逐一变异后对应用例全部变红，`RESTORE OK`。
+
+### 两轴审查发现与修复
+
+- Standards 轴发现后台单来源 `force:true` 路由之前直接调用 `service.syncSource()`，会绕过新的 scheduler 全局闸门：若两路已满还能开第三路，或同源重复请求。现路由改调用 `scheduler.syncSource(id,{force:true})`，既保留「暂停来源仍可手动拉一次、不重启」的用户语义，也共享同源 Promise 与全局上限 2；新增路由 404 语义、重复同源与满载 force 用例。
+- Standards 轴发现 `service.syncSource()` 的 `skipped` 有两种类型：停用来源跳过时是布尔值，成功时的无效事件计数是数字；原 `!!outcome.skipped` 会把「成功但过滤一条动态」误算成跳过来源。现仅 `=== true` 计来源跳过，事件条数另作 `discarded`；并用 `throw Object.create(null)` 钉住非 Error rejection 不得打断批次（意外异常不读取/序列化任意 thrown object）。
+- Standards 轴发现 README 原先声称「逐源显示失败结果」，但 UI toast 实际只显示总数；改成准确地只承诺成功/失败/跳过/新增汇总，不再声称 toast 逐源展示错误详情。
+- Spec 轴发现 `refresh()` 会内部捕获 GET 错误，所以 `syncAllSources()` 外层 `catch` 不会知道最新第一页读取失败，可能采集成功但仍 toast「同步完成」。现读取 `listError` 并区分提示「同步已完成，但最新时间线读取失败」；新增执行真实 `syncAllSources()` 的失败路径用例。
+- 最后一轮 Standards 复核发现 `scheduleSource` 的 `Promise.race(inFlight)` 会把**无关来源** rejection 传播给等待空位的来源，导致后者未真正启动就被记为失败。现对每个在途 Promise 同时处理 resolve/reject，任一结果只释放槽位；新增交错测试（暂停的定时来源失败、待批量来源继续启动）。
+- 两轴最终复核后上述发现都已修复；不再有功能性阻塞。范围只涉及同步入口、并发、刷新结果与对应说明。
+
+### 验证边界 / 我自己的失误
+
+- 本轮上游响应为本地 mock，**没有**调用真实 FxEmbed；这是为验证 UI→HTTP→scheduler→service→SQLite 的链路，不是 FxEmbed 可用性测试。
+- ⚠️ 首次启动 E2E 夹具时 `cwd` 错在仓库根，mock wrapper 因而加载了**真实** `server.js`。本机 `nav-sylph.db` 被打开并从 `user_version=2` 迁到 6，启动钩子补了一条内置 `manual` 来源。随后只读核验：`sessions=0`、时间线事件 0、外部来源 0（只有 manual）、`module_cache=1`；配置/密码/模块/WebDAV 私有 JSON 的 mtime 早于本轮。迁移只新增模块表并补 v6 状态列、未删已有会话或缓存行；本机 DB 保持 v6，没有做破坏性回滚。
+- ⚠️ 隔离 fixture 的 seed 第一次用相对路径，seed 命令失败但后半段 server 仍启动；API 只看到 manual，故停服重建。随后发现 `repo.createSource()` 不接受 `enabled:false`，用 `repo.updateSource(id,{enabled:false})` 显式停用并读回 `enabled=0` 后才测。最终 call log 与 DB 时间戳一致：只有 alpha/beta 被同步。
+- ⚠️⚠️ **同一类 cwd 事故第二次：这次污染了真实库，已删除恢复**。重建 fixture 后我在跑 `seed-sync-e2e.cjs` 时 cwd 落在**仓库根**（而脚本用 `process.cwd()` 定位 `nav-sylph.db`），于是 3 条种子来源（alpha/beta/paused）与 40 条假动态 + 40 条 `timeline_event_state` 行被写进了本机真实 `nav-sylph.db`。发现后只读核验（sources/events/state/sessions 计数 + 私有 JSON mtime），随后**按 ID 精确删除**这些种子行并校验计数（40/40/3），恢复到交接文档记录的先前状态：仅剩 `manual` 来源、时间线 0 条、会话 0。私有 JSON（`.admin-password.json`/`.modules.json`/`config.json`/`favorites.json`/`.webdav-config.json`）mtime 均早于本轮，从未被碰。**教训**：任何按 cwd 定位数据文件的脚本，执行前必须先断言 cwd 不是仓库根；seed/fixture 脚本应改为显式传入绝对路径，不依赖 `process.cwd()`。这也是本会话第二次栽在 cwd 上（第一次见上条），两次都靠「测量与预期不符才停下来查」抓到。
+
+### 下一步
+
+1. 两轴审查已完成且发现全部修复（见上节）；三处版本号与 CHANGELOG 已升到 **1.15.8**。剩余动作：提交 → `scripts/release.sh` → 手动推送 `main`（脚本只推 tag）→ 下载产物核对。
+2. 没有启用订阅时，按钮会提示「没有启用的订阅来源」，仍把最新第一页置顶；未单独做空来源浏览器截图（该分支由路由/前端实现与单测覆盖）。
+3. 旧跟进项不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
+4. E2E 夹具脚本的 cwd 依赖（本次事故根因）尚未改成显式绝对路径——记为后续改进项，不在本次范围。
+
+## 上一轮：首页「立即同步」的 Special Line 功能更新（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
+
+用户原话：「点击模块的立即同步按钮后，应该触发所有订阅更新并将时间线拉回到最顶部，最新一条。」确认过范围：**只同步后台启用中的订阅**；已停止来源跳过，后台每行的「立即同步」仍可手动拉已停止来源。
+
+### 根因（读代码确认）
+
+卡头部 ↻ 以前只走 `refresh({ manual: true })` → `GET /api/timeline/events`，这个接口只读 SQLite，**完全没有调用任何 `syncSource`**；真正会打 X/微博上游的只有后台每个来源行自己的 `/api/timeline/sources/:id/sync`，而且只同步一条。还有第二个独立缺口：`refresh()` 每次 DOM 重建都会保存并恢复 `listEl.scrollTop`，所以就算重拉到了最新第一页，深滚状态也不会回顶；若列表 GET 已在途，refresh 还会直接 return，手动最终刷新可能被吞掉。
+
+### 改法
+
+- `lib/timeline/sync.js`：调度器 `inFlight` 改成**来源→Promise Map**；定时 tick 与 `syncEnabledSources()` 共用 `runSource()`、同源 Promise 与全局 `MAX_CONCURRENT_SYNCS=2`。批量方法取 `enabled && providerType !== 'manual'`，**不传 `force`**；暂停状态不改变。逐来源隔离结果，返回成功/失败/跳过/新增汇总。`server.js` 新增受 `rateLimit, requireAdmin` 保护的 `POST /api/timeline/sync-all`；原有后台单来源强制同步路由不动。
+- 首页 ↻ 改调批量接口，防双击；批量期间停普通轮询、保留列表并显示「同步中」。完成后若用户未在期间改筛选就回到「全部渠道 / 全部」；若用户中途自己选了筛选，则尊重最后选择。随后请求当前筛选的**第一页（无 cursor）**，只有新结果实际渲染后才将列表 `scrollTop=0`。列表 GET 在途时把这次刷新排队，丢旧响应、补拉最后条件后再置顶。
+- README 补清此按钮同步范围；`docs/architecture.md` 加入批量调度与并发共用契约；SW `nav-v96 → nav-v97`。
+
+### 实际验证
+
+- 单测：3 个启用来源（含 X/微博）、1 个暂停、1 个 manual → 仅 3 个外部来源被触发；失败独立统计并继续；并发峰值 2；不传 `force`。
+- 并发交错：定时 tick 已占满两路时启动批量，批次复用同源在途 Promise；第三个来源等空位，不额外开到第 3 路。
+- refresh latest-wins：旧筛选 GET 在途时排入「全部 + scrollToTop」，旧响应丢弃，第二个 GET 无 cursor，返回后列表显示最新事件且最后一次 render 的 `scrollTop=0`。
+- HTTP 路由：`POST /api/timeline/sync-all` 调一次调度器并回传逐源错误与汇总；时间线写接口仍走管理员限流桶。
+- **真实浏览器 + 隔离服务 + mock FxEmbed**：先登录，再经后台「模块」开关启用 Special Line（真实入口）；筛选「收藏」、滚到 `scrollTop=1100` 后点头部 ↻。浏览器收到 `POST /api/timeline/sync-all` 200；上游 mock 只记录 alpha/beta，paused **0 次**；结束 toast「同步完成：成功 2 个，失败 0 个，新增 2 条」；视图复位到「全部渠道 / 全部」，首条「beta 最新动态」，`scrollTop=0`。清空旧 console 后重跑，console **无错误**。
+- 全套 **571/571**；`node --check` 与 `git diff --check` 通过。
+
+### 我在验证中造成并修正的失误（如实记）
+
+- ⚠️ 第一回启动夹具时命令的 `cwd` 仍是仓库根，mock wrapper 因而加载了真实 `server.js`；真实 `nav-sylph.db` 被打开并从 `user_version=2` 迁到 `6`，新建了 v3–v6 表并由启动钩子补了一条内置 `manual` 来源。事后**只读确认**：`sessions=0`、时间线事件 0、用户来源 0（只有 manual）、`module_cache` 1 行；配置/密码/模块/WebDAV 私有 JSON 的 mtime 均早于本轮。迁移是新增模块表 + v6 状态列变更，没有删除已有 `sessions` / `module_cache` 行。该本机 DB 已保持迁移后的 v6 状态，**没有用破坏性方式回滚**。
+- ⚠️ 重建隔离副本后，启动命令用相对路径找 seed 脚本，seed 命令失败，但同一命令行后半段仍启动了 server；API 检查发现库里只有 manual，遂停服重跑 seed。随后又发现 seed 给 `createSource()` 传 `enabled:false` 不生效（该方法无此参数，默认总启用），改用 `repo.updateSource(id,{enabled:false})`，检查 SQLite 确认 `enabled=0` 后才继续。最终两次浏览器结果都以 call log 与 DB 时间戳核对，paused 未被触发。
+
+### 下一步
+
+1. 本次未提交、未发布；若要发版，先两轴审查，再按仓库流程 `CHANGELOG + 三处版本号 + scripts/release.sh + 推 main + 下载产物核对`。
+2. ⚠️ 真外部 FxEmbed 没有在本轮测试（浏览器 E2E 用本地 mock）；单源 adapter 的既有测试仍在。
+3. 遗留不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
+
+## 上一轮：首页「立即同步」的 Special Line 功能更新（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
 
 用户原话：「删掉已读未读的功能吧，这块就留两个功能，归档和收藏，卡片右下角可以放一个收藏按钮（五角星那种），收藏后的内容可以长期保存没有 30 天限制，并继续保持在原时间线。归档按钮放在右上角，右上角不再设置菜单按钮，归档逻辑和现在保持一致。」看完仿真样例后补充：「确认已归档的事件卡片不会在原时间线显示，只能在已归档里面看。其他的没问题」。
 
