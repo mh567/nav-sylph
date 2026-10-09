@@ -1,6 +1,34 @@
 {
   "versions": [
     {
+      "version": "1.15.8",
+      "date": "2026-10-09",
+      "summary": "首页时间线「立即同步」改为同步全部已启用的订阅并回到最新一条",
+      "highlights": [
+        "首页时间线的「立即同步」现在会同步全部已启用的订阅，已停止的来源跳过",
+        "同步完成后自动回到最新第一页并滚动到顶部",
+        "后台单条「立即同步」与定时采集共用并发控制，已停止的来源仍可单独手动同步且不会重新启用"
+      ],
+      "changes": {
+        "fix": [
+          "卡头部 ↻ 此前只执行 `GET /api/timeline/events`（只读数据库），完全没有触发 `syncSource`，所以点「立即同步」实际上不会去抓任何上游；另有一个独立缺口：`refresh()` 每次重绘都会把旧 `scrollTop` 保存后写回，即使拿到新数据也不会回到顶部。现改为 `POST /api/timeline/sync-all` → `scheduler.syncEnabledSources()`，批次结束后重拉最新第一页（不带旧 cursor）并在新结果渲染后置顶。",
+          "`service.syncSource()` 返回的 `skipped` 有两种类型：来源被跳过时是布尔值，成功但过滤掉无效事件时是数字计数。此前 `!!outcome.skipped` 会把「成功但过滤了一条动态」误算成跳过来源，导致汇总里 succeeded=0、skipped=1。现仅 `=== true` 计入来源跳过，数字另计为 `discarded`。",
+          "`scheduleSource()` 在等待并发空位时用 `Promise.race(inFlight)`，任一在途来源 reject 都会传播给正在等待的来源，使后者还没真正启动就被记为失败。现对每个在途 Promise 同时处理 resolve/reject，任一结果都只释放槽位。",
+          "`refresh()` 会把 GET 错误收进 `listError` 而不向调用方 throw，`syncAllSources()` 外层 catch 抓不到，于是「采集成功但最新列表没读到」会误 toast「同步完成」。现 await 后读取 `listError`，失败时提示「同步已完成，但最新时间线读取失败，请重试」。",
+          "意外 rejection 若为 `null` 或无原型对象，原 catch 里读取 `err.message` 会再次抛错、打断整批。现不读取也不序列化任意 thrown value，只记录安全的通用日志并返回安全失败结果。"
+        ],
+        "improve": [
+          "`POST /api/timeline/sources/:id/sync`（后台单条「立即同步」）此前直接调用 `service.syncSource()`，绕过调度器的 `inFlight` Map，可在定时任务与批量已占满两路时开启第三路或重复打同一来源。现改经 `scheduler.syncSource(id,{force:true})`，共享同源 Promise 与全局并发上限 2；`force` 语义不变（已停止来源仍可手动同步一次、不会重新启用），`ServiceError` 仍原样上抛（未知来源保持 404）。",
+          "定时 tick、首页批量同步、后台单条强制同步三个入口现在共用同一来源级 `inFlight: Map<id, Promise>` 与 `MAX_CONCURRENT_SYNCS=2`，同一来源已有同步就复用其 Promise。",
+          "批次结束的 toast 现显示成功、失败、跳过、新增四个汇总数（README 原先声称「逐源显示失败结果」与实现不符，已改为准确描述）。"
+        ],
+        "add": [
+          "新路由 `POST /api/timeline/sync-all`，守卫为 `rateLimit, requireAdmin`，等待批次完成后返回逐来源结果与汇总（total/succeeded/failed/skipped/inserted/discarded），不回传任何凭据。",
+          "首页 ↻ 批次期间停普通轮询与懒加载、防重复点击；结束时若用户在批次期间又改过筛选则保留其最后选择，否则重置为「全部渠道 / 全部」；GET 在途时按 latest-wins 丢弃旧响应并补拉最后条件后才消费置顶标志。"
+        ]
+      }
+    },
+    {
       "version": "1.15.7",
       "date": "2026-10-09",
       "summary": "时间线事件去掉已读/未读，改为归档与收藏，收藏内容长期保存",
