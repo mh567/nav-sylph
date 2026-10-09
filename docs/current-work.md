@@ -1,8 +1,8 @@
 # 当前工作交接
 
-核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+核对日期：2026-10-09。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：首页「立即同步」同步所有启用订阅并回到最新（未提交，工作树；基线 `42b623d`）
+## 最新一轮：首页「立即同步」同步所有启用订阅并回到最新（随 **v1.15.8** 发布；功能提交 `c7d13fc`、版本提交 `879b67a`，基线 `42b623d`）
 
 用户原话：「点击模块的立即同步按钮后，应该触发所有订阅更新并将时间线拉回到最顶部，最新一条。」确认过范围：**只同步后台启用中的来源**；已停止来源跳过，后台每行「立即同步」仍可手动拉已停止来源（原语义不变）。
 
@@ -48,7 +48,7 @@
 
 ### 下一步
 
-1. 两轴审查已完成且发现全部修复（见上节）；三处版本号与 CHANGELOG 已升到 **1.15.8**。剩余动作：提交 → `scripts/release.sh` → 手动推送 `main`（脚本只推 tag）→ 下载产物核对。
+1. ~~两轴审查已完成且发现全部修复（见上节）；三处版本号与 CHANGELOG 已升到 **1.15.8**。剩余动作：提交 → `scripts/release.sh` → 手动推送 `main`（脚本只推 tag）→ 下载产物核对。~~ **已全部完成**：功能提交 `c7d13fc`、版本提交 `879b67a`，`scripts/release.sh` 创建 tag 与 GitHub Release，手动推送 `main`（`42b623d..879b67a`）。产物 `nav-sylph-v1.15.8.tar.gz`（13,444,473 字节）已下载核对：三处版本 1.15.8、`app.post('/api/timeline/sync-all', rateLimit, requireAdmin`、单源路由带同样守卫、`public/sw.js` 缓存 `nav-v97`、`discarded` 与 `listError` 都在，`server.js` / `lib/timeline/sync.js` / `public/modules/special-line.js` / `public/sw.js` / 三处版本文件与仓库逐一 `cmp` 一致；6 个私有文件（`config.json`、`favorites.json`、`.admin-password.json`、`.modules.json`、`nav-sylph.db`、`.webdav-config.json`）全部不在包内。
 2. 没有启用订阅时，按钮会提示「没有启用的订阅来源」，仍把最新第一页置顶；未单独做空来源浏览器截图（该分支由路由/前端实现与单测覆盖）。
 3. 旧跟进项不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
 4. E2E 夹具脚本的 cwd 依赖（本次事故根因）尚未改成显式绝对路径——记为后续改进项，不在本次范围。
