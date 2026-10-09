@@ -499,7 +499,10 @@ app.use((req, res, next) => {
     res.header('X-Frame-Options', 'SAMEORIGIN');
     res.header('X-XSS-Protection', '1; mode=block');
     res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.header('Content-Security-Policy', "script-src 'self' 'unsafe-inline'");
+    // img-src 与 service.js 的 safeAvatarUrl 是同一份白名单的浏览器侧兜底：
+    // 时间线上 X 的头像来自 pbs.twimg.com，除此之外不允许外站图片被加载。
+    res.header('Content-Security-Policy',
+        "script-src 'self' 'unsafe-inline'; img-src 'self' data: https://pbs.twimg.com");
     
     // CORS
     const origin = req.headers.origin;

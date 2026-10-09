@@ -29,7 +29,10 @@ const { getProvider, eventTypeLabel, isEventType } = require(path.join(ROOT, 'li
 const xAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'x.js'));
 const weiboAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'weibo.js'));
 const { encrypt, decrypt } = require(path.join(ROOT, 'lib', 'credentials.js'));
-const { MAX_EVENTS_PER_SOURCE, MANUAL_SOURCE_ID } = require(path.join(ROOT, 'lib', 'timeline', 'constants.js'));
+const {
+    MAX_EVENTS_PER_SOURCE, MANUAL_SOURCE_ID, SOCIAL_RETENTION_DAYS,
+    MAX_TRANSLATIONS_PER_SYNC, PAGE_SIZE_DEFAULT
+} = require(path.join(ROOT, 'lib', 'timeline', 'constants.js'));
 
 const OLD_HASH = '$2b$10$oldhashforunittimeline';
 const NEW_HASH = '$2b$10$newhashforunittimeline';
@@ -258,19 +261,30 @@ test('保留清扫只删过期的社交事件；手动保存的文章不按时�
             providerType: 'x', name: 'X · a', externalKey: 'a',
             settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
         });
-        const old = Date.now() - 200 * 86400000;
-        seedEvents(repo, src.id, [socialEvent(1, old), socialEvent(2, Date.now())]);
+        // 保留期以常量为准（30 天）：边界内留、边界外删
+        assert.equal(SOCIAL_RETENTION_DAYS, 30, '社交事件保留 30 天');
+        const day = 86400000;
+        const now = Date.now();
+        const outside = now - 200 * day;
+        const justOutside = now - 31 * day;
+        const justInside = now - 29 * day;
+        seedEvents(repo, src.id, [
+            socialEvent(1, outside), socialEvent(2, justOutside),
+            socialEvent(3, justInside), socialEvent(4, now)
+        ]);
         // 手动来源里放一条「很旧」的：它不是社交事件，不该被时限清掉
         repo.upsertManualEvent({
-            dedupeKey: 'url:old', occurredAt: old, title: '很久以前保存的文章',
+            dedupeKey: 'url:old', occurredAt: outside, title: '很久以前保存的文章',
             summary: '', url: 'https://example.com/old', metadata: {}
-        }, Date.now());
+        }, now);
 
-        const removed = repo.sweepRetention(Date.now() - 90 * 86400000);
-        assert.equal(removed, 1, '只清掉那条过期的社交事件');
+        const removed = repo.sweepRetention(now - SOCIAL_RETENTION_DAYS * day);
+        assert.equal(removed, 2, '只清掉超出一条（200 天前与 31 天前）');
 
         const titles = repo.listEvents({}).rows.map(r => r.title);
-        assert.ok(titles.includes('post 2'), '未过期的社交事件保留');
+        assert.ok(titles.includes('post 3'), '保留期内的社交事件保留');
+        assert.ok(titles.includes('post 4'), '刚发生的保留');
+        assert.ok(!titles.includes('post 2'), '恰好超出 30 天的被清掉');
         assert.ok(titles.includes('很久以前保存的文章'), '手动文章不参与时限清理');
     } finally {
         db.close();
@@ -352,6 +366,18 @@ test('校验边界：协议、长度、时间、事件类型、metadata 白名�
         'metadata 是白名单：只留 quote');
     assert.deepEqual(sanitizeMetadata('not an object'), {});
 
+    // 作者名与译文进白名单；头像只接受 X 的图片主机
+    assert.deepEqual(
+        sanitizeMetadata({ authorName: ' jack ', translation: '中文', authorAvatar: 'https://pbs.twimg.com/a.jpg' }),
+        { authorName: 'jack', translation: '中文', authorAvatar: 'https://pbs.twimg.com/a.jpg' },
+        '作者名 / 译文 / 头像都保留');
+    assert.deepEqual(sanitizeMetadata({ authorAvatar: 'https://evil.example.com/a.jpg' }), {},
+        '头像主机不在白名单：整条丢掉（否则会变成浏览器直接请求任意地址）');
+    assert.deepEqual(sanitizeMetadata({ authorAvatar: 'http://pbs.twimg.com/a.jpg' }), {},
+        '头像只接受 https');
+    assert.deepEqual(sanitizeMetadata({ authorAvatar: 'javascript:alert(1)' }), {},
+        '非 http(s) 一律拒绝');
+
     assert.ok(isEventType('social_post') && isEventType('article_saved'));
     assert.ok(!isEventType('unknown_type'), '未知事件类型不认（会被跳过而不是入库）');
     assert.equal(eventTypeLabel('social_post', 'x'), '博主推文', '标签按 provider 细分');
@@ -385,6 +411,121 @@ test('FxEmbed normalize 校验作者、精度、原创与时间', () => {
     for (const handle of ['https://x.com/alice', 'id:123', 'a/b', 'a?b', '@@a', 'a'.repeat(16)]) {
         assert.throws(() => xAdapter.normalizeAccount(handle));
     }
+});
+
+test('FxEmbed：作者名与头像写进 metadata；译文只对非中文新条目取，且有上限、失败不影响入库', async () => {
+    const original = globalThis.fetch;
+    const mk = (id, lang, text) => ({
+        type: 'status', id, text, lang,
+        author: { screen_name: 'alice', name: 'Alice A', avatar_url: 'https://pbs.twimg.com/a.jpg' },
+        created_timestamp: 1700000000
+    });
+    const translationCalls = [];
+    globalThis.fetch = async url => {
+        const u = String(url);
+        if (u.includes('/status/')) {
+            const id = u.split('/status/')[1].split('?')[0];
+            translationCalls.push(id);
+            if (id === '103') throw new Error('network down');   // 单条失败必须只跳过这一条
+            return Response.json({
+                code: 200, status: { id, translation: { text: '译文' + id, target_lang: 'zh-cn' } }
+            });
+        }
+        return fxResponse([mk('101', 'en', 'hello'), mk('102', 'zh', '你好'), mk('103', 'en', 'world')], null);
+    };
+    try {
+        const { events } = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: null });
+        assert.equal(events.length, 3, '三条都入库（译文失败不影响入库）');
+        for (const ev of events) {
+            assert.equal(ev.metadata.authorName, 'Alice A', '显示名进了 metadata');
+            assert.equal(ev.metadata.authorAvatar, 'https://pbs.twimg.com/a.jpg', '头像进了 metadata');
+        }
+        const byId = Object.fromEntries(events.map(e => [e.providerEventId, e]));
+        assert.equal(byId['101'].metadata.translation, '译文101', '英文条目取到译文');
+        assert.equal(byId['102'].metadata.translation, undefined, '已是中文的不再取译文');
+        assert.equal(byId['103'].metadata.translation, undefined, '取译文失败只跳过这一条');
+        assert.deepEqual(translationCalls.sort(), ['101', '103'], '只对非中文条目请求译文');
+    } finally {
+        globalThis.fetch = original;
+    }
+
+    // 上限：一次刷出很多新条目时，译文请求数不超过 MAX_TRANSLATIONS_PER_SYNC
+    const many = Array.from({ length: MAX_TRANSLATIONS_PER_SYNC + 8 },
+        (_, i) => mk(String(2000 + i), 'en', 'text ' + i));
+    const capped = [];
+    globalThis.fetch = async url => {
+        const u = String(url);
+        if (u.includes('/status/')) {
+            capped.push(u);
+            return Response.json({ code: 200, status: { translation: { text: '中', target_lang: 'zh-cn' } } });
+        }
+        return fxResponse(many, null);
+    };
+    try {
+        const { events } = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: null });
+        assert.equal(events.length, many.length, '全部条目照常入库');
+        assert.equal(capped.length, MAX_TRANSLATIONS_PER_SYNC, `译文请求被限制在 ${MAX_TRANSLATIONS_PER_SYNC} 条`);
+        const translated = events.filter(e => e.metadata.translation).length;
+        assert.equal(translated, MAX_TRANSLATIONS_PER_SYNC, '超出上限的那部分保持原文，不影响入库');
+    } finally {
+        globalThis.fetch = original;
+    }
+});
+
+test('恢复备份也要过 metadata 白名单：外部头像地址不能被「改一份备份」带进来', () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, {
+            getPasswordHash: async () => OLD_HASH, log: { warn() {} }
+        });
+        const src = repo.createSource({
+            providerType: 'x', name: 'X · alice', externalKey: 'alice',
+            settings: {}, syncIntervalMs: 300000, nextSyncAt: 0
+        });
+        const result = service.importTimeline({
+            sources: [repo.getSource(src.id)].map(s => ({
+                id: s.id, provider_type: s.providerType, name: s.name, external_key: s.externalKey,
+                settings_json: '{}', enabled: 1, sync_cursor: null, sync_interval_ms: 300000,
+                next_sync_at: 0, last_attempt_at: null, last_success_at: null, last_error: null,
+                created_at: 1, updated_at: 1
+            })),
+            events: [{
+                id: 'evt-1', source_id: src.id, event_type: 'social_post', provider_event_id: 'p1',
+                dedupe_key: 'p1', occurred_at: Date.now(), ingested_at: Date.now(),
+                author: '@alice', title: '标题', summary: '', url: 'https://x.com/alice/status/1',
+                metadata_json: JSON.stringify({
+                    authorName: 'Alice', translation: '中文',
+                    authorAvatar: 'https://evil.example.com/a.jpg', evil: '<script>'
+                })
+            }],
+            eventState: []
+        });
+        assert.equal(result.events, 1, '事件被恢复');
+        const row = repo.listEvents({}).rows[0];
+        assert.deepEqual(row.metadata, { authorName: 'Alice', translation: '中文' },
+            '非白名单主机与未知键在恢复时被丢掉');
+    } finally {
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('筛选行 / 头 / 底在卡片里不许被压缩（订阅后列表变长就会触发）', () => {
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    const ruleOf = sel => {
+        const m = new RegExp(`\\${sel} \\{([\\s\\S]*?)\\n\\}`).exec(css);
+        return m ? m[1] : '';
+    };
+    // 卡片是 flex 纵向 + max-height：这三段默认可收缩，一被压扁筛选行的文字就被上下裁掉
+    for (const sel of ['.special-line-filters', '.special-line-head', '.special-line-foot']) {
+        const body = ruleOf(sel);
+        assert.ok(body, `找得到 ${sel} 的规则`);
+        assert.match(body, /flex:\s*0 0 auto/, `${sel} 不许被压缩`);
+    }
+    // 懒加载哨兵必须在滚动容器内部才有意义——它的高度不能撑出可见空隙
+    assert.match(ruleOf('.special-line-sentinel'), /height:\s*1px/, '哨兵是 1px 的占位');
 });
 
 test('FxEmbed 每轮从最新页开始，置顶不截断、过滤条目也推进字符串水位', async () => {
@@ -1314,11 +1455,12 @@ test('顶部只留同步时间、底部只留按钮：旧的三段描述与页�
     assert.match(code, /data-kind="pending"[\s\S]*?同步中/, '同步中保留');
     assert.match(code, /data-kind="alert"[\s\S]*?data-action="retry"/, '同步失败 + 重试保留');
     assert.match(code, /special-line-time-note/, '同步时间保留');
-    // 底部
-    assert.doesNotMatch(code, /special-line-footnote/, '页脚统计行已删');
+    // 底部：说明行现在只说「保留窗口 / 自动加载」，旧统计（共 N 条、更新于）不得回来
+    assert.doesNotMatch(code, /共 \$\{events\.length\} 条/, '不再显示条数');
+    assert.doesNotMatch(code, /更新于/, '不再显示更新时间');
+    assert.match(code, /仅保留最近 30 天/, '到底时说明只保留最近 30 天');
 
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
-    assert.doesNotMatch(css, /\.special-line-footnote\s*\{/, '页脚统计的 CSS 也删了');
     assert.doesNotMatch(css, /\.special-line-sub\s*\{/, '副标题 CSS 也删了');
 });
 
@@ -1343,8 +1485,14 @@ test('保存弹窗用平台那套（居中 + 遮罩），且标题与摘要都�
 test('底部只留「加载更早事件」：条数与更新时间已按用户要求去掉', () => {
     const code = stripComments(moduleSource);
     assert.match(code, /class="special-line-btn" type="button" data-action="more">加载更早事件</, '是真按钮、文案与仿真一致');
-    assert.doesNotMatch(code, /class="special-line-footnote"/, '底部不再有「共 N 条 / 更新于」那一行');
+    assert.match(code, /class="special-line-footnote">向下滚动会自动加载更早事件</, '还有更早时给一行自动加载说明');
+    assert.match(code, /class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</, '到底时说明保留窗口');
+    // ⚠️ 那句话只对社交订阅成立：「稍后阅读」不参与时限清理，空列表也谈不上「已到最早一条」
+    assert.match(code, /const socialView = filterSource !== 'manual'/, '「稍后阅读」视图不算社交窗口');
+    assert.match(code, /events\.length && socialView[\s\S]{0,80}仅保留最近 30 天/,
+        '保留窗口说明只在社交视图且确实有内容时出现');
     assert.doesNotMatch(code, /共 \$\{events\.length\} 条/, '不再显示条数');
+    assert.doesNotMatch(code, /更新于/, '不再显示更新时间');
     // 仿真里底部区每种状态各有一个真按钮：正常→加载更早事件（quiet）、
     // 筛选无结果→清除筛选（quiet）、空状态→＋保存文章（实心主按钮）。
     // 早先这三处都写成了下划线小链接。

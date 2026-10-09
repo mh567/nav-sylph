@@ -2,7 +2,60 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：X 订阅改用 FxEmbed + 逐来源监控周期与启停（功能提交 `71bdbae`，随 **v1.15.0** 发布；基线 `813a86e`）
+## 最新一轮：筛选行裁切修复 + 30 天队列与懒加载 + X 中文展示（未提交，工作树；基线 `6ce246f`）
+
+用户原话：「bug:1.新版本订阅博主后"全部来源"所在那一行文字被遮挡只剩半个文字了。优化项：1.模块采用队列机制，只保留 30 天内的消息，默认模块展示长度需要增长一些，采用懒加载机制，划到最底部时提示仅保留 30 天。3.x 订阅要像 twitter 一样在模块展示出用户名，并默认将内容翻译为中文，保留查看原文的按钮，点击查看原文可显示原文，如果太长需折叠内容。」
+
+用决策表确认三项（均按选择）：**采集时翻译并缓存**；**显示头像**（外站 `pbs.twimg.com`）；**不收转发**（维持只收原创）。
+
+### bug 的根因（对照页实测，不是推断）
+
+`.special-line-filters` 是卡片（`display:flex;flex-direction:column;max-height`）里**没有 `flex: 0 0 auto` 的可收缩项**，而它同时带 `overflow-x:auto`（另一轴按规范计算为 `auto`）与 `align-items:center`。订阅后列表变长、卡片触顶，筛选行被压扁，文字**上下各裁一半**——正是「只剩半个文字」。对照页实测：修复前筛选行 13.5px、`clientHeight 12 < scrollHeight 23`；修复后 35px、两者相等 34。**修法**：给 `.special-line-filters` / `.special-line-head` / `.special-line-foot` 各加 `flex: 0 0 auto`，并加守卫钉住（删掉即变红）。
+
+### 改法
+
+1. **30 天窗口**：`SOCIAL_RETENTION_DAYS` 90 → 30（清理只按 `occurred_at`，是时间窗口而非条数队列；5000 条硬上限保留为安全阀）。
+2. **更长默认展示**：`PAGE_SIZE_DEFAULT` 20 → 30（客户端 `PAGE_SIZE` 同步），卡片 `max-height` `min(62vh,620px)` → `min(74vh,760px)`（窄屏 `min(72vh,640px)` → `min(84vh,780px)`，≤700px 提高触摸目标不变）。
+3. **懒加载**：列表底部放哨兵（**必须在滚动容器内部**，observer 的 root 才是 `.special-line-listwrap`），进入视野就 `loadMore()`；保留显式「加载更早事件」按钮作键盘路径，两者共用同一函数并靠 `loadingMore`/`inFlight` 去重。底部文案：有更多→按钮 + 「向下滚动会自动加载更早事件」；到底→「已到最早一条 · 仅保留最近 30 天」。
+4. **作者行**：社交事件按推特样式给「头像 + 显示名 + @handle」（显示名与 handle 相同则不重复）；手动文章仍是「稍后阅读」。头像 `loading="lazy"`/`decoding="async"`/`referrerpolicy="no-referrer"`/显式 20×20，失败 `onerror` 摘掉 `img` 露出首字母方块。
+5. **默认中文译文**（`adapters/x.js` + `service.js`）：FxEmbed 的 `translation` **只在单条接口上**（实测列表接口即使带 `lang=zh-cn` 也不返回），所以采集后对本轮新入库、非中文的条目**逐条**补取：上限 20 条、并发 3、单条失败只跳过该条。译文与作者信息写进 `metadata_json` 的三个新白名单键（`authorName`/`authorAvatar`/`translation`），**不加表、不加迁移**；`eventView` 透出，前端决定显示哪个。头像 URL 在服务端受主机白名单约束（只 `https:` + `pbs.twimg.com`）。
+6. **查看原文 / 长文折叠**：有译文时默认显示中文（meta 行加「译」标记），按钮在「查看原文 / 查看译文」间切换；正文超过约 6 行折叠，渲染后量 `scrollHeight > clientHeight` 才显示「展开全文 / 收起」。两个选择都按事件 id 记在模块级 `Set` 里，轮询重建不丢。
+
+### 实际验证
+
+- **筛选行**：隔离夹具真实页面（订阅一个 X 来源后）实测 `.special-line-filters` 高 35px、`clientHeight 34 = scrollHeight 34`、chip 26px 完整不被裁；对照页另有修复前后的 13.5px vs 35px 数值。
+- **真实采集**：走真实登录 → 模块页真实开关启用 → 表单添加 `X · jack` → 同步，`GET /api/timeline/events` 返回的头条含 `authorName: "jack"`、`authorAvatar: https://pbs.twimg.com/...`、`translation: "印度政府正式从 App Store 中移除 Bitchat"`（西班牙语那条也译成中文）。
+- **页面渲染**：头像 `img` 存在、「译」标记存在、标题为中文、「查看原文」按钮存在；点它后标题变回 `government of India officially offici…`、按钮变「查看译文」。
+- **长文折叠**：夹具里造一条长正文，折叠态 `clientHeight 109 / scrollHeight 381`、按钮「展开全文」可见；点开后 381 = 381、按钮变「收起」。
+- **懒加载**：夹具库补足到 66 条 → 首屏 30 条 + 哨兵存在，滚到底自动追加到 60 条；继续滚到底后哨兵消失、底部显示「已到最早一条 · 仅保留最近 30 天」。
+- **自动测试**：新增 4 条（作者/译文/上限与失败容忍、恢复备份也要过白名单、筛选行三段的 `flex` 守卫、保留期 30 天边界内外），改写 5 条旧守卫（保留期、页脚文案、metadata 白名单扩展、页脚适用条件）。**全套 559/559 通过**；`node --check`（server、模块、lib/timeline 全部）与 `git diff --check` 通过。
+- 缓存 `nav-v89 → nav-v90`。
+
+### 两轴审查发现并已修
+
+1. **恢复备份会绕过 metadata 白名单**（真缺陷）：`repo.importAll` 是原样写库，改一份备份文件就能把任意地址塞进 `authorAvatar`，浏览器随后会去请求它。现在 `service.importTimeline` 在交给 repository **之前**逐条净化 `metadata_json`，并加了一条恢复路径的用例。
+2. **「仅保留最近 30 天」说得太宽**：原实现只要 `hasMore === false` 就显示。但「稍后阅读」不参与时限清理、空列表也谈不上「已到最早一条」。现在只在 `events.length && filterSource !== 'manual'` 时显示，并加守卫。
+3. **窄屏 44px 漏了新增按钮**：`查看原文 / 展开全文`（`.special-line-ghost`）是 26px，而本模块自己对窄屏的约定是 44px。已并入 `≤700px` 区块。
+4. **单段长译文折叠失效**：整段没有换行时，译文全进了标题（`h3` 不 clamp），「太长需折叠」形同虚设。现在与 adapter 的归一化同规则——首行超长就把整段放进正文，交给折叠逻辑。
+5. **顺手**：删掉因此变成死代码的 `sourceLabelOf`；修正 `sanitizeMetadata` 的旧注释；CSP 补 `img-src 'self' data: https://pbs.twimg.com`，把头像主机白名单在浏览器侧再兜一道（QR 是 data URL，站内没有其它外站图片）。
+
+审查还指出、本轮**未改**的两点（记在这里）：① 译文取满 20 条时最坏约 7 波 × 12s 会加在本轮 `fetchEvents` 上（有界，但不是小数目）；② 同一事件若内容变了而 `relTime` 与 id 都没变，`viewKey` 不会重绘——事件入库后是不可变的（`INSERT OR IGNORE`），这条目前不可达。
+
+### 验证边界
+
+- 未在用户的 Edge 上复跑；浏览器验证用的是本机隔离夹具与 headless Chrome。
+- 真实翻译只覆盖 `jack` 一个账号的一轮采集（含一条西班牙语）；未测翻译在长 note tweet、含 CJK 混排、限流下的表现（那些只有单元测试）。
+- 头像真实加载只在夹具里确认 `img` 元素与 `pbs.twimg.com` 地址存在；**未确认在用户网络下能否加载出来**（国内访问该域的实际成功率未知），失败回退路径只由代码保证。
+- 未做「真的等一个周期自动跑一次」的观察；周期对调度的影响仍由可控时间与 DB 断言证明。
+- `showOriginalIds` / `expandedIds` 是客户端 `Set`，不随分页裁剪（翻页后回到同一事件仍记得选择）；一个会话内不会无限增长，但没有显式上限。
+
+### 下一步
+
+1. 若要发布：先 `git status`，跑两轴审查 + `node --test tests/*.test.js`，再用 `scripts/release.sh`（本请求未授权发布）。
+2. 头像依赖外站图片；若用户希望完全自足，可去掉 `authorHTML` 里的 `img` 分支（只留首字母方块），其余不变。
+3. README 顶部「卡片头含同步状态与未读数」那句仍与实现不符（v1.14.6 之前遗留），与本轮无关，可另行清理。
+
+## 上一轮：X 订阅改用 FxEmbed + 逐来源监控周期与启停（功能提交 `71bdbae`，随 **v1.15.0** 发布；基线 `813a86e`）
 
 用户原话：「对 special line 模块，x 订阅改为采用 FxEmbed JSON API 来实现，输入用户名即可监控，如需配置监控周期可在后台配置。对每个添加的订阅来源均可设置启用或停止。」
 

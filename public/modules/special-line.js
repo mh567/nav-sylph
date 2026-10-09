@@ -16,7 +16,7 @@
     'use strict';
 
     const DEFAULT_POLL_MS = 15000;
-    const PAGE_SIZE = 20;
+    const PAGE_SIZE = 30;
     const TITLE_MAX = 200;
     const SUMMARY_MAX = 2000;
 
@@ -48,6 +48,10 @@
     let visibilityHandler = null;
     let inFlight = false;
 
+    /** 懒加载：列表底部哨兵进入视野就自动补一页。 */
+    let moreObserver = null;
+    let loadingMore = false;
+
     /** 卡片上的持久节点（chips 只建一次，避免轮询把它重建、丢掉焦点与滚动位置） */
     let headStatus = null;
     let chipsEl = null;
@@ -61,6 +65,11 @@
 
     let lastKey = '';
     let lastChipsKey = '';
+
+    /** 按事件 id 记住「正在看原文」（默认看中文译文）与「已展开全文」。
+     *  放在模块级而不是渲染参数里：轮询重建列表时这两个选择不该被重置。 */
+    const showOriginalIds = new Set();
+    const expandedIds = new Set();
 
     // ================= 小工具 =================
 
@@ -125,30 +134,81 @@
         return event.sourceName || event.providerType;
     }
 
-    /** 来源角标那一行：来源名已经含账号（「X · @northstar」）时不再重复作者 */
-    function sourceLabelOf(event) {
-        const name = sourceNameOf(event);
-        const author = String(event.author || '').trim();
-        if (!author) return name;
-        return name.includes(author) ? name : `${name} · ${author}`;
-    }
-
     // ================= 列表 =================
+
+    /** 正文按行数折叠：默认 6 行，超出才给「展开全文」。 */
+    const SUMMARY_LINES = 6;
+    /** 短于这个长度不可能溢出，连折叠类都不加。 */
+    const CLAMP_MIN = 90;
+
+    /**
+     * 作者那一行。社交事件按推特的样子给「头像 + 显示名 + @handle」；
+     * 头像走外站（pbs.twimg.com），加载失败时退回到下面的首字母方块。
+     */
+    function authorHTML(e) {
+        if (e.providerType === 'manual') {
+            return `<span class="special-line-mark"><span class="special-line-icon" aria-hidden="true">${esc(symbolOf(e))}</span>稍后阅读</span>`;
+        }
+        const handle = String(e.author || '').replace(/^@/, '');
+        const name = String(e.authorName || '').trim() || handle || sourceNameOf(e);
+        const letter = esc((name || '·').slice(0, 1).toUpperCase());
+        const img = e.authorAvatar
+            ? `<img src="${esc(e.authorAvatar)}" alt="" width="20" height="20" loading="lazy" decoding="async" ` +
+              `referrerpolicy="no-referrer" onerror="this.remove()">`
+            : '';
+        return `<span class="special-line-mark special-line-author">` +
+            `<span class="special-line-avatar" aria-hidden="true">${letter}${img}</span>` +
+            `<span class="special-line-author-name">${esc(name)}</span>` +
+            (handle && handle !== name ? `<span class="special-line-handle">@${esc(handle)}</span>` : '') +
+            `</span>`;
+    }
 
     function eventHTML(e) {
         const href = e.url || '';
-        const title = esc(e.title);
+        // 默认看中文译文；点过「查看原文」的按原文显示。没有译文就只有原文。
+        const translated = String(e.translation || '').trim();
+        const showOriginal = showOriginalIds.has(e.id);
+        const useZh = !!translated && !showOriginal;
+        let title = e.title;
+        let body = e.summary || '';
+        if (useZh) {
+            const lines = translated.split('\n');
+            const first = lines[0].trim();
+            title = first.slice(0, TITLE_MAX) || e.title;
+            // 与 adapter 的归一化同一条规则：没有第二行、但首行超长时，
+            // 把整段放进正文——否则「太长需折叠」对单段长译文完全不生效
+            // （标题那行没有 clamp，只能显示到截断位置）。
+            body = lines.slice(1).join('\n').trim() || (first.length > TITLE_MAX ? first : '');
+        }
         const linked = href
-            ? `<a class="special-line-title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${title}` +
+            ? `<a class="special-line-title" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}` +
               `<span class="sr-only">（新标签页打开）</span></a>`
-            : `<span class="special-line-title">${title}</span>`;
+            : `<span class="special-line-title">${esc(title)}</span>`;
+
+        const expanded = expandedIds.has(e.id);
+        const clampable = body.length > CLAMP_MIN;
+        const bodyHTML = body
+            ? `<p class="special-line-body${clampable && !expanded ? ' is-clamped' : ''}"` +
+              ` style="--clamp-lines:${SUMMARY_LINES}">${esc(body)}</p>`
+            : '';
+
+        const actions = [];
+        if (translated) {
+            actions.push(`<button class="special-line-ghost" type="button" data-action="original" data-id="${esc(e.id)}">` +
+                `${showOriginal ? '查看译文' : '查看原文'}</button>`);
+        }
+        if (clampable) {
+            actions.push(`<button class="special-line-ghost" type="button" data-action="expand" data-id="${esc(e.id)}" hidden>` +
+                `${expanded ? '收起' : '展开全文'}</button>`);
+        }
+
         return `<li class="special-line-item" data-unread="${e.unread ? 'true' : 'false'}">` +
             `<time class="special-line-time"><strong>${esc(dayLabel(e.occurredAt))}</strong>${hm(e.occurredAt)}</time>` +
             `<article class="special-line-event">` +
                 `<div class="special-line-meta">` +
-                    `<span class="special-line-mark"><span class="special-line-icon" aria-hidden="true">${esc(symbolOf(e))}</span>` +
-                        `${esc(sourceLabelOf(e))}</span>` +
-                    `<span class="special-line-type">${esc(e.eventTypeLabel || '')}</span>` +
+                    authorHTML(e) +
+                    `<span class="special-line-type">${esc(e.eventTypeLabel || '')}` +
+                        `${useZh ? '<span class="special-line-badge">译</span>' : ''}</span>` +
                     `<span class="sr-only">${e.unread ? '未读' : '已读'}</span>` +
                     `<details class="special-line-tools">` +
                         `<summary aria-label="事件操作" title="事件操作">⋯</summary>` +
@@ -161,10 +221,29 @@
                     `</details>` +
                 `</div>` +
                 `<h3>${linked}</h3>` +
-                (e.summary ? `<p>${esc(e.summary)}</p>` : '') +
+                bodyHTML +
                 (e.quote ? `<blockquote>${esc(e.quote)}</blockquote>` : '') +
+                (actions.length ? `<div class="special-line-row-actions">${actions.join('')}</div>` : '') +
                 `<div class="special-line-stamp">${relTime(e.occurredAt)}</div>` +
             `</article></li>`;
+    }
+
+    /**
+     * 渲染后量一次：正文确实被截断的才把「展开全文」显示出来。
+     * 只按字数猜会漏（窄列下更早溢出），所以用真实的溢出判断。
+     */
+    function clampPass() {
+        if (!listEl) return;
+        listEl.querySelectorAll('.special-line-item').forEach(item => {
+            const body = item.querySelector('.special-line-body');
+            const btn = item.querySelector('[data-action="expand"]');
+            if (!body || !btn) return;
+            if (body.classList.contains('is-clamped')) {
+                btn.hidden = body.scrollHeight <= body.clientHeight + 1;
+            } else {
+                btn.hidden = false;   // 已展开：必须留着「收起」
+            }
+        });
     }
 
     function emptyHTML() {
@@ -182,7 +261,8 @@
     function viewKey() {
         return [
             filterSource, filterView, syncState, listError || '', busy ? 'b' : '',
-            events.map(e => `${e.id}:${e.unread}:${e.archived}:${relTime(e.occurredAt)}`).join('|')
+            events.map(e => `${e.id}:${e.unread}:${e.archived}:${relTime(e.occurredAt)}` +
+                `:${showOriginalIds.has(e.id) ? 'o' : ''}${expandedIds.has(e.id) ? 'x' : ''}`).join('|')
         ].join('>');
     }
 
@@ -241,18 +321,51 @@
             (events.length
                 ? `<ol class="special-line-list" aria-label="按时间倒序排列的事件">${events.map(eventHTML).join('')}</ol>`
                 : (busy ? '<div class="special-line-skeleton"></div><div class="special-line-skeleton"></div>'
-                    : emptyHTML()));
+                    : emptyHTML())) +
+            // 懒加载哨兵放在滚动容器**内部**底部：根是该容器，才能判断
+            // 「滚到接近底部」。放在容器外（底栏里）observer 永远等不到它。
+            (hasMore ? '<div class="special-line-sentinel" aria-hidden="true"></div>' : '');
+
+        clampPass();
+        syncMoreObserver();
 
         if (footEl) {
-            // 用户要求：底部不再显示条数与更新时间，只留「加载更早事件」。
-            // 更新时间在顶部已经有一处，重复只会让人以为是两个不同的时刻。
+            // 底部只留一行：还有更早就给按钮（键盘路径），到底了说明保留窗口。
+            // ⚠️ 「仅保留最近 30 天」只对社交订阅成立——「稍后阅读」不参与时限清理，
+            // 空列表也谈不上「已到最早一条」，这两种情况都不能显示这句话。
+            const socialView = filterSource !== 'manual';
             footEl.innerHTML = hasMore
-                ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>'
-                : '';
+                ? '<button class="special-line-btn" type="button" data-action="more">加载更早事件</button>' +
+                  '<div class="special-line-footnote">向下滚动会自动加载更早事件</div>'
+                : (events.length && socialView
+                    ? '<div class="special-line-footnote">已到最早一条 · 仅保留最近 30 天</div>'
+                    : '');
         }
 
         listEl.scrollTop = scrollTop;
         if (requestStack) requestStack();
+    }
+
+    /**
+     * 懒加载：观察列表底部的哨兵，接近可视区就补一页。
+     * 只在 DOM 重建后重新挂（旧哨兵已随 innerHTML 一起被替换）。
+     */
+    function syncMoreObserver() {
+        if (moreObserver) { moreObserver.disconnect(); moreObserver = null; }
+        if (!listEl || !hasMore || typeof IntersectionObserver !== 'function') return;
+        const target = listEl.querySelector('.special-line-sentinel');
+        if (!target) return;
+        moreObserver = new IntersectionObserver(entries => {
+            if (entries.some(entry => entry.isIntersecting)) loadMore();
+        }, { root: listEl, rootMargin: '160px 0px' });
+        moreObserver.observe(target);
+    }
+
+    /** 懒加载与按钮共用同一条路径，避免两处各发一次请求。 */
+    function loadMore() {
+        if (loadingMore || inFlight || !hasMore) return;
+        loadingMore = true;
+        refresh({ append: true }).finally(() => { loadingMore = false; });
     }
 
     // ================= 筛选 chips =================
@@ -1088,8 +1201,24 @@
                     openSaveDialog(target);
                     break;
                 case 'more':
-                    refresh({ append: true });
+                    loadMore();
                     break;
+                case 'original': {
+                    if (!id) break;
+                    if (showOriginalIds.has(id)) showOriginalIds.delete(id);
+                    else showOriginalIds.add(id);
+                    lastKey = '';
+                    render();
+                    break;
+                }
+                case 'expand': {
+                    if (!id) break;
+                    if (expandedIds.has(id)) expandedIds.delete(id);
+                    else expandedIds.add(id);
+                    lastKey = '';
+                    render();
+                    break;
+                }
                 case 'filter-source':
                     closeMenus();
                     filterSource = target.dataset.value || '';

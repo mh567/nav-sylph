@@ -141,7 +141,8 @@ selfSigned / version                **函数**，读实时值
 - **不可信输入的边界在 `service.js`**：第三方返回的一切与用户提交的一切都在这里裁剪（长度、URL 协议、时间合理性、metadata 白名单）。adapter 输出的 `event_type` 必须在 registry 里，未知类型**跳过那一条**而不是作废整批；时间缺失或离谱时回落到摄入时刻，不丢整条。
 - **去重落在数据库层**（`UNIQUE(source_id, dedupe_key)` + `INSERT OR IGNORE`），不是 service 里的一次查重：摄入是「同一批可能被重复拉回」的场景，先查后插在两次同步交错时会漏。用户状态（已读 / 归档）单独一张表，重复摄入不会重置它。手动保存按 **URL 哈希**作为 dedupe_key，同一链接再次保存是**更新**（保留首次保存时间）而不是新增。
 - **游标只在成功时前进**：失败保留旧游标与旧事件，只记 `last_error`（JSON `{code, message}`）与下次时刻（指数退避，上限 4 小时）。`code` 必须能区分「凭据失效」与「网络不通」——界面据此给「重新授权」还是「稍后重试」；把两者塌缩成一句「同步失败」，用户只能自己猜。
-- **容量与保留**：社交事件保留 90 天，手动文章不按时限删、上限 500 条，单来源硬上限 5000 条。**触顶时停止入库并显式报错，不静默驱逐已有数据**。常量集中在 `lib/timeline/constants.js` 并写进测试。
+- **容量与保留**：社交事件**只保留 30 天**（`SOCIAL_RETENTION_DAYS`），手动文章不按时限删、上限 500 条，单来源硬上限 5000 条。**触顶时停止入库并显式报错，不静默驱逐已有数据**。常量集中在 `lib/timeline/constants.js` 并写进测试。保留期是「时间窗口」而不是「条数队列」：清理只按 `occurred_at` 删，老数据自然过期，不做「挤掉最旧」的入库期驱逐。
+- **页大小默认 30**（`PAGE_SIZE_DEFAULT`，上限 50）：卡片默认也更高（`max-height: min(74vh,760px)`），首屏给的内容更多。
 - **每来源至多一个在途同步**，全局并发上限 2（同时打多个第三方 API 只会一起被限流）；调度器定时器 `unref()`，且 `gracefulShutdown` 里**先于 `db.close()`** 停掉——它可能正打第三方 API 并在回调里写库。
 - **平台为它加了三个通用能力**（都不特判模块 id）：① 模块定义可声明 `defaultSide`——没有已保存布局项时按它停靠，用户拖过之后 `widgets[].side` 就是唯一真相、默认值不再参与（`applyWidgetLayout` 的 `sideOf` 与 `commitWidgetDrag` 的新建分支共用同一判据）；② 模块可挂自己的后台区块 `renderAdminSection(host, { api })`，平台只给容器与标题，provider 专属的表单与文案留在模块文件里；③ 模块可声明 `wideRail`，平台据此**让背板让位**（见下）。
 - **凭据是 provider 的能力，不是所有来源都有的**。adapter 用 `requiresCredentials` 声明（X 走 FxEmbed 公开 API，为 `false`；微博为 `true`），`selectableProviders()` 连同 `defaultSyncIntervalMs` / `syncIntervalsMs` 一起给界面，前端据此渲染字段，平台侧不硬编码「X 不用 token」。`createSource` / `testSource` / `syncSource` 只对 `requiresCredentials` 的 adapter 解密与要求凭据；X 既不读旧密文、也不保存新提交的 token。`sourceView()` 的 `pending` / `expired` 判定同样受该能力约束，X 不因没有密文而显示「待授权」。
@@ -150,6 +151,11 @@ selfSigned / version                **函数**，读实时值
 - **API 不回传凭据**：来源列表只回 `hasCredentials`，任何响应里都不出现 token（明文与密文都不出现）。改管理密码时由 `reencryptCredentials()` 一并重加密，单条解不开则保留原值并记进 `details`，不阻断改密码。
 - **备份里不含凭据**（见 WebDAV 一节）。恢复是**整表替换**（一个事务），来源的周期与启用状态照原样恢复；恢复后只有微博需要重新粘贴 token，X 不需要。
 - **自动同步不挂社交事件的摄入**：社交事件可再从提供方取回，且是机器节奏的高频写入，挂钩会把远端上传变成每轮一次。触发的是**不可再生**的数据——保存文章、已读 / 归档、来源增删改。
+- **作者与译文走 `metadata_json` 白名单，不加表、不加迁移**：`authorName` / `authorAvatar` / `translation` 三个键由 `sanitizeMetadata` 裁剪后落库，`eventView` 原样透出，前端决定显示哪一个（`translation` 不回退填原文）。白名单在 `constants.js` 的 `METADATA_KEYS`，长度上限在 `LIMITS`。
+- ⚠️ **头像是唯一会被浏览器直接请求的第三方字段**，所以它不能按普通 URL 放行：`safeAvatarUrl` 只接受 `https:` 且主机为 `pbs.twimg.com`，其余一律丢弃。这条不是洁癖——`<img src>` 是每个访客的浏览器去发请求，一条构造过的事件就能把它变成任意地址。前端另有失败回退（`onerror` 摘掉 `img`，露出底下的首字母方块）、`referrerpolicy="no-referrer"`（不把部署地址带给 X）与 `loading="lazy"`。
+- **译文是逐条取的，必须有界**：FxEmbed 的 `translation` 只挂在单条接口上（`/2/status/{id}?lang=zh-cn`，provider 是 X 自带的 grok），列表接口即使带 `lang` 也不返回。所以采集后对**本轮新入库、且非中文**的条目做一趟补充请求：上限 `MAX_TRANSLATIONS_PER_SYNC = 20`、并发 `TRANSLATION_CONCURRENCY = 3`；单条失败只跳过该条，**绝不影响整批入库**。已是中文（`lang` 以 `zh` 开头或文本含 CJK）不请求。超限的那部分保持原文显示。
+- **懒加载的哨兵必须在滚动容器内部**：列表是 `.special-line-listwrap`，`IntersectionObserver` 的 `root` 是它，哨兵因此必须作为它的子节点（放在底栏里永远等不到）。显式「加载更早事件」按钮保留为键盘路径，两者共用 `loadMore()`，靠 `loadingMore` / `inFlight` 去重。
+- ⚠️ **卡片里的头 / 筛选 / 底三段必须 `flex: 0 0 auto`**。卡片是 `display:flex; flex-direction:column` 且带 `max-height`：列表一变长（订阅之后必然发生）卡片触顶，这几段作为**默认可收缩**的 flex 项会被压扁，而筛选行同时带 `overflow-x: auto`（另一轴按规范计算为 `auto`）与 `align-items: center`，被压扁时文字**上下各裁一半**——用户报的「全部来源那一行只剩半个文字」。实测（对照页）：不写这条时筛选行 13.5px、`clientHeight 12 < scrollHeight 23`；写上后 35px、两侧相等。`tests/timeline.test.js` 有守卫钉住这三段的 `flex`，删掉就变红。
 
 **X adapter（FxEmbed）。** 端点固定在 `https://api.fxtwitter.com/2/profile/{handle}` 与 `/statuses`（`count=100`，分页用 `cursor.bottom`）。用户名经 ASCII 字母/数字/下划线校验后 `encodeURIComponent`，拒绝整条链接、`id:` 与搜索语法；请求不发送任何凭据，且用有界 `getJson`（2 MiB 流式上限、12 秒超时、禁止重定向）。返回体先查 `code` 再查 `results` 形状——null / HTML 不能当空结果。**上游把 404 用于两种含义**（空时间线、账号不存在/封禁），adapter 用「空 results + 无 bottom cursor」加一次资料复核来区分，仍含糊时报「无法确认」而不是假成功。
 

@@ -3335,8 +3335,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     display: flex;
     flex-direction: column;
     gap: 8px;
-    /* 右侧那一列的高度不能无限长：列表超出就在卡片内滚动 */
-    max-height: min(62vh, 620px);
+    /* 右侧那一列的高度不能无限长：列表超出就在卡片内滚动。
+       默认展示长度调大（原 62vh/620px）：卡片更高、首屏看到的事件更多。 */
+    max-height: min(74vh, 760px);
     /* 版式按**卡片自己的宽度**切，而不是按视口：同一份 DOM 在 210px 与 420px
        下各自成立（拖到左列、窗口变窄都不需要重渲染）。 */
     container-type: inline-size;
@@ -3353,7 +3354,14 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-zone[data-dock="below"] .module-widget[data-module-id="special-line"] { position: relative; }
 
 /* ---------- 头：标题 + 副标题 + 状态 + 同步 / 保存 + 拖拽把手 ---------- */
-.special-line-head { flex-wrap: wrap; margin-bottom: 0; }
+/* ⚠️ 头 / 筛选 / 底三段都必须 `flex: 0 0 auto`。
+   卡片是 flex 纵向且带 max-height：列表一变长（订阅之后必然发生），卡片触顶，
+   这几段作为**默认可收缩**的 flex 项会被压扁。筛选行同时带 `overflow-x: auto`
+   （另一轴按规范计算为 auto）且 `align-items: center`，被压扁时文字会被
+   **上下各裁一半**——就是用户报的「全部来源那一行只剩半个文字」。
+   实测（对照页）：不写这条时筛选行 13.5px、clientHeight 12 < scrollHeight 23；
+   写上后 35px、clientHeight 34 = scrollHeight 34，不再裁切。 */
+.special-line-head { flex: 0 0 auto; flex-wrap: wrap; margin-bottom: 0; }
 .special-line-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 .special-line-pill {
@@ -3425,6 +3433,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
     scrollbar-width: none;
+    /* 不许被卡片压缩——见上面 .special-line-head 的实测说明 */
+    flex: 0 0 auto;
 }
 .special-line-filters::-webkit-scrollbar { display: none; }
 .special-line-chip {
@@ -3537,6 +3547,37 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 .special-line-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--text-muted); font-size: 9px; }
 .special-line-mark { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); font-weight: 630; }
+
+/* ---------- 作者行（像推特一样）：头像 + 显示名 + @handle ---------- */
+.special-line-author { min-width: 0; max-width: 100%; }
+.special-line-avatar {
+    position: relative;
+    display: grid;
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-card);
+    color: var(--accent);
+    font-size: 9px;
+    font-weight: 700;
+}
+/* 头像是外站图片：加载失败时 `onerror` 把它摘掉，底下的首字母就露出来 */
+.special-line-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.special-line-author-name { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.special-line-handle { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; font-weight: 400; }
+.special-line-badge {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text-muted);
+    font-size: 9px;
+}
 .special-line-icon {
     display: inline-grid;
     width: 17px;
@@ -3606,6 +3647,26 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .special-line-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .special-line-item[data-unread="true"] .special-line-event h3 { font-weight: 640; }
 .special-line-event p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+/* 长文折叠：默认 6 行，渲染后量过确实溢出才显示「展开全文」 */
+.special-line-body.is-clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: var(--clamp-lines, 6);
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.special-line-row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.special-line-ghost {
+    min-height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 10px;
+    cursor: pointer;
+}
+.special-line-ghost:hover { color: var(--accent); }
+.special-line-ghost:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .special-line-event blockquote {
     margin: 8px 0 0;
     padding: 7px 10px;
@@ -3676,15 +3737,21 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 @keyframes specialLineShimmer { to { background-position: -200% 0; } }
 
-/* 底部与仿真一致：居中的「加载更早事件」按钮 + 一行居中的说明 */
+/* 底部：居中的「加载更早事件」按钮（键盘路径）+ 一行说明。
+   没有更多时只留说明：「已到最早一条 · 仅保留最近 30 天」。 */
 .special-line-foot {
     display: flex;
+    /* 同 head / filters：不许被卡片压缩 */
+    flex: 0 0 auto;
     flex-direction: column;
     align-items: center;
     gap: 7px;
     padding-top: 9px;
     border-top: 1px solid var(--border);
 }
+.special-line-footnote { color: var(--text-muted); font-size: 10px; text-align: center; }
+/* 懒加载哨兵：必须放在滚动容器**内部**，observer 的 root 才是它 */
+.special-line-sentinel { height: 1px; }
 /* 卡片里的实体按钮。仿真底部区那几种状态各有一个真按钮（正常「加载更早事件」、
    筛选无结果「清除筛选」、空状态实心的「＋ 保存文章」），早先都写成了下划线小链接。 */
 .special-line-btn {
@@ -3743,7 +3810,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* ---------- 窄屏（视口 ≤700px）：触控目标 ≥44px ---------- */
 @media (max-width: 700px) {
-    .special-line-card { max-height: min(72vh, 640px); }
+    .special-line-card { max-height: min(84vh, 780px); }
     .special-line-head { gap: 6px; }
     /* 44px 是仿真样例定的触控下限（与 .filter-button / .timeline-action 一致）：
        窄屏上手指就是指针，低于它的按钮点了没反应，用户只会以为坏了。 */
@@ -3754,5 +3821,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-event h3 { font-size: 14px; }
     .special-line-event p { font-size: 12px; }
     .special-line-btn { min-height: 44px; font-size: 12px; }
+    /* 「查看原文 / 展开全文」同属窄屏手指操作，也必须到 44px */
+    .special-line-ghost { min-height: 44px; font-size: 12px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
