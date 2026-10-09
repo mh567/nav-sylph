@@ -171,6 +171,39 @@ test('监控目标整块搬进模块文件：平台侧不留任何模块专属�
     assert.match(code, /KNOWN_MODULES = \['server-monitor'/, 'id 白名单照旧');
 });
 
+// ========== ③b 保存期间「取消」必须真的能关 ==========
+
+test('后台保存期间「取消」不能被静默挡回（历史上它看着能点、点了没反应）', () => {
+    const code = stripComments(appSource);
+    const close = methodBodyOf(code, 'closeAdmin');
+    assert.ok(close.length > 200, `切出 closeAdmin（${close.length}）`);
+    // ⚠️ 原先这里是 `if (this.configSaving && !force) return false;`，而「取消」按钮
+    // 并没有被禁用（点遮罩、按 Esc 也走同一条路），于是保存请求慢或卡住时，
+    // 右上角那一对看着完好却什么都点不动——用户报的正是这个。
+    assert.doesNotMatch(close, /configSaving && !force\) return false/, '不再静默挡回关闭');
+    // ⚠️ 保存中只跳过「放弃修改」这一步，不能把 force 拨成 true 一路放行：
+    // configDirty 在保存期间仍为 true，走进去会把内存的 config 回滚成快照，
+    // 保存成功后页面显示旧配置直到刷新。
+    assert.match(close, /const saving = this\.configSaving;/, '把保存态取成局部量');
+    assert.match(close, /if \(!saving && this\.configDirty\) \{/, '保存中跳过放弃修改分支（而不是放行所有分支）');
+    assert.doesNotMatch(close, /if \(this\.configSaving\) force = true;/, '不得用 force 一路放行');
+
+    const save = methodBodyOf(code, 'save');
+    assert.ok(save.length > 300, `切出 save（${save.length}）`);
+    // 没有超时时，一个卡住的请求会让 finally 永不执行：configSaving 一直是 true、
+    // 「保存」一直是禁用的「保存中...」，只能刷新页面。
+    assert.match(save, /AbortSignal\.timeout\(/, '保存请求带超时');
+    assert.match(save, /API\.post\('\/api\/config', this\.config, \{ signal \}\)/, '超时信号真的传给了请求');
+    // ⚠️ 这条曾经写成 `assert.match(save, /reportFailure/)`——它匹配的是**定义那一行**，
+    // 于是「面板已关掉时说出口」这个行为连同两个调用点都不受保护（变异实测：删掉
+    // `if ($('#modal').hidden) this.showToast(...)` 与两处调用，测试照样全绿）。
+    // 钉行为，不钉符号出现在不在。
+    assert.match(save, /if \(\$\('#modal'\)\.hidden\) this\.showToast\(message, 'error'\);/,
+        '面板已关掉时失败要用 toast 说出来');
+    assert.match(save, /reportFailure\(res\.error/, '服务端返回失败时调用 reportFailure');
+    assert.match(save, /reportFailure\(aborted \? '保存超时/, '超时单独一句话，且走同一条上报路径');
+});
+
 // ========== ④ 后台服务包与唯一写路径 ==========
 
 test('后台服务包：模块从注入的服务里取能力，不去够平台内部', () => {

@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v94：修后台「取消」在保存期间看着能点、点了没反应——`closeAdmin()` 原先在
+// `configSaving` 时直接 return，而「取消」并没有被禁用（点遮罩、按 Esc 同样无效），
+// 请求慢或卡住时右上角那一对一直是死的；现在保存进行中允许关闭，并给配置保存加了
+// 20 秒超时（无超时会让 finally 永不执行、只能刷新）。改了 app.js。
 // nav-v93：渠道下拉按内容收窄（原 min-width 172px 让只有短账号名的菜单空出一截）；
 // 底部去掉「加载更早事件」按钮（与滚动自动加载重复），列表改为可聚焦区域、键盘
 // 滚动同样触发懒加载；时间线左侧留白收紧（卡片内边距 13→9px、时间轨 48→44px、
@@ -218,7 +222,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v93';
+const CACHE = 'nav-v94';
 const ASSETS = [
     '/',
     '/index.html',

@@ -103,11 +103,12 @@
             }
             return data;
         },
-        async post(url, body) {
+        async post(url, body, options = {}) {
             const { data } = await API.request(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
+                body: JSON.stringify(body),
+                ...options
             });
             return data || {};
         }
@@ -3489,8 +3490,16 @@
         }
 
         async closeAdmin(force = false) {
-            if (this.configSaving && !force) return false;
-            if (this.configDirty) {
+            // ⚠️ 保存进行中**必须允许关闭**：配置已经在提交了，没有「未保存的修改」要放弃。
+            // 原先这里是无条件的 `if (this.configSaving && !force) return false;`，而「取消」
+            // 按钮并没有被禁用（点遮罩、按 Esc 走的是同一条路），于是保存请求慢或卡住时，
+            // 右上角那一对看着完好却什么都点不动——用户报的正是这个。
+            //
+            // ⚠️ 但**只跳过「放弃修改」这一步**，绝不把 `force` 拨成 true 一路放行：
+            // `configDirty` 在保存期间仍为 true，走进去就会把内存里的 `config` 回滚成
+            // 提交前的快照，保存成功后页面反而显示旧配置，直到刷新才恢复。
+            const saving = this.configSaving;
+            if (!saving && this.configDirty) {
                 if (!force && !await this.confirmAction('有未保存的修改，确定放弃吗？', '放弃修改')) return false;
                 this.config = JSON.parse(this.configSnapshot);
                 this.applyTheme();
@@ -4709,18 +4718,33 @@
             $('#modalBody').inert = true;
             button.textContent = '保存中...';
             this.updateConfigStatus('正在保存到服务器', 'pending');
+            // ⚠️ 必须带超时：没有它时一个卡住的请求会让 `finally` 永远不执行，
+            // `configSaving` 一直为 true、「保存」一直是禁用的「保存中...」，
+            // 只能刷新页面才能恢复。
+            const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout
+                ? AbortSignal.timeout(20000) : undefined;
+            // 面板可能已经被用户关掉了（保存期间现在允许关闭），那时行内状态看不到，
+            // 失败必须用 toast 说出来，否则这次保存失败是完全静默的。
+            // ⚠️ 失败后**不回滚内存里的 `config`**：面板可能已经关掉，静默回滚等于把
+            // 用户刚改的东西凭空抹掉（改回旧值、还要重改一遍）。内存与服务器不一致这件事
+            // 由这条 toast 交代；下次打开面板以内存为准，再保存一次即可。
+            const reportFailure = message => {
+                this.updateConfigStatus(message, 'error');
+                if ($('#modal').hidden) this.showToast(message, 'error');
+            };
             try {
-                const res = await API.post('/api/config', this.config);
+                const res = await API.post('/api/config', this.config, { signal });
                 if (res.success) {
                     this.configDirty = false;
                     this.render();
                     await this.closeAdmin(true);
                     this.showToast('设置已保存到服务器');
                 } else {
-                    this.updateConfigStatus(res.error || '保存失败，请重试', 'error');
+                    reportFailure(res.error || '保存失败，请重试');
                 }
             } catch (e) {
-                this.updateConfigStatus('保存失败，请检查连接后重试', 'error');
+                const aborted = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+                reportFailure(aborted ? '保存超时，请检查连接后重试' : '保存失败，请检查连接后重试');
             } finally {
                 this.configSaving = false;
                 $('#modalBody').inert = false;
