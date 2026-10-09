@@ -2,7 +2,54 @@
 
 核对日期：2026-10-09。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：首页「立即同步」同步所有启用订阅并回到最新（随 **v1.15.8** 发布；功能提交 `c7d13fc`、版本提交 `879b67a`，基线 `42b623d`）
+## 最新一轮：后台 WebDAV「自动同步」勾了存不住（随 **v1.15.9** 发布；功能提交 `985d59a`、版本提交 `27ca9ea`，基线 `28671eb`）
+
+用户原话：「后台 webdav 远程备份的自动同步功能勾选后无法保存，修复并发布新版本」。
+
+### 根因（真实浏览器复现，不是读代码推断）
+
+区块自己的「保存配置」一直是好的：先在隔离副本上直连 HTTP 验证过——`POST /api/webdav/config` 带 `enabled+autoSync` 返回 200，`.webdav-config.json` 落盘 `autoSync: true`，`GET` 读回一致。丢改动的是**面板右上角那对按钮**：
+
+- 「保存」只 `POST /api/config`（config.json），成功后还弹「设置已保存到服务器」并关闭面板；
+- 「取消」、点遮罩、Esc 走 `closeAdmin()`，只检查 `configDirty`，而这两个勾选框从不置位它。
+
+实测路径（1280×577、隔离副本）：勾上自动同步 → 点右上角「保存」→ 全程只发出 `POST /api/config`，`.webdav-config.json` 的 `autoSync` 仍是 `false`，重新展开显示「自动同步：已关闭」。区块自己的「保存配置」在该视口下 top=649，要滚动才看得见，按面板主按钮是常态。
+
+### 改法
+
+- `public/app.js` 新增 `saveWebDAVToggles()`：「启用」与「自动同步」勾选即提交，与同面板的「信任此设备」同一条纪律。载荷必须同时带 `enabled` 与 `autoSync`（保存路由按 `enabled: !!enabled` 落盘，漏发会把备份整个关掉）；提交期间锁住两个框，避免两次请求在同一份配置上互相覆盖；失败回滚到 `this.webdavConfig` 里服务端确认过的值，区块已在往返期间被关闭时改走 `showToast`（否则该次失败完全静默）。
+- 派生显示收进 `refreshWebDAVToggleState()` 一处：状态点与「已启用/未启用」跟随**服务端确认过的配置**，自动同步状态行与置灰跟随**勾选框当前值**，模板不再各写一遍。
+- **不整块重绘**：重绘会把用户还没按「保存配置」的地址、用户名、远程路径退回服务端旧值。旧的自动同步失败提示改用 `webdav-autosync-error` 类，保存成功后就地撤掉（服务端每次保存都会清 `lastAutoSyncError`，不撤则页面与服务端不一致）。
+- `public/sw.js` 缓存 `nav-v97 → nav-v98`；`tests/fav-tab.test.js` 里写死的 `nav-v97` 断言同步升到 `nav-v98`，测试名一并改掉——名字里的数字是条会过期的声明。
+
+### 实际验证
+
+- **全套 577/577**；`node --check`（app.js、sw.js、两个测试文件）与 `git diff --check` 通过。
+- **变异 8 条逐条变红、恢复后全绿**：去掉即时保存调用、载荷漏 `enabled`、失败不回滚、失败提示写不出、refresh 不画状态点与标签、成功后不撤旧错误、面板已关不走 toast、模板丢失 `webdav-autosync-error` 类——每条都让对应用例变红（pass 31~32），恢复后 pass=33。
+- **真实浏览器（隔离副本，先 `getRegistrations()` → `unregister()`、`caches.delete()` 再带 `?cb=` 打开）**：勾选 → `POST /api/webdav/config` 200、行内「配置已保存」、磁盘 `autoSync: true`；再点右上角「保存」（只发出 `/api/config`）→ 重新展开仍是勾选状态、状态行「自动同步：已开启」、标签「已启用」。启用开关联动就地更新（状态点、已启用/未启用、置灰、待启用文案）。`network route … --abort` 造失败 → 「保存失败: Failed to fetch」且勾选**拨回**服务端值；解除后再次勾选保存成功。预置一条 `lastAutoSyncError`，保存后该提示按预期消失。
+
+### 两轴审查发现与修复
+
+- Standards：改了 `public/` 必须同批升 SW 缓存名 → `nav-v98`（发布前置检查抓到，不升则回访用户拿不到修复）；交接文档缺本轮记录 → 本节；Duplicated Code——状态点与「已启用」在模板和保存后各算一遍 → 收进 `refreshWebDAVToggleState()`。
+- Standards（判断项，未采纳并写明理由）：行内提示文案对与 `saveWebDAVConfig` 相似 → 两处顺序不同（一个先重渲染再写、一个不重绘），抽公共函数得再传一个顺序参数；`enabledBox+autoBox` 数据泥团 → 只有两个元素、各处需要的元素并不相同，包一层反而藏掉空值判断。
+- Spec：面板已关时的失败只有 `console.error` → 补 `showToast`；保存成功后旧失败提示滞留 → 就地撤掉；「发布新版本」尚未做 → 本轮按 `scripts/release.sh` 完成。
+- Spec（复核后**不是**缺陷）：429 与失败路径会显示「保存失败」并回滚（`API.post` 不抛错，靠 `res.success` 判断）；WebDAV 未启用时勾选框是 `disabled`，勾不上也就丢不了；窄视口下 `.webdav-message` 只在 `:empty` 时隐藏。
+
+### 验证边界 / 遗留（本轮未修）
+
+1. **读-改-写未串行化**：`POST /api/webdav/config`、`runAutoSync` 的失败写回、`performBackup` 的时间写回各自 `loadConfig → saveConfig`，理论上存在覆盖窗口。实测每次请求只是两次文件读加一次写（`getPasswordHash` 不跑 bcrypt，约 3ms），同一用户两步操作的间隔远大于处理耗时，交叠需要亚百毫秒级；`runAutoSync` 还得恰好在失败时撞上保存。修复要给配置文件加进程内互斥（把 load→save 包成事务），会同时波及三处写路径与各自测试，超出本轮范围。
+2. **文本字段仍不归面板「保存」管**：地址、用户名、远程路径、密码只由区块自己的「保存配置」保存，关面板时不告警。本轮只修上报的勾选框。
+3. 页面在 POST 在途时刷新或关标签仍会丢掉那一勾（与「信任此设备」同一既有边界，未加 `keepalive`）。
+4. 没有连真实 WebDAV 服务器做过备份，本轮验证到 HTTP 边界与磁盘落盘为止。
+5. CHANGELOG 条目 `date` 记 2026-10-09（会话开始日），实际发布落在 2026-10-10 00:38 CST；产物已按 10-09 发出，改日期会与已发布产物不一致，故不改。
+
+### 下一步
+
+1. ~~两轴审查 → 三处版本号一致 → `scripts/release.sh` → 推 main → 产物核对~~ **已全部完成**：功能提交 `985d59a`、版本提交 `27ca9ea`，Release `v1.15.9`，`28671eb..27ca9ea` 已推。产物 `nav-sylph-v1.15.9.tar.gz`（13,448,624 字节）已下载核对：三处版本 1.15.9，`saveWebDAVToggles` / `refreshWebDAVToggleState` 在 `public/app.js` 中，`public/sw.js` 缓存 `nav-v98`，`public/app.js`、`public/sw.js`、`server.js`、`lib/webdav-backup.js` 与三处版本文件逐个 `cmp` 一致；6 个私有文件全部不在包内。
+2. 旧跟进项不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述、E2E 夹具脚本的 cwd 依赖。
+3. **本轮顺带修的文档问题**：上一轮收尾把本文件弄出了两个完全相同的 `## 上一轮：首页「立即同步」的 Special Line 功能更新（随 **v1.15.7** 发布…）` 标题——其中一份内容其实是 v1.15.8 那轮的早稿（写「全套 571/571」），另一份才是 v1.15.7 归档/收藏的真实内容却挂着错标题。已删掉早稿那份，并把归档/收藏那节的标题按 `git show 42b623d:docs/current-work.md` 逐字恢复为 `## 上一轮：删掉已读/未读，卡片改「归档 + 收藏」（随 **v1.15.7** 发布；功能提交 \`d31552f\`、发布提交 \`d1601dc\`，基线 \`02a6f95\`）`。标题重复正是本轮差点把新章节写错位置的原因，改完用 `grep -c '^## 最新一轮'` 与标题清单核过。
+
+## 上一轮：首页「立即同步」同步所有启用订阅并回到最新（随 **v1.15.8** 发布；功能提交 `c7d13fc`、版本提交 `879b67a`，基线 `42b623d`）
 
 用户原话：「点击模块的立即同步按钮后，应该触发所有订阅更新并将时间线拉回到最顶部，最新一条。」确认过范围：**只同步后台启用中的来源**；已停止来源跳过，后台每行「立即同步」仍可手动拉已停止来源（原语义不变）。
 
@@ -53,41 +100,7 @@
 3. 旧跟进项不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
 4. E2E 夹具脚本的 cwd 依赖（本次事故根因）尚未改成显式绝对路径——记为后续改进项，不在本次范围。
 
-## 上一轮：首页「立即同步」的 Special Line 功能更新（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
-
-用户原话：「点击模块的立即同步按钮后，应该触发所有订阅更新并将时间线拉回到最顶部，最新一条。」确认过范围：**只同步后台启用中的订阅**；已停止来源跳过，后台每行的「立即同步」仍可手动拉已停止来源。
-
-### 根因（读代码确认）
-
-卡头部 ↻ 以前只走 `refresh({ manual: true })` → `GET /api/timeline/events`，这个接口只读 SQLite，**完全没有调用任何 `syncSource`**；真正会打 X/微博上游的只有后台每个来源行自己的 `/api/timeline/sources/:id/sync`，而且只同步一条。还有第二个独立缺口：`refresh()` 每次 DOM 重建都会保存并恢复 `listEl.scrollTop`，所以就算重拉到了最新第一页，深滚状态也不会回顶；若列表 GET 已在途，refresh 还会直接 return，手动最终刷新可能被吞掉。
-
-### 改法
-
-- `lib/timeline/sync.js`：调度器 `inFlight` 改成**来源→Promise Map**；定时 tick 与 `syncEnabledSources()` 共用 `runSource()`、同源 Promise 与全局 `MAX_CONCURRENT_SYNCS=2`。批量方法取 `enabled && providerType !== 'manual'`，**不传 `force`**；暂停状态不改变。逐来源隔离结果，返回成功/失败/跳过/新增汇总。`server.js` 新增受 `rateLimit, requireAdmin` 保护的 `POST /api/timeline/sync-all`；原有后台单来源强制同步路由不动。
-- 首页 ↻ 改调批量接口，防双击；批量期间停普通轮询、保留列表并显示「同步中」。完成后若用户未在期间改筛选就回到「全部渠道 / 全部」；若用户中途自己选了筛选，则尊重最后选择。随后请求当前筛选的**第一页（无 cursor）**，只有新结果实际渲染后才将列表 `scrollTop=0`。列表 GET 在途时把这次刷新排队，丢旧响应、补拉最后条件后再置顶。
-- README 补清此按钮同步范围；`docs/architecture.md` 加入批量调度与并发共用契约；SW `nav-v96 → nav-v97`。
-
-### 实际验证
-
-- 单测：3 个启用来源（含 X/微博）、1 个暂停、1 个 manual → 仅 3 个外部来源被触发；失败独立统计并继续；并发峰值 2；不传 `force`。
-- 并发交错：定时 tick 已占满两路时启动批量，批次复用同源在途 Promise；第三个来源等空位，不额外开到第 3 路。
-- refresh latest-wins：旧筛选 GET 在途时排入「全部 + scrollToTop」，旧响应丢弃，第二个 GET 无 cursor，返回后列表显示最新事件且最后一次 render 的 `scrollTop=0`。
-- HTTP 路由：`POST /api/timeline/sync-all` 调一次调度器并回传逐源错误与汇总；时间线写接口仍走管理员限流桶。
-- **真实浏览器 + 隔离服务 + mock FxEmbed**：先登录，再经后台「模块」开关启用 Special Line（真实入口）；筛选「收藏」、滚到 `scrollTop=1100` 后点头部 ↻。浏览器收到 `POST /api/timeline/sync-all` 200；上游 mock 只记录 alpha/beta，paused **0 次**；结束 toast「同步完成：成功 2 个，失败 0 个，新增 2 条」；视图复位到「全部渠道 / 全部」，首条「beta 最新动态」，`scrollTop=0`。清空旧 console 后重跑，console **无错误**。
-- 全套 **571/571**；`node --check` 与 `git diff --check` 通过。
-
-### 我在验证中造成并修正的失误（如实记）
-
-- ⚠️ 第一回启动夹具时命令的 `cwd` 仍是仓库根，mock wrapper 因而加载了真实 `server.js`；真实 `nav-sylph.db` 被打开并从 `user_version=2` 迁到 `6`，新建了 v3–v6 表并由启动钩子补了一条内置 `manual` 来源。事后**只读确认**：`sessions=0`、时间线事件 0、用户来源 0（只有 manual）、`module_cache` 1 行；配置/密码/模块/WebDAV 私有 JSON 的 mtime 均早于本轮。迁移是新增模块表 + v6 状态列变更，没有删除已有 `sessions` / `module_cache` 行。该本机 DB 已保持迁移后的 v6 状态，**没有用破坏性方式回滚**。
-- ⚠️ 重建隔离副本后，启动命令用相对路径找 seed 脚本，seed 命令失败，但同一命令行后半段仍启动了 server；API 检查发现库里只有 manual，遂停服重跑 seed。随后又发现 seed 给 `createSource()` 传 `enabled:false` 不生效（该方法无此参数，默认总启用），改用 `repo.updateSource(id,{enabled:false})`，检查 SQLite 确认 `enabled=0` 后才继续。最终两次浏览器结果都以 call log 与 DB 时间戳核对，paused 未被触发。
-
-### 下一步
-
-1. 本次未提交、未发布；若要发版，先两轴审查，再按仓库流程 `CHANGELOG + 三处版本号 + scripts/release.sh + 推 main + 下载产物核对`。
-2. ⚠️ 真外部 FxEmbed 没有在本轮测试（浏览器 E2E 用本地 mock）；单源 adapter 的既有测试仍在。
-3. 遗留不变：另两处 `POST /api/config` 无超时、模块 `adminBusy` 无超时、`PAGE_SIZE_DEFAULT`、头像外站依赖、README 顶部旧描述。
-
-## 上一轮：首页「立即同步」的 Special Line 功能更新（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
+## 上一轮：删掉已读/未读，卡片改「归档 + 收藏」（随 **v1.15.7** 发布；功能提交 `d31552f`、发布提交 `d1601dc`，基线 `02a6f95`）
 
 用户原话：「删掉已读未读的功能吧，这块就留两个功能，归档和收藏，卡片右下角可以放一个收藏按钮（五角星那种），收藏后的内容可以长期保存没有 30 天限制，并继续保持在原时间线。归档按钮放在右上角，右上角不再设置菜单按钮，归档逻辑和现在保持一致。」看完仿真样例后补充：「确认已归档的事件卡片不会在原时间线显示，只能在已归档里面看。其他的没问题」。
 
