@@ -4231,8 +4231,8 @@
 
             container.innerHTML = `
                 <div class="webdav-status">
-                    <span class="webdav-status-dot ${cfg.enabled ? 'active' : ''}"></span>
-                    <span>${cfg.enabled ? '已启用' : '未启用'}</span>
+                    <span class="webdav-status-dot"></span>
+                    <span class="webdav-enabled-label"></span>
                     <span class="webdav-auto-status"></span>
                     ${cfg.lastBackupTime ? `<span class="webdav-last-backup">上次备份: ${lastBackup}</span>` : ''}
                 </div>
@@ -4261,7 +4261,7 @@
                     </div>
                 </div>
                 <p class="fav-hint">开启自动同步后，首页导航、书签或模块设置发生变化时会自动备份一次；同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
-                ${cfg.lastAutoSyncError ? `<div class="webdav-message error">上次自动同步失败${cfg.lastAutoSyncErrorAt ? `（${this.formatBackupTime(cfg.lastAutoSyncErrorAt)}）` : ''}：${this.esc(cfg.lastAutoSyncError)}</div>` : ''}
+                ${cfg.lastAutoSyncError ? `<div class="webdav-message error webdav-autosync-error">上次自动同步失败${cfg.lastAutoSyncErrorAt ? `（${this.formatBackupTime(cfg.lastAutoSyncErrorAt)}）` : ''}：${this.esc(cfg.lastAutoSyncError)}</div>` : ''}
                 <div class="webdav-actions">
                     <button class="btn" id="webdavSaveBtn">保存配置</button>
                     <button class="btn" id="webdavTestBtn">测试连接</button>
@@ -4276,31 +4276,65 @@
             $('#webdavBackupBtn').onclick = () => this.createWebDAVBackup();
             $('#webdavRestoreBtn').onclick = () => this.showWebDAVRestoreDialog();
 
-            // 状态行与禁用态都由这两个勾选框的**当前值**算出来，只有一处实现。
-            //
-            // 三种状态必须分开说：「开着但没启用 WebDAV」与「关着」看起来都是
-            // 「没在同步」，但下一步该做什么完全不同（前者去勾「启用」，后者来
-            // 勾这一项）。合成一句就是让用户自己猜。
-            //
             // 两个框都要绑 onchange：只绑「启用」的话，勾上自动同步后状态行仍写着
             // 「已关闭」（浏览器实测如此），读起来正像「勾了没反应」。
+            //
+            // 勾完还要**立即保存**（见 saveWebDAVToggles）：面板右上角的「保存」
+            // 只提交 config.json、「取消」只看 configDirty，这一块的表单不在它们
+            // 的管辖范围内——等用户去点区块里那个还要滚动才看得见的「保存配置」，
+            // 改动在路上就被丢掉了，用户上报的「勾了保存不了」正是这么来的。
             const enabledBox = $('#webdavEnabled');
             const autoBox = $('#webdavAutoSync');
-            const autoStatusEl = container.querySelector('.webdav-auto-status');
-            const refreshAutoState = () => {
-                if (autoBox.checked && enabledBox.checked) autoStatusEl.textContent = '自动同步：已开启';
-                else if (autoBox.checked) autoStatusEl.textContent = '自动同步：待启用（需先勾选「启用 WebDAV 备份」）';
-                else autoStatusEl.textContent = '自动同步：已关闭';
-                // 未启用时置灰：一个看着开着、其实什么也不做的开关比没有更糟
-                autoBox.disabled = !enabledBox.checked;
-                autoBox.closest('label').classList.toggle('is-disabled', !enabledBox.checked);
+            const onToggleChange = () => {
+                this.refreshWebDAVToggleState();
+                this.saveWebDAVToggles();
             };
-            enabledBox.onchange = refreshAutoState;
-            autoBox.onchange = refreshAutoState;
-            refreshAutoState();
+            enabledBox.onchange = onToggleChange;
+            autoBox.onchange = onToggleChange;
+            this.refreshWebDAVToggleState();
 
             // 闩锁：这份配置已经画进当前这块 DOM 了，toggleSection 不必再加载。
             this.webdavRendered = true;
+        }
+
+        /**
+         * 区块顶部那几个**派生显示**的唯一实现：启用状态点、已启用/未启用、
+         * 自动同步状态行、自动同步勾选框的置灰。每次保存/回滚之后都要调它。
+         *
+         * 两种来源，别混：状态点与「已启用」跟着**服务端确认过的配置**
+         * （this.webdavConfig），状态行与置灰跟着**勾选框的当前值**——保存
+         * 在途时前者还是旧值、后者已是新值，这个差就是「正在保存」的含义。
+         *
+         * 三种状态必须分开说：「开着但没启用 WebDAV」与「关着」看起来都是
+         * 「没在同步」，但下一步该做什么完全不同（前者去勾「启用」，后者来
+         * 勾这一项）。合成一句就是让用户自己猜。
+         *
+         * 抽成方法而不是 renderWebDAVSection 里的闭包：保存成功/失败之后都要
+         * 重算（失败要把勾选拨回服务端的真实值，禁用态与状态行得跟着回去），
+         * 而那时闭包已经随那次渲染过去了。
+         *
+         * 区块没在页面上时直接返回——面板可能已经被关掉。
+         */
+        refreshWebDAVToggleState() {
+            const enabledBox = $('#webdavEnabled');
+            const autoBox = $('#webdavAutoSync');
+            const statusEl = $('#webdavSection .webdav-auto-status');
+            if (!enabledBox || !autoBox || !statusEl) return;
+
+            const cfg = this.webdavConfig;
+            const dot = $('#webdavSection .webdav-status-dot');
+            const label = $('#webdavSection .webdav-enabled-label');
+            if (cfg && dot && label) {
+                dot.classList.toggle('active', !!cfg.enabled);
+                label.textContent = cfg.enabled ? '已启用' : '未启用';
+            }
+
+            if (autoBox.checked && enabledBox.checked) statusEl.textContent = '自动同步：已开启';
+            else if (autoBox.checked) statusEl.textContent = '自动同步：待启用（需先勾选「启用 WebDAV 备份」）';
+            else statusEl.textContent = '自动同步：已关闭';
+            // 未启用时置灰：一个看着开着、其实什么也不做的开关比没有更糟
+            autoBox.disabled = !enabledBox.checked;
+            autoBox.closest('label').classList.toggle('is-disabled', !enabledBox.checked);
         }
 
         async saveWebDAVConfig() {
@@ -4339,6 +4373,78 @@
                 msgEl.textContent = '保存失败: ' + e.message;
                 msgEl.className = 'webdav-message error';
             }
+        }
+
+        /**
+         * 「启用 / 自动同步」两个勾选框**立即保存**，不等区块里的「保存配置」。
+         *
+         * 用户上报的「勾了自动同步保存不了」，根因是这一块的表单不在面板右上角
+         * 那两个按钮的管辖范围内：「保存」只提交 config.json（成功后还弹
+         * 「设置已保存到服务器」），「取消」/遮罩/Esc 关面板只看 configDirty，
+         * 而这两个勾选框根本不会把它置位。于是勾完点「保存」，面板关掉、提示
+         * 说保存成功，可全程只发出 POST /api/config，.webdav-config.json 里
+         * autoSync 仍是 false——重新展开看到的还是「自动同步：已关闭」。
+         *
+         * 与同面板的「信任此设备」同一条纪律：开关自己保存自己。两个值必须一起
+         * 提交——服务端按 body 里的 enabled 落盘（enabled: !!enabled），只发
+         * autoSync 会把 WebDAV 备份整个关掉。提交期间锁住两个框：并发 POST 会
+         * 在同一份 .webdav-config.json 上互相覆盖，后到的写回旧值。
+         *
+         * 就地更新派生显示而不整块重绘：重绘会把用户还没按「保存配置」的其它
+         * 表单字段（地址/用户名/远程路径）退回服务端旧值——修一个丢改动的问题，
+         * 不能顺手制造另一个。失败则把两个勾选拨回服务端的真实值并刷新状态行：
+         * 停在一个没存下去的档位上，比一句报错更糟。
+         */
+        async saveWebDAVToggles() {
+            const enabledBox = $('#webdavEnabled');
+            const autoBox = $('#webdavAutoSync');
+            if (!enabledBox || !autoBox) return;
+            const confirmed = this.webdavConfig || {};
+            enabledBox.disabled = true;
+            autoBox.disabled = true;
+
+            let error = null;
+            let saved = null;
+            try {
+                const res = await API.post('/api/webdav/config', {
+                    enabled: enabledBox.checked,
+                    autoSync: autoBox.checked
+                });
+                if (!res.success) throw new Error(res.error || '保存失败');
+                saved = res.config;
+                this.webdavConfig = res.config;
+            } catch (e) {
+                error = e;
+            }
+
+            // 请求回来时区块可能已经不在了（面板被关掉），元素都要重新取
+            const liveEnabled = $('#webdavEnabled');
+            const liveAuto = $('#webdavAutoSync');
+            const msgEl = $('#webdavMessage');
+            if (liveEnabled && liveAuto) {
+                if (error) {
+                    liveEnabled.checked = !!confirmed.enabled;
+                    liveAuto.checked = !!confirmed.autoSync;
+                }
+                liveEnabled.disabled = false;
+                this.refreshWebDAVToggleState();
+            }
+            // 服务端每次保存都清掉旧的自动同步失败原因（见 POST /api/webdav/config），
+            // 页面上那条也得跟着撤：不撤的话旧错误会一直挂到下次整块重渲染，
+            // 看起来像「刚存的配置仍在报错」。
+            if (saved && !saved.lastAutoSyncError) {
+                const stale = $('#webdavSection .webdav-autosync-error');
+                if (stale) stale.remove();
+            }
+            if (msgEl) {
+                msgEl.textContent = error ? '保存失败: ' + error.message : '配置已保存';
+                msgEl.className = error ? 'webdav-message error' : 'webdav-message success';
+            } else if (error) {
+                // 区块已经被关掉了，行内提示没人看得见——失败必须用 toast 说出来，
+                // 否则这次保存失败是完全静默的（与 save() 里那条同一理由）。
+                this.showToast('远程备份开关保存失败: ' + error.message, 'error');
+            }
+            if (error) console.error('Save WebDAV toggles failed:', error);
         }
 
         async testWebDAVConnection() {

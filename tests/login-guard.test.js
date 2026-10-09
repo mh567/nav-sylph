@@ -337,16 +337,33 @@ test('自动同步开关：控件存在、禁用态联动、三种状态分开�
     // 未启用 WebDAV 时置灰并实时联动——一个看着开着、其实什么也不做的开关，
     // 比没有这个开关更糟。**两个框都要绑**：只绑「启用」时，勾上自动同步后
     // 状态行仍写着「已关闭」（浏览器实测如此），读起来正像「勾了没反应」。
-    assert.match(render, /enabledBox\.onchange = refreshAutoState/);
-    assert.match(render, /autoBox\.onchange = refreshAutoState/,
+    assert.match(render, /enabledBox\.onchange = onToggleChange/);
+    assert.match(render, /autoBox\.onchange = onToggleChange/,
         '自动同步自己的勾选也要刷新状态行');
-    assert.match(render, /autoBox\.disabled = !enabledBox\.checked/);
+    // 刷新与**立即保存**必须在同一个处理函数里。只刷新不保存，就是用户上报的
+    // 「勾了自动同步保存不了」：勾选停在页面上，那一勾从来没发出去过——
+    // 面板右上角的「保存」只提交 config.json。
+    assert.match(render,
+        /const onToggleChange = \(\) => \{[^}]*this\.refreshWebDAVToggleState\(\);[^}]*this\.saveWebDAVToggles\(\);/,
+        '勾选既要刷新状态行，也要立即提交');
+
+    // 刷新逻辑抽成了方法：保存失败要按服务端的真实值重算，那时渲染期的闭包已经没了
+    const refresh = methodBody(c, 'refreshWebDAVToggleState() {');
+    assert.ok(refresh.length > 300, 'refreshWebDAVToggleState 方法体完整');
+    assert.match(refresh, /autoBox\.disabled = !enabledBox\.checked/);
+    // 状态点与「已启用」也归它管（跟着服务端确认过的配置），模板不再自己算一遍——
+    // 同一个派生在两处各写一次，改一处漏一处
+    assert.match(refresh, /webdav-status-dot/);
+    assert.match(refresh, /webdav-enabled-label/);
+    assert.match(refresh, /cfg\.enabled \? '已启用' : '未启用'/);
     // 三种状态不能塌缩成一句：「开着但没启用」与「关着」的下一步完全不同
-    assert.match(render, /自动同步：已开启/);
-    assert.match(render, /自动同步：待启用/);
-    assert.match(render, /自动同步：已关闭/);
-    // 失败态必须渲染出来，不能只进 console
+    assert.match(refresh, /自动同步：已开启/);
+    assert.match(refresh, /自动同步：待启用/);
+    assert.match(refresh, /自动同步：已关闭/);
+    // 失败态必须渲染出来，不能只进 console；且要带上可单独寻址的类，
+    // 否则保存后没法把「已经不成立的旧错误」从页面上撤掉
     assert.match(render, /lastAutoSyncError/, '上次自动同步失败要显示在区块里');
+    assert.match(render, /webdav-autosync-error/, '失败行要能被单独选中');
 
     const save = methodBody(c, 'saveWebDAVConfig() {');
     assert.match(save, /autoSync: \$\('#webdavAutoSync'\)\.checked/,
@@ -358,6 +375,85 @@ test('自动同步开关：控件存在、禁用态联动、三种状态分开�
     assert.ok(renderAt >= 0 && freshAt > renderAt,
         '成功分支必须先重渲染、再把提示写到新元素上（反过来提示会被空元素覆盖）');
     assert.match(save, /freshMsg\.textContent = '配置已保存'/);
+
+    // 即时保存的载荷：两个值必须一起提交
+    const toggles = methodBody(c, 'async saveWebDAVToggles() {');
+    assert.match(toggles, /enabled: enabledBox\.checked/);
+    assert.match(toggles, /autoSync: autoBox\.checked/,
+        '只发 autoSync 而漏掉 enabled，服务端按 !!undefined 会把 WebDAV 备份整个关掉');
+    // 服务端每次保存都清掉旧的自动同步失败原因，页面上那条也要撤——否则
+    // 旧错误一直挂到下次整块重渲染，看着像「刚存的配置仍在报错」
+    assert.match(toggles, /\$\('#webdavSection \.webdav-autosync-error'\)/);
+    assert.match(toggles, /stale\.remove\(\)/);
+    // 区块被关掉后行内提示没人看得见，失败必须落到 toast，不能只剩 console
+    assert.match(toggles, /this\.showToast\('远程备份开关保存失败: '/,
+        '面板已关时的失败不能是静默的');
+});
+
+// 形状断言只证明「这段代码在文件里」，证明不了它按想的方式跑。把真实方法体
+// 抽出来执行，断言载荷、失败回滚与提示。
+test('勾选自动同步立即提交；失败把勾拨回服务端的真实值并说清楚', async () => {
+    const body = methodBody(appSource, 'async saveWebDAVToggles() {');
+    assert.ok(body.length > 800, 'saveWebDAVToggles 方法体完整');
+
+    const make = (post, { withMessage = true } = {}) => {
+        const els = {
+            // 服务端上一次确认的是「都没开」，页面上用户刚把「启用」勾上
+            '#webdavEnabled': { checked: true, disabled: false },
+            '#webdavAutoSync': { checked: false, disabled: false },
+            // 上一次自动同步的失败提示：保存成功后服务端会清掉原因，页面上这条要跟着撤
+            '#webdavSection .webdav-autosync-error': {
+                removed: false,
+                remove() { this.removed = true; }
+            }
+        };
+        if (withMessage) els['#webdavMessage'] = { textContent: '', className: '' };
+        const $ = sel => els[sel] || null;
+        const ctx = {
+            webdavConfig: { enabled: false, autoSync: false },
+            refreshed: 0,
+            refreshWebDAVToggleState() { this.refreshed++; }
+        };
+        const run = new Function('$', 'API', 'console',
+            `return ({ ${body} }).saveWebDAVToggles;`)($, { post }, { error() {} });
+        return { els, ctx, run: () => run.call(ctx) };
+    };
+
+    // 成功：载荷必须带 enabled，且只带这两个开关（地址等文本字段不归这里管）
+    const ok = make(async (url, payload) => {
+        assert.equal(url, '/api/webdav/config');
+        assert.deepEqual(payload, { enabled: true, autoSync: false },
+            '两个开关一起提交——只发 autoSync 会让服务端把备份关掉');
+        return { success: true, config: { enabled: true, autoSync: false } };
+    });
+    await ok.run();
+    assert.equal(ok.ctx.webdavConfig.enabled, true, '内存里的配置跟着更新');
+    assert.equal(ok.els['#webdavEnabled'].disabled, false, '保存完要把框解锁');
+    assert.equal(ok.els['#webdavMessage'].textContent, '配置已保存', '要说一声存下了');
+    assert.ok(ok.ctx.refreshed >= 1, '状态行按新值重算');
+    assert.equal(ok.els['#webdavSection .webdav-autosync-error'].removed, true,
+        '服务端已清掉旧失败原因，页面上那条也要撤——否则显示与服务器对不上');
+
+    // 失败：勾必须拨回去——停在一个没存下去的档位上，比一句报错更糟
+    const bad = make(async () => ({ error: '请求过于频繁，请稍后再试' }));
+    await bad.run();
+    assert.equal(bad.els['#webdavEnabled'].checked, false, '拨回服务端确认过的值');
+    assert.equal(bad.els['#webdavAutoSync'].checked, false);
+    assert.equal(bad.els['#webdavEnabled'].disabled, false, '失败也不能把开关锁死');
+    assert.equal(bad.els['#webdavMessage'].textContent, '保存失败: 请求过于频繁，请稍后再试');
+    assert.equal(bad.els['#webdavMessage'].className, 'webdav-message error');
+    assert.ok(bad.ctx.refreshed >= 1, '失败后状态行与禁用态也要跟着回去');
+    assert.equal(bad.els['#webdavSection .webdav-autosync-error'].removed, false,
+        '没保存成功就不该撤提示——那条错误还没解决');
+
+    // 区块已经不在了（面板在往返期间被关掉）：行内提示没人看得见，必须走 toast
+    const gone = make(async () => ({ error: '请求过于频繁，请稍后再试' }), { withMessage: false });
+    const toasts = [];
+    gone.ctx.showToast = (msg, type) => toasts.push({ msg, type });
+    await gone.run();
+    assert.equal(toasts.length, 1, '静默失败的唯一出口是 toast');
+    assert.match(toasts[0].msg, /保存失败: 请求过于频繁，请稍后再试/);
+    assert.equal(toasts[0].type, 'error');
 });
 
 test('错误提示经过转义，不直接插入用户可见文本', () => {
