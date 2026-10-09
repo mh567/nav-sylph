@@ -3424,21 +3424,28 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .special-line-save { border-color: transparent; background: var(--accent); color: #fffaf5; font-weight: 620; }
 .special-line-save:hover { background: var(--accent-hover); color: #fffaf5; }
 
-/* ---------- 筛选 chips（窄列时横向滚动，与仿真一致） ---------- */
+/* ---------- 筛选：按渠道分组（渠道按钮 + 子菜单），放不下就换行 ----------
+   ⚠️ 这里**不能有 overflow**：渠道子菜单是绝对定位的下拉，一旦这一行变成
+   滚动容器（`overflow-x: auto` 会把另一轴也算成 auto），菜单就会被裁掉。
+   之前的扁平 chips 正是靠 `overflow-x: auto` + 隐藏滚动条，结果来源一多，
+   最右边的「已归档」被推出可视区且鼠标够不着（实测 8 个来源超出 415px）。 */
 .special-line-filters {
+    position: relative;
+    z-index: 5;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-    scrollbar-width: none;
     /* 不许被卡片压缩——见上面 .special-line-head 的实测说明 */
     flex: 0 0 auto;
 }
-.special-line-filters::-webkit-scrollbar { display: none; }
+.special-line-views { display: flex; gap: 4px; margin-left: auto; }
 .special-line-chip {
+    display: inline-flex;
     flex: 0 0 auto;
+    align-items: center;
     min-height: 26px;
     padding: 0 9px;
     border: 1px solid transparent;
@@ -3456,7 +3463,48 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     color: var(--accent);
     font-weight: 650;
 }
-.special-line-sep { flex: 0 0 auto; width: 1px; height: 18px; margin: 0 3px; background: var(--border); }
+.special-line-dot { width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: var(--accent); }
+.special-line-caret { margin-left: 4px; color: var(--text-muted); font-size: 9px; }
+
+.special-line-chan { position: relative; }
+/* 子菜单：桌面端悬停即展开，点开也展开（触屏与键盘只能靠点）。
+   菜单是按钮的**子节点**且与它相接（top:100%、无空隙），指针从按钮移到
+   菜单上时 :hover 仍然成立，不会闪一下就关。 */
+.special-line-menu {
+    position: absolute;
+    z-index: 6;
+    top: 100%;
+    left: 0;
+    display: none;
+    min-width: 172px;
+    max-height: min(46vh, 320px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow-lg);
+}
+.special-line-chan:hover .special-line-menu,
+.special-line-chan[data-open="1"] .special-line-menu { display: block; }
+.special-line-menu button {
+    display: block;
+    width: 100%;
+    min-height: 30px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.special-line-menu button:hover { background: var(--bg-hover); color: var(--text); }
+.special-line-menu button[aria-checked="true"] { color: var(--accent); font-weight: 650; }
+.special-line-menu button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 /* ---------- 列表（自身滚动） ---------- */
 .special-line-listwrap {
@@ -3815,6 +3863,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     /* 44px 是仿真样例定的触控下限（与 .filter-button / .timeline-action 一致）：
        窄屏上手指就是指针，低于它的按钮点了没反应，用户只会以为坏了。 */
     .special-line-chip { min-height: 44px; padding: 0 12px; }
+    .special-line-menu button { min-height: 44px; font-size: 12px; }
     .special-line-iconbtn { height: 44px; padding: 0 11px; }
     .special-line-tools summary { width: 44px; height: 44px; }
     .special-line-action { min-height: 44px; font-size: 12px; }

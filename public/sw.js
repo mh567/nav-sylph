@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v92：筛选行改为**按渠道分组**——每个渠道一个按钮、悬停或点击展开具体订阅人，
+// 视图组（全部/未读/已归档）固定不再被挤掉。改前是一条扁平 chips + 横向滚动 + 隐藏
+// 滚动条，来源一多最右边的「已归档」就被推出可视区且鼠标够不着（实测 8 个来源超出
+// 415px）。改了 special-line.js、styles.css。
 // nav-v91：订阅时把保留窗口内的历史**回填**铺满（原来只拉最新一页，转发多的
 // 账号只剩十几条原创，永远到不了一页 30 条，懒加载因此从不触发）；同步时为已入库
 // 但缺作者名/译文的事件补数据；X 的昵称与 @账号始终同时显示。改了 special-line.js、
@@ -210,7 +214,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v91';
+const CACHE = 'nav-v92';
 const ASSETS = [
     '/',
     '/index.html',

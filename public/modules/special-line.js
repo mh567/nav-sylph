@@ -65,6 +65,8 @@
 
     let lastKey = '';
     let lastChipsKey = '';
+    /** 展开着的渠道菜单（providerType）；null = 都收着。 */
+    let openChannel = null;
 
     /** 按事件 id 记住「正在看原文」（默认看中文译文）与「已展开全文」。
      *  放在模块级而不是渲染参数里：轮询重建列表时这两个选择不该被重置。 */
@@ -374,30 +376,80 @@
 
     function chipsKey() {
         return sources.map(s => `${s.id}:${s.providerLabel}:${s.externalKey}`).join('|') +
-            '>' + filterSource + '>' + filterView;
+            '>' + filterSource + '>' + filterView + '>' + (openChannel || '');
     }
 
+    /** 渠道分组：按 providerType 归拢，「稍后阅读」（manual）固定排最后。 */
+    function channelGroups() {
+        const order = [];
+        const map = new Map();
+        for (const s of sources) {
+            if (!map.has(s.providerType)) { map.set(s.providerType, []); order.push(s.providerType); }
+            map.get(s.providerType).push(s);
+        }
+        order.sort((a, b) => (a === 'manual' ? 1 : 0) - (b === 'manual' ? 1 : 0));
+        return order.map(type => {
+            const items = map.get(type);
+            return { type, items, label: (items[0] && items[0].providerLabel) || type };
+        });
+    }
+
+    function sourceLabel(s) {
+        return s.providerType === 'manual'
+            ? (s.name || '稍后阅读')
+            : (s.externalKey || s.name || s.providerLabel);
+    }
+
+    /**
+     * 筛选行**按渠道分组**：每个渠道一个按钮，展开后才是具体订阅人。
+     *
+     * ⚠️ 之前是「一条扁平 chips + `overflow-x: auto` + 隐藏滚动条」：来源一多，
+     * 右边的 chip（包括「已归档」）被推出可视区，而鼠标用户没有可发现的横滑方式
+     * ——实测 8 个来源时「已归档」超出容器 415px、14 个时 954px，等于点不到。
+     * 分组后按钮数只随**渠道数**增长（渠道 + 3 个视图），配合换行不会再藏内容。
+     */
     function renderChips() {
         if (!chipsEl) return;
         const key = chipsKey();
         if (key === lastChipsKey) return;
         lastChipsKey = key;
 
-        const chip = (value, label, kind) =>
-            `<button class="special-line-chip" type="button" data-action="${kind}" data-value="${esc(value)}"` +
-            ` aria-pressed="${(kind === 'filter-source' ? filterSource : filterView) === value}">${esc(label)}</button>`;
+        const selected = sources.find(s => s.id === filterSource) || null;
+        const viewChip = (value, label) =>
+            `<button class="special-line-chip" type="button" data-action="filter-view" data-value="${value}"` +
+            ` aria-pressed="${filterView === value}">${label}</button>`;
 
-        let html = chip('', '全部来源', 'filter-source');
-        for (const s of sources) {
-            if (s.providerType === 'manual') continue;
-            html += chip(s.id, s.providerLabel + (s.externalKey ? ' · ' + s.externalKey : ''), 'filter-source');
+        let html = `<button class="special-line-chip" type="button" data-action="filter-source" data-value=""` +
+            ` aria-pressed="${!selected}">全部渠道</button>`;
+
+        for (const g of channelGroups()) {
+            const picked = selected && selected.providerType === g.type ? selected : null;
+            const text = esc(picked ? `${g.label} · ${sourceLabel(picked)}` : g.label);
+            const dot = picked ? '<span class="special-line-dot" aria-hidden="true"></span>' : '';
+            // 只有一个订阅项的渠道直接选中，不给空菜单（「稍后阅读」就是这种）
+            if (g.items.length === 1) {
+                html += `<button class="special-line-chip" type="button" data-action="filter-source"` +
+                    ` data-value="${esc(g.items[0].id)}" aria-pressed="${!!picked}">${dot}${text}</button>`;
+                continue;
+            }
+            const open = openChannel === g.type;
+            html += `<div class="special-line-chan" data-open="${open ? '1' : '0'}">` +
+                `<button class="special-line-chip" type="button" data-action="channel" data-value="${esc(g.type)}"` +
+                    ` aria-haspopup="true" aria-expanded="${open}" aria-pressed="${!!picked}">${dot}${text}` +
+                    `<span class="special-line-caret" aria-hidden="true">▾</span></button>` +
+                `<div class="special-line-menu" role="menu">` +
+                    `<button type="button" role="menuitemradio" aria-checked="${!picked}"` +
+                        ` data-action="filter-source" data-value="">该渠道全部</button>` +
+                    g.items.map(s => `<button type="button" role="menuitemradio"` +
+                        ` aria-checked="${!!(picked && picked.id === s.id)}"` +
+                        ` data-action="filter-source" data-value="${esc(s.id)}">${esc(sourceLabel(s))}</button>`).join('') +
+                `</div>` +
+            `</div>`;
         }
-        // 「稍后阅读」是固定入口，不是一条可配置来源——它永远在
-        html += chip('manual', '稍后阅读', 'filter-source');
-        html += '<span class="special-line-sep" aria-hidden="true"></span>';
-        html += chip('all', '全部', 'filter-view');
-        html += chip('unread', '未读', 'filter-view');
-        html += chip('archived', '已归档', 'filter-view');
+
+        html += '<div class="special-line-views">' +
+            viewChip('all', '全部') + viewChip('unread', '未读') + viewChip('archived', '已归档') +
+            '</div>';
         chipsEl.innerHTML = html;
     }
 
@@ -649,19 +701,35 @@
      * 用 pointerdown 的捕获阶段：先于 click，不至于让同一次点击又把它打开。
      */
     function onDocPointerDown(event) {
+        const target = event.target;
+        // 渠道菜单：点在筛选行以外就收起（点在筛选行内交给它自己的 click 处理）
+        if (openChannel && !(target && target.closest && target.closest('.special-line-filters'))) {
+            openChannel = null;
+            lastChipsKey = '';
+            renderChips();
+        }
         if (!listEl) return;
         const open = listEl.querySelector('.special-line-tools[open]');
         if (!open) return;
-        if (event.target && event.target.closest('.special-line-tools')) return;   // 点在按钮或菜单里
+        if (target && target.closest('.special-line-tools')) return;   // 点在按钮或菜单里
         closeMenus();
     }
 
     function onDocKeyDown(event) {
-        if (event.key !== 'Escape' || !listEl) return;
-        if (!listEl.querySelector('.special-line-tools[open]')) return;
+        if (event.key !== 'Escape') return;
+        if (openChannel) {
+            const type = openChannel;
+            openChannel = null;
+            lastChipsKey = '';
+            renderChips();
+            // 焦点别留在被收起的按钮上
+            chipsEl?.querySelector(`[data-action="channel"][data-value="${type}"]`)?.focus?.();
+            return;
+        }
+        if (!listEl || !listEl.querySelector('.special-line-tools[open]')) return;
         closeMenus();
         const chip = listEl.closest('.special-line-card')?.querySelector('.special-line-chip');
-        chip?.focus?.();   // 焦点别留在被收起的按钮上
+        chip?.focus?.();
     }
 
     // ================= 保存文章对话框 =================
@@ -1221,8 +1289,16 @@
                     render();
                     break;
                 }
+                case 'channel':
+                    // 再点一次收起；点另一个渠道则改开它（只留一个展开）
+                    openChannel = openChannel === target.dataset.value ? null : target.dataset.value;
+                    closeMenus();
+                    lastChipsKey = '';
+                    renderChips();
+                    break;
                 case 'filter-source':
                     closeMenus();
+                    openChannel = null;
                     filterSource = target.dataset.value || '';
                     lastChipsKey = '';
                     renderChips();
@@ -1230,6 +1306,7 @@
                     break;
                 case 'filter-view':
                     closeMenus();
+                    openChannel = null;
                     filterView = target.dataset.value || 'all';
                     lastChipsKey = '';
                     renderChips();
@@ -1237,6 +1314,7 @@
                     break;
                 case 'reset-filters':
                     closeMenus();
+                    openChannel = null;
                     filterSource = '';
                     filterView = 'all';
                     lastChipsKey = '';

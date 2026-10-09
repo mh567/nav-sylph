@@ -628,6 +628,19 @@ test('筛选行 / 头 / 底在卡片里不许被压缩（订阅后列表变长�
         assert.ok(body, `找得到 ${sel} 的规则`);
         assert.match(body, /flex:\s*0 0 auto/, `${sel} 不许被压缩`);
     }
+    // 筛选行放不下要换行，**且不能变成滚动容器**——滚动会裁掉渠道子菜单，
+    // 而「扁平 chips + 隐藏滚动条」正是「已归档被推出可视区」的原因
+    const filters = ruleOf('.special-line-filters');
+    assert.match(filters, /flex-wrap:\s*wrap/, '放不下就换行');
+    assert.doesNotMatch(filters, /overflow/, '筛选行不能有 overflow（否则裁掉子菜单）');
+    // 渠道子菜单：默认收起，悬停或 data-open 时展开
+    const menu = ruleOf('.special-line-menu');
+    assert.ok(menu, '找得到子菜单规则');
+    assert.match(menu, /display:\s*none/, '默认收起');
+    assert.match(css, /\.special-line-chan:hover \.special-line-menu[\s\S]{0,80}display:\s*block/,
+        '悬停展开');
+    assert.match(css, /\.special-line-chan\[data-open="1"\] \.special-line-menu[\s\S]{0,80}display:\s*block/,
+        '点击（data-open）也能展开——触屏与键盘只能靠它');
     // 懒加载哨兵必须在滚动容器内部才有意义——它的高度不能撑出可见空隙
     assert.match(ruleOf('.special-line-sentinel'), /height:\s*1px/, '哨兵是 1px 的占位');
 });
@@ -1164,8 +1177,14 @@ test('外部点击与 Esc 关闭菜单：执行真实的文档级处理器', () 
         querySelector: () => ({ open: true }),          // 有一个开着的菜单
         closest: () => null
     });
-    const run = (name, listEl) => new Function('listEl', 'closeMenus',
-        `${extractFunction(code, `function ${name}(event)`)}; return ${name};`)(listEl, () => calls.push(name));
+    // 处理器闭包里还有渠道菜单那几个绑定，一并注入（缺一个就是 ReferenceError）
+    const run = (name, listEl, opts = {}) => new Function(
+        'listEl', 'closeMenus', 'openChannel', 'lastChipsKey', 'renderChips', 'chipsEl',
+        `${extractFunction(code, `function ${name}(event)`)}; return ${name};`
+    )(listEl, () => calls.push(name),
+        opts.openChannel === undefined ? null : opts.openChannel,
+        '', () => calls.push('renderChips'),
+        { querySelector: () => ({ focus: () => calls.push('focus') }) });
 
     // 点在菜单/按钮内部不关；点空白处关
     run('onDocPointerDown', mkList())({ target: { closest: sel => (sel === '.special-line-tools' ? {} : null) } });
@@ -1173,11 +1192,26 @@ test('外部点击与 Esc 关闭菜单：执行真实的文档级处理器', () 
     run('onDocPointerDown', mkList())({ target: { closest: () => null } });
     assert.deepEqual(calls, ['onDocPointerDown'], '点空白处关闭（用户报的「点击空白处也不会消失」）');
 
+    // 渠道菜单：点筛选行以外收起并重绘；点在筛选行内部不收起
+    calls.length = 0;
+    run('onDocPointerDown', mkList(), { openChannel: 'x' })({ target: { closest: () => null } });
+    assert.ok(calls.includes('renderChips'), '点空白处收起渠道菜单并重绘');
+    calls.length = 0;
+    run('onDocPointerDown', mkList(), { openChannel: 'x' })(
+        { target: { closest: sel => (sel === '.special-line-filters' ? {} : null) } });
+    assert.ok(!calls.includes('renderChips'), '点在筛选行内部不收起（那一下是它自己的 click）');
+
     calls.length = 0;
     run('onDocKeyDown', mkList())({ key: 'a' });
     assert.deepEqual(calls, [], '其它按键不关闭');
     run('onDocKeyDown', mkList())({ key: 'Escape' });
     assert.deepEqual(calls, ['onDocKeyDown'], 'Esc 关闭');
+
+    // 渠道菜单开着时，Esc 先收它并把焦点还给那个按钮
+    calls.length = 0;
+    run('onDocKeyDown', mkList(), { openChannel: 'x' })({ key: 'Escape' });
+    assert.ok(calls.includes('renderChips') && calls.includes('focus'), 'Esc 收起渠道菜单并把焦点还回按钮');
+    assert.ok(!calls.includes('onDocKeyDown'), '不越过去关 ⋯ 菜单');
 
     // 接线：mountWidget 里真的挂上了这两个处理器（执行级断言之外的「有没有接上」）
     assert.match(code, /document\.addEventListener\('pointerdown', onDocPointerDown, true\)/, '挂了外部点击');
@@ -1319,11 +1353,16 @@ test('时间线内联在首页那一列里：没有弹窗，形态与仿真一�
     assert.match(code, /<time class="special-line-time">/, '左侧日期轨道');
     assert.match(code, /<article class="special-line-event">/, '事件卡');
     assert.match(code, /class="special-line-mark"/, '来源标记');
-    // chips 的 data-action 由调用处的 kind 决定，所以钉调用处而不是拼出来的字面量
-    assert.match(code, /data-action="\$\{kind\}"/, 'chips 的动作类型由调用处传入');
-    assert.match(code, /chip\('', '全部来源', 'filter-source'\)/, '来源 chips（含「全部来源」）');
-    assert.match(code, /chip\('manual', '稍后阅读', 'filter-source'\)/, '「稍后阅读」是固定入口');
-    assert.match(code, /chip\('all', '全部', 'filter-view'\)/, '状态 chips');
+    // 筛选行按渠道分组：渠道按钮 + 下拉里才是具体订阅人
+    assert.match(code, /function channelGroups\(\)/, '渠道分组函数在');
+    assert.match(code, /data-action="channel"/, '渠道按钮是一个动作');
+    assert.match(code, /class="special-line-menu" role="menu"/, '渠道按钮带子菜单');
+    assert.match(code, /全部渠道<\/button>|'全部渠道'/, '「全部渠道」清空来源筛选');
+    assert.match(code, /该渠道全部/, '子菜单里可以只看该渠道');
+    assert.match(code, /chip\('all', '全部', 'filter-view'\)|viewChip\('all', '全部'\)/, '状态 chips');
+    // ⚠️ 这一行**不能**再有横向滚动：滚动容器会把渠道子菜单裁掉，
+    // 而扁平化 + 隐藏滚动条正是「已归档被推出可视区」的原因
+    assert.doesNotMatch(code, /special-line-sep/, '扁平分隔线已随分组一起删除');
     assert.match(code, /<details class="special-line-tools">/, '「⋯」菜单（与仿真同款）');
     assert.match(code, /<div class="special-line-actions"[^>]*popover="manual"/,
         '菜单里是操作列表，且是 top-layer 的 popover（不被滚动容器裁）');
