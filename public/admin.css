@@ -943,7 +943,7 @@
 .special-line-source-state[data-status="failed"] { color: var(--sl-danger); }
 
 .special-line-source-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
-.special-line-source-actions .btn { min-height: 30px; padding-inline: 10px; font-size: 11px; }
+.special-line-source-actions .btn { min-width: 44px; min-height: 44px; padding-inline: 10px; font-size: 11px; }
 .special-line-source-actions .btn-danger { color: var(--sl-danger); }
 
 .special-line-source-form {
@@ -969,7 +969,8 @@
     font-size: 16px;
 }
 .special-line-source-form .special-line-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.special-line-source-form .btn { min-height: 36px; }
+.special-line-source-form .btn { min-height: 44px; }
+#specialLineAddSource { min-height: 44px; }
 
 .special-line-source-note { margin: 6px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
 
@@ -989,5 +990,5 @@
 @media (max-width: 480px) {
     .special-line-source-row { grid-template-columns: auto minmax(0, 1fr); }
     .special-line-source-state { grid-column: 2; justify-self: start; }
-    .special-line-source-actions .btn { min-height: 40px; }
+    .special-line-source-actions .btn { min-height: 44px; }
 }

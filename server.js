@@ -3494,7 +3494,8 @@ app.post('/api/timeline/sources', rateLimit, requireAdmin, async (req, res) => {
             providerType: body.providerType,
             name: body.name,
             externalKey: body.externalKey,
-            token: body.token
+            token: body.token,
+            syncIntervalMs: body.syncIntervalMs
         });
         res.json({ source });
     } catch (err) {
@@ -3510,7 +3511,8 @@ app.put('/api/timeline/sources/:id', rateLimit, requireAdmin, async (req, res) =
             name: body.name,
             externalKey: body.externalKey,
             token: body.token,
-            enabled: body.enabled
+            enabled: body.enabled,
+            syncIntervalMs: body.syncIntervalMs
         });
         res.json({ source });
     } catch (err) {

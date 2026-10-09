@@ -2,7 +2,44 @@
 
 核对日期：2026-10-08。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：时间线卡片瘦身 + 保存弹窗改平台那套 + 只填链接自动解析（修复提交 `c44ba87`/`f24385a`/`aeef2e0`，版本账 `1365d42`，已发布 **v1.14.6**）
+## 最新一轮：X 订阅改用 FxEmbed + 逐来源监控周期与启停（未提交，工作树；基线 `813a86e`）
+
+用户原话：「对 special line 模块，x 订阅改为采用 FxEmbed JSON API 来实现，输入用户名即可监控，如需配置监控周期可在后台配置。对每个添加的订阅来源均可设置启用或停止。」
+
+用决策表确认两项（均取推荐）：**周期按来源独立设置**（1/5/15/30/60 分钟，新来源默认 5 分钟）；**停止只关自动采集，仍可「立即同步」手动拉一次，且不会因此重新启用**。
+
+### 改法
+
+1. **X adapter 换 FxEmbed**（`lib/timeline/adapters/x.js`）：固定 `api.fxtwitter.com/2/profile/{handle}` 与 `/statuses`，不再需要 Bearer Token、不再缓存 userId。用户名校验后 `encodeURIComponent`；有界 `getJson`（2 MiB 流式上限、12 秒超时、拒绝重定向）。水位改用最高推文 ID 作字符串/BigInt 比较；只摄入原创（过滤 `replying_to`/`reposted_by`/他人作者），但**被过滤的有效 status 也推进水位**；用「空 results + 无 bottom cursor + 资料复核」区分上游两种 404。
+2. **凭据变成 provider 能力**：`requiresCredentials` / `defaultSyncIntervalMs` / `syncIntervalsMs` 随 `selectableProviders()` 下发；`createSource`/`testSource`/`syncSource` 只对需要凭据的 adapter 解密；X 不读旧密文、不存新 token；`sourceView()` 的 pending/expired 判定同样受约束。
+3. **逐来源周期**：`syncIntervalMs` 走 POST/PUT→service→DB→响应→调度；非法值 400，缺席保留；改周期以 `lastAttemptAt` 为基准重算 `nextSyncAt`（从未尝试过则保持到期），**重新授权立刻排一次**且不被同一次提交里的周期字段挤掉。
+4. **启停语义**：`enabled` 只接受布尔；停止只阻止新的自动采集，保留历史/已读/归档；`{ force: true }` 的手动同步仍可用且不重新启用。
+5. **后台界面**（`public/modules/special-line.js`、`public/admin.css`）：X 表单只留用户名与周期，微博才出现 Access Token；每行新增「编辑」（账号只读、可改周期），显示「每 N 分钟 · 自动监控已启用/已停止」；动作改「停止监控/启用监控」；失败保留输入与列表、busy 防重复点击；按钮 44px。`sw.js` 缓存 `nav-v88 → nav-v89`。
+
+### 实际验证
+
+- 接口核实：官方文档 `/api/introduction/` 与运行时 OpenAPI `/2/openapi.json` 确认 `/2/profile/{handle}/statuses` 存在且无需凭据；**本机 Node 进程真连**该端点拿到真实动态（`count=2` 实测返回不止 2 条且含回复/转发，故不能把参数当边界）。
+- 隔离夹具（本机临时目录，无任何私人文件）：真实浏览器走「登录 → 模块页真实开关启用 Special Line → 展开配置 → 添加 X · jack → 提交」。请求体 `{providerType,externalKey:jack,syncIntervalMs:300000}`，行显示「每 5 分钟 · 自动监控已启用」，无未配置凭据。
+- 「立即同步」真实采集：`fetched 5 / inserted 5`；直接读 SQLite 确认 5 条事件（author `@jack`、原文链接 `x.com/jack/status/<id>`、毫秒时间）与水位 `2108326299731378630`。
+- 「编辑周期」提交 `{"syncIntervalMs":900000}`（**不含 externalKey**），行读回「每 15 分钟」，DB `sync_interval_ms=900000` 且 `next_sync_at = last_attempt_at + 900000`。
+- 「停止监控」后手动同步仍返回 `ok:true`，`enabled` 仍为 `false`，状态显示「已暂停」、动作变「启用监控」。
+- 脚本探针：无 Authorization 头、重复同步 `inserted 0`、来源带无法解密的旧凭据仍能采集、导出→恢复后 `enabled`/`syncIntervalMs` 原样保留。
+- 新增/扩展测试：FxEmbed 校验与分页、404 双义、超大 JSON 截停、真实路由→服务→DB 的周期/启停/调度、重新授权立即到期、后台渲染函数真执行（X 无 token 字段、微博无 1 分钟档、行状态文案）。**全套 556/556 通过**；`node --check`（server、模块、lib/timeline 全部）与 `git diff --check` 通过。两轴审查已跑，发现的问题逐条复现：改周期分支顺序、重新授权被周期分支推后、周期文案对微博含非法档位、水位判定 `ids.length > 1` 会误报覆盖不全——**四处已修并补测试**。
+
+### 验证边界
+
+- 未在**用户的 Edge** 上复跑；浏览器验证用的是本机隔离夹具与 headless Chrome。
+- 只对 `jack` 一个账号做过真实采集；未覆盖私密/封禁账号、限流的真实响应（这些只有 fixture）。
+- 未做真实「等到下一个周期自动跑一次」的等待观察（周期对调度的影响由可控时间与 DB 断言证明）。
+- 键盘焦点在「停止/立即同步」后因重渲染回到 body（既有行为，非本轮引入），未改。
+
+### 下一步
+
+1. 若要发布：先 `git status`，再按仓库规矩跑两轴审查 + `node --test tests/*.test.js`，用 `scripts/release.sh` 发布（本请求未授权发布）。
+2. README 顶部「卡片头含同步状态与未读数」一句仍是 v1.14.6 之前的旧描述，与本轮无关，可另行清理。
+3. `PUT` 改 `externalKey` 不会重置 `syncCursor`（换号后旧水位可能跳过早帖）——既有问题，本轮未动（新 UI 的编辑态账号只读，常规路径不可达）。
+
+## 上一轮：时间线卡片瘦身 + 保存弹窗改平台那套 + 只填链接自动解析（修复提交 `c44ba87`/`f24385a`/`aeef2e0`，版本账 `1365d42`，已发布 **v1.14.6**）
 
 用户原话：「1. "动态 · 稍后阅读 / 已同步 / 未读 1" 这些描述不用保留了，顶部只保留最新同步时间就行了，另外模块底部的更新时间和条数也没必要保留。 2. 点击保存按钮是新增稍后阅读的链接，弹窗位置不对，应该不加遮罩居中，和其他设置弹窗一样 3. 添加稍后阅读的链接时，只需填链接就行，标题或者说明选填，链接填完添加后自动解析摘要进行展示」
 

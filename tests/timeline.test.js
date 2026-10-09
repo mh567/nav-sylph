@@ -42,7 +42,7 @@ function stripComments(src) {
 }
 
 function tempDb() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-timeline-db-'));
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-timeline-db-'));
     return { dir, file: path.join(dir, 'timeline.db') };
 }
 
@@ -361,38 +361,114 @@ test('校验边界：协议、长度、时间、事件类型、metadata 白名�
 
 // ========== adapter（fixture） ==========
 
-test('x adapter：normalize 出稳定事件，错误分类可区分凭据与网络', async () => {
-    const rec = {
-        id: '1799999999999999999',
-        text: '第一行是标题\n第二行以后是摘要',
-        created_at: '2026-10-08T06:32:00.000Z',
-        author_id: '42'
-    };
-    const ev = xAdapter.normalize(rec, { externalKey: '@alice' });
-    assert.equal(ev.providerEventId, rec.id, 'provider 事件 id 原样保留（它就是去重键）');
-    assert.equal(ev.eventType, 'social_post');
-    assert.equal(ev.title, '第一行是标题');
-    assert.equal(ev.summary, '第二行以后是摘要');
-    assert.equal(ev.author, '@alice', '@ 前缀补回');
-    assert.equal(ev.url, `https://x.com/alice/status/${rec.id}`);
-    assert.equal(ev.occurredAt, Date.parse(rec.created_at));
-    assert.equal(xAdapter.normalize({}, {}), null, '没有 id 的记录返回 null（会被跳过）');
+function fxStatus(id, extra = {}) {
+    return { type: 'status', id, text: '标题\n正文', author: { screen_name: 'alice' },
+        created_timestamp: 1700000000, ...extra };
+}
 
-    // 凭据缺失 -> auth（界面给「重新授权」，不是「稍后重试」）
-    const noTok = await xAdapter.testConnection({ credentials: {}, externalKey: 'a' });
-    assert.equal(noTok.ok, false);
-    assert.equal(noTok.code, 'auth');
+function fxResponse(results = [], bottom = null, code = 200) {
+    return Response.json({ code, results, cursor: { top: null, bottom } });
+}
 
-    // 网络层错误分类：注入一个必然失败的 fetch
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => { throw Object.assign(new Error('boom'), { name: 'TypeError' }); };
-    try {
-        const res = await xAdapter.testConnection({ credentials: { token: 't' }, externalKey: 'a' });
-        assert.equal(res.ok, false);
-        assert.equal(res.code, 'network', '网络错误不能被当成凭据错误');
-    } finally {
-        globalThis.fetch = originalFetch;
+test('FxEmbed normalize 校验作者、精度、原创与时间', () => {
+    const row = fxStatus('1799999999999999999');
+    const ev = xAdapter.normalize(row, { externalKey: '@alice' });
+    assert.equal(ev.providerEventId, row.id);
+    assert.equal(ev.author, '@alice');
+    assert.equal(ev.occurredAt, 1700000000000);
+    assert.equal(ev.url, `https://x.com/alice/status/${row.id}`);
+    assert.deepEqual(ev.metadata, {});
+    for (const extra of [{ replying_to: {} }, { reposted_by: {} }, { type: 'thread' },
+        { author: { screen_name: 'bob' } }, { id: 1799999999999999999 }]) {
+        assert.equal(xAdapter.normalize(fxStatus(row.id, extra), { externalKey: 'alice' }), null);
     }
+    for (const handle of ['https://x.com/alice', 'id:123', 'a/b', 'a?b', '@@a', 'a'.repeat(16)]) {
+        assert.throws(() => xAdapter.normalizeAccount(handle));
+    }
+});
+
+test('FxEmbed 每轮从最新页开始，置顶不截断、过滤条目也推进字符串水位', async () => {
+    const original = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push([String(url), options]);
+        if (new URL(url).searchParams.has('cursor')) return fxResponse([fxStatus('102'), fxStatus('100')]);
+        return fxResponse([fxStatus('10'), fxStatus('105'), fxStatus('106', { replying_to: {} })], 'next');
+    };
+    try {
+        const result = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: '100' });
+        assert.deepEqual(result.events.map(e => e.providerEventId), ['105', '102']);
+        assert.equal(result.nextCursor, '106');
+        assert.equal(requests.length, 2);
+        for (const [url, options] of requests) {
+            assert.ok(url.startsWith('https://api.fxtwitter.com/2/profile/alice/statuses?'));
+            assert.equal(new URL(url).searchParams.get('count'), '100');
+            assert.equal(new URL(url).searchParams.has('since'), false);
+            assert.equal(options.redirect, 'error');
+            assert.equal(options.headers.authorization, undefined);
+        }
+        requests.length = 0;
+        await xAdapter.fetchEvents({ externalKey: 'alice' });
+        assert.equal(requests.length, 1);
+    } finally { globalThis.fetch = original; }
+});
+
+test('FxEmbed 无 token 连接、空列表与 404 双义、错误 JSON/code/限流/超时', async () => {
+    const original = globalThis.fetch;
+    try {
+        for (const [response, expected] of [
+            [() => fxResponse(), true], [() => fxResponse([], null, 404), true],
+            [() => new Response('html', { status: 404 }), false],
+            [() => Response.json({ code: 404 }), false],
+            [() => Response.json({ code: 200, results: null }), false],
+            [() => Response.json(null), false], [() => new Response('<html>'), false],
+            [() => fxResponse([], null, 500), false],
+            [() => new Response('', { status: 429 }), false]
+        ]) {
+            globalThis.fetch = async url => String(url).includes('/statuses') ? response()
+                : Response.json({ code: 200, user: { screen_name: 'alice', protected: false } });
+            const result = await xAdapter.testConnection({ externalKey: 'alice' });
+            assert.equal(result.ok, expected);
+        }
+        globalThis.fetch = async () => { throw Object.assign(new Error('timeout'), { name: 'TimeoutError' }); };
+        assert.equal((await xAdapter.testConnection({ externalKey: 'alice' })).code, 'timeout');
+        globalThis.fetch = async () => Response.json({ code: 200, user: { screen_name: 'alice', protected: true } });
+        assert.equal((await xAdapter.testConnection({ externalKey: 'alice' })).ok, false);
+    } finally { globalThis.fetch = original; }
+});
+
+test('FxEmbed 重复游标、五页上限与中途故障拒绝成功', async () => {
+    const original = globalThis.fetch;
+    try {
+        for (const mode of ['repeat', 'limit', 'failure']) {
+            let n = 0;
+            globalThis.fetch = async () => {
+                n++;
+                if (mode === 'failure' && n === 2) throw new Error('offline');
+                return fxResponse([fxStatus(String(200 - n))], mode === 'repeat' ? 'same' : `page${n}`);
+            };
+            await assert.rejects(() => xAdapter.fetchEvents({ externalKey: 'alice', cursor: '100' }));
+            assert.ok(n <= 5);
+        }
+    } finally { globalThis.fetch = original; }
+});
+
+test('有界 getJson 流式截停 2MiB、取消正文并保持微博默认解析', async () => {
+    const { getJson } = require('../lib/timeline/http');
+    const original = globalThis.fetch;
+    let cancelled = false;
+    let reads = 0;
+    globalThis.fetch = async () => new Response(new ReadableStream({
+        pull(controller) { reads++; controller.enqueue(new Uint8Array(1024 * 1024)); },
+        cancel() { cancelled = true; }
+    }));
+    try {
+        await assert.rejects(() => getJson('https://api.fxtwitter.com', { maxBytes: 2 * 1024 * 1024 }), /大小限制/);
+        assert.equal(cancelled, true);
+        assert.ok(reads <= 4);
+        globalThis.fetch = async () => ({ ok: true, json: async () => ({ statuses: [] }) });
+        assert.deepEqual(await getJson('https://api.weibo.com'), { statuses: [] });
+    } finally { globalThis.fetch = original; }
 });
 
 test('weibo adapter：normalize 与 error_code 分类（HTTP 200 里报错也要认出来）', async () => {
@@ -641,6 +717,56 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
         '模块实现该渲染函数');
     assert.match(moduleSource, /renderAdminSection\b[\s\S]*registerModule|registerModule[\s\S]*renderAdminSection/,
         '并把它登记进模块定义');
+});
+
+test('后台来源表单与行：X 只填用户名与周期，微博才要求 Access Token（执行真实渲染函数）', () => {
+    const code = stripComments(moduleSource);
+    const providers = [
+        { id: 'x', label: 'X', accountLabel: '账号名（不含 @）', credentialLabel: null,
+            requiresCredentials: false, defaultSyncIntervalMs: 300000,
+            syncIntervalsMs: [60000, 300000, 900000, 1800000, 3600000] },
+        { id: 'weibo', label: '微博', accountLabel: '微博昵称', credentialLabel: 'Access Token',
+            requiresCredentials: true, defaultSyncIntervalMs: 300000,
+            syncIntervalsMs: [300000, 900000, 1800000, 3600000] }
+    ];
+    const providerFor = id => providers.find(p => p.id === id);
+    const esc = value => String(value === null || value === undefined ? '' : value);
+    const submitSrc = extractFunction(code, 'function submitText() {');
+    const makeFormHTML = new Function('providers', 'providerFor', 'esc', 'submitText',
+        'form', `return (${extractFunction(code, 'function formHTML() {')});`);
+    const renderForm = form => makeFormHTML(providers, providerFor, esc,
+        new Function('form', `return (${submitSrc});`)(form), form)();
+
+    const xHtml = renderForm({ mode: 'add', providerType: 'x', externalKey: '', syncIntervalMs: 300000 });
+    assert.doesNotMatch(xHtml, /name="token"/, 'X 表单不出现凭据输入框');
+    assert.doesNotMatch(xHtml, /Access Token/, 'X 表单不出现凭据标签');
+    assert.match(xHtml, /name="syncIntervalMs"/, 'X 表单有监控周期');
+    assert.match(xHtml, /value="60000"/, 'X 支持 1 分钟档');
+    assert.match(xHtml, /保存并测试/, '新增态按钮文案');
+
+    const weiboHtml = renderForm({ mode: 'add', providerType: 'weibo', externalKey: 'someone', syncIntervalMs: 900000 });
+    assert.match(weiboHtml, /name="token"/, '微博表单保留 Access Token 输入');
+    assert.match(weiboHtml, /name="syncIntervalMs"[\s\S]*value="900000" selected/,
+        '微博表单回显周期');
+    assert.doesNotMatch(weiboHtml, /value="60000"/, '微博不提供 1 分钟档');
+
+    const bumped = renderForm({ mode: 'add', providerType: 'weibo', externalKey: '', syncIntervalMs: 60000 });
+    assert.doesNotMatch(bumped, /value="60000"/, '微博不接受 1 分钟档，回落到合法默认值');
+    assert.match(bumped, /value="300000" selected/, '回落值即默认周期');
+
+    const editHtml = renderForm({ mode: 'edit', id: 's1', providerType: 'x', externalKey: 'jack', syncIntervalMs: 900000 });
+    assert.match(editHtml, /name="externalKey"[\s\S]*readonly/, '编辑态账号只读');
+    assert.match(editHtml, /保存配置/, '编辑态按钮文案');
+
+    const makeRowHTML = new Function('providerFor', 'esc', 'relTime', 'STATUS_TEXT',
+        `return (${extractFunction(code, 'function rowHTML(s) {')});`);
+    const row = makeRowHTML(providerFor, esc, () => '刚刚', { ok: '已连接', paused: '已暂停' })(
+        { id: '1', providerType: 'x', providerLabel: 'X', providerSymbol: 'X', externalKey: 'jack',
+            enabled: false, hasCredentials: false, status: 'paused', syncIntervalMs: 900000 });
+    assert.match(row, /每 15 分钟 · 自动监控已停止/, '行显示周期与自动监控状态');
+    assert.match(row, /data-act="toggle"[^>]*>启用监控</, '停止态给「启用监控」');
+    assert.doesNotMatch(row, /未配置凭据/, 'X 没有凭据概念，不显示未配置');
+    assert.doesNotMatch(row, /重新授权/, 'X 不出现重新授权');
 });
 
 test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has() 的浏览器里菜单会被下一张卡盖住）', () => {
@@ -1501,12 +1627,11 @@ test('时间线没有自带限流 Map（复用既有桶，不必进 sweep 清单
     assert.ok(section.length > 2000, `时间线那一节切出来了（${section.length} 字符）`);
     assert.doesNotMatch(section, /new Map\(/,
         '时间线自带一只新 Map 就会出现「只增不减、无人清扫」——复用既有桶即可。' +
-        '（lib/timeline 里那两只 Map 不在限流路径上，见下条。）');
+        '（lib/timeline 的集合不在限流路径上，见下条。）');
 
     // lib/timeline 里的可变集合都是「有界或被显式清理」的，逐只点出来：
     //  · service 的 failures：删来源时 delete，且只按来源计数
     //  · sync 的 inFlight：finally 里 delete
-    //  · adapters/x 的 userIdCache：有 USER_ID_CACHE_MAX 上限
     // （registry 的 PROVIDERS 是 new Map([...]) 的字面量常量，不在扫描范围内。）
     const timelineDir = fs.readdirSync(path.join(ROOT, 'lib', 'timeline'));
     const files = timelineDir.filter(f => f.endsWith('.js'))
@@ -1522,6 +1647,198 @@ test('时间线没有自带限流 Map（复用既有桶，不必进 sweep 清单
             maps.push(`${path.basename(file)}:${m[1]}`);
         }
     }
-    assert.deepEqual(maps.sort(), ['service.js:failures', 'sync.js:inFlight', 'x.js:userIdCache'].sort(),
-        `lib/timeline 里的可变集合就是这三只，每只都要有边界或显式清理（实测：${maps.join(', ')}）`);
+    assert.deepEqual(maps.sort(), ['service.js:failures', 'sync.js:inFlight'].sort(),
+        `lib/timeline 里的可变集合就是这两只，每只都要有边界或显式清理（实测：${maps.join(', ')}）`);
+});
+
+test('真实路由→服务→数据库：周期白名单、无 token、启停与调度恢复', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+        requests.push([url, options]);
+        return String(url).includes('/statuses') ? fxResponse([fxStatus('1799999999999999999', { created_timestamp: Math.floor(Date.now() / 1000) })])
+            : Response.json({ code: 200, user: { screen_name: 'alice' } });
+    };
+    try {
+        const timeline = createTimeline(db, {
+            getPasswordHash: async () => { throw new Error('X must not decrypt'); }, log: { warn() {} }
+        });
+        const routes = loadTimelineRoutes(timeline);
+        const providers = (await callRoute(routes, 'GET /api/timeline/sources')).body.providers;
+        assert.deepEqual(Array.from(providers.find(p => p.id === 'x').syncIntervalsMs), [60000, 300000, 900000, 1800000, 3600000]);
+        assert.equal(providers.find(p => p.id === 'x').requiresCredentials, false);
+        assert.equal(providers.find(p => p.id === 'x').defaultSyncIntervalMs, 300000);
+        assert.deepEqual(Array.from(providers.find(p => p.id === 'weibo').syncIntervalsMs), [300000, 900000, 1800000, 3600000]);
+        assert.equal(providers.find(p => p.id === 'weibo').requiresCredentials, true);
+        const create = await callRoute(routes, 'POST /api/timeline/sources', {
+            body: { providerType: 'x', externalKey: ' @alice ', syncIntervalMs: 60000, token: 'ignore' }
+        });
+        assert.equal(create.statusCode, 200);
+        const id = create.body.source.id;
+        assert.equal(create.body.source.externalKey, 'alice');
+        assert.equal(create.body.source.syncIntervalMs, 60000);
+        assert.equal(timeline.repo.getCredentials(id), null);
+        timeline.repo.setCredentials(id, { broken: true });
+        assert.equal((await timeline.service.testSource(id)).ok, true);
+        assert.equal((await timeline.service.syncSource(id)).inserted, 1);
+        const event = timeline.repo.listEvents({ sourceId: id }).rows[0];
+        timeline.service.markRead(event.id, true);
+        timeline.service.archive(event.id, true);
+        assert.equal((await timeline.service.syncSource(id)).inserted, 0);
+        for (const interval of [60000, 300000, 900000, 1800000, 3600000]) {
+            timeline.repo.recordAttempt(id, 1);
+            const changed = await callRoute(routes, 'PUT /api/timeline/sources/:id', {
+                params: { id }, body: { syncIntervalMs: interval }
+            });
+            assert.equal(changed.statusCode, 200);
+            assert.equal(changed.body.source.syncIntervalMs, interval);
+            assert.equal(timeline.repo.getSource(id).syncIntervalMs, interval);
+            assert.ok(changed.body.source.nextSyncAt <= Date.now());
+        }
+        const unchanged = await callRoute(routes, 'PUT /api/timeline/sources/:id', { params: { id }, body: { name: 'renamed' } });
+        assert.equal(unchanged.body.source.syncIntervalMs, 3600000);
+        for (const invalid of [null, '60000', 120000, -1, {}, true]) {
+            const bad = await callRoute(routes, 'PUT /api/timeline/sources/:id', { params: { id }, body: { syncIntervalMs: invalid } });
+            assert.equal(bad.statusCode, 400);
+            assert.equal(timeline.repo.getSource(id).syncIntervalMs, 3600000);
+            const badCreate = await callRoute(routes, 'POST /api/timeline/sources', {
+                body: { providerType: 'x', externalKey: 'alice', syncIntervalMs: invalid }
+            });
+            assert.equal(badCreate.statusCode, 400);
+        }
+        assert.equal((await callRoute(routes, 'PUT /api/timeline/sources/:id', {
+            params: { id }, body: { enabled: 'false' }
+        })).statusCode, 400);
+        const stopped = await callRoute(routes, 'PUT /api/timeline/sources/:id', {
+            params: { id }, body: { enabled: false }
+        });
+        assert.equal(stopped.body.source.enabled, false);
+        const n = requests.length;
+        await timeline.scheduler.tickNow();
+        assert.equal((await timeline.service.syncSource(id)).skipped, true);
+        assert.equal(requests.length, n);
+        await callRoute(routes, 'PUT /api/timeline/sources/:id', {
+            params: { id }, body: { syncIntervalMs: 300000, token: 'ignored' }
+        });
+        assert.equal(timeline.repo.getSource(id).enabled, false);
+        assert.equal((await callRoute(routes, 'POST /api/timeline/sources/:id/sync', { params: { id } })).body.ok, true);
+        assert.ok(requests.length > n);
+        assert.equal(timeline.repo.getSource(id).enabled, false);
+        assert.ok(timeline.repo.listEvents({ view: 'archived' }).rows[0].readAt);
+        await callRoute(routes, 'PUT /api/timeline/sources/:id', { params: { id }, body: { enabled: true } });
+        assert.equal(timeline.repo.dueSources(Date.now(), 10).length, 1);
+        const before = requests.length;
+        await timeline.scheduler.tickNow();
+        while (timeline.scheduler.isRunning(id)) await new Promise(resolve => setImmediate(resolve));
+        assert.ok(requests.length > before);
+        assert.ok(timeline.repo.getSource(id).nextSyncAt >= timeline.repo.getSource(id).lastAttemptAt + 300000);
+        assert.equal((await callRoute(routes, 'POST /api/timeline/sources', {
+            body: { providerType: 'weibo', externalKey: 'alice' }
+        })).statusCode, 400);
+        const defaults = await timeline.service.createSource({ providerType: 'x', externalKey: 'alice' });
+        assert.equal(defaults.syncIntervalMs, 300000);
+        for (const [, options] of requests) assert.equal(options.headers.authorization, undefined);
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('重新授权立即排一次同步，不被同一次提交里的周期字段挤掉；从未尝试过改周期仍然到期', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, { getPasswordHash: async () => OLD_HASH, log: { warn() {} } });
+
+        // ① X：从未尝试过（lastAttemptAt 为空）时改周期，仍应「现在就该跑」
+        const x = repo.createSource({ providerType: 'x', externalKey: 'alice', name: 'alice', syncIntervalMs: 300000 });
+        const changed = await service.updateSource(x.id, { syncIntervalMs: 3600000 });
+        assert.equal(changed.syncIntervalMs, 3600000);
+        assert.ok(repo.getSource(x.id).nextSyncAt <= Date.now(), '从未尝试过，改周期后仍立即到期');
+
+        // ② 微博：重新授权（token + syncIntervalMs 同一次提交）必须立刻排一次，
+        //    而不是落到「上次尝试 + 新周期」那条分支上（那会让用户等满一个周期）
+        globalThis.fetch = async () => Response.json({ id: 42, screen_name: 'someone' });
+        const weibo = repo.createSource({ providerType: 'weibo', externalKey: 'someone', name: 'someone', syncIntervalMs: 300000 });
+        repo.setCredentials(weibo.id, { stale: true });
+        repo.recordAttempt(weibo.id, Date.now() - 10 * 60 * 1000);
+        repo.setNextSyncAt(weibo.id, Date.now() + 300000);
+        const reauth = await service.updateSource(weibo.id, { externalKey: 'someone', token: 'new-token', syncIntervalMs: 900000 });
+        assert.equal(reauth.syncIntervalMs, 900000, '周期照常写入');
+        assert.ok(repo.getSource(weibo.id).nextSyncAt <= Date.now(), '重新授权后立刻到期，不被周期分支推后');
+
+        // ③ 未授权平台仍然必须带凭据创建
+        await assert.rejects(() => service.createSource({ providerType: 'weibo', externalKey: 'someone' }),
+            /Access Token|凭据/);
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('真实同步中途失败不写事件或推进旧数字水位；旧 X 状态与周期保留', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const repo = createRepository(db);
+        const source = repo.createSource({ providerType: 'x', externalKey: 'alice', name: 'alice', syncIntervalMs: 900000 });
+        repo.recordSuccess(source.id, { cursor: '1799999999999999900', at: 1, nextSyncAt: 1 });
+        repo.recordFailure(source.id, { code: 'auth', message: 'old token', at: 1, nextSyncAt: 1 });
+        repo.setCredentials(source.id, { corrupt: true });
+        const service = createService(repo, { getPasswordHash: async () => { throw new Error('unused'); }, log: { warn() {} } });
+        assert.equal(service.getSourceView(source.id).status, 'failed');
+        let n = 0;
+        globalThis.fetch = async () => {
+            if (++n === 2) throw new Error('offline');
+            return fxResponse([fxStatus('1799999999999999999')], 'next');
+        };
+        assert.equal((await service.syncSource(source.id)).ok, false);
+        assert.equal(repo.getSource(source.id).syncCursor, '1799999999999999900');
+        assert.equal(repo.countSourceEvents(source.id), 0);
+        assert.equal(repo.getSource(source.id).syncIntervalMs, 900000);
+        globalThis.fetch = async () => fxResponse([fxStatus('1799999999999999999')]);
+        assert.equal((await service.syncSource(source.id)).ok, true);
+        assert.equal(repo.getSource(source.id).syncCursor, '1799999999999999999');
+        assert.equal(service.getSourceView(source.id).status, 'ok');
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('微博周期白名单最低五分钟，凭据依旧加密并且周期编辑不重新启用', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({ id: '123' });
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, { getPasswordHash: async () => OLD_HASH });
+        await assert.rejects(() => service.createSource({ providerType: 'weibo', externalKey: 'alice', token: 'secret', syncIntervalMs: 60000 }), { status: 400 });
+        const src = await service.createSource({ providerType: 'weibo', externalKey: 'alice', token: 'secret' });
+        assert.equal(src.syncIntervalMs, 300000);
+        assert.equal(src.hasCredentials, true);
+        assert.equal(JSON.parse(decrypt(repo.getCredentials(src.id), OLD_HASH, 'timeline')).token, 'secret');
+        await service.updateSource(src.id, { enabled: false });
+        for (const ms of [300000, 900000, 1800000, 3600000]) {
+            const updated = await service.updateSource(src.id, { syncIntervalMs: ms });
+            assert.equal(updated.syncIntervalMs, ms);
+            assert.equal(updated.enabled, false);
+            assert.equal(updated.nextSyncAt, null);
+        }
+        await assert.rejects(() => service.updateSource(src.id, { syncIntervalMs: 60000 }), { status: 400 });
+        assert.equal(repo.getSource(src.id).syncIntervalMs, 3600000);
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });

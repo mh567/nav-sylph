@@ -26,7 +26,7 @@ const { encrypt } = require(path.join(ROOT, 'lib', 'credentials.js'));
 const HASH = '$2b$10$hashforbackuptest';
 
 function tempDb() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-timeline-backup-'));
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-timeline-backup-'));
     return { dir, file: path.join(dir, 'timeline.db') };
 }
 
@@ -258,7 +258,7 @@ test('破坏性往返：备份 → 清库 → 恢复，事件与用户状态回�
         assert.equal(service.listSources().filter(s => s.hasCredentials).length, 0,
             '凭据不随备份——恢复后来源是「待授权」，由用户重新填 token');
         assert.equal(service.getSourceView(service.listSources().find(s => s.providerType === 'x').id).status,
-            'pending', '界面据此显示「待授权」而不是「已连接」');
+            'ok', 'X 恢复后无需凭据即可工作');
     } finally {
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
@@ -373,6 +373,47 @@ test('校验和不对的时间线备份拒绝恢复；没有时间线文件的�
         const restored = await legacy.restoreBackup({ timelineFile: null, configFile: null });
         assert.equal(restored.data.timeline, undefined, '旧备份没有时间线数据，恢复流程照常走完');
     } finally {
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('恢复保留周期启停和历史状态，X 可无凭据同步，微博仍待授权且重新授权不启用暂停来源', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const { repo, service, sourceId } = await seedService(db);
+        repo.updateSource(sourceId, { enabled: false, syncIntervalMs: 1800000 });
+        const weibo = repo.createSource({ providerType: 'weibo', name: 'weibo', externalKey: 'alice', syncIntervalMs: 300000 });
+        const activeX = repo.createSource({ providerType: 'x', name: 'active', externalKey: 'alice', syncIntervalMs: 900000, nextSyncAt: 0 });
+        const snapshot = service.exportTimeline();
+        service.importTimeline(snapshot);
+        assert.equal(repo.getSource(sourceId).enabled, false);
+        assert.equal(repo.getSource(sourceId).syncIntervalMs, 1800000);
+        assert.equal(service.getSourceView(sourceId).status, 'paused');
+        assert.equal(service.getSourceView(activeX.id).status, 'ok');
+        assert.equal(service.getSourceView(weibo.id).status, 'pending');
+        assert.equal((await service.syncSource(weibo.id)).code, 'auth');
+        let calls = 0;
+        globalThis.fetch = async url => {
+            calls++;
+            if (String(url).includes('weibo')) return Response.json({ id: '123' });
+            return Response.json({ code: 200, results: [], cursor: { top: null, bottom: null } });
+        };
+        assert.equal((await service.syncSource(sourceId)).skipped, true);
+        assert.equal(calls, 0);
+        assert.equal((await service.syncSource(sourceId, { force: true })).ok, true);
+        assert.equal(repo.getSource(sourceId).enabled, false);
+        assert.equal((await service.syncSource(activeX.id)).ok, true);
+        const history = repo.listEvents({ view: 'archived' }).rows[0];
+        assert.ok(history.readAt && history.archivedAt);
+        await service.updateSource(weibo.id, { enabled: false });
+        await service.updateSource(weibo.id, { token: 'fresh' });
+        assert.equal(repo.getSource(weibo.id).enabled, false);
+        assert.equal(repo.getSource(weibo.id).nextSyncAt, null);
+    } finally {
+        globalThis.fetch = original;
         db.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }

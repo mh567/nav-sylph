@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v89：X 订阅改用 FxEmbed JSON API（只填用户名、不需要凭据），每条来源可独立
+// 设置监控周期（1/5/15/30/60 分钟）与启用/停止；改了 special-line.js、admin.css、
+// lib/timeline/*、server.js。
 // nav-v88：Special Line 顶部只留最近同步时间（去掉副标题/已同步/未读），底部去掉条数与更新时间；
 // 保存弹窗改用平台 .ui-dialog-overlay（居中 + 同款遮罩，点遮罩/Esc 关闭）；标题与摘要改为选填，
 // 留空由服务端抓取，抓不到就用链接当标题。改了 special-line.js、styles.css、lib/timeline/*、server.js。
@@ -199,7 +202,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v88';
+const CACHE = 'nav-v89';
 const ASSETS = [
     '/',
     '/index.html',

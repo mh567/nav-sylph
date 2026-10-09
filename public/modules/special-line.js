@@ -725,16 +725,28 @@
             }
         }
 
+        function providerFor(id) {
+            return providers.find(p => p.id === id);
+        }
+
+        function submitText() {
+            return form && form.mode === 'edit' ? '保存配置'
+                : form && form.mode === 'reauth' ? '重新授权' : '保存并测试';
+        }
+
         function rowHTML(s) {
-            const canReauth = s.status === 'expired' || s.status === 'pending';
+            const provider = providerFor(s.providerType);
+            const needsCredentials = provider && provider.requiresCredentials;
+            const canReauth = needsCredentials && (!s.hasCredentials || s.status === 'expired' || s.status === 'pending');
             const actions = [];
             if (canReauth) {
                 actions.push(`<button class="btn" type="button" data-act="reauth" data-id="${esc(s.id)}">重新授权</button>`);
             } else {
                 actions.push(`<button class="btn" type="button" data-act="test" data-id="${esc(s.id)}">测试连接</button>`);
             }
+            actions.push(`<button class="btn" type="button" data-act="edit" data-id="${esc(s.id)}">编辑</button>`);
             actions.push(`<button class="btn" type="button" data-act="sync" data-id="${esc(s.id)}">立即同步</button>`);
-            actions.push(`<button class="btn" type="button" data-act="toggle" data-id="${esc(s.id)}">${s.enabled ? '暂停同步' : '恢复同步'}</button>`);
+            actions.push(`<button class="btn" type="button" data-act="toggle" data-id="${esc(s.id)}">${s.enabled ? '停止监控' : '启用监控'}</button>`);
             actions.push(`<button class="btn btn-danger" type="button" data-act="del" data-id="${esc(s.id)}">删除</button>`);
             const err = s.lastError
                 ? `<div class="special-line-source-error">${esc(s.lastError.message || '')}</div>`
@@ -743,8 +755,9 @@
                 `<span class="special-line-icon" aria-hidden="true">${esc(s.providerSymbol || '·')}</span>` +
                 `<div class="special-line-source-copy">` +
                     `<strong>${esc(s.providerLabel)}${s.externalKey ? ' · ' + esc(s.externalKey) : ''}</strong>` +
+                    `<small>每 ${esc(s.syncIntervalMs / 60000)} 分钟 · 自动监控${s.enabled ? '已启用' : '已停止'}</small>` +
                     `<small>${s.lastSuccessAt ? `最近成功 ${esc(relTime(s.lastSuccessAt))}` : '尚未同步成功'}` +
-                        `${s.hasCredentials ? '' : ' · 未配置凭据'}</small>` +
+                        `${needsCredentials && !s.hasCredentials ? ' · 未配置凭据' : ''}</small>` +
                     err +
                 `</div>` +
                 `<span class="special-line-source-state" data-status="${esc(s.status)}">${esc(STATUS_TEXT[s.status] || s.status)}</span>` +
@@ -754,29 +767,37 @@
 
         function formHTML() {
             if (!form) return '';
-            const editing = form.mode === 'reauth';
-            const current = editing ? providers.find(p => p.id === form.providerType) : null;
+            const editing = form.mode !== 'add';
+            const current = providerFor(form.providerType);
+            if (!current) return '<p class="fav-hint">暂无可用订阅平台，请重新加载。</p>';
+            const intervals = current.syncIntervalsMs || [];
+            if (!intervals.includes(form.syncIntervalMs)) form.syncIntervalMs = current.defaultSyncIntervalMs;
             const providerOptions = providers.map(p =>
-                `<option value="${esc(p.id)}" ${editing && p.id === form.providerType ? 'selected' : ''}>${esc(p.label)}</option>`
+                `<option value="${esc(p.id)}" ${p.id === form.providerType ? 'selected' : ''}>${esc(p.label)}</option>`
             ).join('');
-            const accountLabel = (current && current.accountLabel) ||
-                (providers[0] && providers[0].accountLabel) || '账号标识';
-            const credentialLabel = (current && current.credentialLabel) ||
-                (providers[0] && providers[0].credentialLabel) || '凭据';
+            const intervalOptions = intervals.map(ms =>
+                `<option value="${ms}" ${ms === form.syncIntervalMs ? 'selected' : ''}>${ms / 60000} 分钟</option>`
+            ).join('');
+            const credential = current.requiresCredentials
+                ? `<label>${esc(current.credentialLabel)}
+                    <input name="token" type="password" autocomplete="off"
+                        placeholder="${editing ? '留空表示保留原值' : '在平台开发者后台获取'}" value="${esc(form.token || '')}">
+                   </label>` : '';
             return `<form class="special-line-source-form">
                 <label>平台
                     <select name="providerType" ${editing ? 'disabled' : ''}>${providerOptions}</select>
                 </label>
-                <label>${esc(accountLabel)}
-                    <input name="externalKey" autocomplete="off" value="${esc(form.externalKey || '')}">
+                <label>${esc(current.accountLabel)}
+                    <input name="externalKey" autocomplete="off" value="${esc(form.externalKey || '')}"
+                        ${form.mode === 'edit' ? 'readonly' : ''}>
                 </label>
-                <label>${esc(credentialLabel)}
-                    <input name="token" type="password" autocomplete="off"
-                           placeholder="${editing ? '留空表示保留原值' : '在平台开发者后台获取'}" value="">
+                ${credential}
+                <label>监控周期
+                    <select name="syncIntervalMs">${intervalOptions}</select>
                 </label>
                 <div class="special-line-form-actions">
                     <button class="btn" type="button" data-act="form-cancel">取消</button>
-                    <button class="btn btn-primary" type="submit">${editing ? '重新授权' : '保存并测试'}</button>
+                    <button class="btn btn-primary" type="submit">${submitText()}</button>
                 </div>
             </form>`;
         }
@@ -784,24 +805,37 @@
         function draw(list) {
             const rows = list.filter(s => s.providerType !== 'manual');
             host.innerHTML =
-                `<p class="fav-hint">社交订阅在服务端用官方接口拉取；稍后阅读由你在首页保存。` +
-                `凭据只存在服务端，不会回传到页面。</p>` +
+                `<p class="fav-hint">X 通过 FxEmbed 在服务端采集，只需填写用户名；微博需配置 Access Token。` +
+                `每条来源独立设置周期。停止仅影响自动监控，仍可立即同步，历史内容保留。</p>` +
                 `<div class="special-line-source-list">${rows.length ? rows.map(rowHTML).join('') : '<p class="fav-hint">还没有订阅来源。</p>'}</div>` +
                 `<button class="btn" id="specialLineAddSource">＋ 添加订阅来源</button>` +
                 formHTML() +
-                `<p class="special-line-source-note">保存前会先测试连通：连不上的凭据不会被保存下来。</p>`;
+                `<p class="special-line-source-note">添加来源前会测试连通，失败不保存。监控周期与平台页面刷新周期互不影响。</p>`;
             bind(list);
         }
 
         function bind(list) {
             host.querySelector('#specialLineAddSource')?.addEventListener('click', () => {
-                form = { mode: 'add', externalKey: '' };
+                if (adminBusy) return;
+                form = { mode: 'add', providerType: providers[0]?.id, externalKey: '',
+                    syncIntervalMs: providers[0]?.defaultSyncIntervalMs };
                 draw(list);
                 host.querySelector('.special-line-source-form input[name="externalKey"]')?.focus();
             });
 
             host.querySelectorAll('.special-line-source-form [data-act="form-cancel"]').forEach(btn => {
-                btn.addEventListener('click', () => { form = null; draw(list); });
+                btn.addEventListener('click', () => { if (!adminBusy) { form = null; draw(list); } });
+            });
+
+            host.querySelector('.special-line-source-form [name="providerType"]')?.addEventListener('change', event => {
+                if (adminBusy || !form || form.mode !== 'add') return;
+                const el = event.currentTarget.closest('form');
+                form.externalKey = el.querySelector('[name="externalKey"]').value;
+                form.syncIntervalMs = Number(el.querySelector('[name="syncIntervalMs"]').value);
+                form.providerType = event.currentTarget.value;
+                form.token = '';
+                draw(list);
+                host.querySelector('.special-line-source-form [name="providerType"]')?.focus();
             });
 
             host.querySelector('.special-line-source-form')?.addEventListener('submit', async event => {
@@ -810,22 +844,28 @@
                 const el = event.currentTarget;
                 const providerType = el.querySelector('[name="providerType"]').value;
                 const externalKey = el.querySelector('[name="externalKey"]').value.trim();
-                const token = el.querySelector('[name="token"]').value;
+                const provider = providerFor(providerType);
+                const token = provider?.requiresCredentials ? el.querySelector('[name="token"]')?.value : undefined;
+                const syncIntervalMs = Number(el.querySelector('[name="syncIntervalMs"]').value);
                 if (!externalKey) {
                     toast('请填写账号标识', 'error');
                     return;
                 }
-                if (form.mode === 'add' && !token) {
+                if (form.mode === 'add' && provider?.requiresCredentials && !token) {
                     toast('请填写凭据', 'error');
                     return;
                 }
                 adminBusy = true;
                 const submit = el.querySelector('button[type="submit"]');
-                submit.disabled = true;
-                submit.textContent = '测试中…';
+                const controls = Array.from(el.querySelectorAll('input, select, button'));
+                const disabled = controls.map(control => control.disabled);
+                controls.forEach(control => { control.disabled = true; });
+                submit.textContent = form.mode === 'edit' ? '保存中…' : '测试中…';
                 try {
                     if (form.mode === 'add') {
-                        const data = await adminApi.post('/api/timeline/sources', { providerType, externalKey, token });
+                        const data = await adminApi.post('/api/timeline/sources', {
+                            providerType, externalKey, syncIntervalMs, ...(token ? { token } : {})
+                        });
                         if (data && data.error) throw Object.assign(new Error(data.error), { status: 400 });
                         toast('来源已添加');
                     } else {
@@ -834,37 +874,46 @@
                             {
                                 method: 'PUT',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ externalKey, token: token || undefined })
+                                body: JSON.stringify({ syncIntervalMs,
+                                    ...(form.mode === 'reauth' ? { externalKey } : {}),
+                                    ...(token ? { token } : {}) })
                             });
                         if (!res.ok) {
                             throw Object.assign(new Error((data && data.error) || '保存失败'), { status: res.status });
                         }
-                        toast('已更新授权');
+                        toast(form.mode === 'edit' ? '监控配置已保存' : '已更新授权');
                     }
                     form = null;
                     await load();
                 } catch (e) {
                     toast(e.message || '操作失败', 'error');
-                    submit.disabled = false;
-                    submit.textContent = form && form.mode === 'reauth' ? '重新授权' : '保存并测试';
                 } finally {
+                    controls.forEach((control, i) => { control.disabled = disabled[i]; });
+                    submit.textContent = submitText();
                     adminBusy = false;
                 }
             });
 
             host.querySelectorAll('[data-act]').forEach(btn => {
                 btn.addEventListener('click', async () => {
+                    if (adminBusy) return;
                     const id = btn.dataset.id;
                     const source = list.find(s => s.id === id);
                     if (!source) return;
+                    adminBusy = true;
+                    btn.disabled = true;
+                    try {
                     switch (btn.dataset.act) {
+                        case 'edit':
                         case 'reauth':
                             form = {
-                                mode: 'reauth', id,
+                                mode: btn.dataset.act, id,
                                 providerType: source.providerType,
-                                externalKey: source.externalKey
+                                externalKey: source.externalKey,
+                                syncIntervalMs: source.syncIntervalMs
                             };
                             draw(list);
+                            host.querySelector('.special-line-source-form [name="syncIntervalMs"]')?.focus();
                             break;
                         case 'test': {
                             btn.disabled = true;
@@ -901,16 +950,16 @@
                             break;
                         }
                         case 'toggle': {
-                            const { res } = await adminApi.request(
+                            const { res, data } = await adminApi.request(
                                 `/api/timeline/sources/${encodeURIComponent(id)}`,
                                 {
                                     method: 'PUT',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ enabled: !source.enabled })
                                 });
-                            if (res.ok) toast(source.enabled ? '已暂停同步' : '已恢复同步');
-                            else toast('操作失败', 'error');
-                            load();
+                            if (!res.ok) throw new Error((data && data.error) || '操作失败，请重试');
+                            toast(source.enabled ? '自动监控已停止' : '自动监控已启用');
+                            await load();
                             break;
                         }
                         case 'del': {
@@ -929,6 +978,12 @@
                             load();
                             break;
                         }
+                    }
+                    } catch (e) {
+                        toast(e.message || '操作失败，请重试', 'error');
+                    } finally {
+                        adminBusy = false;
+                        btn.disabled = false;
                     }
                 });
             });
