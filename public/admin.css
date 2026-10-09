@@ -934,6 +934,9 @@
 }
 .special-line-source-copy small { color: var(--text-muted); font-size: 10px; }
 .special-line-source-error { color: var(--sl-danger); font-size: 10px; line-height: 1.5; }
+/* 「下次 15:50」跟在「最近成功 N 分钟前」后面，是用来对照的：两者一起读才知道
+   现在是不是正常范围。只有真超期（超过周期 5 分钟）才换成等待调度并变色。 */
+.special-line-next.is-overdue { color: var(--sl-warning); }
 
 .special-line-source-state { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 /* 「已连接」用 --accent：与 .module-card-status[data-kind="ready"] 同一套，

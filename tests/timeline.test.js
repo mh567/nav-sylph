@@ -576,6 +576,53 @@ test('回填：首次订阅继续往更早翻页把窗口铺满，翻到早于�
     }
 });
 
+test('下一轮同步按「本轮开始」算：设 30 分钟就是每 30 分钟一轮，耗时超过周期时让出下限', async () => {
+    const { intervalFor, nextSyncAtFor } = require(path.join(ROOT, 'lib', 'timeline', 'service.js')).__test;
+
+    // 纯函数三种情形。服务不注入时钟，只能这样把边界精确钉住。
+    const source = { enabled: true, providerType: 'x', syncIntervalMs: 1800000 };
+    assert.equal(nextSyncAtFor(source, { attemptedAt: 1000, now: 2000 }), 1801000, '从本轮开始 + 周期');
+    assert.equal(nextSyncAtFor(source, { attemptedAt: 1000, now: 1800000 }), 1805000,
+        '本轮耗时超过周期时，至少让出下限，不许排在过去（否则会连轴转）');
+    assert.equal(nextSyncAtFor({ ...source, enabled: false }, { attemptedAt: 1000, now: 2000 }), null,
+        '停止监控的来源不排程');
+    assert.equal(intervalFor({ providerType: 'x', syncIntervalMs: 1 }), 60000, '仍与 adapter 最小间隔取大');
+
+    // ⚠️ 真跑一轮：把本轮拖慢，验的是「按开始」而不是「按结束」——
+    // 按结束算会把本轮耗时叠加到周期上，用户设 30 分钟却在后台读到 30 出头。
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, { getPasswordHash: async () => OLD_HASH, log: { warn() {} } });
+        globalThis.fetch = async url => {
+            await new Promise(r => setTimeout(r, 150));
+            if (String(url).includes('/2/status/')) {
+                return Response.json({ code: 200, status: { id: 'x', text: 'en', author: { screen_name: 'alice' } } });
+            }
+            const now = Date.now();
+            return fxResponse([fxStatus(String((BigInt(Math.round(now) - 1288834974657) << 22n) + 1n),
+                { created_timestamp: Math.floor(now / 1000) })], '5');
+        };
+        const src = repo.createSource({
+            providerType: 'x', name: 'X · alice', externalKey: 'alice',
+            settings: {}, syncIntervalMs: 60000, nextSyncAt: 0
+        });
+        const result = await service.syncSource(src.id);
+        assert.equal(result.ok, true);
+        const after = repo.getSource(src.id);
+        const round = after.lastSuccessAt - after.lastAttemptAt;
+        assert.ok(round >= 100, `这一轮确实花了时间（${round}ms）`);
+        assert.equal(after.nextSyncAt - after.lastAttemptAt, 60000, '周期从本轮开始算');
+        assert.ok(after.nextSyncAt - after.lastSuccessAt < 60000, '不再把本轮耗时叠加到周期上');
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('恢复备份也要过 metadata 白名单：外部头像地址不能被「改一份备份」带进来', () => {
     const { dir, file } = tempDb();
     const db = openDatabase(file);
@@ -643,6 +690,38 @@ test('筛选行 / 头 / 底在卡片里不许被压缩（订阅后列表变长�
         '点击（data-open）也能展开——触屏与键盘只能靠它');
     // 懒加载哨兵必须在滚动容器内部才有意义——它的高度不能撑出可见空隙
     assert.match(ruleOf('.special-line-sentinel'), /height:\s*1px/, '哨兵是 1px 的占位');
+});
+
+test('后台来源行补「下次 HH:MM」：只有真超期才说等待调度', () => {
+    const code = stripComments(moduleSource);
+    const grace = /const NEXT_SYNC_GRACE_MS = [^;]+;/.exec(code);
+    assert.ok(grace, '找得到超期宽限常量');
+    // 执行真实函数，而不是断言源码里有这几个字
+    const run = new Function('hm', `${grace[0]}\n${extractFunction(code, 'function nextSyncHTML(s)')}\nreturn nextSyncHTML;`)(() => '15:50');
+
+    const soon = Date.now() + 12 * 60000;
+    assert.match(run({ enabled: true, nextSyncAt: soon }), /下次 15:50/,
+        '正常时给出下一次的时刻——「最近成功 31 分钟前」缺了这条对照，才看着像卡住');
+    assert.doesNotMatch(run({ enabled: true, nextSyncAt: Date.now() - 60000 }), /is-overdue/,
+        '刚到期不报等待：调度器 tick 本身就有 30 秒');
+    assert.match(run({ enabled: true, nextSyncAt: Date.now() - 6 * 60000 }), /is-overdue[^>]*>已到期，等待调度/,
+        '真超期（超过周期 5 分钟）才明说等待调度');
+    assert.equal(run({ enabled: false, nextSyncAt: soon }), '', '已停止的来源不排程，不显示下次');
+    assert.equal(run({ enabled: true, nextSyncAt: null }), '', '没有排程信息时不显示');
+    assert.match(code, /nextSyncHTML\(s\)\}<\/small>/, '真的接在「最近成功」那一行上');
+
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'admin.css'), 'utf8'));
+    assert.match(css, /\.special-line-next\.is-overdue\s*\{[^}]*var\(--sl-warning\)/, '超期要变色');
+    // ⚠️「规则存在」不够：它必须**压过**父级那句 --text-muted 才看得见颜色。
+    // 依据两条一起钉住：① 特异性 0-2-0（`.special-line-next.is-overdue`）> 0-1-1
+    //（`.special-line-source-copy small`，同时是它的祖先）；② 同一文件内声明在后。
+    // 本仓库有过「后加载样式表压过前者 / 尾部块重复声明让先声明的那条静默失效」的教训。
+    const mutedAt = css.indexOf('.special-line-source-copy small');
+    const overdueAt = css.indexOf('.special-line-next.is-overdue');
+    assert.ok(mutedAt >= 0 && overdueAt > mutedAt,
+        `超期规则要声明在 --text-muted 那条之后（muted@${mutedAt} overdue@${overdueAt}）`);
+    assert.equal(css.split('.special-line-next.is-overdue').length - 1, 1,
+        '只此一处声明——重复声明会让先声明的那条静默失效');
 });
 
 test('FxEmbed 每轮从最新页开始，置顶不截断、过滤条目也推进字符串水位', async () => {
@@ -1016,15 +1095,28 @@ test('后台来源表单与行：X 只填用户名与周期，微博才要求 Ac
     assert.match(editHtml, /name="externalKey"[\s\S]*readonly/, '编辑态账号只读');
     assert.match(editHtml, /保存配置/, '编辑态按钮文案');
 
-    const makeRowHTML = new Function('providerFor', 'esc', 'relTime', 'STATUS_TEXT',
+    // ⚠️ `rowHTML` 现在还会调 `nextSyncHTML`——沙箱少注入一个依赖就整条红，
+    // 这里注入**真实**的那个（连同它的宽限常量），别塞一个空壳。
+    const grace = /const NEXT_SYNC_GRACE_MS = [^;]+;/.exec(code)[0];
+    const nextSyncHTML = new Function('hm',
+        `${grace}\n${extractFunction(code, 'function nextSyncHTML(s) {')}\nreturn nextSyncHTML;`)(() => '15:50');
+    const makeRowHTML = new Function('providerFor', 'esc', 'relTime', 'STATUS_TEXT', 'nextSyncHTML',
         `return (${extractFunction(code, 'function rowHTML(s) {')});`);
-    const row = makeRowHTML(providerFor, esc, () => '刚刚', { ok: '已连接', paused: '已暂停' })(
+    const renderRow = makeRowHTML(providerFor, esc, () => '刚刚', { ok: '已连接', paused: '已暂停' }, nextSyncHTML);
+    const row = renderRow(
         { id: '1', providerType: 'x', providerLabel: 'X', providerSymbol: 'X', externalKey: 'jack',
             enabled: false, hasCredentials: false, status: 'paused', syncIntervalMs: 900000 });
     assert.match(row, /每 15 分钟 · 自动监控已停止/, '行显示周期与自动监控状态');
     assert.match(row, /data-act="toggle"[^>]*>启用监控</, '停止态给「启用监控」');
     assert.doesNotMatch(row, /未配置凭据/, 'X 没有凭据概念，不显示未配置');
     assert.doesNotMatch(row, /重新授权/, 'X 不出现重新授权');
+    assert.doesNotMatch(row, /下次/, '已停止的来源没有排程，不显示下次同步');
+
+    const live = renderRow(
+        { id: '2', providerType: 'x', providerLabel: 'X', providerSymbol: 'X', externalKey: 'jack',
+            enabled: true, hasCredentials: false, status: 'ok', syncIntervalMs: 1800000,
+            lastSuccessAt: Date.now() - 60000, nextSyncAt: Date.now() + 12 * 60000 });
+    assert.match(live, /最近成功 刚刚[\s\S]*下次 15:50/, '运行中的来源把「下次」接在「最近成功」后面');
 });
 
 test('打开菜单的整行由 JS 加类抬升，不用 :has()（不支持 :has() 的浏览器里菜单会被下一张卡盖住）', () => {

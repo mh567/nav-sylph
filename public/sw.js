@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v95：更新周期改为「按本轮开始」计时（此前按本轮结束，端到端间隔会被本轮
+// 耗时推长，用户设 30 分钟却在后台读到「最近成功 30 出头分钟」），并在后台来源行
+// 补上「下次 15:50」——超过周期 5 分钟仍未被调度才改说「已到期，等待调度」。
+// 改了 special-line.js、admin.css（顺带 service.js/constants.js）。
 // nav-v94：修后台「取消」在保存期间看着能点、点了没反应——`closeAdmin()` 原先在
 // `configSaving` 时直接 return，而「取消」并没有被禁用（点遮罩、按 Esc 同样无效），
 // 请求慢或卡住时右上角那一对一直是死的；现在保存进行中允许关闭，并给配置保存加了
@@ -222,7 +226,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v94';
+const CACHE = 'nav-v95';
 const ASSETS = [
     '/',
     '/index.html',

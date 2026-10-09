@@ -112,6 +112,23 @@
     }
 
     /**
+     * 后台每行来源的第二行补充：「下次 15:50」。
+     *
+     * 周期按**本轮开始**算（服务端 nextSyncAtFor），所以正常时它总在未来。
+     * 超过周期这么久还没被调度到，才是真的卡住——那时明说等待调度，而不是
+     * 继续显示一个已经过去的时刻（用户看到「最近成功 31 分钟前」时会以为
+     * 系统没在跑，就是缺了这条对照）。
+     */
+    const NEXT_SYNC_GRACE_MS = 5 * 60 * 1000;
+    function nextSyncHTML(s) {
+        if (!s.enabled || !s.nextSyncAt) return '';
+        if (Date.now() - s.nextSyncAt > NEXT_SYNC_GRACE_MS) {
+            return ' · <span class="special-line-next is-overdue">已到期，等待调度</span>';
+        }
+        return ` · <span class="special-line-next">下次 ${hm(s.nextSyncAt)}</span>`;
+    }
+
+    /**
      * 头部状态。只给**临时**状态：同步中 / 同步失败（带重试）。
      * 稳态不再显示「已同步」这类描述——顶部只留最近同步时间（用户要求）。
      * 失败必须保留：它带一个动作（重试），去掉就没有下一步了。
@@ -941,7 +958,8 @@
                     `<strong>${esc(s.providerLabel)}${s.externalKey ? ' · ' + esc(s.externalKey) : ''}</strong>` +
                     `<small>每 ${esc(s.syncIntervalMs / 60000)} 分钟 · 自动监控${s.enabled ? '已启用' : '已停止'}</small>` +
                     `<small>${s.lastSuccessAt ? `最近成功 ${esc(relTime(s.lastSuccessAt))}` : '尚未同步成功'}` +
-                        `${needsCredentials && !s.hasCredentials ? ' · 未配置凭据' : ''}</small>` +
+                        `${needsCredentials && !s.hasCredentials ? ' · 未配置凭据' : ''}` +
+                        `${nextSyncHTML(s)}</small>` +
                     err +
                 `</div>` +
                 `<span class="special-line-source-state" data-status="${esc(s.status)}">${esc(STATUS_TEXT[s.status] || s.status)}</span>` +
