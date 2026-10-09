@@ -153,7 +153,10 @@ selfSigned / version                **函数**，读实时值
 - **自动同步不挂社交事件的摄入**：社交事件可再从提供方取回，且是机器节奏的高频写入，挂钩会把远端上传变成每轮一次。触发的是**不可再生**的数据——保存文章、已读 / 归档、来源增删改。
 - **作者与译文走 `metadata_json` 白名单，不加表、不加迁移**：`authorName` / `authorAvatar` / `translation` 三个键由 `sanitizeMetadata` 裁剪后落库，`eventView` 原样透出，前端决定显示哪一个（`translation` 不回退填原文）。白名单在 `constants.js` 的 `METADATA_KEYS`，长度上限在 `LIMITS`。
 - ⚠️ **头像是唯一会被浏览器直接请求的第三方字段**，所以它不能按普通 URL 放行：`safeAvatarUrl` 只接受 `https:` 且主机为 `pbs.twimg.com`，其余一律丢弃。这条不是洁癖——`<img src>` 是每个访客的浏览器去发请求，一条构造过的事件就能把它变成任意地址。前端另有失败回退（`onerror` 摘掉 `img`，露出底下的首字母方块）、`referrerpolicy="no-referrer"`（不把部署地址带给 X）与 `loading="lazy"`。
-- **译文是逐条取的，必须有界**：FxEmbed 的 `translation` 只挂在单条接口上（`/2/status/{id}?lang=zh-cn`，provider 是 X 自带的 grok），列表接口即使带 `lang` 也不返回。所以采集后对**本轮新入库、且非中文**的条目做一趟补充请求：上限 `MAX_TRANSLATIONS_PER_SYNC = 20`、并发 `TRANSLATION_CONCURRENCY = 3`；单条失败只跳过该条，**绝不影响整批入库**。已是中文（`lang` 以 `zh` 开头或文本含 CJK）不请求。超限的那部分保持原文显示。
+- **译文是逐条取的，走「同步后补数据」这条唯一路径**：FxEmbed 的 `translation` 只挂在单条接口上（`/2/status/{id}?lang=zh-cn`，provider 是 X 自带的 grok），列表接口即使带 `lang` 也不返回。所以每轮同步结束时跑一趟 `enrichSource`：在**已入库**的事件里挑出缺作者名或译文的（`repo.eventsNeedingMeta`），逐条取回作者名 / 头像 / 译文并写回 `metadata_json`。上限 `MAX_ENRICH_PER_SYNC = 30`、并发 `TRANSLATION_CONCURRENCY = 3`，单条失败只跳过该条。
+- ⚠️ **为什么不放在采集时**：事件入库后不可变（`INSERT OR IGNORE`），水位又已越过旧条目——只在采集时写，老版本入库的事件就永远没有昵称与译文（用户报的「没有翻译 / 没有用户名」正是这个；把来源删掉重建只是绕过）。放在同步后，新老条目走同一条路：新条目先入库、同一趟补上，单轮上限留下的尾巴在下一轮抹平。
+- **补数据必须收敛**：取不到译文时（本来就是中文，或 X 没提供）要写一个 `translationSettled: '1'` 标记，否则这些条目会**每一轮都被当成「缺译文」重问一次**。删除的帖子（404）是确定性结果，同样记标记；网络/限流类失败不记，留到下一轮再试。
+- **订阅时要把保留窗口铺满**：只拉最新一页时，转发/回复多的大号一页里可能只剩个位数原创——库里只有十几条，既凑不满一屏，也**永远触发不了分页**（用户报的「没有懒加载」）。所以每轮同步再跑一趟 `backfillSource`：从首页底部游标（或上次保存的游标）继续往更早翻 `X_BACKFILL_PAGES_PER_SYNC = 20` 页，翻到某页最旧一条早于 30 天窗口就标记完成（进度存 `settings.history`，下一轮接着走）。已入库的条目由数据库去重吸收。
 - **懒加载的哨兵必须在滚动容器内部**：列表是 `.special-line-listwrap`，`IntersectionObserver` 的 `root` 是它，哨兵因此必须作为它的子节点（放在底栏里永远等不到）。显式「加载更早事件」按钮保留为键盘路径，两者共用 `loadMore()`，靠 `loadingMore` / `inFlight` 去重。
 - ⚠️ **卡片里的头 / 筛选 / 底三段必须 `flex: 0 0 auto`**。卡片是 `display:flex; flex-direction:column` 且带 `max-height`：列表一变长（订阅之后必然发生）卡片触顶，这几段作为**默认可收缩**的 flex 项会被压扁，而筛选行同时带 `overflow-x: auto`（另一轴按规范计算为 `auto`）与 `align-items: center`，被压扁时文字**上下各裁一半**——用户报的「全部来源那一行只剩半个文字」。实测（对照页）：不写这条时筛选行 13.5px、`clientHeight 12 < scrollHeight 23`；写上后 35px、两侧相等。`tests/timeline.test.js` 有守卫钉住这三段的 `flex`，删掉就变红。
 

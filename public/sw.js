@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v91：订阅时把保留窗口内的历史**回填**铺满（原来只拉最新一页，转发多的
+// 账号只剩十几条原创，永远到不了一页 30 条，懒加载因此从不触发）；同步时为已入库
+// 但缺作者名/译文的事件补数据；X 的昵称与 @账号始终同时显示。改了 special-line.js、
+// lib/timeline/*。
 // nav-v90：修筛选行被卡片压缩裁切（`.special-line-filters` 加 `flex: 0 0 auto`）；
 // 卡片默认更高、分页 30 条；列表底部懒加载并在到底时提示「仅保留最近 30 天」；
 // X 事件按推特样式显示头像+显示名+@handle，默认中文译文、可切「查看原文」、长文可折叠。
@@ -206,7 +210,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v90';
+const CACHE = 'nav-v91';
 const ASSETS = [
     '/',
     '/index.html',

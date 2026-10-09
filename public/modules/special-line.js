@@ -156,10 +156,12 @@
             ? `<img src="${esc(e.authorAvatar)}" alt="" width="20" height="20" loading="lazy" decoding="async" ` +
               `referrerpolicy="no-referrer" onerror="this.remove()">`
             : '';
+        // 昵称与账号**始终同时显示**（用户要求「区分 X 的用户名和账号」）：
+        // 即使两者字面相同也不省略，否则只看到「jack」时无法判断哪个是账号。
         return `<span class="special-line-mark special-line-author">` +
             `<span class="special-line-avatar" aria-hidden="true">${letter}${img}</span>` +
             `<span class="special-line-author-name">${esc(name)}</span>` +
-            (handle && handle !== name ? `<span class="special-line-handle">@${esc(handle)}</span>` : '') +
+            (handle ? `<span class="special-line-handle">@${esc(handle)}</span>` : '') +
             `</span>`;
     }
 

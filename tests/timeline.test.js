@@ -30,8 +30,7 @@ const xAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'x.js'))
 const weiboAdapter = require(path.join(ROOT, 'lib', 'timeline', 'adapters', 'weibo.js'));
 const { encrypt, decrypt } = require(path.join(ROOT, 'lib', 'credentials.js'));
 const {
-    MAX_EVENTS_PER_SOURCE, MANUAL_SOURCE_ID, SOCIAL_RETENTION_DAYS,
-    MAX_TRANSLATIONS_PER_SYNC, PAGE_SIZE_DEFAULT
+    MAX_EVENTS_PER_SOURCE, MANUAL_SOURCE_ID, SOCIAL_RETENTION_DAYS, PAGE_SIZE_DEFAULT
 } = require(path.join(ROOT, 'lib', 'timeline', 'constants.js'));
 
 const OLD_HASH = '$2b$10$oldhashforunittimeline';
@@ -413,62 +412,167 @@ test('FxEmbed normalize 校验作者、精度、原创与时间', () => {
     }
 });
 
-test('FxEmbed：作者名与头像写进 metadata；译文只对非中文新条目取，且有上限、失败不影响入库', async () => {
+test('单条补数据：作者名 / 头像 / 译文一起取；拿不到译文时打「已判定」标记（不再重复请求）', async () => {
     const original = globalThis.fetch;
-    const mk = (id, lang, text) => ({
-        type: 'status', id, text, lang,
-        author: { screen_name: 'alice', name: 'Alice A', avatar_url: 'https://pbs.twimg.com/a.jpg' },
-        created_timestamp: 1700000000
-    });
-    const translationCalls = [];
     globalThis.fetch = async url => {
         const u = String(url);
-        if (u.includes('/status/')) {
-            const id = u.split('/status/')[1].split('?')[0];
-            translationCalls.push(id);
-            if (id === '103') throw new Error('network down');   // 单条失败必须只跳过这一条
-            return Response.json({
-                code: 200, status: { id, translation: { text: '译文' + id, target_lang: 'zh-cn' } }
-            });
-        }
-        return fxResponse([mk('101', 'en', 'hello'), mk('102', 'zh', '你好'), mk('103', 'en', 'world')], null);
+        assert.match(u, /\/2\/status\/101\?lang=zh-cn/, '请求单条接口并带目标语言');
+        return Response.json({
+            code: 200,
+            status: {
+                id: '101', text: 'hello',
+                author: { screen_name: 'alice', name: 'Alice A', avatar_url: 'https://pbs.twimg.com/a.jpg' },
+                translation: { text: '你好', target_lang: 'zh-cn' }
+            }
+        });
     };
     try {
-        const { events } = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: null });
-        assert.equal(events.length, 3, '三条都入库（译文失败不影响入库）');
-        for (const ev of events) {
-            assert.equal(ev.metadata.authorName, 'Alice A', '显示名进了 metadata');
-            assert.equal(ev.metadata.authorAvatar, 'https://pbs.twimg.com/a.jpg', '头像进了 metadata');
-        }
-        const byId = Object.fromEntries(events.map(e => [e.providerEventId, e]));
-        assert.equal(byId['101'].metadata.translation, '译文101', '英文条目取到译文');
-        assert.equal(byId['102'].metadata.translation, undefined, '已是中文的不再取译文');
-        assert.equal(byId['103'].metadata.translation, undefined, '取译文失败只跳过这一条');
-        assert.deepEqual(translationCalls.sort(), ['101', '103'], '只对非中文条目请求译文');
+        const meta = await xAdapter.fetchStatusMeta('101');
+        assert.deepEqual(meta, {
+            authorName: 'Alice A',
+            authorAvatar: 'https://pbs.twimg.com/a.jpg',
+            translation: '你好'
+        }, '作者名、头像、译文一次取回');
     } finally {
         globalThis.fetch = original;
     }
 
-    // 上限：一次刷出很多新条目时，译文请求数不超过 MAX_TRANSLATIONS_PER_SYNC
-    const many = Array.from({ length: MAX_TRANSLATIONS_PER_SYNC + 8 },
-        (_, i) => mk(String(2000 + i), 'en', 'text ' + i));
-    const capped = [];
-    globalThis.fetch = async url => {
-        const u = String(url);
-        if (u.includes('/status/')) {
-            capped.push(u);
-            return Response.json({ code: 200, status: { translation: { text: '中', target_lang: 'zh-cn' } } });
-        }
-        return fxResponse(many, null);
-    };
+    // 没有译文（X 没提供 / 本来就是中文）→ 记「已判定」，否则每一轮都会重问一次
+    globalThis.fetch = async () => Response.json({
+        code: 200, status: { id: '102', text: '你好', author: { screen_name: 'alice', name: 'Alice A' } }
+    });
     try {
-        const { events } = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: null });
-        assert.equal(events.length, many.length, '全部条目照常入库');
-        assert.equal(capped.length, MAX_TRANSLATIONS_PER_SYNC, `译文请求被限制在 ${MAX_TRANSLATIONS_PER_SYNC} 条`);
-        const translated = events.filter(e => e.metadata.translation).length;
-        assert.equal(translated, MAX_TRANSLATIONS_PER_SYNC, '超出上限的那部分保持原文，不影响入库');
+        const meta = await xAdapter.fetchStatusMeta('102');
+        assert.equal(meta.translation, undefined, '没有译文');
+        assert.equal(meta.translationSettled, '1', '打了已判定标记');
+        assert.equal(meta.authorName, 'Alice A', '作者名照常取回');
     } finally {
         globalThis.fetch = original;
+    }
+
+    // 帖子已删除（404）是**确定性**结果：记「已判定」，别每轮重问
+    globalThis.fetch = async () => Response.json({ code: 404, message: 'not found' });
+    try {
+        assert.deepEqual(await xAdapter.fetchStatusMeta('999'), { translationSettled: '1' },
+            '已删除的帖子记已判定');
+    } finally {
+        globalThis.fetch = original;
+    }
+
+    // 其它失败（上游故障）→ null，留到下一轮再试
+    globalThis.fetch = async () => Response.json({ code: 500, message: 'upstream' });
+    try {
+        assert.equal(await xAdapter.fetchStatusMeta('998'), null, '暂时性失败返回 null，下轮再试');
+    } finally {
+        globalThis.fetch = original;
+    }
+});
+
+test('补旧账：同步时为已入库但缺作者名/译文的事件补齐，且第二轮回不再重复请求', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, {
+            getPasswordHash: async () => OLD_HASH, log: { warn() {} }
+        });
+        const src = repo.createSource({
+            providerType: 'x', name: 'X · alice', externalKey: 'alice',
+            settings: {}, syncIntervalMs: 300000, nextSyncAt: 0
+        });
+        // 升级前入库的样子：metadata 里什么都没有
+        seedEvents(repo, src.id, [
+            socialEvent(1, Date.now() - 1000), socialEvent(2, Date.now() - 2000)
+        ]);
+        const metaCalls = [];
+        globalThis.fetch = async url => {
+            const u = String(url);
+            if (u.includes('/2/status/')) {
+                const id = u.split('/2/status/')[1].split('?')[0];
+                metaCalls.push(id);
+                return Response.json({
+                    code: 200,
+                    status: {
+                        id, text: 'hello',
+                        author: { screen_name: 'alice', name: '昵称 A', avatar_url: 'https://pbs.twimg.com/a.jpg' },
+                        translation: { text: '译文 ' + id, target_lang: 'zh-cn' }
+                    }
+                });
+            }
+            return fxResponse([], null);   // 增量那一步没有新内容
+        };
+        const first = await service.syncSource(src.id);
+        assert.equal(first.ok, true);
+        assert.ok(first.enriched >= 2, `补齐了旧事件（enriched=${first.enriched}）`);
+        const rows = repo.listEvents({}).rows;
+        for (const row of rows) {
+            assert.equal(row.metadata.authorName, '昵称 A', '昵称补上了');
+            assert.ok(row.metadata.translation, '译文补上了');
+        }
+        const afterFirst = metaCalls.length;
+        await service.syncSource(src.id);
+        assert.equal(metaCalls.length, afterFirst, '第二轮不再为已完成的事件重复请求');
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('回填：首次订阅继续往更早翻页把窗口铺满，翻到早于保留窗口就收工', async () => {
+    const { dir, file } = tempDb();
+    const db = openDatabase(file);
+    const original = globalThis.fetch;
+    try {
+        const repo = createRepository(db);
+        const service = createService(repo, {
+            getPasswordHash: async () => OLD_HASH, log: { warn() {} }
+        });
+        const day = 86400000;
+        const now = Date.now();
+        // 雪花号：((ms - 1288834974657) << 22)
+        const idAt = ms => String((BigInt(Math.round(ms) - 1288834974657) << 22n) + 123n);
+        const pages = [];
+        const historyCalls = [];
+        globalThis.fetch = async url => {
+            const u = String(url);
+            if (u.includes('/2/status/')) {
+                return Response.json({ code: 200, status: { id: 'x', text: 'en', author: { screen_name: 'alice' } } });
+            }
+            // ⚠️ 夹具必须给**近期**的 created_timestamp：fxStatus 默认是 2023 年，
+            // 那样入库的事件就已经早于 30 天窗口，回填会直接判定「铺满了」而不翻页。
+            const recent = { created_timestamp: Math.floor(now / 1000) };
+            if (u.includes('cursor=')) {
+                const cursor = new URL(u).searchParams.get('cursor');
+                historyCalls.push(cursor);
+                const age = Number(cursor);
+                // 越往里翻越旧：page2=5 天前、page3=40 天前（早于窗口 → 收工）
+                return fxResponse([fxStatus(idAt(now - age * day), recent)], String(age * 10));
+            }
+            // 首页
+            return fxResponse([fxStatus(idAt(now - 1000), recent)], '5');
+        };
+        const src = repo.createSource({
+            providerType: 'x', name: 'X · alice', externalKey: 'alice',
+            settings: {}, syncIntervalMs: 300000, nextSyncAt: 0
+        });
+        const result = await service.syncSource(src.id);
+        assert.equal(result.ok, true);
+        assert.equal(result.inserted, 1, '增量那一步只收首页那条');
+        assert.equal(result.backfilled, 2, `回填又往前铺了两页（backfilled=${result.backfilled}）`);
+        assert.equal(repo.listEvents({}).rows.length, 3, '库里一共三条');
+        assert.deepEqual(historyCalls, ['5', '50'], '从首页底部游标接着往里翻，遇到早于窗口的那页就停');
+        assert.equal(repo.getSource(src.id).settings.history.done, true, '窗口铺满后标记完成');
+
+        // 已完成之后不再回填
+        const before = historyCalls.length;
+        await service.syncSource(src.id);
+        assert.equal(historyCalls.length, before, '完成之后不再翻历史');
+    } finally {
+        globalThis.fetch = original;
+        db.close();
+        fs.rmSync(dir, { recursive: true, force: true });
     }
 });
 
