@@ -3,6 +3,9 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v99：修点「稍后阅读」筛选按钮后按钮上出现两遍「稍后阅读」——选中态拼
+// 「渠道 · 订阅项」，而该渠道唯一订阅项与渠道同名，拼成「稍后阅读 · 稍后阅读」；
+// 同名时只显示一遍。改了 special-line.js、tests/timeline.test.js。
 // nav-v98：修后台 WebDAV「自动同步」勾了存不住——那一块的表单不在面板右上角
 // 「保存」（只提交 config.json）与「取消」/遮罩/Esc 的管辖范围内，勾完点保存、
 // 提示还写着「设置已保存到服务器」，可那一勾从来没发出去过。现在「启用」与
@@ -240,7 +243,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v98';
+const CACHE = 'nav-v99';
 const ASSETS = [
     '/',
     '/index.html',

@@ -1713,6 +1713,57 @@ test('筛选不先清空事件，进行中的筛选只补拉最后一次选择',
         '过渡期间显示明确的切换状态');
 });
 
+test('选中「稍后阅读」后 chip 只出现一遍「稍后阅读」（执行真实 renderChips）', () => {
+    const code = stripComments(moduleSource);
+    const esc = v => String(v === null || v === undefined ? '' : v)
+        .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // 真跑 chips 那一段：channelGroups / sourceLabel / chipsKey / renderChips 全从源码切出来，
+    // 只注入 esc 与一个承接 innerHTML 的假容器——自己重写一遍拼串逻辑就成同义反复了。
+    const build = new Function('esc', `
+        let sources = [], filterSource = '', filterView = 'all', openChannel = '', lastChipsKey = '';
+        const chipsEl = { innerHTML: '' };
+        ${extractFunction(code, 'function channelGroups() {')}
+        ${extractFunction(code, 'function sourceLabel(s) {')}
+        ${extractFunction(code, 'function chipsKey() {')}
+        ${extractFunction(code, 'function renderChips() {')}
+        return {
+            init(list) { sources = list; filterSource = ''; lastChipsKey = ''; renderChips(); return chipsEl.innerHTML; },
+            select(id) { filterSource = id; lastChipsKey = ''; renderChips(); return chipsEl.innerHTML; }
+        };
+    `)(esc);
+
+    /** 取出某个 chip 的整段 <button>（单订阅项渠道没有内嵌元素，能整段数词）。 */
+    const chipOf = (html, value) => {
+        const m = new RegExp(`<button class="special-line-chip"[^>]*data-value="${value}"[^>]*>[\\s\\S]*?</button>`)
+            .exec(html);
+        assert.ok(m, `渲染出 data-value="${value}" 的 chip`);
+        return m[0];
+    };
+    const times = (s, needle) => s.split(needle).length - 1;
+
+    const idle = chipOf(build.init([
+        { id: 'x-jack', providerType: 'x', providerLabel: 'X', providerSymbol: 'X', externalKey: 'jack', name: 'jack' },
+        { id: 'x-jill', providerType: 'x', providerLabel: 'X', providerSymbol: 'X', externalKey: 'jill', name: 'jill' },
+        { id: 'manual', providerType: 'manual', providerLabel: '稍后阅读', providerSymbol: '↗',
+            externalKey: '', name: '稍后阅读' }
+    ]), 'manual');
+
+    // 未选中：只显示渠道名一遍
+    assert.equal(times(idle, '稍后阅读'), 1, `未选中时只有一处「稍后阅读」，实际：${idle}`);
+
+    // 选中后（回归）：原先是 `${g.label} · ${sourceLabel(picked)}`，两个同名字段拼成
+    // 「稍后阅读 · 稍后阅读」——用户点一下按钮就看到两遍词。
+    const picked = chipOf(build.select('manual'), 'manual');
+    assert.equal(times(picked, '稍后阅读'), 1, `选中后仍只有一处「稍后阅读」，实际：${picked}`);
+    assert.ok(!picked.includes('·'), `同名渠道不拼「渠道 · 订阅项」，实际：${picked}`);
+    assert.match(picked, /aria-pressed="true"/, '选中态仍标记在按钮上');
+
+    // 非同名渠道不受影响：多订阅项渠道照常显示「渠道 · 订阅项」
+    const multi = build.select('x-jack');
+    assert.match(multi, /X · jack/, '不同名时仍拼出「渠道 · 订阅项」');
+});
+
 test('时间线内联在首页那一列里：没有弹窗，形态与仿真一致（轨道 / 事件卡 / 归档 + 收藏 / chips）', () => {
     const code = stripComments(moduleSource);
 

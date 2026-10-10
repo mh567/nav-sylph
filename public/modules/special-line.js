@@ -464,7 +464,12 @@
 
         for (const g of channelGroups()) {
             const picked = selected && selected.providerType === g.type ? selected : null;
-            const text = esc(picked ? `${g.label} · ${sourceLabel(picked)}` : g.label);
+            // 选中后拼「渠道 · 订阅项」，但两者同名时（「稍后阅读」渠道只有这一个
+            // 同名订阅）只显示一遍，否则按钮上就是「稍后阅读 · 稍后阅读」。
+            const pickedLabel = picked ? sourceLabel(picked) : '';
+            const text = esc(!picked
+                ? g.label
+                : (!pickedLabel || pickedLabel === g.label ? g.label : `${g.label} · ${pickedLabel}`));
             const dot = picked ? '<span class="special-line-dot" aria-hidden="true"></span>' : '';
             // 只有一个订阅项的渠道直接选中，不给空菜单（「稍后阅读」就是这种）
             if (g.items.length === 1) {
