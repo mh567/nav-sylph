@@ -3,6 +3,10 @@
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
 // 但仍留在预缓存清单里——延后加载的文件若不预缓存，回访用户的每次模块
 // 打开都要走一次网络，与延后加载的初衷相反。
+// nav-v100：修 Special Line 读着读着突然跳回最上面——每 15 秒的轮询只拉第一页，
+// 整份替换把已滚出来的更早页面全丢掉（实测 90 条退回 60 条、位置 12443→3805），
+// 容器变矮又让底部哨兵重新入视、立刻再自动补一页。改为轮询只把新事件插到最前，
+// 其余原样保留，并把新增高度补回滚动位置。改了 special-line.js、tests/timeline.test.js。
 // nav-v99：修点「稍后阅读」筛选按钮后按钮上出现两遍「稍后阅读」——选中态拼
 // 「渠道 · 订阅项」，而该渠道唯一订阅项与渠道同名，拼成「稍后阅读 · 稍后阅读」；
 // 同名时只显示一遍。改了 special-line.js、tests/timeline.test.js。
@@ -243,7 +247,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v99';
+const CACHE = 'nav-v100';
 const ASSETS = [
     '/',
     '/index.html',

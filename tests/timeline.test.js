@@ -1554,6 +1554,99 @@ test('同步结束时第一页刷新若遇到旧 GET 在途，会补拉最新页
     assert.equal(refresh.renderedScrolls.at(-1), 0, '最后一次 render 观察到的 scrollTop 已是 0');
 });
 
+test('轮询只把新事件插到最前，不再把已加载的更早页面整份替换掉（执行真实 refresh）', async () => {
+    const code = stripComments(moduleSource);
+    // 与上一条共用同一套函数体边界纪律：第一个 `{` 是解构参数。
+    const signature = code.indexOf('async function refresh(');
+    assert.ok(signature >= 0, 'refresh 函数定义存在');
+    const open = code.indexOf(') {', signature) + 2;
+    assert.ok(open > signature, 'refresh 函数体开括号存在');
+    let depth = 0, end = -1;
+    for (let i = open; i < code.length; i++) {
+        if (code[i] === '{') depth++;
+        else if (code[i] === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    assert.ok(end > open, 'refresh 函数体括号配对成功');
+    const body = code.slice(signature, end);
+    const apply = extractFunction(code, 'function applyPayload(data)');
+    const resolvers = [];
+    const requested = [];
+    const renderFlags = [];
+    const harness = new Function('initial', 'api', 'renderFlags', `
+        const PAGE_SIZE = 30;
+        const URLSearchParams = globalThis.URLSearchParams;
+        let events = initial.slice(), sources = [];
+        let nextCursor = 'cursor-older', hasMore = true, syncFailed = [], lastSync = null;
+        let syncState = 'synced', listError = null, busy = false;
+        let filterSource = '', filterView = 'all', inFlight = false;
+        let appliedFilterSource = '', appliedFilterView = 'all';
+        let filterTransition = false, filterRefreshPending = false;
+        let scrollToTopPending = false, scrollRefreshWaiters = [];
+        let syncAllInFlight = false;
+        let lastKey = '', lastChipsKey = '', pollMs = 15000, pollTimer = null;
+        let prependPending = false;
+        const listEl = { scrollTop: 12000 };
+        const renderChips = () => {};
+        // 真实 render 会消费这个标记（见另一条形状断言）；这里只记下它带着什么值被调用。
+        const render = () => renderFlags.push(prependPending);
+        const console = { error() {} };
+        ${apply}
+        ${body}
+        return {
+            refresh,
+            setFilters(source, view) { filterSource = source; filterView = view; },
+            get events() { return events; },
+            get nextCursor() { return nextCursor; },
+            get hasMore() { return hasMore; }
+        };
+    `)([{ id: 'e60' }, { id: 'e61' }], { get: url => {
+        requested.push(url);
+        return new Promise(resolve => resolvers.push(resolve));
+    } }, renderFlags);
+
+    // 用户已经滚到 61 条（两页），下一次后台轮询只拉第一页
+    const poll = harness.refresh();
+    await Promise.resolve();
+    assert.doesNotMatch(requested[0], /cursor=/, '轮询只拉第一页，不带分页游标');
+    resolvers[0]({ events: [{ id: 'e0-newest' }, { id: 'e60' }], sources: [], sync: { failed: [] },
+        nextCursor: 'cursor-page1', hasMore: true, pollInterval: 15 });
+    await poll;
+
+    assert.deepEqual(harness.events.map(e => e.id), ['e0-newest', 'e60', 'e61'],
+        '新事件插到最前，已滚出来的更早事件一条都不丢（丢掉就是「跳回最上面」的根因）');
+    assert.equal(harness.nextCursor, 'cursor-older', '分页游标仍是「比最旧那条更早」的那个，不被第一页覆盖');
+    assert.equal(harness.hasMore, true, 'hasMore 同理不被第一页覆盖');
+    assert.equal(renderFlags.at(-1), true, '告诉 render：这次要按新增高度补偿滚动位置');
+
+    // 切筛选仍然是整份替换——合并只属于后台轮询
+    harness.setFilters('', 'archived');
+    const filtered = harness.refresh({ filterChange: true });
+    await Promise.resolve();
+    assert.match(requested[1], /view=archived/, '切筛选按新条件请求');
+    resolvers[1]({ events: [{ id: 'a1' }], sources: [], sync: { failed: [] },
+        nextCursor: null, hasMore: false, pollInterval: 15 });
+    await filtered;
+    assert.deepEqual(harness.events.map(e => e.id), ['a1'], '换筛选仍是替换语义');
+});
+
+test('render 的滚动补偿：高度要在换 DOM 前量，补完清标记，停在顶部不补', () => {
+    const code = stripComments(moduleSource);
+    const renderBody = extractFunction(code, 'function render() {');
+    const captureAt = renderBody.indexOf('const prevHeight = listEl.scrollHeight');
+    const htmlAt = renderBody.indexOf('listEl.innerHTML =');
+    assert.ok(captureAt > 0 && htmlAt > captureAt, '高度必须在换 DOM 之前量（否则量到的是新内容）');
+    const compensateAt = renderBody.indexOf('if (prependPending) {');
+    assert.ok(compensateAt > htmlAt, '补偿发生在重绘之后');
+    const tailAt = renderBody.indexOf('if (requestStack)');
+    assert.ok(tailAt > compensateAt, '补偿分支的末端锚点存在');
+    const branch = renderBody.slice(compensateAt, tailAt);
+    assert.ok(branch.length > 80, `补偿分支切片不能是空的（实际 ${branch.length}）`);
+    assert.match(branch, /prependPending = false/, '补偿后清掉标记，下次普通重绘不再补');
+    assert.match(branch, /if \(scrollTop > 0\)/, '停在最顶部时不补偿（那里本就该露出新事件）');
+    assert.match(branch, /listEl\.scrollTop = scrollTop \+ \(listEl\.scrollHeight - prevHeight\)/,
+        '把新增的那截高度补回滚动位置');
+});
+
 test('外部点击与 Esc 收起渠道菜单：执行真实的文档级处理器', () => {
     const code = stripComments(moduleSource);
     const calls = [];

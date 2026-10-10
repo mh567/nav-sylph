@@ -65,6 +65,8 @@
     /** 懒加载：列表底部哨兵进入视野就自动补一页。 */
     let moreObserver = null;
     let loadingMore = false;
+    /** 轮询把新事件插到最前：render 据此把新增高度补回 scrollTop，否则可视内容整体下移。 */
+    let prependPending = false;
 
     /** 卡片上的持久节点（chips 只建一次，避免轮询把它重建、丢掉焦点与滚动位置） */
     let headStatus = null;
@@ -345,6 +347,7 @@
         listEl.removeAttribute('aria-busy');
 
         const scrollTop = listEl.scrollTop;
+        const prevHeight = listEl.scrollHeight;
         const notice = syncFailed.length
             ? `<div class="special-line-notice" role="status"><strong>同步未完成</strong>` +
               `<span>保留了上次同步的事件。` +
@@ -387,6 +390,12 @@
         }
 
         listEl.scrollTop = scrollTop;
+        if (prependPending) {
+            // 轮询在最前插入了新事件：可视内容整体下移了新增的那截高度，补回滚动位置，
+            // 用户正在看的那一条才不会被顶下去。停在最顶部时不补（那里本就该露出新事件）。
+            prependPending = false;
+            if (scrollTop > 0) listEl.scrollTop = scrollTop + (listEl.scrollHeight - prevHeight);
+        }
         if (requestStack) requestStack();
     }
 
@@ -556,6 +565,22 @@
                 nextCursor = data.nextCursor || null;
                 hasMore = !!data.hasMore;
                 syncState = syncFailed.length ? 'failed' : 'synced';
+                appliedFilterSource = filterSource;
+                appliedFilterView = filterView;
+            } else if (events.length && !filterChange && !manual && !scrollToTop) {
+                // 后台轮询**只拉第一页**（不带 cursor）。整体替换成那一页会把用户滚出来的
+                // 更早页面全丢掉：容器骤然变矮 → scrollTop 被夹回 → 底部哨兵重新入视 →
+                // 立刻又自动补一页。实测 90 条退回 60 条、位置 12443 → 3805，用户看到的就是
+                // 「读着读着突然跳回最上面」。这里只把**新事件**插到最前，其余原样保留；
+                // nextCursor / hasMore 描述的是「比当前最旧那条更早还有没有」，不因这次响应改变。
+                const seen = new Set(events.map(e => e.id));
+                const fresh = data.events.filter(e => !seen.has(e.id));
+                if (fresh.length) { prependPending = true; events = fresh.concat(events); }
+                if (Array.isArray(data.sources)) sources = data.sources;
+                syncFailed = (data.sync && Array.isArray(data.sync.failed)) ? data.sync.failed : syncFailed;
+                lastSync = Date.now();
+                syncState = syncFailed.length ? 'failed' : 'synced';
+                listError = null;
                 appliedFilterSource = filterSource;
                 appliedFilterView = filterView;
             } else {
