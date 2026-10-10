@@ -2,7 +2,31 @@
 
 核对日期：2026-10-09。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：后台 WebDAV「自动同步」勾了存不住（随 **v1.15.9** 发布；功能提交 `985d59a`、版本提交 `27ca9ea`，基线 `28671eb`）
+## 最新一轮：Special Line「稍后阅读」筛选按钮文字重复（功能提交 `b99c4de`，**未发布**）
+
+用户原话：「为什么点击 special line 的稍后阅读按钮，按钮那里会出现两个稍后阅读的文字，重复了，需要修复」。
+
+### 根因
+
+筛选 chips 的选中态一律拼「渠道 · 订阅项」：`renderChips()` 里 `${g.label} · ${sourceLabel(picked)}`。而「稍后阅读」渠道只有一个订阅项（`MANUAL_SOURCE_ID`），`g.label` 取 `providerLabel`（adapter 的 `label: '稍后阅读'`），`sourceLabel(picked)` 取 `source.name`（repository 写死 `'稍后阅读'`）——两个字段同源同值，点一下按钮就拼成「稍后阅读 · 稍后阅读」。
+
+### 改法
+
+- `public/modules/special-line.js`：先算 `pickedLabel`，与 `g.label` 相同（或为空）时只显示渠道名一遍；不同名的多订阅项渠道照常拼「渠道 · 订阅项」。
+- `public/sw.js`：改了 `public/` 资产，缓存名 `nav-v98 → nav-v99` 并补注释条目。
+- `tests/fav-tab.test.js`：写死的 `nav-v98` 断言与测试名一并升到 `nav-v99`。
+
+### 实际验证
+
+- **全套 578/578**；`node --check`（special-line.js、sw.js、两个测试文件）与 `git diff --check` 通过。
+- **红绿**：新增用例「选中『稍后阅读』后 chip 只出现一遍」执行**真实** `renderChips`（`channelGroups`/`sourceLabel`/`chipsKey` 全从源码切出）——先断言未选中一遍、选中仍一遍、同名不拼 `·`、不同名仍拼 `X · jack`；把修复还原后该用例变红（`not ok`），恢复后全绿，并 `diff` 确认还原一致。
+
+### 验证边界 / 下一步
+
+1. **未在真实浏览器里点过这个按钮**（本轮没起服务）：结论来自执行真实渲染函数，不是截图。
+2. **已提交 `b99c4de`，未发布**；要发布需走 `scripts/release.sh`，三处版本号一致。
+
+## 上一轮：后台 WebDAV「自动同步」勾了存不住（随 **v1.15.9** 发布；功能提交 `985d59a`、版本提交 `27ca9ea`，基线 `28671eb`）
 
 用户原话：「后台 webdav 远程备份的自动同步功能勾选后无法保存，修复并发布新版本」。
 
