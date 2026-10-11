@@ -239,7 +239,8 @@
          * 单张卡片的入场动画时长（`moduleEnter`：从上方落下）。**必须与 styles.css 里
          * `moduleEnter` 的 animation-duration 一致**——摘标记的兜底定时器
          * 按它算，两处漂移会让兜底早于/晚于动画结束（有断言钉住）。
-         * 让位过渡的时长也取它（首张卡的起跑延迟），见 renderModuleZone。
+         * 它同时是**让位过渡的时长**，因此也是卡片起跑延迟的上限：
+         * 首张的延迟 = 本值 − 让位已过去的时间（见 renderModuleZone 的入场排期）。
          */
         static MODULE_ENTER_MS = 260;
 
@@ -247,7 +248,8 @@
          * 逐张卡片入场的间隔（毫秒）。
          *
          * 用户要求「先缩窄、再从上到下一个个落到两侧」：卡片按各自的实际落点
-         * （--stack-top）排序，第 i 张的 animation-delay = 让位时长 + i × 本值。
+         * （--stack-top）排序，第 i 张的 animation-delay = **让位剩余时间** +
+         * i × 本值（剩余时间为 0 时就是 i × 本值）。
          * 只影响动画的**起始时刻**，不改时长——总时长 = 让位 + (n-1)×本值 + 入场，
          * 4 张卡约 730ms；这是刻意的：一次一张才看得出「一个一个落」。
          */
@@ -468,36 +470,49 @@
             // 不全，手动缩放一下才恢复正常」。
             // 脚本本来在 mountModule 里躲不掉（loadScript 按 src 缓存，同一份只下载
             // 一次），提前加载只是把顺序摆正。
-            // 让位（syncRail）与停靠判定**推迟到首轮数据就绪之后**，与
-            // `zone.hidden = false`、卡片入场动画在同一帧发生（见下面的同帧块）。
-            // 改前它在 preload 之后立刻执行：背板先硬跳变窄、两侧空列挂着，
-            // 隔着挂载 + 首轮数据（上限 1500ms）卡片才淡入——用户报的
-            // 「导航先宽、模块出来时突然变窄」两处生硬都出在这段时序里。
-            // 推迟只动 syncRail 这一步，不改变任何请求的发起点：
-            // preload / 挂载 / 首轮数据照旧在原位置跑。
+            // 让位（syncRail）与停靠判定**紧跟脚本预加载**，不等挂载、不等首轮数据。
+            // 用户报「从导航宽屏模式到识别登录状态再到收缩导航部分宽度这个过程太慢了」：
+            // 同口径实测（页面内时间戳、远端数据注入 600ms 延迟、脚本走 SW 缓存）改前
+            // 从 session 返回到背板开始收窄要 624ms——config 只占 7ms，其余全在等首轮数据。
+            // 让位其实只需要两件事：**已登录**、**已启用哪些模块**（宽栏判定读模块
+            // 定义里的 wideRail，由 preload 注册）；挂载与数据都不改变它该多宽。
+            // ⚠️ 代价：两侧列会先空着，直到挂载 + 首轮数据就绪卡片才落——空窗长度
+            // 就是数据就绪时间（最坏 FIRST_ROUND_TIMEOUT_MS 1500ms）。这是刻意的取舍：
+            // 让位要快，卡片落点仍等终态。
             const ids = this.enabledModuleIds();
             await this.preloadModuleDefs(ids);
+
+            const app = $('#app');
+            if (wasHidden && app) app.classList.add('is-railing');
+            const railLayout = this.syncRail();
+            // 让位记号：过渡真正开始时由 watchRailShift 写 startedAt（入场排期要据此
+            // 算「背板还要挪多久」——不能按调用时刻算，过渡下一帧才开始）
+            const rail = { startedAt: 0 };
+            this.watchRailShift(app, railLayout, wasHidden, rail);
+
+            // 先让位、再量余量（顺序不能反，见 syncRail 的注释）。
+            // 宽栏下必须传**终值** railLayout.board：此刻背板正带着过渡，
+            // 实测 getBoundingClientRect 读到的是过渡起点值（936），
+            // 按它算余量会把边界档位判错（改前无过渡所以读得到终值）。
+            const sideDock = this.sideDockAvailable(railLayout && railLayout.board);
+            zone.dataset.dock = (this.modulesError || !sideDock) ? 'below' : 'outside';
 
             // ⚠️ 加载失败要**先说话**：config 没拿到时 enabledModuleIds() 是空的，
             // 若先判空再返回，模块区会静默消失——用户看到的是「模块加载不出来」
             // 而屏幕上没有任何线索（首次加载时下面那段错误 UI 走不到）。
             // 本仓库同一条教训：失败的请求必须渲染失败，不能只是跳过成功分支。
+            // 错误态一律 below（上面的赋值已把 modulesError 算进去）：错误条是个普通
+            // div，按基础规则会铺成 y=48..102 的全宽条——实测压住搜索框 19px，
+            // 而它是 pointer-events:auto，会挡住搜索框下沿的点击。
             if (this.modulesError) {
-                // 错误态没有宽栏模块可读（enabledModuleIds 为空），背板回宽，
-                // 不播让位动画。停靠恒 below：错误条是个普通 div，按基础规则会
-                // 铺成 y=48..102 的全宽条（实测压住搜索框 19px、挡住搜索框下沿
-                // 点击），且它不需要量余量——直接写死，不走 sideDockAvailable。
-                this.syncRail();
-                zone.dataset.dock = 'below';
                 zone.hidden = false;
                 zone.replaceChildren(this.renderModuleZoneError());
                 return;
             }
 
             if (!ids.length) {
-                // 全部模块被关掉时背板也要回宽：不调 syncRail 的话，上一档的
-                // 窄态（data-rail="wide" + 三个宽度变量）会一直留在 #app 上。
-                this.syncRail();
+                // 全部模块被关掉时背板也要回宽——上面的 syncRail 已经处理
+                // （它自己看 enabledModuleIds 为空 → narrow）。
                 zone.hidden = true;
                 zone.replaceChildren();
                 return;
@@ -521,28 +536,16 @@
             // 等过之后卡片出现时就是终态。
             await this.waitFirstRound(firstRound);
 
-            // ===== 首现那一刻的入场编排（先让位、再逐张落下）=====
-            // 让位、停靠、显示与「入场排期」都在这一帧定下来：背板开始收窄的**同时**
-            // 给每张卡片排好 animation-delay —— 首张的 delay 等于让位时长，后面每张
-            // 再 +MODULE_ENTER_STAGGER_MS。于是观感是两段：导航先收窄，收完卡片从上
-            // 到下逐个落入两侧（用户要求「中间导航部分先缩窄，然后模块再从上到下一
-            // 个个落到两侧」）。卡片在等待期间是 opacity 0（animation-fill-mode: both
-            // 会盖住 delay 段），不会先亮一下再落。
-            // `is-railing` 只在这一刻前后存在，负责打开背板的过渡（CSS 里 260ms）；
-            // resize / 登出 / 配置改版走另外的调用路径，不加这个类，仍瞬时切换。
-            const app = $('#app');
-            if (wasHidden && app) app.classList.add('is-railing');
-            const railLayout = this.syncRail();
-            this.watchRailShift(app, railLayout, wasHidden);
-
-            // 先让位、再量余量（顺序不能反，见 syncRail 的注释）。
-            // 宽栏下必须传**终值** railLayout.board：此刻背板正带着过渡，
-            // 实测 getBoundingClientRect 读到的是过渡起点值（936），
-            // 按它算余量会把边界档位判错（改前无过渡所以读得到终值）。
-            const sideDock = this.sideDockAvailable(railLayout && railLayout.board);
-            zone.dataset.dock = sideDock ? 'outside' : 'below';
-
-            // 显隐也等到首轮之后：dock=below 时模块区自带一条上边框与内边距，
+            // ===== 入场排期 =====
+            // 让位早在 preload 之后就已经开始（见上面那段注释），这里只排卡片：
+            // 起跑延迟取**让位剩下的时间**，所以两种快慢都能兼顾——
+            //   · 数据慢（让位早收完）：剩余 ≤ 0 → 卡片立刻按落点次序逐个落下；
+            //   · 数据快（让位还在挪）：剩余 > 0 → 卡片等到背板停稳再落。
+            // 不变式：卡片绝不在背板还在挪的时候出现（原先是「首张 delay 恒等于让位
+            // 时长」，那只在让位与排期同帧时才成立）。
+            // 卡片在等待期间是 opacity 0（animation-fill-mode: both 会盖住 delay 段），
+            // 不会先亮一下再落。--stack-top 次序与逐张间隔见 playModuleEntrance。
+            // 显隐仍等到首轮之后：dock=below 时模块区自带一条上边框与内边距，
             // 先亮出来再等数据会凭空留一个空盒子。
             zone.hidden = false;
 
@@ -571,9 +574,11 @@
             }
 
             // 摆好位之后再排入场：加类与写 inline delay 在同一帧，首帧就是 opacity 0。
-            // 有让位时首张卡等背板收窄完（baseDelay = 让位时长），随后逐张落下。
+            // 起跑延迟 = 让位**剩下的**时间（让位可能在等数据期间早就收完了）。
             if (wasHidden) {
-                this.playModuleEntrance(zone, { baseDelay: railLayout ? App.MODULE_ENTER_MS : 0 });
+                // startedAt 为 0 = 过渡还没开始 → 按整段算（保守，不会提前落）
+                const elapsed = rail.startedAt ? performance.now() - rail.startedAt : 0;
+                this.playModuleEntrance(zone, { baseDelay: Math.max(0, App.MODULE_ENTER_MS - elapsed) });
             }
         }
 
@@ -584,8 +589,9 @@
          * 严格一张接一张，两侧混在同一份次序里（顶上那两张落点相同，按 DOM 次序
          * 排在前后，**相隔一个间隔**——不是同刻起跑）。
          * `below` 停靠没有 `--stack-top`（一律 0），于是退回 DOM 次序——那正是屏幕上的
-         * 自上而下。首张的 delay 由调用方给：有让位时是让位时长，于是形成
-         * 「导航先收窄、模块再一张张落下」的两段式。
+         * 自上而下。首张的 delay 由调用方给：有让位时是**让位剩下的时间**（让位紧跟
+         * preload 之后就开始了，等数据期间它可能早就收完），于是形成
+         * 「导航先收窄、模块再一张张落下」的两段式；没有让位时为 0。
          *
          * ⚠️ 动画结束后**必须**把类与 inline delay 都清掉：CSS 用的是
          * `animation-fill-mode: both`，最后一帧（`transform: none`）会被一直保留，
@@ -646,8 +652,14 @@
          *
          * 不进宽栏或非首现时**立刻**摘：类是在 syncRail 之前加的（要让它落在
          * 属性变化的 after-change style 里），同一 tick 内加了又摘，无视觉效果。
+         *
+         * `rail` 是调用方给的**可变记号**：过渡真正开始（`transitionstart`）时把
+         * 时刻写进 `rail.startedAt`。为什么不能直接用「调 syncRail 那一刻」——
+         * 过渡要等下一次样式重算（通常下一帧）才开始，按调用时刻算会把已过去的
+         * 时间估多一帧，卡片可能早一帧落下来。`startedAt` 停在 0 表示还没开始，
+         * 调用方据此按「整段都还没走」处理（偏保守，不会提前落）。
          */
-        watchRailShift(app, railLayout, wasHidden) {
+        watchRailShift(app, railLayout, wasHidden, rail) {
             if (!app) return;
             const cls = 'is-railing';
             if (!railLayout || !wasHidden) {
@@ -660,12 +672,18 @@
                 done = true;
                 app.classList.remove(cls);
                 app.removeEventListener('transitionend', onEnd);
+                app.removeEventListener('transitionstart', onStart);
             };
             const onEnd = ev => {
                 if (ev.propertyName !== 'max-width' && ev.propertyName !== 'margin-left') return;
                 finish();
             };
+            const onStart = ev => {
+                if (ev.propertyName !== 'max-width' && ev.propertyName !== 'margin-left') return;
+                if (rail && !rail.startedAt) rail.startedAt = performance.now();
+            };
             app.addEventListener('transitionend', onEnd);
+            app.addEventListener('transitionstart', onStart);
             setTimeout(finish, App.MODULE_ENTER_MS + 150);
         }
 

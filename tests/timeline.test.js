@@ -2080,11 +2080,10 @@ test('首屏宽栏判定：模块定义必须在 syncRail 之前注册（真跑 
     await method.call(ctx);
 
     assert.deepEqual(loadModuleCalls, ['special-line'], '先加载了启用模块的脚本');
-    // 顺序即契约：让位与判停靠都必须落在**首轮数据之后**（同帧让位），
-    // 且让位在判停靠之前。改前 syncRail 在 preload 之后立刻跑，
-    // 背板先硬跳变窄、隔着 1500ms 上限的等数据，卡片才出现——用户报的生硬。
-    assert.deepEqual(seen.map(s => s.at), ['firstRound', 'syncRail', 'sideDock'],
-        '同帧顺序：首轮数据 → 让位 → 判停靠（改前让位在 preload 之后立刻发生）');
+    // 顺序即契约：让位与判停靠都在**首轮数据之前**（用户报「收缩导航部分宽度
+    // 这个过程太慢」——让位不该等数据），而卡片入场仍等首轮数据。
+    assert.deepEqual(seen.map(s => s.at), ['syncRail', 'sideDock', 'firstRound'],
+        '让位 → 判停靠 → 首轮数据（让位不再排在等数据之后）');
     assert.equal(seen.filter(s => s.at === 'syncRail').length, 1, 'syncRail 恰好被调用一次');
     assert.equal(seen.find(s => s.at === 'syncRail').defRegistered, true,
         'syncRail 执行时模块定义必须已注册——否则首屏判定读不到 wideRail，时间线按窄卡出生');
@@ -2176,38 +2175,51 @@ test('窄屏（below 停靠）纵向堆叠，不再左右横滑', () => {
 
 // ---------- 首现让位动画（同帧编排 + is-railing 门控过渡） ----------
 
-test('首现让位与入场排期同帧：让位/过渡收尾/判停靠/显示都落在首轮数据之后的那一段', () => {
-    // 用户报的生硬：改前 syncRail 在 preload 之后**立刻**跑，背板先硬跳变窄、
-    // 两侧空列挂着，隔着挂载 + 首轮数据（上限 1500ms）卡片才淡入。
-    // 这条钉住排期位置：preload < waitFirstRound < 同帧那次 syncRail <
-    // watchRailShift < sideDockAvailable < zone.hidden=false；卡片自己再按
-    // baseDelay（= 让位时长）与落点次序逐张落下，见 monitor-agent 那两条。
+test('让位不等数据：让位/判停靠紧跟 preload，卡片仍等首轮数据', () => {
+    // 用户报「从导航宽屏模式到识别登录状态再到收缩导航部分宽度这个过程太慢了」：
+    // 同口径实测（页面内时间戳、远端数据注入 600ms 延迟）改前从 session 返回到
+    // 背板开始收窄是 624ms，config 只占 7ms，其余全在等首轮数据——而让位只需要
+    // 「已登录 + 已启用哪些模块」。这条钉住新顺序：preload < syncRail <
+    // watchRailShift < sideDockAvailable < waitFirstRound（**让位不能再排在等数据
+    // 之后**）；卡片入场仍等到 zone.hidden=false（在首轮数据之后），起跑延迟取
+    // 让位剩下的时间。
     const src = stripComments(appSource);
-    // 起点推到同帧块之后：错误分支里也有一句 zone.hidden = false（先于同帧块）
-    const seg = loginPathThrough(src, 'zone.hidden = false;', 'this.watchRailShift(app, railLayout, wasHidden);');
-    assert.ok(seg.length > 500, `切片覆盖整段登录路径（实际 ${seg.length}）`);
+    // 切到入场调用那一行为止：错误分支里也有 zone.hidden = false（比入场早），
+    // 切片要盖过它才能用 lastIndexOf 取到「模块区可见」那一句。
+    const seg = loginPathThrough(src, 'this.playModuleEntrance(zone,');
+    assert.ok(seg.length > 900, `切片覆盖整段登录路径（实际 ${seg.length}）`);
 
     const iPreload = seg.indexOf('await this.preloadModuleDefs(ids);');
-    const iFirst = seg.indexOf('await this.waitFirstRound(firstRound);');
-    // ⚠️ 用 lastIndexOf：错误分支与空列表分支里各有一次 syncRail（那是回宽复位，
-    // 刻意不带动画），同帧块那次是这段路径里的**最后**一次。
-    const iRail = seg.lastIndexOf('this.syncRail()');
-    const iWatch = seg.indexOf('this.watchRailShift(app, railLayout, wasHidden);');
+    const iRail = seg.indexOf('this.syncRail()');
+    const iWatch = seg.indexOf('this.watchRailShift(app, railLayout, wasHidden, rail);');
     const iDock = seg.indexOf('const sideDock = this.sideDockAvailable(');
-    // ⚠️ 同样用 lastIndexOf：错误分支里也有一句 zone.hidden = false（先于同帧块），
-    // 切片末尾那句才是本条要钉的「模块区可见」。
+    const iFirst = seg.indexOf('await this.waitFirstRound(firstRound);');
     const iShow = seg.lastIndexOf('zone.hidden = false;');
-    for (const [name, i] of Object.entries({ preload: iPreload, firstRound: iFirst, syncRail: iRail, watch: iWatch, dock: iDock, show: iShow })) {
+    for (const [name, i] of Object.entries({ preload: iPreload, syncRail: iRail, watch: iWatch, dock: iDock, firstRound: iFirst, show: iShow })) {
         assert.ok(i >= 0, `切片里能找到 ${name}（${i}）`);
     }
-    assert.ok(iPreload < iFirst, '模块脚本先加载，再等首轮数据');
-    assert.ok(iFirst < iRail, '让位必须在首轮数据之后（同帧，而不是 preload 之后立刻）');
+    assert.ok(iPreload < iRail, '定义先注册（宽栏判定读 wideRail），再让位');
     assert.ok(iRail < iWatch, '让位后立刻进入过渡收尾（类先加、后摘）');
-    assert.ok(iWatch < iDock, '过渡收尾在判停靠之前（同一帧块内）');
-    assert.ok(iDock < iShow, '停靠判定在模块区可见之前');
+    assert.ok(iWatch < iDock, '过渡收尾在判停靠之前');
+    // ★ 本条的承重断言：让位不能排在等数据之后
+    assert.ok(iDock < iFirst, `让位/判停靠必须在首轮数据之前（dock=${iDock} first=${iFirst}）`);
+    assert.ok(iFirst < iShow, '卡片入场仍等首轮数据之后才可见');
     // 调用点必须把**终值**传给停靠判定：让位带过渡时实测读到的是起点值
     assert.match(seg, /this\.sideDockAvailable\(railLayout && railLayout\.board\)/,
         '宽栏下判停靠吃 syncRail 给的终值 railLayout.board，不吃过渡中的实测值');
+    // 让位记号必须在**过渡真正开始**时写（不能按调 syncRail 那一刻算：
+    // 过渡要等下一次样式重算才起跑，按调用时刻算会估多一帧，卡片可能早一帧落）
+    assert.match(seg, /const rail = \{ startedAt: 0 \};/, '让位记号初始为「还没开始」');
+    // ⚠️ 这两条要查**整份源码**：watchRailShift 是另一个方法，不在 seg 这段里
+    assert.match(src, /app\.addEventListener\('transitionstart', onStart\)/,
+        'watchRailShift 里监听 transitionstart 写起点');
+    assert.match(src, /if \(rail && !rail\.startedAt\) rail\.startedAt = performance\.now\(\);/,
+        '过渡开始时写入起点（只写第一次）');
+    assert.match(seg, /const elapsed = rail\.startedAt \? performance\.now\(\) - rail\.startedAt : 0;/,
+        '余量由过渡起点算出（还没开始则按整段算，偏保守）');
+    // ⚠️ baseDelay 在切片锚点之后，得查整份源码
+    assert.match(src, /baseDelay: Math\.max\(0, App\.MODULE_ENTER_MS - elapsed\)/,
+        '起跑延迟 = 让位剩余时间（不为负）');
 });
 
 test('让位过渡的两端都必须可插值：margin 用数值居中量、max-width 显式写死', () => {
@@ -2258,11 +2270,12 @@ test('背板让位过渡只在 #app.is-railing 窗口内开启，时长决定首
 test('watchRailShift：不进宽栏立刻摘类，进宽栏则 transitionend + 定时器兜底，摘类无条件且幂等', () => {
     // 留着 is-railing 类的后果：背板此后每次宽度变化都带过渡，resize 路径跟着拖泥带水。
     // 这条**执行**真实实现（切出来接上真实 App 常量与受控 setTimeout），不重写一遍。
-    const body = extractFunction(stripComments(appSource), 'watchRailShift(app, railLayout, wasHidden) {');
+    const body = extractFunction(stripComments(appSource), 'watchRailShift(app, railLayout, wasHidden, rail) {');
     const timers = [];
-    const fn = new Function('App', 'setTimeout',
+    const fn = new Function('App', 'setTimeout', 'performance',
         `return ({ ${body} }).watchRailShift;`)(
-        { MODULE_ENTER_MS: 260 }, (cb, ms) => { timers.push({ cb, ms }); return timers.length; });
+        { MODULE_ENTER_MS: 260 }, (cb, ms) => { timers.push({ cb, ms }); return timers.length; },
+        { now: () => 1234.5 });
 
     const makeApp = () => {
         const state = { added: [], removed: [], listeners: {} };
@@ -2277,7 +2290,7 @@ test('watchRailShift：不进宽栏立刻摘类，进宽栏则 transitionend + �
     // 非首现 / 不进宽栏：立刻摘，不挂监听也不上定时器（类是 syncRail 之前加的，同 tick 摘掉无视觉效果）
     for (const [rail, hidden] of [[{ board: 696 }, false], [null, true]]) {
         const a = makeApp();
-        fn(a, rail, hidden);
+        fn(a, rail, hidden, { startedAt: 0 });
         assert.deepEqual(a.state.removed, ['is-railing'], '立刻摘类');
         assert.equal(Object.keys(a.state.listeners).length, 0, '不挂监听');
         assert.equal(timers.length, 0, '不上定时器');
@@ -2285,11 +2298,21 @@ test('watchRailShift：不进宽栏立刻摘类，进宽栏则 transitionend + �
 
     // 进宽栏且首现：挂监听 + 定时器兜底（260 + 150，与 playModuleEntrance 同形制）
     const a = makeApp();
-    fn(a, { board: 696 }, true);
+    const railMark = { startedAt: 0 };
+    fn(a, { board: 696 }, true, railMark);
     assert.deepEqual(a.state.removed, [], '过渡期间不摘');
     assert.ok(a.state.listeners.transitionend, '挂了 transitionend');
+    assert.ok(a.state.listeners.transitionstart, '挂了 transitionstart（写让位起点）');
     assert.equal(timers.length, 1, '上了兜底定时器');
     assert.equal(timers[0].ms, 260 + 150, '兜底 = MODULE_ENTER_MS + 150');
+
+    // 起点只在**过渡真正开始**那一刻写（别的属性不算；重复触发只写第一次）
+    a.state.listeners.transitionstart({ propertyName: 'opacity' });
+    assert.equal(railMark.startedAt, 0, '别的属性的 transitionstart 不写起点');
+    a.state.listeners.transitionstart({ propertyName: 'max-width' });
+    assert.equal(railMark.startedAt, 1234.5, 'max-width 的 transitionstart 写入起点');
+    a.state.listeners.transitionstart({ propertyName: 'margin-left' });
+    assert.equal(railMark.startedAt, 1234.5, '重复触发不覆盖（只认第一次）');
 
     // 按 propertyName 过滤：别的过渡结束不能提前摘
     a.state.listeners.transitionend({ propertyName: 'opacity' });

@@ -1,3 +1,9 @@
+// nav-v105：让位（背板收窄）不再等模块挂载与首轮数据——紧跟模块脚本预加载之后
+// 就收窄，卡片仍在数据就绪后按落点逐个落入（起跑延迟取让位剩余时间）。用户报
+// 「从导航宽屏模式到识别登录状态再到收缩导航部分宽度这个过程太慢了」：同口径实测
+// （页面内时间戳、远端数据注入 600ms 延迟、脚本走 SW 缓存），从 session 返回到
+// 背板开始收窄由 624ms 降到 12ms；数据很快时也不变式成立——背板挪动期间无卡片露头。
+// 改了 app.js。
 // nav-v104：入场编排改为两段式——导航先收窄，模块再自上而下逐个落入两侧
 // （v1.15.13 是同时起步，观感「过渡不自然」）。卡片按 --stack-top 次序拿
 // inline animation-delay，方向改为从上方落下。改了 app.js、styles.css。
@@ -261,7 +267,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v104';
+const CACHE = 'nav-v105';
 const ASSETS = [
     '/',
     '/index.html',

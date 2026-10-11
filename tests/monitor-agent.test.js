@@ -3696,18 +3696,23 @@ test('模块配置加载失败要渲染错误，不能静默收起模块区', ()
     // 横铺在页面顶部盖住搜索区，**而且里面那个「重试」按钮点不动**。
     // 实测（冷启动、把 config 打成 429）：document.elementFromPoint 落在按钮中心
     // 返回的是 app，不是按钮本身。
-    // 形态变了：改前主判定行里带 `(this.modulesError || !sideDock)` 条件、且整行排在
-    // 错误分支**之前**；首现同帧让位之后，停靠判定挪进了首轮数据之后的同帧块，
-    // 错误分支到不了那里（它在 waitFirstRound 之前就 return 了），所以由分支自己
-    // 写死 below。承重的事实不变：错误条进 DOM 之前 dock 必须已是 below。
+    // ⚠️ 这条断言的形态随实现搬过一次家（让位先挪到首轮数据之后、又挪回 preload
+    // 之后），但承重的事实始终是同一个：**错误条进 DOM 之前 dock 已是 below**。
+    // 现在它由主判定行负责——那一行带 `(this.modulesError || !sideDock)` 条件，
+    // 且排在错误分支之前。
+    const dockAt = body.indexOf("zone.dataset.dock = (this.modulesError || !sideDock) ? 'below' : 'outside'");
+    assert.ok(dockAt > 0 && dockAt < errAt,
+        `停靠判定（含错误态强制 below）必须排在错误分支之前（dock=${dockAt} err=${errAt}）`);
+    // ⚠️ 断言这条赋值的**内容**，而不是把 indexOf 找的那串文本再 match 一遍（那是自证）：
+    //    两种停靠都要出现，且错误态条件必须在里面。
+    const dockLine = body.slice(dockAt, body.indexOf(';', dockAt) + 1);
+    assert.match(dockLine, /'below'/, "赋值里要出现 'below'");
+    assert.match(dockLine, /'outside'/, "赋值里要出现 'outside'");
+    assert.match(dockLine, /this\.modulesError/, '错误态在这个条件里被强制为 below');
+    // 错误分支自己不量余量（量了也不用：恒 below），也不该再手写第二份 dock 赋值
     const errBranch = body.slice(errAt, emptyAt);
-    const dockInErr = errBranch.indexOf("zone.dataset.dock = 'below'");
-    const renderErr = errBranch.indexOf('renderModuleZoneError()');
-    assert.ok(dockInErr > 0 && renderErr > dockInErr,
-        `错误分支先写死 below 再渲染错误（dock=${dockInErr} render=${renderErr}）`);
-    // 主判定仍然只认两种停靠；错误态到不了它（错误分支在它之前 return）
-    assert.match(body, /sideDock \? 'outside' : 'below'/, '主判定两种停靠都可能');
-    assert.doesNotMatch(errBranch, /sideDockAvailable\(/, '错误分支不量余量（量了也不用，恒 below）');
+    assert.doesNotMatch(errBranch, /sideDockAvailable\(/, '错误分支不量余量');
+    assert.doesNotMatch(errBranch, /zone\.dataset\.dock\s*=/, '错误分支不重复写 dock（主判定已经写过）');
     // 错误条是 `.module-zone` 的**直接子节点**，不在「.module-zone-inner > .module-widget」
     // 与「[data-dock=below]」那两条重新打开 pointer-events 的规则里，得自己开。
     assert.match(stripComments(stylesSource), /\.module-zone-error\s*\{[^}]*pointer-events:\s*auto/,
@@ -3728,11 +3733,13 @@ test('模块区首次出现逐张落入，播完必须摘类且不留 inline del
     const wasAt = body.indexOf('const wasHidden = zone.hidden');
     const showAt = body.lastIndexOf('zone.hidden = false');
     assert.ok(wasAt >= 0 && showAt > wasAt, `先记原状态再显形（was=${wasAt} show=${showAt}）`);
-    // ⚠️ 首张的 delay 必须是**让位时长**：这是「导航先收窄、模块再落」的唯一机制。
-    //    没有让位（below 停靠/窄屏）时 baseDelay 为 0，否则白等 260ms。
-    const callAt = body.indexOf('this.playModuleEntrance(zone, { baseDelay: railLayout ? App.MODULE_ENTER_MS : 0 })');
+    // ⚠️ 起跑延迟取**让位剩下的时间**，而不是恒等于让位时长：让位现在紧跟在
+    //    preload 之后（不等数据），数据慢时它早就收完了，数据快时它还在挪——
+    //    取剩余时间才能在两种情况下都保证「卡片不在背板还在挪的时候出现」。
+    const callAt = body.indexOf('baseDelay: Math.max(0, App.MODULE_ENTER_MS - elapsed)');
     assert.ok(callAt > showAt, '摆好位之后再排入场');
-    assert.ok(callAt > 0, '首张 delay 取让位时长（有让位才延后）');
+    assert.match(body, /const elapsed = rail\.startedAt \? performance\.now\(\) - rail\.startedAt : 0;/,
+        '余量由让位**过渡起点**算出（起点未记录时按整段算，偏保守）');
 
     // ② 摘类：animationend 按名字过滤 + **等最后一张**（逐张延迟之后不能再
     //    「第一张结束就摘」，那会把还在排队的卡片一起打回终态）+ 定时器兜底 + 清 inline delay。
