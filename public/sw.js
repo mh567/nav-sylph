@@ -1,3 +1,7 @@
+// nav-v101：新增「微博热搜」模块（public/modules/weibo-hot.js）——首页前 15 条、
+// 60 秒轮询、keyed diff + FLIP 平滑换榜。服务端代理 /api/weibo-hot（60 秒缓存）。
+// 与 memo/server-monitor 同理：按需加载但留在预缓存清单里，否则回访用户
+// 首次打开模块区要等一次网络。改了 modules/weibo-hot.js、app.js、styles.css、server.js。
 // 首页性能优化：admin.css 改非阻塞加载、pinyin/qrcode 延迟加载，
 // index.html 与 app.js 已变，命中缓存的老用户拿不到，必须升缓存名。
 // 模块平台：新增 public/modules/server-monitor.js。它按需加载、不进首屏，
@@ -247,7 +251,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v100';
+const CACHE = 'nav-v101';
 const ASSETS = [
     '/',
     '/index.html',
@@ -260,6 +264,7 @@ const ASSETS = [
     '/modules/server-monitor.js',
     '/modules/memo.js',
     '/modules/special-line.js',
+    '/modules/weibo-hot.js',
     '/favicon.svg',
     '/icon.svg',
     '/manifest.json'

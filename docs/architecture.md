@@ -27,7 +27,7 @@ Nav Sylph 是个人导航和书签页面，面向公网访问的首页应保持�
 | `lib/credentials.js` | 凭据加密（AES-256-GCM），WebDAV 密码、agent token、推送凭据共用 |
 | `agent/` | 部署在**被监控目标机**上的只读采集程序。**Go 静态二进制，零第三方依赖**（`go.mod` 无 `require`）：`main.go`（协议、HTTPS、注册、推送、`upgrade`）+ 平台桩（`mem_darwin.go` / `mem_other.go` / `readcpu_darwin.go` / `readcpu_other.go` / `disk_other.go` / `disk_unsupported.go`）、`install.sh`（一键 `curl \| bash`）、`README.md` |
 | `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
-| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`、`special-line.js`） |
+| `public/modules/` | 登录后才按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`、`special-line.js`、`weibo-hot.js`） |
 | `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
 | `tests/` | 备份隐私、移动书签、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
@@ -117,6 +117,8 @@ selfSigned / version                **函数**，读实时值
 1. **模块不得引用 `app.js` 内部的标识符。** `API` 是 `app.js` IIFE 的 `const`，不是全局；平台通过 `mountWidget(shell, { api })` 注入。写裸 `API` 时 `node --check` 与源码形状断言都过得去，只有真在浏览器里跑起来才以 `ReferenceError` 现形。
 2. **模块自己的元素 id 必须带模块前缀。** 与管理端弹窗撞名（如 `#saveBtn`，`app.js:1037`）会让 `querySelector('#saveBtn')` 命中那个隐藏的按钮，点击落到遮罩上——看起来像「保存没反应」，实际是面板被关掉、内容丢失。
 3. **同步的失败态不能清空已显示的数据。** 拉取失败只把状态位转成「同步失败 + 重试」，上一条已知列表留在卡片上；恢复后由下一次轮询自动回「已同步」。
+
+**第四个模块：微博热搜（`weibo-hot.js`）**，无数据表、无配置项——数据是外站公开榜单，经服务端代理 `GET /api/weibo-hot`（60 秒内存缓存 + 陈旧缓存兜底；上游形状校验与 href 白名单在服务端先做一道，模块里是第二道）。它是「列表会自己变」的模块，渲染约定与前三个不同：**整卡永不 innerHTML 重建，按条目 key（title）做行级 diff + FLIP 动画**——`listKey()` 指纹相同的一轮只刷状态行（零 DOM 写入）；不同时复用行节点移动重排、`translateY` 反转 + 强制 reflow + 过渡归零，新行淡入。三条可复用的判据：① 行元素的身份必须按稳定 key（title）而不是下标，下标键在换位时会把动画打乱成整列重建；② hover 效果**不能**用 `transform`（与 FLIP 冲突），这个模块的行 hover 只换背景色；③ 卡片是容器查询锚点（`.weibo-card { container-type: inline-size }`），侧挂窄卡（≤240px）自动隐藏热度列。轮询桶阈值 `MODULE_POLL_MAX` 的推导随轮询接口数走（现 4 条 → 240），新增轮询路由时 monitor-agent 的守卫会强制重算。
 
 ## 凭据加密
 

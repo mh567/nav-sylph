@@ -271,19 +271,20 @@ function publicReadLimit(req, res, next) {
 // 单独计数而**不是**提高 rateLimit：rateLimit 同时是
 // /api/verify-password 的第一层防爆破，放宽它等于把暴力破解的额度一起
 // 放宽 4 倍。这与 publicReadLimit 早先为 /api/session 做过的是同一件事。
-// 阈值按轮询推导：**3 个接口** × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 180。
+// 阈值按轮询推导：**4 个接口** × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 240。
 // ⚠️ 每新增一条「每个标签页每周期各打一次」的接口，这个乘数就要重算一次：
 // v1.11.7 定这个数是按 2 个接口推的（120），v1.13.0 加入
-// GET /api/timeline/events 之后必须抬到 180——留着 120 的话，「三个模块
-// 全开 + 十个标签页」会把桶打满，复现的正是 v1.11.7 修过的那类故障
+// GET /api/timeline/events 之后抬到 180，新增 GET /api/weibo-hot（微博热搜模块，
+// 60 秒一轮）之后必须到 240——留着 180 的话，「四个模块全开 + 十个标签页」
+// 会把桶打满，复现的正是 v1.11.7 修过的那类故障
 //（429 → 模块区渲染不出来 / 时间线读取失败）。
 //
 // 代价：这几条是 requireAdmin 门控，无会话时它会跑一次 bcrypt（正常会话
 // 命中不走）。所以伪造 X-Admin-Password 打这些接口时，可触发的 bcrypt
-// 上限从 30 次/分钟升到 180 次/分钟；仍是有界的，且不必放宽登录那条路径。
+// 上限从 30 次/分钟升到 240 次/分钟；仍是有界的，且不必放宽登录那条路径。
 const modulePollLimitMap = new Map();
 const MODULE_POLL_WINDOW = 60000;
-const MODULE_POLL_MAX = 180;
+const MODULE_POLL_MAX = 240;
 
 function modulePollLimit(req, res, next) {
     const ip = resolveClientIp(req);
@@ -379,6 +380,8 @@ const {
 // Special Line 时间线：repository / service / scheduler 的装配入口。
 // 凭据加解密需要密码哈希，构造放在 init() 里（那时 getPasswordHash 已可用）。
 const { createTimeline, ServiceError } = require('./lib/timeline');
+// 微博热搜代理复用时间线的取数工具（AbortSignal 超时 + 响应体大小上限）。
+const { getJson: fetchJson } = require('./lib/timeline/http');
 
 // 推送凭据的随机数与哈希需要 Node 的 crypto。
 // **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
@@ -3410,6 +3413,66 @@ app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
     } catch (err) {
         console.error('删除备忘录失败:', err);
         res.status(500).json({ error: '删除失败' });
+    }
+});
+
+// ========== 微博热搜代理 ==========
+//
+// 浏览器不直连外站（项目里数据模块一律服务端取数：免 CORS、可缓存、失败可控）。
+// 上游 https://api.xunjinlu.fun/api/rebang/weibo.php 自带 3 分钟缓存、无需密钥；
+// 这里再压一层 60 秒服务端缓存——前端 60 秒一轮的轮询多数打在缓存上，
+// 上游一旦换榜最坏 60 秒内可见。
+//
+// 路由走轮询专用桶（与 /api/memos 同理：按标签页数线性增长，算进管理桶会自己打满）。
+// ⚠️ 路径**不**用 /api/modules 前缀——api-boundary.test.js 对该前缀有恰好 10 条的计数守卫。
+const WEIBO_HOT_URL = 'https://api.xunjinlu.fun/api/rebang/weibo.php';
+const WEIBO_HOT_TTL = 60000;
+const WEIBO_HOT_PAGE = 15;
+const WEIBO_HOT_TIMEOUT = 8000;
+const WEIBO_HOT_MAX_BYTES = 512 * 1024;
+let weiboHotCache = { data: null, at: 0 };
+
+app.get('/api/weibo-hot', modulePollLimit, requireAdmin, async (req, res) => {
+    const now = Date.now();
+    if (weiboHotCache.data && now - weiboHotCache.at < WEIBO_HOT_TTL) {
+        return res.json(weiboHotCache.data);
+    }
+    try {
+        const json = await fetchJson(WEIBO_HOT_URL, {
+            timeoutMs: WEIBO_HOT_TIMEOUT,
+            maxBytes: WEIBO_HOT_MAX_BYTES
+        });
+        // 形状校验在服务端做：上游是第三方，字段说变就变，
+        // 宁可在这里失败也不把畸形数据放行到浏览器的渲染路径上。
+        if (!json || json.code !== 200 || !json.data || !Array.isArray(json.data.list)) {
+            throw new Error('上游返回形状异常');
+        }
+        const list = json.data.list
+            .filter(x => x && typeof x.title === 'string' && x.title)
+            .slice(0, WEIBO_HOT_PAGE)
+            // 长度上限在服务端收口：上游是第三方，异常长的标题/标签会把卡片
+            // 撑出预期排版（textContent 渲染没有注入面，只有排版稳定性问题）。
+            .map((x, i) => ({
+                // rank 缺失回退到**列表序号**而不是 0：回 0 会让畸形条目
+                // 显示成与榜首重复的「1」，编号从此不可信。
+                rank: Number.isFinite(x.rank) ? x.rank : i,
+                title: x.title.slice(0, 120),
+                hot_value: Number.isFinite(x.hot_value) ? x.hot_value : 0,
+                label: typeof x.label === 'string' ? x.label.slice(0, 8) : '',
+                // href 白名单的**第一道**在服务端：模块里还有一道（客户端不信任任何数据源）
+                url: /^https?:\/\//.test(x.url || '') ? x.url : ''
+            }));
+        // 响应只带模块真正消费的字段（list）。早先的 updateTime / stale 标记
+        // 没有任何读取方——陈旧兜底的语义是「静默给上一版榜单」，本就不需要标记。
+        weiboHotCache = { data: { list }, at: Date.now() };
+        res.json(weiboHotCache.data);
+    } catch (err) {
+        // 上游抖动用陈旧缓存兜底——宁可给上一版榜单，也不要卡片上一个失败态。
+        if (weiboHotCache.data) {
+            return res.json(weiboHotCache.data);
+        }
+        console.error('拉取微博热搜失败:', err && err.message);
+        res.status(502).json({ error: '热搜数据获取失败' });
     }
 });
 
