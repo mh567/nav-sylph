@@ -3160,19 +3160,22 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     :root:not([data-theme="light"]) .weibo-card-status[data-kind="failed"] { color: #e9a69d; }
 }
 .weibo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; cursor: pointer; }
-.weibo-rows { display: flex; flex-direction: column; }
+.weibo-rows { display: flex; flex-direction: column; gap: 2px; }
 /* 行本身不带 hover transform——FLIP 期间 transform 归 FLIP 管，两者会打架 */
 .weibo-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 7px; text-decoration: none; color: inherit; transition: background 110ms; }
 .weibo-row:hover { background: var(--bg-hover); }
 .weibo-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.weibo-rank { flex: 0 0 16px; font-size: 11px; font-weight: 700; color: var(--text-muted); text-align: center; font-variant-numeric: tabular-nums; }
+.weibo-rank { flex: 0 0 16px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-align: center; font-variant-numeric: tabular-nums; }
 .weibo-row[data-top="1"] .weibo-rank { color: #a44c46; }
 :root[data-theme="dark"] .weibo-row[data-top="1"] .weibo-rank { color: #e9a69d; }
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) .weibo-row[data-top="1"] .weibo-rank { color: #e9a69d; }
 }
-.weibo-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: .015em; }
-.weibo-badge { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font-size: 9px; line-height: 15px; font-weight: 600; }
+/* 标题走常规字重：15 行连排时 600 会糊成一片视觉重块（用户反馈「粗、显眼、
+   密」）。备忘录卡同为卡内列表但预览只露 3 行、可保 600；书签卡一卡一条同理。
+   唯独这里是 15 行满屏文本，必须降档。 */
+.weibo-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 400; letter-spacing: .015em; }
+.weibo-badge { flex: 0 0 auto; padding: 0 4px; border: 1px solid currentColor; border-radius: 4px; font-size: 9px; line-height: 15px; font-weight: 500; }
 .weibo-badge[data-label="热"] { color: #a44c46; }
 .weibo-badge[data-label="新"] { color: var(--accent); }
 .weibo-badge[data-label="辟谣"] { color: #4a7f62; }

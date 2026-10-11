@@ -1,3 +1,6 @@
+// nav-v102：微博热搜卡片字体调轻——标题字重 600→400、名次 700→600、标签
+// 600→500、行间补 2px 间隙。15 行 600 字重连排糊成一片视觉重块（用户反馈
+// 「粗、显眼、密、放首页不和谐」）。改了 styles.css。
 // nav-v101：新增「微博热搜」模块（public/modules/weibo-hot.js）——首页前 15 条、
 // 60 秒轮询、keyed diff + FLIP 平滑换榜。服务端代理 /api/weibo-hot（60 秒缓存）。
 // 与 memo/server-monitor 同理：按需加载但留在预缓存清单里，否则回访用户
@@ -251,7 +254,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v101';
+const CACHE = 'nav-v102';
 const ASSETS = [
     '/',
     '/index.html',

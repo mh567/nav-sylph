@@ -108,6 +108,20 @@ test('窄卡容器查询在 styles.css 里（侧挂档隐藏热度列）', () =>
     assert.match(stylesSource, /@container \(max-width: 240px\) \{ \.weibo-hot \{ display: none; \} \}/);
 });
 
+test('标题走常规字重：15 行列表不与书签卡的 600 字重同档', () => {
+    // 用户反馈「15 条热搜文字粗、显眼、密、放首页不和谐」——600 字重
+    // 连排会糊成一片视觉重块。走 stripComments：注释里摆一条同形假规则
+    // 就能骗过源码匹配（本文件自己的守则）。
+    const css = stripComments(stylesSource);
+    const titleRule = css.match(/\.weibo-title \{[^}]*\}/);
+    assert.ok(titleRule, '.weibo-title 规则存在');
+    assert.match(titleRule[0], /font-weight: 400/, '标题必须是常规字重 400');
+    const rankRule = css.match(/\.weibo-rank \{[^}]*\}/);
+    assert.ok(rankRule, '.weibo-rank 规则存在');
+    assert.match(rankRule[0], /font-weight: 600/, '名次数字降到 600（原 700）');
+    assert.match(css, /\.weibo-rows \{[^}]*gap: 2px/, '行间有 2px 间隙（与 memo-rows 同）');
+});
+
 // ========== 服务端代理路由 ==========
 
 test('/api/weibo-hot 路由：轮询桶 + requireAdmin，且不在 /api/modules 前缀下', () => {
