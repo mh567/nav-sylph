@@ -3691,19 +3691,23 @@ test('模块配置加载失败要渲染错误，不能静默收起模块区', ()
     // 那条文案本身要能区分 429——否则用户只会一直刷新
     assert.match(code, /this\.modulesError = e && e\.status === 429/, '429 与普通失败分开说');
 
-    // ⚠️ 光把错误渲染出来不够：停靠方式必须在这之前定下来，否则 `data-dock` 没赋值，
-    // `.module-zone` 保持默认的 `absolute` + `pointer-events: none`——错误条会横铺在
-    // 页面顶部盖住搜索区，**而且里面那个「重试」按钮点不动**。
+    // ⚠️ 光把错误渲染出来不够：`data-dock` 必须在错误条进 DOM **之前**是 below，
+    // 否则 `.module-zone` 保持默认的 `absolute` + `pointer-events: none`——错误条会
+    // 横铺在页面顶部盖住搜索区，**而且里面那个「重试」按钮点不动**。
     // 实测（冷启动、把 config 打成 429）：document.elementFromPoint 落在按钮中心
     // 返回的是 app，不是按钮本身。
-    const dockAt = body.indexOf('zone.dataset.dock = (this.modulesError || !sideDock)');
-    assert.ok(dockAt > 0 && dockAt < errAt,
-        `停靠方式必须在错误分支之前（dock=${dockAt} err=${errAt}）`);
-    // 而且错误态必须**一律 below**：`[data-dock="outside"]` 没有自己的 CSS 规则
-    // （那个模式靠每张卡片各自绝对定位），错误条是普通 div，会按 `.module-zone`
-    // 的基础规则横铺在 y=48..102——实测压住搜索框 19px，而它是 pointer-events:auto。
-    assert.match(body.slice(dockAt, errAt), /this\.modulesError \|\| !sideDock/,
-        '错误态走 below，不跟着宽屏走 outside');
+    // 形态变了：改前主判定行里带 `(this.modulesError || !sideDock)` 条件、且整行排在
+    // 错误分支**之前**；首现同帧让位之后，停靠判定挪进了首轮数据之后的同帧块，
+    // 错误分支到不了那里（它在 waitFirstRound 之前就 return 了），所以由分支自己
+    // 写死 below。承重的事实不变：错误条进 DOM 之前 dock 必须已是 below。
+    const errBranch = body.slice(errAt, emptyAt);
+    const dockInErr = errBranch.indexOf("zone.dataset.dock = 'below'");
+    const renderErr = errBranch.indexOf('renderModuleZoneError()');
+    assert.ok(dockInErr > 0 && renderErr > dockInErr,
+        `错误分支先写死 below 再渲染错误（dock=${dockInErr} render=${renderErr}）`);
+    // 主判定仍然只认两种停靠；错误态到不了它（错误分支在它之前 return）
+    assert.match(body, /sideDock \? 'outside' : 'below'/, '主判定两种停靠都可能');
+    assert.doesNotMatch(errBranch, /sideDockAvailable\(/, '错误分支不量余量（量了也不用，恒 below）');
     // 错误条是 `.module-zone` 的**直接子节点**，不在「.module-zone-inner > .module-widget」
     // 与「[data-dock=below]」那两条重新打开 pointer-events 的规则里，得自己开。
     assert.match(stripComments(stylesSource), /\.module-zone-error\s*\{[^}]*pointer-events:\s*auto/,

@@ -2849,8 +2849,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 收束视觉：比 .app 窄一档，让宽屏下背景不再一览无余。
    padding-top 48px = 仿真的 24px 背板内边距 + 4px topbar 占位 + 20px 下边距。
    仿真保留那个空占位元素（本项目已随站点标识一并删除），
-   两段留白叠起来比一段更透气；这里用单值等效还原，搜索框顶落在 83px。 */
-.backboard { position: relative; width: min(100%,936px); margin: 0 auto; padding: 48px 30px 30px; border-radius: 18px;
+   两段留白叠起来比一段更透气；这里用单值等效还原，搜索框顶落在 83px。
+   margin-left 不写 `margin: 0 auto`：auto 不可插值，首现那次让位动画
+   （#app.is-railing，见下方宽栏段）要把它从窄态的居中量平滑推到
+   宽态的 `--side-w + 20px`。数值居中量在 ≥1024 下恒 ≥22px（内容盒 ≥980px），
+   与 auto 视觉等价；max-width 也显式写死 936——`none` 与长度值同样不可插值。 */
+.backboard { position: relative; width: min(100%,936px); max-width: 936px; margin-left: calc((100% - 936px) / 2); margin-right: auto; padding: 48px 30px 30px; border-radius: 18px;
     background: linear-gradient(168deg,var(--glass-strong),var(--glass));
     box-shadow: inset 0 1px rgba(255,255,255,.72),inset 0 -1px rgba(105,81,63,.07),0 2px 6px rgba(67,51,39,.035),0 20px 48px rgba(67,51,39,.07);
     backdrop-filter: blur(20px) saturate(122%); -webkit-backdrop-filter: blur(20px) saturate(122%); }
@@ -2863,8 +2867,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     -webkit-mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite: xor;
     mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); mask-composite: exclude; }
 
-/* 窄屏完全退回现状：透明、无描边、无模糊、无圆角、无内边距 */
-@media (max-width: 1023px) { .backboard { width: auto; padding: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* 窄屏完全退回现状：透明、无描边、无模糊、无圆角、无内边距。
+   margin 与 max-width 都必须显式归零：上面基础规则里的 margin-left 是个数值 calc，
+   窄屏内容盒不足 936 时会算成负数把背板推出左边界；max-width 则是本轮新增的
+   （为了让让位过渡可插值），不清掉的话 981~1023px 这段视口下 `width: auto` 会被它
+   压到 936 且左对齐——实测 1000px 视口背板 956 → 936，比改前窄 20px。 */
+@media (max-width: 1023px) { .backboard { width: auto; max-width: none; margin: 0; padding: 0; border-radius: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
     .backboard::before,.backboard::after { display: none; } }
 
 /* ========== 模块平台 ==========
@@ -3358,10 +3366,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 三个宽度由 app.js 的 railLayoutFor() 算好后写在 #app 的行内变量上
    （--rail-w / --side-w / --board-max）——三列是「一起挤出来」的连续值，
    不会出现「窗口缩 1px 模块从 420 掉到 132」那种阈值悬崖。
-   ⚠️ 背板默认是 `margin: 0 auto` **居中**的，必须显式改成靠左（`margin-left` 取
-   左侧那一列的宽度），否则右侧那条时间线列会压在背板上——实测压 124px，而只看
-   宽度公式是看不出来的。左边的 margin 必须把**列间距**一起算进去
-   （`--side-w + 20px`），只写 `--side-w` 会让左列与背板贴在一起、左右间距不对称。 */
+   ⚠️ 背板默认靠 `margin-left: calc((100% - 936px) / 2)` 居中（数值，不是 `auto`——
+   首现那次的让位过渡要可插值），必须显式改成靠左（`margin-left` 取左侧那一列的
+   宽度），否则右侧那条时间线列会压在背板上——实测压 124px，而只看宽度公式是看不
+   出来的。左边的 margin 必须把**列间距**一起算进去（`--side-w + 20px`），只写
+   `--side-w` 会让左列与背板贴在一起、左右间距不对称。 */
 #app[data-rail="wide"] .backboard {
     max-width: var(--board-max, 936px);
     margin-left: calc(var(--side-w, 180px) + 20px);
@@ -3369,6 +3378,21 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 #app[data-rail="wide"] .module-widget[data-side="right"] { width: var(--rail-w, 420px); }
 #app[data-rail="wide"] .module-widget[data-side="left"] { width: var(--side-w, 180px); }
+
+/* 首现那次让位的过渡：登录后模块区第一次出现时，背板从「936 居中」滑到
+   「--board-max + 左让位」，与卡片的 moduleEnter 淡入同一帧起步（app.js 的
+   renderModuleZone 同帧块 + watchRailShift）。
+   - **类门控**，不写在基础规则或 [data-rail] 规则上：只有 #app.is-railing 这
+     一小段时间开着过渡，摘类后 resize / 登出 / 配置改版仍瞬时切换——拖窗口时
+     背板跟着拖泥带水地走，比硬跳更难受（那几条路径刻意保持瞬时）。
+   - 260ms 必须与 app.js 的 App.MODULE_ENTER_MS 同值、曲线同 moduleEnter
+     （有断言钉住）：两者同帧起步，同刻结束才是一次完整的让位，而不是
+     卡片都亮完了背板还在挪。
+   - 过渡的是 max-width 与 margin-left 两个**布局**属性，成本≈一次窗口缩放，
+     一次性 260ms；类由 watchRailShift 用 transitionend + 定时器兜底摘掉。 */
+#app.is-railing .backboard {
+    transition: max-width 260ms cubic-bezier(.2,.8,.25,1), margin-left 260ms cubic-bezier(.2,.8,.25,1);
+}
 
 /* ---------- 卡片：纵向四段（头 / 筛选 / 列表 / 底） ---------- */
 .special-line-card {

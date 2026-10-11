@@ -1,8 +1,45 @@
 # 当前工作交接
 
-核对日期：2026-10-10。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+核对日期：2026-10-11。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：微博热搜卡片字体调轻（随 **v1.15.12** 发布；功能提交 `69b69c9`、版本提交 `d8d0ec3`，tag `v1.15.12`）
+## 最新一轮：登录后「导航让位 → 模块出现」的入场动画（**未提交，工作树**；基线 `a479070`）
+
+用户原话：「优化登录后首页从导航部分加载到模块加载出来的动画，现在有些生硬，导航部分首次出现会比较宽，然后模块出来的时候导航部分会突然变窄，这里过渡很生硬不够丝滑。前提是优化保证各个模块的加载速度和对客户端浏览器资源的占用」。
+
+### 根因（两处生硬）
+
+1. `syncRail()`（`public/app.js`）把 `#app[data-rail="wide"]` 打开时，背板从「936 居中」瞬时变成「`--board-max` + 左让位」，那条 CSS（`public/styles.css` 宽栏段）**没有任何过渡**。
+2. 时序上它排在 `preloadModuleDefs` 之后、`waitFirstRound` **之前**：背板先硬跳变窄、两侧空列挂着，隔着挂载 + 首轮数据（`waitFirstRound` 上限 1500ms）卡片才淡入。
+
+### 改法
+
+- `renderModuleZone()`：让位（`syncRail`）、停靠判定、`zone.hidden = false`、卡片 `moduleEnter` 全部移到 `await this.waitFirstRound(...)` **之后同一帧**（同帧让位，消掉空列等待期）。错误分支与「全部模块被关掉」分支各补一次 `syncRail()` 回宽（不带过渡），错误分支自己写 `data-dock='below'` 再渲染错误条（停靠判定已挪到它到不了的后面）。**不移动任何请求的发起点**。
+- `syncRail()` 返回值由 `!!layout` 改 `layout`（真相性不变）；`sideDockAvailable(boardWidth)` 加可选档：宽栏下由调用方传 **`layout.board`（终值）**——过渡进行中 `getBoundingClientRect()` 读到的是起点值 936，会把边界视口判反。
+- 新增 `watchRailShift(app, railLayout, wasHidden)`：镜像 `playModuleEntrance` 的收尾形制（`transitionend` 按 `propertyName` 过滤 + `MODULE_ENTER_MS + 150` 兜底 + `done` 去重，**无条件摘类**）。
+- `styles.css`：基础 `.backboard` 的居中量改数值 `margin-left: calc((100% - 936px) / 2)` + 显式 `max-width: 936px`（`auto`/`none` 不可插值，过渡会退化成 50% 处离散跳）；`≤1023px` 兜底块补 `margin: 0`；新增 `#app.is-railing .backboard { transition: max-width/margin-left 260ms cubic-bezier(.2,.8,.25,1) }`——**类门控**，`resize` / 登出 / 配置改版仍瞬时切换。
+- `public/sw.js`：`CACHE` nav-v102 → **nav-v103** + 注释条目。
+- 测试：`tests/timeline.test.js` +5 条（同帧顺序、两端可插值、门控过渡时长/曲线、`watchRailShift` **执行**真实实现、停靠吃终值），并改写两处 `sideDockAvailable()` 锚点、2010 那条的 fixture（新增 `watchRailShift` 桩）与 `firstRound → syncRail → sideDock` 执行顺序断言；`tests/homepage-material.test.js` 的 `data-dock` 断言改为「全部赋值」形态；`tests/monitor-agent.test.js` 的「停靠必须在错误分支之前」按新形态改写（承重事实不变：错误条进 DOM 前 dock 已是 below）；`tests/fav-tab.test.js` 的 `CACHE` 断言随升 nav-v103（测试名里的版本号一并改）。
+
+### 审查（提交前两轴，对未提交工作树 `git diff v1.15.12`）
+
+- **规范轴**：硬违规 2 条，均为**文档与代码/实际不符**，已修——① `docs/architecture.md` 写「类由 `watchRailShift()` 在 `syncRail()` 之前加上」，实际加类是 `renderModuleZone()`、`watchRailShift()` 只负责摘（改准）；② 本文档原写「只剩本轮 6 个改动文件」实为 **9** 个、测试清单漏了 `tests/fav-tab.test.js`（已补）。判断题 4 条：`watchRailShift` 与 `playModuleEntrance` 的收尾骨架同形（**保留**——两者事件类型/宿主/类名都不同，抽公共件的收益不如各自读得清楚，且仓库既有「同形制」的约定）；测试里三处重复切同一段登录路径（**已抽 `loginPathThrough()` helper**，本轮改锚点曾被迫改三处，正是它该被抽的信号）；`zone.dataset.dock = 'below'` 两处字面量与门控规则里 `260ms …` 重复两次（**保留**——前者是「错误态强制 below」与「放不下时回落 below」两个不同决策，后者是 `transition: a 260ms, b 260ms` 的固有写法，且本文件纪律禁止为此新增自定义属性）。附带修掉一条：`styles.css` 宽栏段注释仍写「背板默认是 `margin: 0 auto` 居中」（基础规则本轮已改数值 calc）。
+- **需求轴**：**抓到一条真实回归并已修**——基础规则新增的 `max-width: 936px` 没有被 ≤1023px 兜底块清掉，981~1023px 视口下 `width: auto` 被它压住且左对齐。实测（1000px 视口）：改前 v1.15.12 背板 **956**、`max-width: none`；本轮改动后 **936**、左对齐（右侧多 20px 死区）。修法：兜底块补 `max-width: none`，修复后同视口复测回到 **956**，并加守卫断言。此前只验了 390/844 两个视口，恰好绕开这一段。其余核对**无误**：两条前提（请求发起点零移动、无新依赖/无 rAF/无 `will-change`/过渡类门控一次性）、错误分支与空列表分支各自回宽、`is-railing` 由 `wasHidden` 门控、停靠吃终值、两端可插值。
+
+### 实际验证
+
+- 全量 `node --test tests/*.test.js` → **607/607**（回归修复是给已有那条「两端可插值」用例加了 `max-width: none` 断言，不是新增用例，总数不变）；`node --check public/app.js`、`git diff --check` 干净。
+- **红/绿变异**：首轮 10 条全红（删 `watchRailShift` 调用 / 时长 260→300 / 基础规则回 `margin: 0 auto` / 调用点去掉终值 / 同帧 `syncRail` 挪回 `waitFirstRound` 之前 / 窄屏删 `margin: 0` / 删定时器兜底 / 去掉 `propertyName` 过滤 / 终值改 `undefined` / 删错误分支的 `dock='below'`）。**抽取 `loginPathThrough()` 之后这 10 条的结论不再作数，已重跑受影响的 5 条**（删调用 / 重排 syncRail / 去终值 / 回不可插值形态 / 删窄屏 `max-width: none`）——全红；每次破坏前从备份 `cp`、`trap` 还原，收尾 `diff` 证两文件逐字节相同。
+- **真实浏览器**（树外临时副本 + 清 SW/caches + cache-busting）：1440×900 同一套重放的 A/B —— 改前背板 **一帧从 936 跳到 696（中间帧 0）**；改后 **10~16 个单调中间帧** 936→875.3→822.5→782.8→755.4→737.2→724.7→…→696，`margin-left` 同步插值 230→240，`is-railing` 类存在约 250ms，让位与 `zone.hidden=false` **同一采样帧**；`longtask` 记录 **0 条**，控制台无错误。定格截图两帧（822.3px 时卡片半透明浮现、终态 696px 布局正确）。**回归复现与修复**：1000px 视口改前 956 → 改动后 936 → 补 `max-width: none` 后回到 **956**；390×844 与 844×390 改前后逐字段相同（366/785、`max-width: none`、`margin-left: 0`、无横向溢出）；`resize` 路径 `boardTransitions: []`（类门控生效，不跟随）。
+- 临时服务（4477）、浏览器会话、树外夹具已全部清理；`git status --short` 只剩本轮 **9** 个改动文件，私有文件 mtime 早于本会话。
+
+### 验证边界 / 下一步
+
+1. **未验证**：低端机 / 集成显卡上那 260ms 布局过渡 + 背板 `backdrop-filter` 的逐帧成本（本机 `longtask` 为 0，但没有低端设备可测）。
+2. **未验证**：收窄过程中书签网格列数变化（936→696 会从 6 列降到 4 列）的逐帧观感——保持浏览器原生重排（与手动缩放窗口一致），未逐帧评价；不做逐项 FLIP 是刻意的（成本高于收益，见 architecture.md）。
+3. **设计取舍**：过渡期间右列卡片在背板还宽时就开始浮现，会有一瞬间「卡片压在还没收完的背板上」——定格图里卡片是半透明的，观感可接受；若要更保守，可把卡片入场延后 60~80ms，未采用。
+4. **未验证**：`prefers-reduced-motion: reduce` 下的实际观感（全局把过渡压到 .01ms，逻辑上等于瞬时切换 + 类由兜底定时器摘掉，未在打开该偏好的浏览器里实测）。
+
+## 上一轮：微博热搜卡片字体调轻（随 **v1.15.12** 发布；功能提交 `69b69c9`、版本提交 `d8d0ec3`，tag `v1.15.12`）
 
 用户原话：「优化一下微博热搜这个模块的字体样式，现在15 条热搜的文字很多有点粗和显眼，文字又很密，显得放在首页很突出不和谐」。
 

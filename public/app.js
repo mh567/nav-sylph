@@ -306,16 +306,20 @@
          * 而 1440 下有 252px。断点只能二选一，另一头必然出错。
          * 所以按实际余量判断——放得下才用两侧，否则退回网格下方。
          */
-        sideDockAvailable() {
+        sideDockAvailable(boardWidth) {
             const MIN_SIDE = 132;   // 与 CSS 里的 clamp 下限一致
             const GAP = 20;
             const board = $('.backboard');
             const app = $('#app');
             if (!board || !app) return false;
-            const boardWidth = board.getBoundingClientRect().width;
+            // 宽栏让位带过渡时（首现那次），实测读到的是**过渡起点值**——
+            // getBoundingClientRect 在过渡进行中返回当前插值，不是终值，
+            // 按 936 量会把边界档位判错。所以宽栏下由调用方直接传终值（railLayout.board）。
+            const measured = Number.isFinite(boardWidth)
+                ? boardWidth : board.getBoundingClientRect().width;
             const appWidth = app.getBoundingClientRect().width;
             const padding = 22 * 2;
-            const side = (appWidth - padding - boardWidth) / 2;
+            const side = (appWidth - padding - measured) / 2;
             return side >= MIN_SIDE + GAP;
         }
 
@@ -382,10 +386,14 @@
          *
          * 未登录也算「不进宽栏」——让位是给登录后那条时间线的，登出后不该让背板
          * 继续窄着。这条判断放在这里而不是调用方，登出路径才只需要调一次本方法。
+         *
+         * 返回 `layout` 对象（或 null）而不是布尔：调用方拿 `layout.board`（背板**终值**）
+         * 去判停靠——让位带过渡时实测读的是过渡起点值，见 sideDockAvailable 的注释。
+         * 真相性不变（null 即假），忽略返回值的调用方（resize / 登出）不受影响。
          */
         syncRail() {
             const app = $('#app');
-            if (!app) return false;
+            if (!app) return null;
             const content = app.getBoundingClientRect().width - 22 * 2;
             const layout = (this.authenticated && this.wantsWideRail())
                 ? this.railLayoutFor(content) : null;
@@ -398,7 +406,7 @@
                 if (vars[key]) app.style.setProperty(key, vars[key] + 'px');
                 else app.style.removeProperty(key);
             }
-            return !!layout;
+            return layout;
         }
 
         /**
@@ -449,39 +457,36 @@
             // 不全，手动缩放一下才恢复正常」。
             // 脚本本来在 mountModule 里躲不掉（loadScript 按 src 缓存，同一份只下载
             // 一次），提前加载只是把顺序摆正。
-            // ⚠️ 代价要说清楚：让位（syncRail）仍然发生在挂载与首轮数据**之前**，所以
-            // 右侧那一列会先空着若干帧才出现卡片（模块区本身要等首轮数据才
-            // zone.hidden = false）。反过来把让位挪到卡片之后，卡片会先以窄列出生
-            // 再跳宽，那更难看。判定也因此被模块脚本的下载门控住了——总耗时与改前
-            // 相当（脚本本来就要下），只是这段等待现在落在布局判定上。
+            // 让位（syncRail）与停靠判定**推迟到首轮数据就绪之后**，与
+            // `zone.hidden = false`、卡片入场动画在同一帧发生（见下面的同帧块）。
+            // 改前它在 preload 之后立刻执行：背板先硬跳变窄、两侧空列挂着，
+            // 隔着挂载 + 首轮数据（上限 1500ms）卡片才淡入——用户报的
+            // 「导航先宽、模块出来时突然变窄」两处生硬都出在这段时序里。
+            // 推迟只动 syncRail 这一步，不改变任何请求的发起点：
+            // preload / 挂载 / 首轮数据照旧在原位置跑。
             const ids = this.enabledModuleIds();
             await this.preloadModuleDefs(ids);
-
-            // 宽栏模块先让背板让位，再量余量（顺序不能反，见 syncRail 的注释）
-            this.syncRail();
-
-            // 停靠方式必须在**错误分支之前**定下来：`.module-zone` 的基础规则是
-            // `position: absolute; pointer-events: none`，不设 data-dock 的话失败时
-            // 错误条会横铺在页面顶部，而且里面的「重试」按钮点不动。
-            //
-            // ⚠️ 但错误态**一律走 below**：`[data-dock="outside"]` 没有自己的 CSS 块
-            // （那个模式靠每张卡片各自绝对定位），错误条是个普通 div，会按基础规则
-            // 铺成 y=48..102 的全宽条——实测压住搜索框 19px，而它是 pointer-events:auto，
-            // 会挡住搜索框下沿的点击。below 是文档流里、分类网格下方的一条横幅。
-            const sideDock = this.sideDockAvailable();
-            zone.dataset.dock = (this.modulesError || !sideDock) ? 'below' : 'outside';
 
             // ⚠️ 加载失败要**先说话**：config 没拿到时 enabledModuleIds() 是空的，
             // 若先判空再返回，模块区会静默消失——用户看到的是「模块加载不出来」
             // 而屏幕上没有任何线索（首次加载时下面那段错误 UI 走不到）。
             // 本仓库同一条教训：失败的请求必须渲染失败，不能只是跳过成功分支。
             if (this.modulesError) {
+                // 错误态没有宽栏模块可读（enabledModuleIds 为空），背板回宽，
+                // 不播让位动画。停靠恒 below：错误条是个普通 div，按基础规则会
+                // 铺成 y=48..102 的全宽条（实测压住搜索框 19px、挡住搜索框下沿
+                // 点击），且它不需要量余量——直接写死，不走 sideDockAvailable。
+                this.syncRail();
+                zone.dataset.dock = 'below';
                 zone.hidden = false;
                 zone.replaceChildren(this.renderModuleZoneError());
                 return;
             }
 
             if (!ids.length) {
+                // 全部模块被关掉时背板也要回宽：不调 syncRail 的话，上一档的
+                // 窄态（data-rail="wide" + 三个宽度变量）会一直留在 #app 上。
+                this.syncRail();
                 zone.hidden = true;
                 zone.replaceChildren();
                 return;
@@ -504,6 +509,24 @@
             // margin-top 过渡（给 metrics 注入 600ms 延迟模拟远端网络）。
             // 等过之后卡片出现时就是终态。
             await this.waitFirstRound(firstRound);
+
+            // ===== 同帧让位（首现那一刻的入场编排）=====
+            // 让位、停靠、显示、入场动画全在这一帧触发：背板收窄与卡片淡入
+            // 合成一次运动，中间不再有「两侧空列挂着等数据」的等待期。
+            // `is-railing` 只在这一刻存在，负责打开背板的过渡（CSS 里 260ms，
+            // 与 MODULE_ENTER_MS 同值、同曲线）；resize / 登出 / 配置改版走的
+            // 是另外的调用路径，不加这个类，仍然瞬时切换、不跟着拖泥带水。
+            const app = $('#app');
+            if (wasHidden && app) app.classList.add('is-railing');
+            const railLayout = this.syncRail();
+            this.watchRailShift(app, railLayout, wasHidden);
+
+            // 先让位、再量余量（顺序不能反，见 syncRail 的注释）。
+            // 宽栏下必须传**终值** railLayout.board：此刻背板正带着过渡，
+            // 实测 getBoundingClientRect 读到的是过渡起点值（936），
+            // 按它算余量会把边界档位判错（改前无过渡所以读得到终值）。
+            const sideDock = this.sideDockAvailable(railLayout && railLayout.board);
+            zone.dataset.dock = sideDock ? 'outside' : 'below';
 
             // 显隐也等到首轮之后：dock=below 时模块区自带一条上边框与内边距，
             // 先亮出来再等数据会凭空留一个空盒子。
@@ -566,6 +589,44 @@
                 zone.removeEventListener('animationend', onEnd);
             };
             zone.addEventListener('animationend', onEnd);
+            setTimeout(finish, App.MODULE_ENTER_MS + 150);
+        }
+
+        /**
+         * 首现让位过渡的收尾：摘掉 `#app.is-railing`（它只负责打开背板的
+         * max-width / margin-left 过渡，见 styles.css 宽栏段）。
+         *
+         * 形制与 playModuleEntrance 一致：transitionend（正常路径，按
+         * propertyName 过滤，只认这两条属性，别被背板上别的过渡提前摘掉）
+         * + 定时器兜底（过渡没跑时：标签页在后台、系统开了「减少动态效果」
+         * 时长被压到 .01ms、或本次根本没进宽栏）。
+         *
+         * ⚠️ 必须**无条件**摘：留着这个类，背板此后每次宽度变化都会带上过渡
+         * ——包括 resize 路径，用户拖窗口时背板会拖泥带水地跟着走（那条路径
+         * 刻意保持瞬时切换）。
+         *
+         * 不进宽栏或非首现时**立刻**摘：类是在 syncRail 之前加的（要让它落在
+         * 属性变化的 after-change style 里），同一 tick 内加了又摘，无视觉效果。
+         */
+        watchRailShift(app, railLayout, wasHidden) {
+            if (!app) return;
+            const cls = 'is-railing';
+            if (!railLayout || !wasHidden) {
+                app.classList.remove(cls);
+                return;
+            }
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                app.classList.remove(cls);
+                app.removeEventListener('transitionend', onEnd);
+            };
+            const onEnd = ev => {
+                if (ev.propertyName !== 'max-width' && ev.propertyName !== 'margin-left') return;
+                finish();
+            };
+            app.addEventListener('transitionend', onEnd);
             setTimeout(finish, App.MODULE_ENTER_MS + 150);
         }
 

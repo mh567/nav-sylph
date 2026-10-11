@@ -1,3 +1,7 @@
+// nav-v103：登录后「导航让位 → 模块出现」的入场动画——背板从 936 居中平滑收到
+// 宽栏宽度（#app.is-railing 门控的 260ms 过渡），与卡片淡入同帧起步；让位判定
+// 推迟到首轮数据就绪那一帧（改前在 preload 后立刻硬跳变窄、隔着 1500ms 上限的
+// 等数据卡片才出现）。改了 app.js、styles.css。
 // nav-v102：微博热搜卡片字体调轻——标题字重 600→400、名次 700→600、标签
 // 600→500、行间补 2px 间隙。15 行 600 字重连排糊成一片视觉重块（用户反馈
 // 「粗、显眼、密、放首页不和谐」）。改了 styles.css。
@@ -254,7 +258,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v102';
+const CACHE = 'nav-v103';
 const ASSETS = [
     '/',
     '/index.html',

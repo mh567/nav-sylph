@@ -285,21 +285,27 @@ test('模块区停靠方式由 JS 按实际余量判定，不靠媒体查询', (
     // 1024 视口下 936 背板左右只剩 44px，1440 下有 252px——
     // 固定断点只能二选一，另一头必然出错，所以判据是实测量。
     const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    assert.match(appSource, /sideDockAvailable\(\)\s*\{[\s\S]*?getBoundingClientRect\(\)\.width/,
+    assert.match(appSource, /sideDockAvailable\([^)]*\)\s*\{[\s\S]*?getBoundingClientRect\(\)\.width/,
         '判据必须读实际渲染宽度');
     assert.match(appSource, /side\w*\s*>=\s*MIN_SIDE\s*\+\s*GAP/,
         '余量不足最小宽度加间隙时判为放不下');
     // 两种停靠方式都要有对应的 data-dock 值。
-    // ⚠️ 别钉死三元表达式的具体写法：错误态会**强制**走 below（错误条不是模块卡片，
-    // 见 renderModuleZone 的注释——跟着宽屏走 outside 会横铺压住搜索框），
-    // 于是这一行多了个条件。钉「两个值都出现在这条赋值里」，不钉顺序。
-    const dockLine = /zone\.dataset\.dock\s*=\s*[^;]*/.exec(appSource)?.[0] || '';
-    assert.ok(dockLine, '定位到 data-dock 赋值那一行');
-    assert.match(dockLine, /'outside'/, "赋值里要出现 'outside'");
-    assert.match(dockLine, /'below'/, "赋值里要出现 'below'");
-    assert.match(dockLine, /\bsideDock\b/, '余量判定仍是这一行的依据');
-    // 那个变量必须真的来自实测量（别把它换成常量）
-    assert.match(appSource, /const\s+sideDock\s*=\s*this\.sideDockAvailable\(\)/,
+    // ⚠️ 别钉死三元表达式的具体写法：错误态单独走一条**写死 below** 的赋值
+    // （错误条不是模块卡片，见 renderModuleZone 的注释——跟着宽屏走 outside
+    // 会横铺压住搜索框），主判定是另一行三元。所以按「全部赋值」来钉：
+    // 至少两处、每处都有 below、其中一处带 outside（且那处也带 below）。
+    const dockLines = [...appSource.matchAll(/zone\.dataset\.dock\s*=\s*[^;]*/g)].map(m => m[0]);
+    assert.ok(dockLines.length >= 2,
+        `data-dock 应有两处赋值（错误分支写死 below + 主判定），实际 ${dockLines.length}`);
+    assert.ok(dockLines.every(l => /'below'/.test(l)),
+        '每处赋值都要能把模块区摆到 below（错误态强制、放不下时回落）');
+    const mainDock = dockLines.find(l => /'outside'/.test(l));
+    assert.ok(mainDock, "主判定的赋值里要出现 'outside'");
+    assert.match(mainDock, /'below'/, "主判定的赋值里也要出现 'below'");
+    assert.match(mainDock, /\bsideDock\b/, '余量判定仍是主判定那一行的依据');
+    // 那个变量必须真的来自实测量（别把它换成常量）。带参：宽栏下传终值
+    // railLayout.board（让位带过渡时实测读到的是起点值）。
+    assert.match(appSource, /const\s+sideDock\s*=\s*this\.sideDockAvailable\([^)]*\)/,
         'sideDock 取自 sideDockAvailable() 的实测量');
     // 跨过阈值要重新摆放，否则窗口拉宽后模块仍挤在下方
     assert.match(appSource, /addEventListener\('resize'[\s\S]*?sideDockAvailable\(\)[\s\S]*?renderModuleZone\(\)/,
