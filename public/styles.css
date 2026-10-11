@@ -2921,13 +2921,24 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    卡片是带着 margin-top: 0 出生的，此时若允许过渡，四张卡会先完全重叠
    再各自滑开——那是加载时最显眼的「卡顿感」。只在这一次布局里关掉。 */
 .module-zone.is-laying-out .module-widget { transition: none; }
-/* 模块区**首次出现**时的淡入上浮。只动 opacity / transform——两者都由
+/* 模块区**首次出现**时的入场。只动 opacity / transform——两者都由
    合成器处理，不触发布局，与 --stack-top（margin-top）那套让位动画互不干扰。
    时长必须与 app.js 的 App.MODULE_ENTER_MS 一致（有断言钉住）。
+   方向是**从上方落下**（`translateY(-10px)` → 0）：配合每张卡各自的
+   animation-delay（app.js 按 --stack-top 次序写 inline，首张等背板收窄完），
+   观感是「导航先收窄，模块再从上到下一个个落到两侧」。
+   ⚠️ delay 不写在这条规则里——它逐张不同，由 JS 写 inline animation-delay。
    ⚠️ 摘类之前 `animation-fill-mode: both` 会把最后一帧的 `transform: none`
    一直压着，而拖拽正是靠 inline transform 跟手——所以 app.js 播完必须摘掉。 */
-@keyframes moduleEnter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes moduleEnter { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
 .module-zone.is-entering .module-widget { animation: moduleEnter 260ms cubic-bezier(.2,.8,.25,1) both; }
+/* 减少动态效果时不能还排队：入场的 delay 是逐张写在 inline 上的，全局那条
+   reduced-motion 规则只压时长，压不掉它——卡片会一张张延迟出现（没有动画却仍排队）。
+   这里给入场卡片补一条归零；**作用域限定在入场卡片**，不在全局 `*` 上顺手改所有动画的
+   延迟（那会波及无关动画，也被本轮审查点名）。`!important` 能压过 inline 的 delay。 */
+@media (prefers-reduced-motion: reduce) {
+    .module-zone.is-entering .module-widget { animation-delay: 0s !important; }
+}
 /* 模块区整体不接收指针事件，只有卡片本身可交互——否则它铺满全宽会挡住背板 */
 .module-zone-inner > .module-widget { pointer-events: auto; }
 
@@ -3380,14 +3391,15 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 #app[data-rail="wide"] .module-widget[data-side="left"] { width: var(--side-w, 180px); }
 
 /* 首现那次让位的过渡：登录后模块区第一次出现时，背板从「936 居中」滑到
-   「--board-max + 左让位」，与卡片的 moduleEnter 淡入同一帧起步（app.js 的
-   renderModuleZone 同帧块 + watchRailShift）。
+   「--board-max + 左让位」。这是入场编排的**第一段**——卡片的首张
+   animation-delay 等于本时长（app.js 的 renderModuleZone 里 baseDelay），
+   所以观感是「导航先收窄，收完模块再从上到下一个个落下」。
    - **类门控**，不写在基础规则或 [data-rail] 规则上：只有 #app.is-railing 这
      一小段时间开着过渡，摘类后 resize / 登出 / 配置改版仍瞬时切换——拖窗口时
      背板跟着拖泥带水地走，比硬跳更难受（那几条路径刻意保持瞬时）。
    - 260ms 必须与 app.js 的 App.MODULE_ENTER_MS 同值、曲线同 moduleEnter
-     （有断言钉住）：两者同帧起步，同刻结束才是一次完整的让位，而不是
-     卡片都亮完了背板还在挪。
+     （有断言钉住）：它既是背板收窄的时长，也是首张卡的起跑延迟——两者漂移的话
+     卡片会在背板还在挪的时候就开始落。
    - 过渡的是 max-width 与 margin-left 两个**布局**属性，成本≈一次窗口缩放，
      一次性 260ms；类由 watchRailShift 用 transitionend + 定时器兜底摘掉。 */
 #app.is-railing .backboard {

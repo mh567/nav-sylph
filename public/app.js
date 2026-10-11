@@ -236,11 +236,22 @@
         static FIRST_ROUND_TIMEOUT_MS = 1500;
 
         /**
-         * 模块区首次出现的淡入上浮时长。**必须与 styles.css 里
+         * 单张卡片的入场动画时长（`moduleEnter`：从上方落下）。**必须与 styles.css 里
          * `moduleEnter` 的 animation-duration 一致**——摘标记的兜底定时器
          * 按它算，两处漂移会让兜底早于/晚于动画结束（有断言钉住）。
+         * 让位过渡的时长也取它（首张卡的起跑延迟），见 renderModuleZone。
          */
         static MODULE_ENTER_MS = 260;
+
+        /**
+         * 逐张卡片入场的间隔（毫秒）。
+         *
+         * 用户要求「先缩窄、再从上到下一个个落到两侧」：卡片按各自的实际落点
+         * （--stack-top）排序，第 i 张的 animation-delay = 让位时长 + i × 本值。
+         * 只影响动画的**起始时刻**，不改时长——总时长 = 让位 + (n-1)×本值 + 入场，
+         * 4 张卡约 730ms；这是刻意的：一次一张才看得出「一个一个落」。
+         */
+        static MODULE_ENTER_STAGGER_MS = 70;
 
         static moduleDefs = new Map();
 
@@ -510,12 +521,15 @@
             // 等过之后卡片出现时就是终态。
             await this.waitFirstRound(firstRound);
 
-            // ===== 同帧让位（首现那一刻的入场编排）=====
-            // 让位、停靠、显示、入场动画全在这一帧触发：背板收窄与卡片淡入
-            // 合成一次运动，中间不再有「两侧空列挂着等数据」的等待期。
-            // `is-railing` 只在这一刻存在，负责打开背板的过渡（CSS 里 260ms，
-            // 与 MODULE_ENTER_MS 同值、同曲线）；resize / 登出 / 配置改版走的
-            // 是另外的调用路径，不加这个类，仍然瞬时切换、不跟着拖泥带水。
+            // ===== 首现那一刻的入场编排（先让位、再逐张落下）=====
+            // 让位、停靠、显示与「入场排期」都在这一帧定下来：背板开始收窄的**同时**
+            // 给每张卡片排好 animation-delay —— 首张的 delay 等于让位时长，后面每张
+            // 再 +MODULE_ENTER_STAGGER_MS。于是观感是两段：导航先收窄，收完卡片从上
+            // 到下逐个落入两侧（用户要求「中间导航部分先缩窄，然后模块再从上到下一
+            // 个个落到两侧」）。卡片在等待期间是 opacity 0（animation-fill-mode: both
+            // 会盖住 delay 段），不会先亮一下再落。
+            // `is-railing` 只在这一刻前后存在，负责打开背板的过渡（CSS 里 260ms）；
+            // resize / 登出 / 配置改版走另外的调用路径，不加这个类，仍瞬时切换。
             const app = $('#app');
             if (wasHidden && app) app.classList.add('is-railing');
             const railLayout = this.syncRail();
@@ -556,40 +570,65 @@
                 zone.classList.remove('is-laying-out');
             }
 
-            // 摆好位之后再播淡入上浮（同一帧内加类，首帧就是 opacity 0，
-            // 不会先亮一下再暗下去）。
-            if (wasHidden) this.playModuleEntrance(zone);
+            // 摆好位之后再排入场：加类与写 inline delay 在同一帧，首帧就是 opacity 0。
+            // 有让位时首张卡等背板收窄完（baseDelay = 让位时长），随后逐张落下。
+            if (wasHidden) {
+                this.playModuleEntrance(zone, { baseDelay: railLayout ? App.MODULE_ENTER_MS : 0 });
+            }
         }
 
         /**
-         * 模块区首次出现时的淡入上浮。
+         * 模块区首次出现时，卡片按纵向次序**逐张落入**。
          *
-         * ⚠️ 动画结束后**必须**把类摘掉：CSS 用的是 `animation-fill-mode: both`，
-         * 最后一帧（`transform: none`）会被一直保留，而拖拽正是靠 inline
-         * `transform` 跟手——留着它，拖拽当场失效。
-         * 摘除有两条路：`animationend`（正常）与定时器兜底（动画没跑时，
+         * 次序 = 各自的**实际落点**（`--stack-top`，上一步 applyWidgetLayout 写好的）：
+         * 严格一张接一张，两侧混在同一份次序里（顶上那两张落点相同，按 DOM 次序
+         * 排在前后，**相隔一个间隔**——不是同刻起跑）。
+         * `below` 停靠没有 `--stack-top`（一律 0），于是退回 DOM 次序——那正是屏幕上的
+         * 自上而下。首张的 delay 由调用方给：有让位时是让位时长，于是形成
+         * 「导航先收窄、模块再一张张落下」的两段式。
+         *
+         * ⚠️ 动画结束后**必须**把类与 inline delay 都清掉：CSS 用的是
+         * `animation-fill-mode: both`，最后一帧（`transform: none`）会被一直保留，
+         * 而拖拽正是靠 inline `transform` 跟手——留着它，拖拽当场失效。
+         * 摘除有两条路：`animationend`（要**等最后一张**，见下面的计数——逐张延迟之后
+         * 「第一张结束就摘」会把还在排队的卡片一起打回终态）与定时器兜底（动画没跑时，
          * 例如标签页在后台、或系统开了「减少动态效果」）。
          */
-        playModuleEntrance(zone) {
+        playModuleEntrance(zone, { baseDelay = 0 } = {}) {
             const cls = 'is-entering';
+            const widgets = [...zone.querySelectorAll('.module-widget')];
+            const topOf = el => parseFloat(el.style.getPropertyValue('--stack-top')) || 0;
+            // 落点相同时按 DOM 次序——不依赖 Array#sort 的稳定性，显式带上原始下标
+            const ordered = widgets
+                .map((el, i) => ({ el, i, top: topOf(el) }))
+                .sort((a, b) => a.top - b.top || a.i - b.i)
+                .map(x => x.el);
+            ordered.forEach((el, i) => {
+                el.style.animationDelay = `${baseDelay + i * App.MODULE_ENTER_STAGGER_MS}ms`;
+            });
             zone.classList.add(cls);
             let done = false;
+            let pending = ordered.length;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                zone.classList.remove(cls);
+                for (const el of ordered) el.style.animationDelay = '';
+                zone.removeEventListener('animationend', onEnd);
+            };
             const onEnd = ev => {
                 // 只认自己那条动画。子元素上将来若加一条**有限**动画，它的
                 // animationend 会冒泡上来，按名字过滤才不会被别人的动画提前摘掉。
                 // （备忘录那个 spinner 是 infinite，只发 animationiteration，
                 // 不在此列——这里防的是以后的改动，不是现在这个。）
                 if (ev.animationName !== 'moduleEnter') return;
+                if (--pending > 0) return;
                 finish();
             };
-            const finish = () => {
-                if (done) return;
-                done = true;
-                zone.classList.remove(cls);
-                zone.removeEventListener('animationend', onEnd);
-            };
+            if (!pending) { finish(); return; }
             zone.addEventListener('animationend', onEnd);
-            setTimeout(finish, App.MODULE_ENTER_MS + 150);
+            const lastStart = baseDelay + (ordered.length - 1) * App.MODULE_ENTER_STAGGER_MS;
+            setTimeout(finish, lastStart + App.MODULE_ENTER_MS + 150);
         }
 
         /**

@@ -1,3 +1,6 @@
+// nav-v104：入场编排改为两段式——导航先收窄，模块再自上而下逐个落入两侧
+// （v1.15.13 是同时起步，观感「过渡不自然」）。卡片按 --stack-top 次序拿
+// inline animation-delay，方向改为从上方落下。改了 app.js、styles.css。
 // nav-v103：登录后「导航让位 → 模块出现」的入场动画——背板从 936 居中平滑收到
 // 宽栏宽度（#app.is-railing 门控的 260ms 过渡），与卡片淡入同帧起步；让位判定
 // 推迟到首轮数据就绪那一帧（改前在 preload 后立刻硬跳变窄、隔着 1500ms 上限的
@@ -258,7 +261,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v103';
+const CACHE = 'nav-v104';
 const ASSETS = [
     '/',
     '/index.html',

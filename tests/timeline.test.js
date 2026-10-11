@@ -2067,9 +2067,16 @@ test('首屏宽栏判定：模块定义必须在 syncRail 之前注册（真跑 
     // 那样测的就是测试自己的逻辑，「先加载定义」这件事根本没被验证。
     const preloadBody = extractFunction(stripComments(appSource), 'async preloadModuleDefs(ids) {');
     ctx.preloadModuleDefs = new Function(`return ({ ${preloadBody} }).preloadModuleDefs;`)();
-    // 方法体的两个自由名是 `$` 与 `document`（其余都挂在 this 上），一并注入。
-    const method = new Function('$', 'document', `return ({ ${body} }).renderModuleZone;`)(
-        () => fakeZone(), { createElement: fakeZone, head: { appendChild() {} } });
+    // 方法体的自由名是 `$`、`document` 与 `App`（其余都挂在 this 上），一并注入。
+    // `App` 是首张卡的起跑延迟用到的类常量；两个常量都从**源码解析**，
+    // 不写死字面量——写死的话改了真实常量这里照样绿（monitor-agent 那条次序
+    // 用例就是被这一手骗过，已改）。本条只关心顺序，不校验数值。
+    const appEnter = Number(/static MODULE_ENTER_MS = (\d+)/.exec(stripComments(appSource))?.[1]);
+    const appStagger = Number(/static MODULE_ENTER_STAGGER_MS = (\d+)/.exec(stripComments(appSource))?.[1]);
+    assert.ok(Number.isFinite(appEnter) && Number.isFinite(appStagger), '两个常量都能从源码解析');
+    const method = new Function('$', 'document', 'App', `return ({ ${body} }).renderModuleZone;`)(
+        () => fakeZone(), { createElement: fakeZone, head: { appendChild() {} } },
+        { MODULE_ENTER_MS: appEnter, MODULE_ENTER_STAGGER_MS: appStagger });
     await method.call(ctx);
 
     assert.deepEqual(loadModuleCalls, ['special-line'], '先加载了启用模块的脚本');
@@ -2169,11 +2176,12 @@ test('窄屏（below 停靠）纵向堆叠，不再左右横滑', () => {
 
 // ---------- 首现让位动画（同帧编排 + is-railing 门控过渡） ----------
 
-test('首现同帧让位：让位/过渡收尾/判停靠/显示全部落在首轮数据之后的同一段', () => {
+test('首现让位与入场排期同帧：让位/过渡收尾/判停靠/显示都落在首轮数据之后的那一段', () => {
     // 用户报的生硬：改前 syncRail 在 preload 之后**立刻**跑，背板先硬跳变窄、
     // 两侧空列挂着，隔着挂载 + 首轮数据（上限 1500ms）卡片才淡入。
-    // 这条钉住新时序：preload < waitFirstRound < 同帧那次 syncRail <
-    // watchRailShift < sideDockAvailable < zone.hidden=false。
+    // 这条钉住排期位置：preload < waitFirstRound < 同帧那次 syncRail <
+    // watchRailShift < sideDockAvailable < zone.hidden=false；卡片自己再按
+    // baseDelay（= 让位时长）与落点次序逐张落下，见 monitor-agent 那两条。
     const src = stripComments(appSource);
     // 起点推到同帧块之后：错误分支里也有一句 zone.hidden = false（先于同帧块）
     const seg = loginPathThrough(src, 'zone.hidden = false;', 'this.watchRailShift(app, railLayout, wasHidden);');
@@ -2222,7 +2230,7 @@ test('让位过渡的两端都必须可插值：margin 用数值居中量、max-
     assert.match(fb[1], /max-width:\s*none/, '窄屏把 max-width 清掉，背板仍吃满内容盒');
 });
 
-test('背板让位过渡只在 #app.is-railing 窗口内开启，时长与曲线同卡片入场', () => {
+test('背板让位过渡只在 #app.is-railing 窗口内开启，时长决定首张卡的起跑时刻', () => {
     const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
     const gate = /#app\.is-railing \.backboard \{([^}]*)\}/.exec(css);
     assert.ok(gate, '存在 is-railing 门控规则');
@@ -2230,7 +2238,8 @@ test('背板让位过渡只在 #app.is-railing 窗口内开启，时长与曲线
     const jsMs = Number(/static MODULE_ENTER_MS = (\d+)/.exec(appSource)?.[1]);
     assert.ok(Number.isFinite(ms) && Number.isFinite(jsMs), '两侧时长都能解析');
     assert.equal(ms, jsMs,
-        '让位过渡时长必须等于 MODULE_ENTER_MS——两者同帧起步，不同时长意味着卡片亮完了背板还在挪');
+        '让位过渡时长必须等于 MODULE_ENTER_MS——它同时是首张卡的起跑延迟（renderModuleZone 的 baseDelay），'
+        + '两处漂移意味着卡片会在背板还在挪的时候就开始落');
     // 只取 cubic-bezier() 本身：transition 值里两个属性用逗号分隔，
     // animation 值尾部还有 fill-mode，直接截到分隔符会被逗号切碎。
     const curve = /max-width \d+ms (cubic-bezier\([^)]+\))/.exec(gate[1])?.[1];

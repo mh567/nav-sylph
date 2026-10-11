@@ -3714,8 +3714,10 @@ test('模块配置加载失败要渲染错误，不能静默收起模块区', ()
         '错误条必须自己开 pointer-events，否则「重试」点不动');
 });
 
-test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {
-    // 用户原话：「给模块加载增加一个淡入或其他动画效果，现在直接冒出来有些生硬」。
+test('模块区首次出现逐张落入，播完必须摘类且不留 inline delay', () => {
+    // 用户原话：「给模块加载增加一个淡入或其他动画效果，现在直接冒出来有些生硬」；
+    // 第二轮追加：「中间导航部分先缩窄，然后模块再从上到下一个个落到两侧」——
+    // 于是卡片不再是同一刻整体淡入，而是按落点排队逐张落下。
     const code = stripComments(appSource);
     const css = stripComments(stylesSource);
 
@@ -3726,18 +3728,25 @@ test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {
     const wasAt = body.indexOf('const wasHidden = zone.hidden');
     const showAt = body.lastIndexOf('zone.hidden = false');
     assert.ok(wasAt >= 0 && showAt > wasAt, `先记原状态再显形（was=${wasAt} show=${showAt}）`);
-    const callAt = body.indexOf('if (wasHidden) this.playModuleEntrance(zone)');
-    assert.ok(callAt > showAt, '摆好位之后再播');
+    // ⚠️ 首张的 delay 必须是**让位时长**：这是「导航先收窄、模块再落」的唯一机制。
+    //    没有让位（below 停靠/窄屏）时 baseDelay 为 0，否则白等 260ms。
+    const callAt = body.indexOf('this.playModuleEntrance(zone, { baseDelay: railLayout ? App.MODULE_ENTER_MS : 0 })');
+    assert.ok(callAt > showAt, '摆好位之后再排入场');
+    assert.ok(callAt > 0, '首张 delay 取让位时长（有让位才延后）');
 
-    // ② 摘类：animationend 按名字过滤 + 定时器兜底 + 真的把类摘掉。
-    //    ⚠️ 不摘的话 `animation-fill-mode: both` 会把最后一帧的
-    //    `transform: none` 一直压着，而拖拽正是靠 inline transform 跟手。
+    // ② 摘类：animationend 按名字过滤 + **等最后一张**（逐张延迟之后不能再
+    //    「第一张结束就摘」，那会把还在排队的卡片一起打回终态）+ 定时器兜底 + 清 inline delay。
+    //    ⚠️ 不摘/不清的话 `animation-fill-mode: both` 会把最后一帧的 `transform: none`
+    //    一直压着，而拖拽正是靠 inline transform 跟手。
     const play = methodBodyOf(code, 'playModuleEntrance');
     assert.ok(play.length > 300, `切出 playModuleEntrance（${play.length}）`);
     assert.match(play, /zone\.classList\.add\(cls\)/, '加标记');
     assert.match(play, /zone\.classList\.remove\(cls\)/, '必须摘标记');
     assert.match(play, /ev\.animationName !== 'moduleEnter'/, '按动画名过滤冒泡上来的 animationend');
-    assert.match(play, /setTimeout\(finish, App\.MODULE_ENTER_MS \+ \d+\)/, '有定时器兜底');
+    assert.match(play, /--pending > 0/, '等最后一张结束才摘（计数）');
+    assert.match(play, /animationDelay = ''/, '把 inline delay 也清掉（不留残留）');
+    assert.match(play, /setTimeout\(finish, lastStart \+ App\.MODULE_ENTER_MS \+ \d+\)/,
+        '兜底时长要把最后一张的起跑延迟算进去');
 
     // ③ CSS 与 JS 常量必须一致——两处漂移会让兜底早于/晚于动画结束
     const cssMs = Number(/moduleEnter\s+(\d+)ms/.exec(css)?.[1]);
@@ -3761,9 +3770,109 @@ test('模块区首次出现播一次淡入上浮，播完必须摘类', () => {
     assert.ok(kf.length > 80, `切出完整关键帧而非只有 from 帧（${kf.length}）`);
     assert.equal((kf.match(/\{/g) || []).length, 3, 'from / to 两帧都在里面');
     assert.match(kf, /opacity:\s*0/, '从透明开始');
-    assert.match(kf, /translateY\(8px\)/, '上浮 8px');
+    assert.match(kf, /translateY\(-\d+px\)/, '从**上方**落下（用户要求「落」，不是上浮）');
     assert.match(kf, /to\s*\{[^}]*opacity:\s*1/, '结束时完全不透明');
     assert.doesNotMatch(kf, /margin|height|padding|top:/, '不得动布局属性（两帧都要查）');
     assert.match(css, /\.module-zone\.is-entering \.module-widget\s*\{[^}]*animation:\s*moduleEnter/,
         'CSS 里真有这条规则');
+    // delay 逐张不同，只能来自 inline——基础规则里写死一个 delay 会让全队列同时起跑
+    const enterRule = /\.module-zone\.is-entering \.module-widget \{([^}]*)\}/.exec(css)?.[1];
+    assert.ok(enterRule, '找到入场规则本体');
+    assert.doesNotMatch(enterRule, /animation-delay/, 'delay 不得写进这条基础规则');
+    // 减少动态效果时不能还排队：归零要**限定在入场卡片**上，且真的存在
+    // （写在全局 `*` 上会波及无关动画——本轮审查点名过）
+    const scoped = /@media \(prefers-reduced-motion: reduce\) \{\s*\.module-zone\.is-entering \.module-widget \{([^}]*)\}/.exec(css);
+    assert.ok(scoped, '有入场卡片的 reduced-motion 覆盖块');
+    assert.match(scoped[1], /animation-delay:\s*0s !important/,
+        'reduced-motion 下入场延迟归零（inline delay 压不过 !important）');
+    const globalRm = /@media \(prefers-reduced-motion: reduce\) \{ \*,?\*::before,\*::after \{([^}]*)\}/.exec(css);
+    assert.ok(globalRm, '找到全局 reduced-motion 块');
+    assert.doesNotMatch(globalRm[1], /animation-delay/, '全局块不动 animation-delay');
+});
+
+test('入场次序：按落点自上而下逐张排 delay，首张 = 让位时长（执行真实实现）', () => {
+    // 「先缩窄、再从上到下一个个落到两侧」落到代码上就是两件事：
+    //   · 首张 delay == 让位时长（导航收完才轮到模块）
+    //   · 每张再 +MODULE_ENTER_STAGGER_MS，次序按 --stack-top（实际落点），
+    //     落点相同按 DOM 次序 —— 一律**一张接一张**，顶上那两张也是相隔一个间隔
+    const code = stripComments(appSource);
+    const body = methodBodyOf(code, 'playModuleEntrance');
+    const timers = [];
+    // ⚠️ 两个常量必须从**源码**解析再注入：把它们写成桩常量的话，
+    //    把 MODULE_ENTER_STAGGER_MS 改成 0（全队列同刻起跑）这条用例照样绿——
+    //    实测过（第一版就是桩，变异 S7 抓到的）。
+    const realEnter = Number(/static MODULE_ENTER_MS = (\d+)/.exec(code)?.[1]);
+    const realStagger = Number(/static MODULE_ENTER_STAGGER_MS = (\d+)/.exec(code)?.[1]);
+    assert.ok(Number.isFinite(realEnter) && Number.isFinite(realStagger),
+        `两个常量都能解析（enter=${realEnter} stagger=${realStagger}）`);
+    assert.ok(realStagger > 0, '逐张入场的间隔必须大于 0，否则「一个个落」不成立');
+    assert.ok(realStagger < realEnter, `间隔要明显小于动画时长（${realStagger} < ${realEnter}），否则前一张早就落完了`);
+    const mk = (top, name) => ({
+        name,
+        style: {
+            _d: '',
+            getPropertyValue: k => (k === '--stack-top' ? (top == null ? '' : top + 'px') : ''),
+            set animationDelay(v) { this._d = v; },
+            get animationDelay() { return this._d; }
+        }
+    });
+    const mkZone = widgets => ({
+        _handler: null,
+        classList: {
+            _added: [], _removed: [],
+            add(c) { this._added.push(c); },
+            remove(c) { this._removed.push(c); }
+        },
+        querySelectorAll: () => widgets,
+        addEventListener(t, h) { this._handler = h; },
+        removeEventListener() { this._handler = null; }
+    });
+    const fn = new Function('App', 'setTimeout',
+        `return ({ ${body} }).playModuleEntrance;`)(
+        { MODULE_ENTER_MS: realEnter, MODULE_ENTER_STAGGER_MS: realStagger },
+        (cb, ms) => { timers.push({ cb, ms }); return timers.length; });
+
+    // DOM 次序故意打乱：真实布局里同一侧在 DOM 上不连续（见 applyWidgetLayout 的注释）
+    const widgets = [mk(332, 'L3'), mk(0, 'L1'), mk(166, 'L2'), mk(0, 'R1')];
+    const zone = mkZone(widgets);
+    fn(zone, { baseDelay: realEnter });
+    // 期望值由源码里的两个常量算出，而不是抄一串写死的毫秒数：
+    // 常量一动，这里跟着动，断言仍然在验「次序 + 等差」这件事本身。
+    const base = realEnter;               // 有让位时首张等一个让位时长
+    const d = i => `${base + i * realStagger}ms`;
+    const delayOf = n => widgets.find(w => w.name === n).style.animationDelay;
+    assert.deepEqual([delayOf('L1'), delayOf('R1'), delayOf('L2'), delayOf('L3')],
+        [d(0), d(1), d(2), d(3)],
+        '按落点自上而下排队；顶上两张落点相同，按 DOM 次序紧随；首张 = 让位时长');
+    assert.equal(timers.length, 1, '一个兜底定时器');
+    assert.equal(timers[0].ms, base + 3 * realStagger + realEnter + 150,
+        '兜底 = 最后一张起跑 + 入场时长 + 150，早了会把还在排队的卡片打回终态');
+
+    // 逐张结束才摘类：第一张结束不能摘（否则第二张起白排队）
+    zone._handler({ animationName: 'moduleEnter' });
+    assert.equal(zone.classList._removed.length, 0, '第一张结束不摘类');
+    zone._handler({ animationName: '别的动画' });
+    assert.equal(zone.classList._removed.length, 0, '别的动画名不计入');
+    zone._handler({ animationName: 'moduleEnter' });
+    zone._handler({ animationName: 'moduleEnter' });
+    zone._handler({ animationName: 'moduleEnter' });
+    assert.deepEqual(zone.classList._removed, ['is-entering'], '四张都结束才摘类，且只摘一次');
+    assert.deepEqual(widgets.map(w => w.style.animationDelay), ['', '', '', ''],
+        '摘类时把 inline delay 一并清掉（不留残留）');
+
+    // 没有让位（below 停靠/窄屏/减少动态效果之外的普通情况）时首张不等待
+    const w2 = [mk(0, 'A'), mk(120, 'B')];
+    const z2 = mkZone(w2);
+    fn(z2, {});
+    assert.deepEqual(w2.map(w => w.style.animationDelay), ['0ms', `${realStagger}ms`],
+        'baseDelay 默认 0：首张立刻开始');
+    // 落点缺失（below 停靠没有 --stack-top）时退回 DOM 次序
+    const w3 = [mk(null, 'X'), mk(null, 'Y')];
+    fn(mkZone(w3), { baseDelay: realEnter });
+    assert.deepEqual(w3.map(w => w.style.animationDelay), [`${realEnter}ms`, d(1)],
+        'below 停靠没有落点 → 退回 DOM 次序（即屏幕上的自上而下）');
+    // 没有卡片时立刻收尾，不留类也不留定时器
+    const z4 = mkZone([]);
+    fn(z4, {});
+    assert.deepEqual(z4.classList._removed, ['is-entering'], '空模块区立刻摘类');
 });
