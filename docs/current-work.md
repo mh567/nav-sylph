@@ -2,7 +2,7 @@
 
 核对日期：2026-10-11。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：登录后「导航让位 → 模块出现」的入场动画（**未提交，工作树**；基线 `a479070`）
+## 最新一轮：登录后「导航让位 → 模块出现」的入场动画（随 **v1.15.13** 发布；功能提交 `8a8db71`、版本提交 `e3efb98`，tag `v1.15.13`，基线 `a479070`）
 
 用户原话：「优化登录后首页从导航部分加载到模块加载出来的动画，现在有些生硬，导航部分首次出现会比较宽，然后模块出来的时候导航部分会突然变窄，这里过渡很生硬不够丝滑。前提是优化保证各个模块的加载速度和对客户端浏览器资源的占用」。
 
@@ -30,7 +30,8 @@
 - 全量 `node --test tests/*.test.js` → **607/607**（回归修复是给已有那条「两端可插值」用例加了 `max-width: none` 断言，不是新增用例，总数不变）；`node --check public/app.js`、`git diff --check` 干净。
 - **红/绿变异**：首轮 10 条全红（删 `watchRailShift` 调用 / 时长 260→300 / 基础规则回 `margin: 0 auto` / 调用点去掉终值 / 同帧 `syncRail` 挪回 `waitFirstRound` 之前 / 窄屏删 `margin: 0` / 删定时器兜底 / 去掉 `propertyName` 过滤 / 终值改 `undefined` / 删错误分支的 `dock='below'`）。**抽取 `loginPathThrough()` 之后这 10 条的结论不再作数，已重跑受影响的 5 条**（删调用 / 重排 syncRail / 去终值 / 回不可插值形态 / 删窄屏 `max-width: none`）——全红；每次破坏前从备份 `cp`、`trap` 还原，收尾 `diff` 证两文件逐字节相同。
 - **真实浏览器**（树外临时副本 + 清 SW/caches + cache-busting）：1440×900 同一套重放的 A/B —— 改前背板 **一帧从 936 跳到 696（中间帧 0）**；改后 **10~16 个单调中间帧** 936→875.3→822.5→782.8→755.4→737.2→724.7→…→696，`margin-left` 同步插值 230→240，`is-railing` 类存在约 250ms，让位与 `zone.hidden=false` **同一采样帧**；`longtask` 记录 **0 条**，控制台无错误。定格截图两帧（822.3px 时卡片半透明浮现、终态 696px 布局正确）。**回归复现与修复**：1000px 视口改前 956 → 改动后 936 → 补 `max-width: none` 后回到 **956**；390×844 与 844×390 改前后逐字段相同（366/785、`max-width: none`、`margin-left: 0`、无横向溢出）；`resize` 路径 `boardTransitions: []`（类门控生效，不跟随）。
-- 临时服务（4477）、浏览器会话、树外夹具已全部清理；`git status --short` 只剩本轮 **9** 个改动文件，私有文件 mtime 早于本会话。
+- 临时服务（4477）、浏览器会话、树外夹具已全部清理；本轮 9 个改动文件（`app.js` / `styles.css` / `sw.js` / 4 个测试 / 2 份文档）已全部提交，私有文件 mtime 早于本会话。
+- **发布产物核对**（下载 `nav-sylph-v1.15.13.tar.gz`、树外解包）：`version.json` = 1.15.13、`CACHE` = nav-v103、`app.js` 有 `watchRailShift`（2 处）、`styles.css` 有 `is-railing`（3 处）与窄屏 `max-width: none`（1 处）；四类私有文件（`.admin-password.json` / `.modules.json` / `config.json` / `favorites.json`）与 `nav-sylph.db` 均未夹带；`agent/dist` 只有三个 linux 产物，darwin 自测二进制未进包。
 
 ### 验证边界 / 下一步
 
