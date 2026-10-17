@@ -928,7 +928,10 @@
         pending: '待授权',
         expired: '授权失效',
         paused: '已暂停',
-        failed: '同步失败'
+        failed: '同步失败',
+        // 积压追赶中：**不是**失败，所以不给重试按钮；中性色即可（见 admin.css 的
+        // [data-status] 规则，没有这一档就落到 --text-muted）。文案取短，chips 很窄。
+        catching_up: '正在补齐'
     };
 
     function renderAdminSection(host, state) {

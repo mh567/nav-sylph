@@ -1154,16 +1154,35 @@ test('FxEmbed 无 token 连接、空列表与 404 双义、错误 JSON/code/限�
     } finally { globalThis.fetch = original; }
 });
 
-test('FxEmbed 重复游标、五页上限与中途故障拒绝成功', async () => {
+test('FxEmbed 重复游标报 pagination、翻满单轮预算改交部分进度、中途故障仍拒绝成功', async () => {
     const original = globalThis.fetch;
     try {
-        for (const mode of ['repeat', 'limit', 'failure']) {
+        // 重复游标：上游把同一个游标还回来，本轮停止并给出独立错误码
+        // （旧实现与「消息太多」共用一句「未能覆盖所有新动态」，两种处置混成一种）。
+        {
             let n = 0;
-            globalThis.fetch = async () => {
-                n++;
-                if (mode === 'failure' && n === 2) throw new Error('offline');
-                return fxResponse([fxStatus(String(200 - n))], mode === 'repeat' ? 'same' : `page${n}`);
-            };
+            globalThis.fetch = async () => { n++; return fxResponse([fxStatus(String(200 - n))], 'same'); };
+            await assert.rejects(() => xAdapter.fetchEvents({ externalKey: 'alice', cursor: '100' }),
+                err => { assert.equal(err.code, 'pagination'); return true; });
+            assert.ok(n <= 5);
+        }
+
+        // 翻满单轮预算：**不再抛错**，改为交出本轮已取到的消息与续接游标。
+        // 旧实现在这里把消息整批丢掉并抛错，水位又因失败不推进，于是永久卡死。
+        {
+            let n = 0;
+            globalThis.fetch = async () => { n++; return fxResponse([fxStatus(String(200 - n))], `page${n}`); };
+            const partial = await xAdapter.fetchEvents({ externalKey: 'alice', cursor: '100' });
+            assert.equal(partial.covered, false, '没追到水位');
+            assert.equal(partial.events.length, n, '本轮取到的消息必须交出来');
+            assert.equal(partial.resumeCursor, `page${n}`, '留下续接游标');
+            assert.ok(n <= 5, `请求页数有界（实测 ${n}）`);
+        }
+
+        // 中途故障仍然是失败（网络问题该退避重试，不该当成功）。
+        {
+            let n = 0;
+            globalThis.fetch = async () => { n++; if (n === 2) throw new Error('offline'); return fxResponse([fxStatus('199')], `page${n}`); };
             await assert.rejects(() => xAdapter.fetchEvents({ externalKey: 'alice', cursor: '100' }));
             assert.ok(n <= 5);
         }
@@ -2759,6 +2778,9 @@ test('时间线没有自带限流 Map（复用既有桶，不必进 sweep 清单
     // lib/timeline 里的可变集合都是「有界或被显式清理」的，逐只点出来：
     //  · service 的 failures：删来源时 delete，且只按来源计数
     //  · sync 的 inFlight：finally 里 delete
+    //  · x 的 seen：**每次调用内的局部量**，随调用结束一起回收；条目数上界就是
+    //    单轮页数预算（`X_MAX_PAGES`，循环每页最多加一条）。这个上界由
+    //    tests/timeline-x-catchup.test.js 的「请求页数有界」用例钉住。
     // （registry 的 PROVIDERS 是 new Map([...]) 的字面量常量，不在扫描范围内。）
     const timelineDir = fs.readdirSync(path.join(ROOT, 'lib', 'timeline'));
     const files = timelineDir.filter(f => f.endsWith('.js'))
@@ -2774,8 +2796,8 @@ test('时间线没有自带限流 Map（复用既有桶，不必进 sweep 清单
             maps.push(`${path.basename(file)}:${m[1]}`);
         }
     }
-    assert.deepEqual(maps.sort(), ['service.js:failures', 'sync.js:inFlight'].sort(),
-        `lib/timeline 里的可变集合就是这两只，每只都要有边界或显式清理（实测：${maps.join(', ')}）`);
+    assert.deepEqual(maps.sort(), ['service.js:failures', 'sync.js:inFlight', 'x.js:seen'].sort(),
+        `lib/timeline 里的可变集合就是这三只，每只都要有边界或显式清理（实测：${maps.join(', ')}）`);
 });
 
 test('真实路由→服务→数据库：周期白名单、无 token、启停与调度恢复', async () => {
