@@ -567,7 +567,7 @@ function runMethod(source, name, thisArg, { API = {}, console: log = console } =
     // 用 with 之外的显式形参：方法体里的自由变量只有 API 与 console
     const factory = vm.runInNewContext(
         `(function(API, console){ return async function(){ ${body} }; })`,
-        { console: log }
+        { console: log, structuredClone }
     );
     return factory(API, log).call(thisArg);
 }
@@ -611,48 +611,18 @@ test('保存编辑一次提交两套存储，且布局失败即中止', () => {
         calls.length = 0;
         widgetSaveSucceeds = false;
         await runMethod(appSource, 'saveEditSession', makeApp(), { API });
-        assert.deepEqual(calls, ['modules', 'rollback', 'exit'],
-            '布局失败必须中止：书签不提交、草稿回滚、退出编辑态');
+        assert.deepEqual(calls, ['modules', 'toast:error'],
+            '布局失败中止导航提交，保留编辑态与草稿');
         // 提示由 saveWidgetLayout 发出（真实实现里是「布局保存失败，已还原」），
         // 所以这里不重复断言 toast——它属于被调方，不属于本方法的职责。
     })();
 });
 
-test('保存编辑传给 saveWidgetLayout 的是对象而不是裸数组', () => {
-    // 形状缺陷（审查抓到的真缺陷）：saveWidgetLayout 的回滚分支读
-    // `snapshot.widgets`。传裸数组会让它变 undefined，.map 抛 TypeError——
-    // 而那个异常从 catch 块内部抛出，会穿透两层 try/catch，
-    // 于是回滚、退出、提示一行都不执行，只留下改坏了的 widgets。
-    //
-    // 断言的是**实际传出去的值**，不是源码里有没有 `widgets:` 字样。
-    let received;
-    const app = {
-        authenticated: true,
-        editSession: { config: {}, widgets: [{ id: 'w1' }, { id: 'w2' }] },
-        modulesConfig: { widgets: [{ id: 'w1' }] },
-        config: {},
-        saveWidgetLayout: async (snapshot) => { received = snapshot; return true; },
-        rollbackEditSession: () => {}, exitEditLayout: () => {}, showToast: () => {}
-    };
-    const API = { post: () => Promise.resolve({ success: true }) };
-
-    return runMethod(appSource, 'saveEditSession', app, { API }).then(() => {
-        assert.ok(received && typeof received === 'object' && !Array.isArray(received),
-            'snapshot 必须是对象——回滚分支读 snapshot.widgets');
-        assert.ok(Array.isArray(received.widgets),
-            'snapshot.widgets 必须是数组，否则回滚时 .map 直接抛');
-        assert.equal(received.widgets.length, 2, '快照内容来自 editSession.widgets');
-    });
-});
-
-test('saveWidgetLayout 的回滚分支读到的形状，与调用方传入的一致', () => {
-    // 上一条断言的是「调用方传对了」，这条反过来钉住「被调方怎么读」——
-    // 两侧必须用同一个字段名，否则其中一侧改了另一侧不会察觉。
-    const body = methodBody(appSource, 'saveWidgetLayout');
-    assert.match(body, /snapshot\.widgets\.map\(/,
-        'saveWidgetLayout 的回滚读 snapshot.widgets');
-    assert.match(body, /if \(snapshot\)/,
-        'snapshot 允许缺省（调用方可能没有草稿快照）');
+test('布局保存冲突保留草稿并提示，不覆盖服务器', async () => {
+    const widgets = [{ id: 'memo', order: 2 }];
+    const app = { modulesConfig: { widgets }, saveModulesConfig: async () => { throw new Error('模块配置已改变'); }, showToast: (message) => assert.match(message, /草稿已保留/) };
+    assert.equal(await runMethod(appSource, 'saveWidgetLayout', app), false);
+    assert.equal(app.modulesConfig.widgets, widgets);
 });
 
 test('drop 落在分类之外时必须先守卫再解引用', () => {

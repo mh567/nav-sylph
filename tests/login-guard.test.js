@@ -322,7 +322,7 @@ test('面板重建 DOM 时复位 webdavRendered，登出时两样一起清', () 
     assert.ok(render.length > 500, 'renderWebDAVSection 方法体完整');
     assert.match(render, /this\.webdavRendered = true/);
 
-    const logout = methodBody(c, 'clearPrivateState() {');
+    const logout = methodBody(c, 'clearPrivateState({ preservePending = false } = {}) {');
     assert.match(logout, /this\.webdavConfig = null/,
         '换会话后内存里不留上一个会话的配置');
     assert.match(logout, /this\.webdavRendered = false/,

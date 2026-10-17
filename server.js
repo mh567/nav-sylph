@@ -818,7 +818,10 @@ async function ensureFile(file, defaultData) {
     }
 }
 
+const versionedModules = require('./lib/versioned-modules');
+
 async function readJSON(file) {
+    if (file === MODULES_FILE) return versionedModules.read(file);
     const data = await fs.readFile(file, 'utf8');
     return JSON.parse(data);
 }
@@ -834,8 +837,11 @@ function isBackupSource(file) {
 
 /** 只用于 PRIVATE_FILES 里的文件：写完立即收紧，不留 644 窗口。 */
 async function writeJSON(file, data) {
-    await fs.writeFile(file, JSON.stringify(data, null, 2));
-    await fs.chmod(file, 0o600);
+    if (file === MODULES_FILE) versionedModules.write(file, data);
+    else {
+        await fs.writeFile(file, JSON.stringify(data, null, 2));
+        await fs.chmod(file, 0o600);
+    }
     // 触发自动同步的钩子放在这里，而不是逐条路由里加：.modules.json 一个
     // 文件就有 8 处写路径（新增/编辑/删除机器、领取推送凭据、探测部署态、
     // agent 注册、改密码重加密…）。逐条加，漏一处的表现是「改了这项不会
@@ -2330,15 +2336,25 @@ function invalidateMetricsCache() {
     }
 }
 
+function moduleMutation(req, res, next) {
+    req.moduleOperation = { ...req.body, route: req.path, method: req.method };
+    try {
+        const receipt = versionedModules.replay(MODULES_FILE, req.moduleOperation);
+        if (receipt) return res.json(receipt);
+        next();
+    } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
+}
+
 app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
     try {
         res.setHeader('Cache-Control', 'no-store');
-        const config = await readJSON(MODULES_FILE).catch(() => defaultModulesConfig);
+        const config = await readJSON(MODULES_FILE);
         // token 只出不来：回一个 hasToken 布尔即可，前端显示「已配置」。
         // 把信封原样回给前端等于把密文也交出去——虽然解不开，
         // 但没必要让浏览器拿到本不该有的数据。
         res.json({
             ...config,
+            revision: versionedModules.revision(config),
             // 证书 PEM 不回给前端：它不是秘密，但有 1KB+ 且前端用不到。
             // 前端只需要知道「注册过没有」，据此显示状态而不是让用户
             // 反复重新部署同一台机器。
@@ -2368,12 +2384,11 @@ app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
             }))
         });
     } catch {
-        // 文件缺失时回落到默认值，而不是 500——配置丢了不该让模块整体不可用
-        res.json(defaultModulesConfig);
+        res.status(500).json({ error: '模块配置读取失败，请检查文件后重试' });
     }
 });
 
-app.post('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
+app.post('/api/modules/config', rateLimit, requireAdmin, moduleMutation, async (req, res) => {
     try {
         if (JSON.stringify(req.body ?? {}).length > MODULES_CONFIG_MAX) {
             return res.status(413).json({ error: '配置过大' });
@@ -2384,15 +2399,11 @@ app.post('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
             return res.status(400).json({ error: '无效的模块配置格式' });
         }
 
-        let existing = {};
-        try {
-            existing = await readJSON(MODULES_FILE);
-        } catch {
-            existing = defaultModulesConfig;
-        }
+        const existing = await readJSON(MODULES_FILE);
 
         const merged = mergeModulesConfig(existing, normalized);
-        await writeJSON(MODULES_FILE, merged);
+        const result = versionedModules.write(MODULES_FILE, merged, req.moduleOperation);
+        scheduleAutoSync();
 
         // 服务器列表变了才清缓存：这条路由也用于拖拽排序与开关模块，
         // 那两种改动不影响采集目标，每次都清会让缓存形同虚设。
@@ -2408,10 +2419,10 @@ app.post('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
         // 还是旧数据，所以看起来像设置完全没起作用。
         if (metricsInputsChanged(existing, normalized)) invalidateMetricsCache();
 
-        res.json({ success: true });
+        res.json(result);
     } catch (err) {
         console.error('保存模块配置失败:', err);
-        res.status(500).json({ error: '保存失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '保存失败: ' + err.message });
     }
 });
 
@@ -2638,7 +2649,7 @@ app.get('/api/modules/metrics', modulePollLimit, requireAdmin, async (req, res) 
  * 服务器配置的增删改。token 只进不出：
  * 读接口只回 hasToken，保存时空值表示保持原值。
  */
-app.post('/api/modules/servers', rateLimit, requireAdmin, async (req, res) => {
+app.post('/api/modules/servers', rateLimit, requireAdmin, moduleMutation, async (req, res) => {
     try {
         const { id, name, url, token, mode, reachable } = req.body || {};
         if (typeof url !== 'string' || !url.trim()) {
@@ -2735,17 +2746,18 @@ entry.token = servers[index].token;
         else servers.push(entry);
 
         config.servers = servers;
-        await writeJSON(MODULES_FILE, config);
+        const result = versionedModules.write(MODULES_FILE, config, req.moduleOperation, { id: serverId });
+        scheduleAutoSync();
         // 加/改一台机器后立刻重采，否则要等满 5 分钟 TTL 才看到新目标
         invalidateMetricsCache();
-        res.json({ success: true, id: serverId });
+        res.json(result);
     } catch (err) {
         console.error('保存服务器失败:', err);
-        res.status(500).json({ error: '保存失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '保存失败: ' + err.message });
     }
 });
 
-app.delete('/api/modules/servers/:id', rateLimit, requireAdmin, async (req, res) => {
+app.delete('/api/modules/servers/:id', rateLimit, requireAdmin, moduleMutation, async (req, res) => {
     try {
         let config;
         try {
@@ -2759,13 +2771,14 @@ app.delete('/api/modules/servers/:id', rateLimit, requireAdmin, async (req, res)
         if (config.servers.length === before) {
             return res.status(404).json({ error: '未找到该服务器' });
         }
-        await writeJSON(MODULES_FILE, config);
+        const result = versionedModules.write(MODULES_FILE, config, req.moduleOperation);
+        scheduleAutoSync();
         // 删掉的机器不该再出现在下一次采集结果里
         invalidateMetricsCache();
-        res.json({ success: true });
+        res.json(result);
     } catch (err) {
         console.error('删除服务器失败:', err);
-        res.status(500).json({ error: '删除失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '删除失败: ' + err.message });
     }
 });
 
@@ -2800,7 +2813,7 @@ app.post('/api/modules/servers/:id/push-secret', rateLimit, requireAdmin, async 
         res.json({ secret, serverId: req.params.id });
     } catch (err) {
         console.error('领取推送凭据失败:', err);
-        res.status(500).json({ error: '领取失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '领取失败: ' + err.message });
     }
 });
 
@@ -3002,7 +3015,7 @@ app.post('/api/modules/servers/:id/probe', rateLimit, requireAdmin, async (req, 
         });
     } catch (err) {
         console.error('探测服务器失败:', err);
-        res.status(500).json({ error: '探测失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '探测失败: ' + err.message });
     }
 });
 app.post('/api/modules/servers/:id/enroll-token', rateLimit, requireAdmin, async (req, res) => {
@@ -3041,7 +3054,7 @@ app.post('/api/modules/servers/:id/enroll-token', rateLimit, requireAdmin, async
         });
     } catch (err) {
         console.error('签发部署令牌失败:', err);
-        res.status(500).json({ error: '签发失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '签发失败: ' + err.message });
     }
 });
 
@@ -3183,7 +3196,7 @@ app.post('/api/modules/enroll', enrollLimit, async (req, res) => {
         });
     } catch (err) {
         console.error('agent 注册失败:', err);
-        res.status(500).json({ error: '注册失败: ' + err.message });
+        res.status(err.status || 500).json({ error: '注册失败: ' + err.message });
     }
 });
 

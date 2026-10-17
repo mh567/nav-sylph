@@ -279,7 +279,8 @@
      * 失败要 render 出来——只渲染成功分支会让上一份数据一直留在屏上。
      */
     async function poll() {
-        if (inFlight) return;
+        if (inFlight || !window.app?.authenticated) return;
+        const epoch = window.app.privateEpoch || 0;
         inFlight = true;
         try {
             const res = await fetch('/api/modules/metrics', {
@@ -290,6 +291,7 @@
             // 那样状态码就带不出来，429 又会退回「监控数据读取失败」这一句。
             let payload = null;
             try { payload = await res.json(); } catch { /* 非 JSON 响应体 */ }
+            if (!window.app?.authenticated || epoch !== (window.app.privateEpoch || 0)) return;
             if (!res.ok) {
                 // 带上状态码：429 是「你刷太快」，不是「数据读不到」——两者的
                 // 下一步完全不同（等一分钟 vs 去查服务）
@@ -1042,9 +1044,7 @@
                     // 再 `res.res.json()` 会抛「body stream already read」，被 catch
                     // 吞成 `HTTP 500` —— 服务端那句具体的 error（例如「未找到该服务器」）
                     // 就丢了。直接用返回的 data。
-                    const { res, data } = await adminApi().request(
-                        `/api/modules/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
-                    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+                    await services.mutateConfig(`/api/modules/servers/${encodeURIComponent(id)}`, {}, 'DELETE');
                     showToastSafe('已删除');
                     await services.refreshAdmin();
                 } catch (e) {
@@ -1102,7 +1102,8 @@
         // 所以面板必须立刻让用户复制走。
         showToastSafe('正在生成部署命令…');
         adminApi().post(`/api/modules/servers/${encodeURIComponent(server.id)}/enroll-token`)
-            .then(res => {
+            .then(async res => {
+                await services.refreshAdmin();
                 const origin = location.origin;
                 const mode = res.mode === 'push' ? 'push' : 'pull';
                 // 自签服务端要在命令里带上 CA，否则 agent 的 TLS 握手会失败
@@ -1394,7 +1395,7 @@
         const mode = reachable ? 'pull' : 'push';
 
         try {
-            const saved = await adminApi().post('/api/modules/servers', {
+            const saved = await services.mutateConfig('/api/modules/servers', {
                 id: server ? server.id : undefined,
                 name,
                 url,

@@ -240,15 +240,13 @@ test('后台服务包：模块从注入的服务里取能力，不去够平台�
 
 test('模块配置只有一条写路径：saveModulesConfig（后台三处都改走它）', () => {
     const code = stripComments(appSource);
-    // ⚠️ 首页编辑态的 saveWidgetLayout 是**有意**保留的第二条（草稿/回滚语义纠缠），
-    // 所以这里数的是 2：一条模块配置的通用写路径 + 一条首页拖拽布局的写路径。
-    const posts = [...code.matchAll(/API\.post\('\/api\/modules\/config'/g)];
-    assert.equal(posts.length, 2, `写路径恰好两条（实际 ${posts.length}）`);
+    const posts = [...code.matchAll(/API\.post\(route, this\.pendingModules\.body/g)];
+    assert.equal(posts.length, 1, '模块设置及目标修改共享写入入口');
     const save = methodBodyOf(code, 'saveModulesConfig');
     assert.ok(save.length > 300, `切出 saveModulesConfig（${save.length}）`);
-    assert.match(save, /await API\.post\('\/api\/modules\/config'/, '通用写路径在这里');
-    assert.match(save, /enabledModules: merged\.enabledModules[\s\S]*?widgets: merged\.widgets[\s\S]*?servers: merged\.servers/,
-        '按服务端要的形状整份提交，不是只带自己关心的那几个键');
+    assert.match(save, /await API\.post\(route, this\.pendingModules\.body/, '通用写路径在这里');
+    assert.match(save, /revision: this\.modulesRevision, operationId: crypto\.randomUUID\(\)/,
+        '保存携带当前模块域基线与稳定操作标识');
     // ⚠️ 原地更新，不换对象：各处（渲染闭包、模块拿到的取值器）都握着这个引用
     assert.match(save, /Object\.assign\(this\.modulesConfig, merged\)/,
         '原地合并（换对象会让别人手里的引用过期）');

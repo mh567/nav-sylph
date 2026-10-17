@@ -1,3 +1,4 @@
+// nav-v110：管理员配置跨设备协调与身份切换草稿保护。
 // nav-v109：普通导航使用独立 IndexedDB，缓存包含本地保存与共享校验脚本。
 // nav-v108：个人导航与默认模板使用独立管理入口。
 // nav-v107：收藏仅供管理员访问，更新静态资源并清理旧缓存。
@@ -271,7 +272,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v109';
+const CACHE = 'nav-v110';
 const ASSETS = [
     '/',
     '/index.html',

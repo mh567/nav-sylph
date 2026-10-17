@@ -148,9 +148,9 @@ test('browser: browser restart, offline revisit and service worker upgrade retai
     assert.equal(await page.locator('#moduleZone').isVisible(), false);
     await context.setOffline(false);
     const sw = path.join(app.dir, 'public/sw.js');
-    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace("const CACHE = 'nav-v109'", "const CACHE = 'nav-v109-browser-upgrade'"));
+    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace("const CACHE = 'nav-v110'", "const CACHE = 'nav-v110-browser-upgrade'"));
     await page.evaluate(async () => { const registration = await navigator.serviceWorker.ready; await registration.update(); });
-    await page.waitForFunction(async () => (await caches.keys()).includes('nav-v109-browser-upgrade'));
+    await page.waitForFunction(async () => (await caches.keys()).includes('nav-v110-browser-upgrade'));
     await page.reload();
     await page.getByRole('heading', { name: 'Restart survives', exact: true }).waitFor();
 });

@@ -74,8 +74,7 @@
             if (API.envChangeNotified) return;
             API.envChangeNotified = true;
             if (window.app) {
-                window.app.clearPrivateState();
-                location.reload();
+                window.app.expirePrivateState();
                 // 模块区与布局按钮是登录态的产物，必须一起收起。
                 // 少了这一行，环境变化后首页仍留着可点的模块入口。
                 window.app.syncModuleVisibility();
@@ -86,11 +85,12 @@
         // 否则一律在此解析：body stream 只能读一次，调用方再 res.json()
         // 会抛 "body stream already read"。
         async request(url, options, binary = false) {
+            if (/^\/api\/(?:admin\/|modules\/|timeline(?:\/|$)|memos(?:\/|$)|favorites(?:\/|$))/.test(url) && !window.app?.authenticated) throw new Error('需要管理员登录');
             const epoch = window.app?.privateEpoch || 0;
             const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Sylph-Request': '1' } });
+            if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
             if (res.status === 401 && window.app?.authenticated) {
-                window.app.clearPrivateState();
-                location.reload();
+                window.app.expirePrivateState();
             }
             if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
             if (binary) return { res, data: null };
@@ -280,7 +280,10 @@
             this.modulesLoading = true;
             this.modulesError = null;
             try {
+                const epoch = this.privateEpoch || 0;
                 const data = await API.get('/api/modules/config');
+                if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return null;
+                this.modulesRevision = data.revision;
                 this.modulesConfig = {
                     enabledModules: Array.isArray(data?.enabledModules) ? data.enabledModules : [],
                     widgets: Array.isArray(data?.widgets) ? data.widgets : [],
@@ -840,26 +843,13 @@
             }
         }
 
-        /**
-         * 写回 layout（顺序 / 换边）。排序是持久化状态，所以不做乐观更新：
-         * 失败时用调用方的快照回滚，并把错误 render 出来。
-         */
-        async saveWidgetLayout(snapshot) {
+        /** 保存失败保留布局草稿，供用户重试或取消。 */
+        async saveWidgetLayout() {
             try {
-                await API.post('/api/modules/config', {
-                    enabledModules: this.modulesConfig.enabledModules,
-                    widgets: this.modulesConfig.widgets,
-                    servers: this.modulesConfig.servers
-                });
+                await this.saveModulesConfig({ widgets: this.modulesConfig.widgets });
                 return true;
             } catch (e) {
-                console.error('Save widget layout failed:', e);
-                // 整体回滚到拖拽前，而不是只回滚一个字段——同一操作通常还推进了 updatedAt 之类
-                if (snapshot) {
-                    this.modulesConfig.widgets = snapshot.widgets.map(w => ({ ...w }));
-                }
-                this.showToast('布局保存失败，已还原', 'error');
-                this.renderModuleZone();
+                this.showToast(e.message + '，布局草稿已保留', 'error');
                 return false;
             }
         }
@@ -980,6 +970,7 @@
          * `toggleEditLayout(false)` 能静默退出，而实际上它做不到。
          */
         async toggleEditLayout() {
+            if (this.suspendedAdministrator) return;
             if (this.editLayout) return this.saveEditSession();
             this.editSession = {
                 config: JSON.parse(JSON.stringify(this.config)),
@@ -1017,23 +1008,11 @@
         async saveEditSession() {
             if (!this.authenticated) { await this.localQueue; this.editSession = null; this.exitEditLayout(); return; }
             if (!this.editSession) { this.exitEditLayout(); return; }
-            if (this.modulesConfig) {
-                // 传**对象**而不是裸数组：saveWidgetLayout 的回滚分支读的是
-                // snapshot.widgets。传数组会让 snapshot.widgets 为 undefined，
-                // .map 直接抛——而那个异常从 catch 块内部抛出，会穿透
-                // saveWidgetLayout 的 catch、穿透 saveEditSession 的 try，
-                // 于是回滚、退出编辑态、提示 toast 一行都不执行，
-                // 只留下一个改坏了的 widgets。
-                const ok = await this.saveWidgetLayout({ widgets: this.editSession.widgets });
-                // saveWidgetLayout 自己回滚了 widgets 并已提示，但**编辑会话还没结束**：
-                // 书签那部分草稿仍在内存里，界面也仍停在编辑态。早先这里直接
-                // return，用户点了「保存编辑」却什么都没发生，也没有下一步可走。
-                // 所以失败路径与书签提交失败同构：还原整份草稿、退出、提示。
-                // 两套存储不是原子的，串行 + 前者失败即中止，
-                // 把最坏情况收敛成「只有布局变了」。
+            if (this.modulesConfig && JSON.stringify(this.modulesConfig.widgets) !== JSON.stringify(this.editSession.widgets)) {
+                const ok = await this.saveWidgetLayout();
+                if (ok) this.editSession.widgets = structuredClone(this.modulesConfig.widgets);
                 if (!ok) {
-                    this.rollbackEditSession();
-                    this.exitEditLayout();
+                    this.showToast('布局保存失败，请处理冲突后重试，导航草稿已保留', 'error');
                     return;
                 }
             }
@@ -1041,9 +1020,7 @@
                 const res = await this.saveNavigation();
                 if (!res.success) throw new Error(res.error || '保存失败');
             } catch (e) {
-                this.rollbackEditSession();
-                this.exitEditLayout();
-                this.showToast('首页书签保存失败，已还原', 'error');
+                this.showToast(e.message + '，草稿已保留；可取消编辑后读取服务器版本', 'error', 8000);
                 return;
             }
             this.editSession = null;
@@ -1063,8 +1040,13 @@
                 if (!ok) return;
             }
             this.rollbackEditSession();
+            this.pendingNavigation = null;
+            this.pendingModules = null;
+            sessionStorage.removeItem('nav-sylph-pending-navigation');
+            sessionStorage.removeItem('nav-sylph-pending-modules');
             this.editSession = null;
             this.exitEditLayout();
+            this.checkAdministratorSync();
         }
 
         /** 整体替换回草稿快照——不能逐字段还原，
@@ -1159,7 +1141,7 @@
         }
 
         saveLocalNavigation(config = this.config, undo = false) {
-            if (this.authenticated || this.personalNavigationLoaded) return Promise.resolve(false);
+            if (this.authenticated || this.personalNavigationLoaded || this.suspendedAdministrator) return Promise.resolve(false);
             const candidate = window.NavigationSchema.publicConfig(structuredClone(config));
             this.localPending++;
             this.setLocalStatus('正在保存到本机');
@@ -1335,7 +1317,7 @@
                 if (!this.authenticated && (this.localPending || this.localError || $('.ui-dialog-overlay input, .ui-dialog-overlay textarea'))) { event.preventDefault(); event.returnValue = ''; }
             });
             window.addEventListener('focus', () => this.refreshLocalNavigation());
-            window.addEventListener('online', () => { if (!this.authenticated) this.restoreSession(); });
+            window.addEventListener('online', () => this.checkAdministratorSync());
         }
 
         async finishLocalDraft() {
@@ -1604,21 +1586,17 @@
             $('#layoutBtn').hidden = false;
             $('#modeBtn').hidden = !this.authenticated;
             $('#favSearchHint').hidden = !this.authenticated;
+            const identityChanged = () => this.checkAdministratorSync();
             window.addEventListener('storage', event => {
-                if (event.key === 'nav-sylph-auth-reset') {
-                    this.clearPrivateState();
-                    location.reload();
-                }
+                if (event.key === 'nav-sylph-auth-reset') identityChanged();
             });
-            setInterval(() => {
-                if (this.authenticated) this.loadSession().then(session => {
-                    if (!session.authenticated) { this.clearPrivateState(); location.reload(); }
-                }).catch(() => this.clearPrivateState());
-            }, 30000);
+            if ('BroadcastChannel' in window) {
+                this.authChannel = new BroadcastChannel('nav-sylph-auth');
+                this.authChannel.onmessage = identityChanged;
+            }
+            setInterval(() => { if (!document.hidden) this.checkAdministratorSync(); }, 30000);
             document.addEventListener('visibilitychange', () => {
-                if (!document.hidden && this.authenticated) this.loadSession().then(session => {
-                    if (!session.authenticated) { this.clearPrivateState(); location.reload(); }
-                }).catch(() => this.clearPrivateState());
+                if (!document.hidden) this.checkAdministratorSync();
             });
             $('#modeBtn').onclick = () => {
                 const input = $('#searchInput');
@@ -2377,7 +2355,86 @@
 
         // ========== 书签模糊检索 ==========
 
-        clearPrivateState() {
+        notifyIdentityChanged() {
+            this.authChannel?.postMessage('changed');
+            try { localStorage.setItem('nav-sylph-auth-reset', String(Date.now())); } catch {}
+        }
+
+        hasAdministratorDraft() {
+            return this.editLayout || this.configDirty || this.navigationSaving || this.modulesSaving
+                || this.pendingNavigation || this.pendingModules || !!$('.ui-dialog-overlay');
+        }
+
+        async checkAdministratorSync() {
+            if (this.administratorChecking || this.suspendedAdministrator) return;
+            this.administratorChecking = true;
+            const epoch = this.privateEpoch || 0;
+            try {
+                const session = await this.loadSession();
+                if (epoch !== (this.privateEpoch || 0)) return;
+                if (!session.authenticated) {
+                    if (this.authenticated) this.expirePrivateState();
+                    return;
+                }
+                if (!this.authenticated) { await this.restoreSession(); return; }
+                const before = JSON.stringify([this.config, this.modulesConfig]);
+                const [navigation, modules] = await Promise.all([
+                    API.get('/api/admin/navigation'), API.get('/api/modules/config')
+                ]);
+                if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
+                if (this.hasAdministratorDraft() || before !== JSON.stringify([this.config, this.modulesConfig]) || !$('#modal').hidden) {
+                    if (navigation.revision !== this.navigationRevision || modules.revision !== this.modulesRevision)
+                        this.showToast('服务器配置已更新，当前草稿已保留；完成或取消编辑后协调版本', 'error', 8000);
+                    return;
+                }
+                if (navigation.revision !== this.navigationRevision) {
+                    this.config = navigation.config;
+                    this.navigationRevision = navigation.revision;
+                    this.adoptServerTheme();
+                    this.render();
+                }
+                if (modules.revision !== this.modulesRevision) {
+                    this.modulesConfig = modules;
+                    this.modulesRevision = modules.revision;
+                    this.modulesLoaded = true;
+                    await this.renderModuleZone();
+                }
+            } catch (e) {
+                // 网络失败保留当前上下文，明确的未授权响应才触发失效。
+                if (this.authenticated) this.showToast('暂时无法同步，联网后重试', 'error');
+            } finally { this.administratorChecking = false; }
+        }
+
+        async expirePrivateState() {
+            if (!this.authenticated) return;
+            const draft = this.hasAdministratorDraft() ? {
+                config: structuredClone(this.config), revision: this.navigationRevision,
+                modules: structuredClone(this.modulesConfig), modulesRevision: this.modulesRevision,
+                editSession: this.editSession, configSnapshot: this.configSnapshot,
+                pendingNavigation: this.pendingNavigation, pendingModules: this.pendingModules
+            } : null;
+            this.clearPrivateState();
+            if (!draft) { this.showToast('登录已失效，请重新登录', 'error'); return; }
+            this.suspendedAdministrator = draft;
+            $('#appearanceBtn').disabled = true;
+            $('#engineBtn').disabled = true;
+            $('#localNavigationTools').hidden = true;
+            $('#layoutBtn').hidden = true;
+            const login = await this.showUiDialog({ title: '登录已失效', message: '私人内容已隐藏，未保存草稿仅保留在当前标签页。重新登录后恢复草稿，或放弃草稿恢复普通首页。', confirmText: '重新登录', cancelText: '放弃草稿' });
+            if (login) await this.openAdmin();
+            if (!this.authenticated && this.suspendedAdministrator) {
+                const discard = await this.confirmAction('放弃管理员草稿并恢复普通首页？', '放弃草稿', true);
+                if (discard) this.suspendedAdministrator = null;
+            }
+            if (!this.suspendedAdministrator) {
+                $('#appearanceBtn').disabled = false;
+                $('#engineBtn').disabled = false;
+                $('#localNavigationTools').hidden = this.authenticated;
+                $('#layoutBtn').hidden = false;
+            }
+        }
+
+        clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
             $('#localNavigationTools').hidden = false;
             if (this.publicNavigation) {
@@ -2386,11 +2443,19 @@
                 this.applyTheme();
                 this.render();
             }
+            this.editSession = null;
+            this.configDirty = false;
+            this.configSnapshot = null;
+            this.modulesRevision = null;
+            this.pendingModules = null;
             this.personalNavigationLoaded = false;
             this.navigationRevision = null;
             this.pendingNavigation = null;
-            sessionStorage.removeItem('nav-sylph-pending-navigation');
-            sessionStorage.removeItem('nav-sylph-pending-default');
+            if (!preservePending) {
+                sessionStorage.removeItem('nav-sylph-pending-navigation');
+                sessionStorage.removeItem('nav-sylph-pending-default');
+                sessionStorage.removeItem('nav-sylph-pending-modules');
+            }
             this.sessionTrusted = false;
             this.privateEpoch = (this.privateEpoch || 0) + 1;
             this.favorites = [];
@@ -2417,6 +2482,7 @@
             this.updateFavStat();
             // 关闭管理与模块弹窗，同时丢弃闭包中的私人草稿。
             $('#modal').hidden = true;
+            this.closeModuleAdminSections();
             $('.admin-panels')?.replaceChildren();
             $$('.ui-dialog-overlay, .fav-manager-overlay').forEach(el => el.remove());
             this.syncModuleVisibility();
@@ -2737,12 +2803,16 @@
         // 期间 authenticated 仍是 false。此时输入 // 会被当成普通搜索词，
                 // 私密书签「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
+            const epoch = this.privateEpoch || 0;
             const session = this.initialSession || this.loadSession();
             this.initialSession = null;
             const probe = this.sessionProbe = session
                 .then(async session => {
+                    if (epoch !== (this.privateEpoch || 0) || this.suspendedAdministrator) return false;
                     if (session.authenticated) {
+                        if (this.authenticated) return true;
                         await this.finishLocalDraft();
+                        this.privateEpoch = (this.privateEpoch || 0) + 1;
                         this.authenticated = true;
                         await this.loadPersonalNavigation();
                         $('#modeBtn').hidden = false;
@@ -2762,7 +2832,7 @@
                 })
                 .catch(e => {
                     console.error('Restore session failed:', e);
-                    if (this.authenticated) this.clearPrivateState();
+                    if (this.authenticated && !this.personalNavigationLoaded) this.clearPrivateState({ preservePending: true });
                     this.setLocalStatus('无法确认管理员登录，可继续使用本地导航，网络恢复后重新确认', true);
                     return false;
                 });
@@ -2828,13 +2898,40 @@
                 }
                 sessionStorage.removeItem('nav-sylph-pending-navigation');
             }
+            const modulePending = sessionStorage.getItem('nav-sylph-pending-modules');
+            if (modulePending && !this.suspendedAdministrator) {
+                const pending = JSON.parse(modulePending);
+                const result = await API.post(pending.route || '/api/modules/config', pending.body, { method: pending.method || 'POST' });
+                if (!result.success && !result.error) throw new Error('模块保存结果尚未确认，请重试');
+                if (!result.success) {
+                    const discard = await this.confirmAction('模块保存存在版本冲突。放弃待确认操作并读取服务器版本？', '模块版本冲突');
+                    if (!discard) throw new Error('模块操作尚待处理');
+                }
+                sessionStorage.removeItem('nav-sylph-pending-modules');
+            }
             const data = await API.get('/api/admin/navigation');
             if (!this.authenticated || epoch !== (this.privateEpoch || 0)) throw new Error('登录状态已变化');
             if (!this.personalNavigationLoaded) this.publicNavigation = structuredClone(this.config);
             this.config = this.recoveredNavigationDraft || data.config;
             this.recoveredNavigationDraft = null;
             this.navigationRevision = data.revision;
+            if (this.suspendedAdministrator) {
+                const draft = this.suspendedAdministrator;
+                this.config = draft.config;
+                this.navigationRevision = draft.revision;
+                this.modulesConfig = draft.modules;
+                this.modulesRevision = draft.modulesRevision;
+                this.modulesLoaded = !!draft.modules;
+                this.editSession = draft.editSession || { config: data.config, widgets: structuredClone(draft.modules?.widgets || []) };
+                this.editLayout = true;
+                this.pendingNavigation = draft.pendingNavigation;
+                this.pendingModules = draft.pendingModules;
+                this.suspendedAdministrator = null;
+                this.showToast('管理员草稿已恢复，保存时将校验原始版本');
+            }
             this.personalNavigationLoaded = true;
+            $('#appearanceBtn').disabled = false;
+            $('#engineBtn').disabled = false;
             $('#localNavigationTools').hidden = true;
             this.migrateConfig();
             this.adoptServerTheme();
@@ -2853,7 +2950,7 @@
             try {
                 sessionStorage.setItem('nav-sylph-pending-navigation', JSON.stringify(this.pendingNavigation.body));
                 const res = await API.post('/api/admin/navigation', this.pendingNavigation.body, options);
-                if (!res.success) { if (res.error) sessionStorage.removeItem('nav-sylph-pending-navigation'); throw new Error(res.error || '保存结果尚未确认，请刷新后重试'); }
+                if (!res.success) { if (res.error) { sessionStorage.removeItem('nav-sylph-pending-navigation'); this.pendingNavigation = null; } throw new Error(res.error || '保存结果尚未确认，请刷新后重试'); }
                 sessionStorage.removeItem('nav-sylph-pending-navigation');
                 this.navigationRevision = res.revision;
                 this.pendingNavigation = null;
@@ -3869,7 +3966,9 @@
                     return;
                 }
                 await this.finishLocalDraft();
+                this.privateEpoch = (this.privateEpoch || 0) + 1;
                 this.authenticated = true;
+                this.notifyIdentityChanged();
                 await this.loadPersonalNavigation();
                 $('#modeBtn').hidden = false;
                 $('#favSearchHint').hidden = false;
@@ -3895,7 +3994,7 @@
 
             }
             if (!this.personalNavigationLoaded) await this.loadPersonalNavigation();
-            this.beginConfigEdit();
+            if (!this.editLayout) this.beginConfigEdit();
             // 两个请求互不依赖，仍并发发出。会话 Cookie 命中时服务端不再跑
             // bcrypt，但两个请求的串行等待仍是两倍往返。
             const [, privacyMode] = await Promise.all([
@@ -3918,7 +4017,7 @@
 
         markConfigDirty() {
             if (!this.authenticated) { this.saveLocalNavigation(); return; }
-            this.configDirty = JSON.stringify(this.config) !== this.configSnapshot;
+            this.configDirty = this.configSnapshot !== null && JSON.stringify(this.config) !== this.configSnapshot;
             this.updateConfigStatus();
         }
 
@@ -4258,6 +4357,7 @@
                 api: API,
                 get config() { return app.modulesConfig; },
                 saveConfig: patch => app.saveModulesConfig(patch),
+                mutateConfig: (route, patch, method) => app.saveModulesConfig(patch, route, method),
                 reloadConfig: () => app.loadModulesConfig(),
                 // ⚠️ 必须经 app 实例调用：`showToast` / `showUiDialog` 是 App 的
                 // **方法**，不是本文件作用域里的函数——写成裸名会 ReferenceError，
@@ -4273,29 +4373,28 @@
             };
         }
 
-        /**
-         * 模块配置的**唯一写路径**。
-         *
-         * 早先三处各写一份请求体（模块开关、显示/隐藏、更新周期），每处只带自己
-         * 关心的那几个键——写路径一多，就必然出现「A 用一份陈旧快照写回、把 B 刚
-         * 改的字段覆盖掉」这类事故。现在统一：把 patch 合并进当下这份配置，再按
-         * 服务端要的形状整份提交，成功后以合并结果为准。
-         *
-         * 只改内存里的 `this.modulesConfig`，**不**负责刷新界面——调用方最清楚该
-         * 刷哪里（有的只刷首页、有的只刷后台、有的两个都要）。
-         *
-         * ⚠️ 首页编辑态的 `saveWidgetLayout()` 没并进来：它带草稿与回滚语义，
-         * 属另一条路径，合并会让两边都变复杂。
-         */
-        async saveModulesConfig(patch) {
+        /** 模块设置和目标增删共享版本及待确认操作，成功后原地更新配置引用。 */
+        async saveModulesConfig(patch, route = '/api/modules/config', method = 'POST') {
             const current = this.modulesConfig || {};
             const merged = { ...current, ...patch };
-            await API.post('/api/modules/config', {
-                enabledModules: merged.enabledModules,
-                widgets: merged.widgets,
-                servers: merged.servers,
-                pollInterval: merged.pollInterval
-            });
+            if (this.modulesSaving) throw new Error('模块配置正在保存，请稍后重试');
+            const content = JSON.stringify([route, method, patch]);
+            if (!this.pendingModules || this.pendingModules.content !== content) {
+                this.pendingModules = { content, route, method, body: { ...patch, revision: this.modulesRevision, operationId: crypto.randomUUID() } };
+            }
+            this.modulesSaving = true;
+            try {
+                sessionStorage.setItem('nav-sylph-pending-modules', JSON.stringify(this.pendingModules));
+                const result = await API.post(route, this.pendingModules.body, { method });
+                if (!result.success) {
+                    if (result.error) { this.pendingModules = null; sessionStorage.removeItem('nav-sylph-pending-modules'); }
+                    throw new Error(result.error || '模块保存结果尚未确认，请重试');
+                }
+                this.modulesRevision = result.revision;
+                this.pendingModules = null;
+                sessionStorage.removeItem('nav-sylph-pending-modules');
+                if (route !== '/api/modules/config') return result;
+            } finally { this.modulesSaving = false; }
             // ⚠️ **原地**更新，不换对象：各处（后台区块的渲染闭包、模块拿到的
             // `services.config` 取值器、别的写入路径）都握着这个引用，换掉它等于
             // 让它们手里的那一份从此过期——「连续改两台机器的显示开关，第二次
@@ -4745,14 +4844,25 @@
 
             // 登出按钮
             $('#logoutBtn').onclick = async () => {
+                if (this.navigationSaving || this.modulesSaving || this.configSaving) { this.showToast('正在保存，请等待结果后退出', 'error'); return; }
+                if (this.pendingModules || this.pendingNavigation) {
+                    this.showToast('上次保存结果尚未确认，请重试保存或刷新协调后再退出', 'error', 8000);
+                    return;
+                }
+                if (this.editLayout) {
+                    const save = await this.showUiDialog({ title: '退出登录', message: '先保存管理员首页草稿？取消后可继续编辑或按 Esc 放弃草稿。', confirmText: '保存草稿', cancelText: '取消退出' });
+                    if (!save) return;
+                    await this.saveEditSession();
+                    if (this.editLayout) return;
+                }
                 if (!await this.closeAdmin()) return;
-                this.clearPrivateState();
-                try { await API.post('/api/logout', {}); } catch (e) {
+                try { const result = await API.post('/api/logout', {}); if (!result.success) throw new Error('退出结果尚未确认'); } catch (e) {
                     this.showToast('退出请求失败，请检查网络后重试', 'error');
                     return;
                 }
-                try { localStorage.setItem('nav-sylph-auth-reset', String(Date.now())); } catch {}
-                location.reload();
+                this.clearPrivateState();
+                this.notifyIdentityChanged();
+                await this.refreshLocalNavigation();
             };
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，

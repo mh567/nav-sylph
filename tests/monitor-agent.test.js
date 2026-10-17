@@ -1338,7 +1338,7 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
         };
         // 真实的 saveModulesConfig：它读 this.modulesConfig、POST、再回写
         // methodBodyOf 返回的是**含签名**的片段，所以用对象字面量的写法抽出来
-        app.saveModulesConfig = new Function('API', `return { ${saveBody} }.saveModulesConfig;`)(API);
+        app.saveModulesConfig = new Function('API', 'sessionStorage', `return { ${saveBody} }.saveModulesConfig;`)(API, { setItem() {}, removeItem() {} });
         // 循环体里写的是 this.xxx，所以按方法调用来跑：
         // `new Function` 的函数体非严格，this 就是 .call 的接收者。
         // ⚠️ 这里**只**注入真代码里确实存在的自由变量（host / config / API）：
@@ -1458,7 +1458,7 @@ test('改更新周期会让采集缓存失效，否则「改完不生效」', ()
     const route = routeBody("app.post('/api/modules/config'");
     assert.ok(route.length > 300, '切出保存配置的路由');
     assert.match(route, /metricsInputsChanged\(existing, normalized\)/, '路由里真的调了它');
-    const writeAt = route.indexOf('writeJSON');
+    const writeAt = route.indexOf('versionedModules.write');
     const invAt = route.indexOf('invalidateMetricsCache()');
     assert.ok(writeAt > 0 && invAt > writeAt, '先写盘再清缓存');
 });
