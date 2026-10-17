@@ -2,7 +2,7 @@
 
 核对日期：2026-10-17。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：X 订阅增量追赶失败（随 **v1.15.17** 发布；功能提交 `ef3fb86`；改动起点 `aa3414f`）
+## 最新一轮：X 订阅增量追赶失败（随 **v1.15.17** 发布；功能提交 `ef3fb86`、版本提交 `2b93755`，tag `v1.15.17`；改动起点 `aa3414f`）
 
 用户原话：「specialline 模块，为什么订阅了 elonmusk 同步消息会失败，最开始是好的，后来有一天突然同步不了了」，
 随后明确现场提示是「未能覆盖所有新动态，请缩短监控周期后重试」，且项目部署在用户自己的服务器上。
@@ -64,6 +64,13 @@
 3. **观察到的既有行为**（非本轮缺陷）：后台分区不在 15 秒轮询的刷新范围内，状态变化要重新渲染（重开面板或整页刷新）才反映到 DOM；接口本身是即时的。
 4. **未做（记录为后续）**：追赶进度会随 WebDAV 备份导出，靠 `normalizeCatchup()` 的校验与过期丢弃兜住，但没有专门的界面入口去查看/清除一条卡住的追赶；也没有提高 `X_MAX_PAGES`（保留为单轮预算）。
 5. 提交与发布由本次「提交并发布」授权执行；版本号 `1.15.17`。
+
+### 发布收尾
+
+- `bash scripts/release.sh` 已完成构建、打包、tag 与 GitHub 正式 Release：`https://github.com/mh567/nav-sylph/releases/tag/v1.15.17`（非草稿、非预发布）。脚本只推 tag，`main` 已另行推送（`aa3414f..2b93755`）。
+- `gh release download` 下载实际附件再解包核对：三处版本均为 `1.15.17`；`lib/timeline/adapters/x.js`、`service.js`、`repository.js`、`constants.js` 与 `public/modules/special-line.js` 与仓库**逐字节一致**，并包含 `pagination` 错误码、置顶帖排除、`covered === false` 默认旧行为、`ingestableRows` 窗口过滤；无真实站点配置、收藏、管理密码、模块、WebDAV 或 SQLite 文件；`agent/dist` 仅三个 Linux 产物。
+- 附件 13,471,020 字节，SHA-256 `538a1cd04690a12d6fbfd541d113b57d781bd6c00070fbbfb00170fe848a093c`，与 GitHub asset digest 一致。
+- 发布前全量回归 **625/625**；`node --check`、`git diff --check` 干净。
 
 ## 上一轮：修正书签中文检索（随 **v1.15.16** 发布；功能提交 `cbb1664`、版本提交 `9ed8b5e`，tag `v1.15.16`；发布基线 `9ed8b5e`，改动起点 `a220ed4`）
 
