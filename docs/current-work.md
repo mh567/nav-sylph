@@ -1,8 +1,8 @@
 # 当前工作交接
 
-核对日期：2026-10-11。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+核对日期：2026-10-17。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 最新一轮：修正书签中文检索（v1.15.16 发布准备；功能提交 `cbb1664`；基线 `a220ed4`）
+## 最新一轮：修正书签中文检索（随 **v1.15.16** 发布；功能提交 `cbb1664`、版本提交 `9ed8b5e`，tag `v1.15.16`；发布基线 `9ed8b5e`，改动起点 `a220ed4`）
 
 ### 范围与实现
 
@@ -26,6 +26,13 @@
 - 浏览器探针第一次统计条目数用了不存在的 `.fav-result-item`，读到 0；随后检查实际 DOM 为 `.fav-item selected` 且结果可见，0 是探针选择器错误，不是检索失败。
 - 浏览器补验发现既有高亮缺陷：`highlightText()` 把 uFuzzy 的 `[start,end)` 区间数组当成逐字符位置，`知乎` 只标出「知」。用 `git show v1.15.15:public/app.js` 提取旧方法对照：旧/新参数下 `github` 均得到 ranges `[0,6]`，均输出 `<mark>G</mark>itHub`。已确认不是本次引入，本轮不扩改高亮算法。
 - 发布前静态资源预检确认 `public/` 在打包范围且缓存已升为 `nav-v106`，本轮未漏升。版本文件与正式更新说明统一为 `1.15.16`。
+
+### 发布收尾
+
+- `bash scripts/release.sh` 已完成构建、打包、tag 与 GitHub 正式 Release：`https://github.com/mh567/nav-sylph/releases/tag/v1.15.16`，不是草稿或预发布。
+- `gh release download v1.15.16 --pattern 'nav-sylph-v1.15.16.tar.gz' --dir <临时目录>` 下载实际发布附件，再解包检查：三处版本均为 `1.15.16`；`public/app.js` 与 `public/sw.js` 与仓库逐字节一致，包含 Unicode 分词及 `nav-v106`；无真实站点配置、收藏、管理密码、模块、WebDAV 或 SQLite 文件；`agent/dist` 仅有 Linux amd64/arm64/armv7 三个产物。
+- 附件为 13,466,929 字节，SHA-256 `66f57202250cdcc9d3d10faebd9c2da225fa072249d4999274152b9b423cc08b`，与 GitHub asset digest 一致。构建脚本已确认三个 Linux 二进制均为静态 ELF。
+- 发布前再次执行全量回归：**609/609**，语法检查与 `git diff --check` 通过。浏览器会话与测试服务已停止，4486 端口已释放。
 
 ### 验证边界与下一步
 
