@@ -19,12 +19,12 @@
 - 首个浏览器红灯：匿名编辑按钮隐藏，3秒等待超时。接入本地编辑后转绿；随后增加保存中状态和离页保护，测试在 IndexedDB 完成后刷新。
 - 定向：`node --test tests/navigation-http.test.js` 5/5；首页、分享对话框及边界152/152；分享编辑器22/22。
 - 全量：`node --test tests/*.test.js` 623/623。首次全量6项分享夹具缺少新控件，补齐夹具后全量复跑通过。旧主题 localStorage 源码断言随行为迁移调整，本地失败由真实浏览器回归覆盖。
-- 浏览器：`NODE_PATH=<含 playwright 的 node_modules> node --test tests/browser/local-navigation.cjs`；9项主回归通过，另补充无 BroadcastChannel 竞争用例。执行前需要 Playwright 和已安装的 Chrome，生产运行不引入浏览器依赖。
+- 浏览器：`NODE_PATH=<含 playwright 的 node_modules> node --test tests/browser/local-navigation.cjs`；最终11/11通过，含无 BroadcastChannel 竞争和首次创建本地副本失败；另扩展延迟身份用例覆盖真实管理员会话下个人配置读取失败后恢复本地保存。执行前需要 Playwright 和已安装的 Chrome，生产运行不引入浏览器依赖。
 - 语法及差异：候选阶段对相关 JavaScript 执行 `node --check`，并执行 `git diff --check`。
 - 视觉检查：首页与引擎设置截图已检查，修复引擎表单操作区超出可见范围；390×844和844×390验证确认按钮在视口内，Tab及Shift+Tab保持弹窗焦点。
 
 ## 审查与交付状态
 
-候选待 Standards 与 Spec 两轴审查。当前授权包含本地实现、验证、审查和 main 提交；尚未获得推送、远端 Issue 更新及关闭、版本发布授权。
+候选实现提交 `00ff725`。Standards 与 Spec 两轴独立子代理审查及两次补验整改复审均无阻塞发现，两个轴各0项。审查子代理未独立成功运行浏览器测试，其测试监听受沙箱限制；本记录的实际通过证据来自主代理获准运行的真实服务与 Chrome。整改包含首次副本写入失败继续显示并允许导出，以及管理员配置读取失败后清理未完成身份、恢复普通本地保存。最终全量仍为623/623，浏览器11/11，相关JS语法及差异检查通过。当前授权包含本地实现、验证、审查和 main 提交；尚未获得推送、远端 Issue 更新及关闭、版本发布授权。
 
 未执行目标服务器、Safari/Firefox及移动实机验收。未运行容量、长时间压测或断电持久性测试；云同步及完整身份切换生命周期属于 #5，公开模块授权属于 #6。当前保持1.15.17，无新版 Release。

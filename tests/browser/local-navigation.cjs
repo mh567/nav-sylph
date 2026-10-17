@@ -201,6 +201,11 @@ test('browser: delayed administrator confirmation preserves ordinary drafts and 
     await submit(page);
     await page.getByRole('heading', { name: 'PRIVATE ADMIN NAVIGATION', exact: true }).waitFor();
     assert.equal(await page.locator('#localNavigationTools').isVisible(), false);
+    await page.route('**/api/admin/navigation', route => route.abort());
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('无法确认管理员登录'));
+    await page.locator('#appearanceBtn').click(); await saved(page);
+    await page.unroute('**/api/admin/navigation');
     await page.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: '{}' }); });
     await page.unroute('**/api/session');
     await page.reload();
@@ -277,4 +282,21 @@ test('browser: stale writes are rejected even without BroadcastChannel', async t
     assert.match(await page.locator('#localNavigationStatus').textContent(), /其他标签页已修改/);
     await page.locator('#localAdoptBtn').click(); await submit(page); await saved(page);
     assert.notEqual(await page.locator('#engineName').textContent(), 'Stale candidate');
+});
+
+test('browser: failure to create the first local copy is explicit and does not claim saved', async t => {
+    const app = await installation(t); await app.start();
+    const browser = await chromium.launch({ headless: true, channel: 'chrome' }); t.after(() => browser.close());
+    const context = await browser.newContext();
+    await context.addInitScript(() => { IDBObjectStore.prototype.put = function () { throw new DOMException('initial quota exhausted', 'QuotaExceededError'); }; });
+    const page = await context.newPage(); page.setDefaultTimeout(6000);
+    await page.goto(app.base);
+    await page.locator('#app').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#localNavigationStatus').textContent(), /未能保存到本机/);
+    assert.notEqual(await page.locator('#localNavigationStatus').textContent(), '仅保存在本机');
+    const download = page.waitForEvent('download'); await page.locator('#localExportBtn').click();
+    const file = await download;
+    assert.equal(file.suggestedFilename(), 'sylph-navigation.json');
+    const exported = JSON.parse(require('node:fs').readFileSync(await file.path(), 'utf8'));
+    assert.deepEqual(exported.config, await (await app.request('/api/config')).json());
 });

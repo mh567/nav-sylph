@@ -1148,7 +1148,7 @@
                     catch (error) {
                         // 另一个首次访问标签页可能已经建立了副本。
                         record = await this.localStore.read();
-                        if (!record) throw error;
+                        if (!record) { this.localUnavailable = true; this.localError = '未能保存到本机：' + error.message; }
                     }
                 }
                 this.config = structuredClone(record?.config || config);
@@ -2762,6 +2762,7 @@
                 })
                 .catch(e => {
                     console.error('Restore session failed:', e);
+                    if (this.authenticated) this.clearPrivateState();
                     this.setLocalStatus('无法确认管理员登录，可继续使用本地导航，网络恢复后重新确认', true);
                     return false;
                 });
