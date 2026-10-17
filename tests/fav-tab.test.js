@@ -37,7 +37,7 @@ test('书签检索执行真实实现：中文、混合输入、拼音与英文�
     const uFuzzy = new Function(fs.readFileSync(path.join(__dirname, '..', 'public/lib/uFuzzy.iife.min.js'), 'utf8') + '\nreturn uFuzzy;')();
     const Pinyin = require('../public/lib/pinyin.js');
     const dropdown = { innerHTML: '' };
-    const state = { favorites: [
+    const state = { authenticated: true, favorites: [
         { id: 'private', title: '私密中文', url: 'https://private.example', private: true },
         { id: 'zh', title: '知乎', url: 'https://zhihu.com', category: '阅读', description: '中文问答社区', tags: ['知识'] },
         { id: 'stock', title: '雪球', url: 'https://xueqiu.com', description: '股票行情' },
@@ -202,19 +202,19 @@ test('首页网格条目改称「导航」，与收藏夹的「书签」分层',
     assert.doesNotMatch(src, /删除书签 \$\{this\.esc\(bm\.title\)\}/);
 });
 
-test('placeholder 在 index.html 与 app.js 两层一致（搜索网页或书签）', () => {
-    assert.match(indexHtml, /placeholder="搜索网页或书签"/);
-    assert.match(appSource, /input\.placeholder = '搜索网页或书签';/);
+test('匿名搜索框仅提示网页搜索', () => {
+    assert.match(indexHtml, /placeholder="搜索网页"/);
+    assert.match(appSource, /input\.placeholder = this\.authenticated \? '搜索网页或书签' : '搜索网页';/);
     assert.doesNotMatch(appSource, /搜索网页或收藏/);
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v106，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v106';/);
-    assert.match(swJs, /nav-v106：修正书签检索的 Unicode 分词/);
+test('sw.js：CACHE 升到 nav-v107，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v107';/);
+    assert.match(swJs, /nav-v107：收藏仅供管理员访问/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v106', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v107', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });

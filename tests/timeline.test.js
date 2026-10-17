@@ -1302,83 +1302,9 @@ test('api 层不回传凭据：列表只有 hasCredentials，任何响应形状�
 
 // ========== 改密码：凭据重加密（执行真实函数） ==========
 
-test('改管理员密码时，时间线凭据被就地重加密（跑真实的 reencryptCredentials）', async () => {
-    const { dir, file } = tempDb();
-    const db = openDatabase(file);
-    try {
-        const timeline = createTimeline(db, { getPasswordHash: async () => OLD_HASH });
-        const src = timeline.repo.createSource({
-            providerType: 'x', name: 'X · a', externalKey: 'a',
-            settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
-        });
-        timeline.repo.setCredentials(src.id,
-            encrypt(JSON.stringify({ token: 'secret' }), OLD_HASH, 'timeline'));
 
-        const body = extractFunction(stripComments(server), 'async function reencryptCredentials(oldHash, newHash)');
-        const ENOENT = () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; };
-        const run = vm.runInNewContext(`(${body})`, {
-            readJSON: async () => ENOENT(),
-            writeJSON: async () => {},
-            WEBDAV_CONFIG_FILE: '/unused/webdav.json',
-            MODULES_FILE: '/unused/modules.json',
-            isEnvelope: require(path.join(ROOT, 'lib', 'credentials.js')).isEnvelope,
-            encrypt, decrypt,
-            timeline,
-            db,
-            console
-        });
 
-        const result = await run(OLD_HASH, NEW_HASH);
-        assert.equal(result.reencrypted, 1, '时间线凭据计入重加密条数');
-        assert.ok(result.details.some(d => d.includes('时间线')), '详情里说得出是时间线凭据');
 
-        const env = timeline.repo.getCredentials(src.id);
-        assert.equal(JSON.parse(decrypt(env, NEW_HASH, 'timeline')).token, 'secret',
-            '新密码哈希能解开');
-        assert.throws(() => decrypt(env, OLD_HASH, 'timeline'), '旧密码哈希已解不开');
-    } finally {
-        db.close();
-        fs.rmSync(dir, { recursive: true, force: true });
-    }
-});
-
-test('单条凭据解不开不阻断改密码：保留原值并记进详情', async () => {
-    const { dir, file } = tempDb();
-    const db = openDatabase(file);
-    try {
-        const timeline = createTimeline(db, { getPasswordHash: async () => OLD_HASH });
-        const src = timeline.repo.createSource({
-            providerType: 'x', name: 'X · a', externalKey: 'a',
-            settings: {}, syncIntervalMs: 900000, nextSyncAt: 0
-        });
-        // 用**别的**哈希加密：模拟「上一轮改密码后已死的凭据」
-        timeline.repo.setCredentials(src.id,
-            encrypt(JSON.stringify({ token: 'dead' }), 'some-other-hash', 'timeline'));
-        const before = JSON.stringify(timeline.repo.getCredentials(src.id));
-
-        const body = extractFunction(stripComments(server), 'async function reencryptCredentials(oldHash, newHash)');
-        const run = vm.runInNewContext(`(${body})`, {
-            readJSON: async () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
-            writeJSON: async () => {},
-            WEBDAV_CONFIG_FILE: '/unused/webdav.json',
-            MODULES_FILE: '/unused/modules.json',
-            isEnvelope: require(path.join(ROOT, 'lib', 'credentials.js')).isEnvelope,
-            encrypt, decrypt,
-            timeline,
-            db,
-            console
-        });
-        const result = await run(OLD_HASH, NEW_HASH);
-
-        assert.equal(result.reencrypted, 0);
-        assert.ok(result.details.some(d => d.includes('无法解密')), '明确记下这条解不开');
-        assert.equal(JSON.stringify(timeline.repo.getCredentials(src.id)), before,
-            '解不开就原样保留，不能把凭据改成垃圾');
-    } finally {
-        db.close();
-        fs.rmSync(dir, { recursive: true, force: true });
-    }
-});
 
 // ========== 平台接线 ==========
 

@@ -327,6 +327,7 @@
         learnText,
         learnTexts,
         getLearnedWords,
+        clearLearnedWords() { CUSTOM_WORDS.clear(); },
         // 允许扩展字典
         extend(dict) {
             Object.assign(COMMON_PINYIN, dict);

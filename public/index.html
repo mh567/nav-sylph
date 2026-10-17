@@ -55,7 +55,7 @@
         <header class="header">
             <div class="search-wrapper">
                 <form class="search" id="searchForm">
-                    <button type="button" class="search-mode" id="modeBtn" aria-label="切换搜索模式，当前为网页" aria-pressed="false">
+                    <button type="button" class="search-mode" id="modeBtn" hidden aria-label="切换搜索模式，当前为网页" aria-pressed="false">
                         <span class="mode-label" data-label="web">网页</span>
                         <span class="mode-label" data-label="fav" hidden>书签</span>
                         <span class="mode-label" data-label="exit" hidden>退出</span>
@@ -64,14 +64,14 @@
                         <span class="engine-name" id="engineName">Google</span>
                         <svg class="engine-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页或书签" aria-label="搜索网页或书签" autocomplete="off" spellcheck="false"></textarea>
+                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页" aria-label="搜索网页" autocomplete="off" spellcheck="false"></textarea>
                     <button type="submit" class="search-btn" title="搜索">搜索</button>
                 </form>
                 <div class="engine-dropdown" id="engineDropdown" role="listbox" aria-label="搜索引擎" hidden></div>
             </div>
         </header>
         <div class="search-caption" aria-hidden="true">
-            <span><kbd>/</kbd> 查书签</span>
+            <span id="favSearchHint" hidden><kbd>/</kbd> 查书签</span>
             <span><kbd>&gt;</kbd> 分享文本</span>
         </div>
         <main class="grid" id="grid"></main>

@@ -406,7 +406,7 @@ async function waitForServer(base, deadlineMs) {
     return false;
 }
 
-test('HTTP 边界：未登录 401，带密码头可增删改查', { timeout: 60000 }, async t => {
+test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查', { timeout: 60000 }, async t => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-memo-e2e-'));
     let child = null;
     t.after(() => {
@@ -454,7 +454,11 @@ test('HTTP 边界：未登录 401，带密码头可增删改查', { timeout: 600
 
     assert.ok(await waitForServer(base, 20000), `服务未在 20 秒内就绪；stderr:\n${stderr}`);
 
-    const auth = { 'X-Admin-Password': 'admin123' };
+    const login = await fetch(`${base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'admin123', 'X-Sylph-Request': '1' } });
+    const weak = login.headers.get('set-cookie').split(';')[0];
+    const changed = await fetch(`${base}/api/change-password`, { method: 'POST', headers: { Cookie: weak, 'Content-Type': 'application/json', 'X-Sylph-Request': '1' }, body: JSON.stringify({ currentPassword: 'admin123', newPassword: 'MemoTest12345!' }) });
+    assert.equal(changed.status, 200);
+    const auth = { Cookie: changed.headers.get('set-cookie').split(';')[0], 'X-Sylph-Request': '1' };
     const json = { ...auth, 'Content-Type': 'application/json' };
 
     // 未登录：401，且不泄露任何条目

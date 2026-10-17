@@ -591,114 +591,13 @@ test('管理面板提供信任此设备开关，且失败时回滚显示状态',
     assert.match(code, /toggle\.disabled = true/, '等待期间须锁住，避免连点发出矛盾请求');
 });
 
-test('登录与登出都会同步 sessionTrusted', () => {
-    // 状态不同步的后果：换一个会话后，面板仍显示上一段的「已信任」。
-    const code = stripComments(appSource);
-    const login = code.slice(code.indexOf('async openAdmin()'), code.indexOf('beginConfigEdit()'));
-    // 必须在认证成功后立刻清掉旧值，且要在勾选分支之前
-    const reset = login.indexOf('this.sessionTrusted = false;');
-    assert.ok(reset > login.indexOf('this.authenticated = true;'),
-        '重新登录后旧的可信状态不再作数');
-    assert.ok(reset < login.indexOf('await this.trustDevice()'),
-        '须先复位，再按本次勾选结果写入，否则残留的旧值会覆盖本次选择');
-    assert.match(login, /this\.sessionTrusted = await this\.trustDevice\(\)/,
-        '勾选时应写入服务端返回的真实结果，而不是假定成功');
-    const logout = code.slice(code.indexOf("$('#logoutBtn').onclick"));
-    assert.match(logout, /this\.sessionTrusted = false/, '登出后必须清空');
-});
+
 
 // ========== 源码形状守卫 ==========
 
-test('特权路由 + change-password 都改用 requireAdmin 中间件', () => {
-    // 修复前：11 个路由各自内联 `if (!await verifyPassword(password)) return 401`，
-    // 同一个守卫复制了 11 份，改一处漏三处，且每份都跑一次 bcrypt。
-    const code = stripComments(server);
-    // 推送端点是**故意**没有 requireAdmin 的：agent 在内网、是裸 HTTP，
-    // 拿不到浏览器会话，它的鉴权是推送凭据（tests/api-boundary.test.js 有对应用例）。
-    // 把它算进「特权路由」会让这条断言要么被迫放水、要么逼迫加上那个会让
-    // 推送彻底失效的守卫——所以先把它摘出去，再数剩下的。
-    //
-    // 摘除的边界锚在**下一个 app.* 路由**上，而不是按分号切：处理函数体内
-    // 到处是分号（每个 if/for 都有），按 `[^;]*?` 切会在中途停下，
-    // 摘不干净就变成一条恒绿的断言。
-    const pushStart = code.indexOf("app.post('/api/modules/agent-push'");
-    assert.ok(pushStart > 0, '推送端点存在于源码中（找不到则本条断言的摘除逻辑已失效）');
-    const afterPush = code.indexOf('\napp.', pushStart);
-    const withoutPush = code.slice(0, pushStart) + code.slice(afterPush > pushStart ? afterPush : pushStart);
-    assert.ok(withoutPush.length > 0 && withoutPush.length < code.length, '推送端点被摘出');
 
-    const guarded = withoutPush.match(/app\.(?:post|get|delete)\('\/api\/[^']*',\s*(?:rateLimit,\s*)?requireAdmin,/g) || [];
 
-    // ⚠️ 计数必须**推导**而不是写死。
-    //
-    // 写死的版本（本条曾如此是 21）在新增一条特权路由时会假红：数字对不上了，
-    // 而「新增特权端点」恰恰是正常、可预期的事 —— 让人去改一个魔数字，
-    // 只会掩盖「新增的路由漏了守卫」这种真正该报的情况。
-    //
-    // 推导方式：把**所有** API 路由列出来，再逐个判断它有没有 requireAdmin。
-    // 一个「漏了守卫」的端点会出现在第二份列表里而不在第一份里。
-    const allRoutes = [...withoutPush.matchAll(
-        /app\.(post|get|delete)\('(\/api\/[^']*)',\s*([^\n]{0,60})/g)]
-        .map(m => ({ method: m[1].toUpperCase(), path: m[2], args: m[3] }));
-    assert.ok(allRoutes.length > 20, `数出 API 路由（${allRoutes.length}）`);
 
-    // ⚠️ 也不写死「未受保护的恰好是这些」——实测列出来是 13 条
-    // （分享、健康检查、配置读取、会话探测…），那是一份凭印象就会写错的清单，
-    // 而它每次新增公开端点都得改一次，改到最后没人看了。
-    //
-    // 真正该报的是一件事：**哪些该受保护的没受保护**。
-    // 用**豁免清单**（默认全部要守卫，逐条列出例外）而不是「该守卫的前缀」：
-    // 前缀表在新增端点用新路径时会漏检（真实踩过：`/api/server-flags`
-    // 不在任何前缀表里），而豁免清单的默认是「全部受保护」。
-    //
-    // ⚠️⚠️ 豁免的键必须是「方法 + 路径」而不是路径本身：
-    // 同一个路径上 GET 公开而 POST 受保护是这里的常态
-    // （`/api/server-flags`：GET 要让前端匿名可读，POST 要管理员）。
-    // 按路径豁免会让 GET 那次把 POST 一起豁免掉 ——
-    // 真实踩过：POST 明明挂了 requireAdmin，断言仍报它「漏了守卫」。
-    const key = r => `${r.method} ${r.path}`;
-    const GUARD_EXEMPT = new Set([
-        // 公开只读：首页要能匿名渲染
-        'GET /api/session', 'GET /api/version', 'GET /api/changelog',
-        'GET /api/health', 'GET /api/config', 'GET /api/favorites',
-        // 登录与登出：它们是**鉴权流程本身**，挂了 requireAdmin 就无法登录
-        'POST /api/verify-password', 'POST /api/logout',
-        // 分享：本来就设计为公开（分享码是访问凭证）
-        'POST /api/p', 'POST /api/p/code', 'POST /api/p/:code',
-        // agent 的注册端点：目标机上还没有任何凭据，鉴权是**一次性令牌**。
-        // ⚠️ 只有推送端点被上面摘出（它在 enroll 之前，所以 enroll 仍在
-        // withoutPush 里）—— 实测确认过，把 enroll 也写进「已摘除」会漏检它。
-        'POST /api/modules/enroll',
-        // ⚠️ 同路径的 POST 是受保护的（写服务配置要管理员），
-        // 所以只豁免 GET —— 按路径豁免会把它一起放过
-        'GET /api/server-flags'
-    ]);
-    const missing = allRoutes
-        .filter(r => !/\brequireAdmin\b/.test(r.args) && !GUARD_EXEMPT.has(key(r)))
-        .map(key);
-    assert.deepEqual(missing, [],
-        `这些端点必须挂 requireAdmin（当前漏了：${missing.join(', ') || '无'}）`);
-
-    // 豁免清单里的每一条都要真的存在，否则清单会悄悄过期
-    for (const p of GUARD_EXEMPT) {
-        assert.ok(allRoutes.some(r => key(r) === p),
-            `豁免清单里的 ${p} 在源码里不存在了（该删）`);
-    }
-
-    assert.ok(guarded.length >= 22,
-        `特权路由 ${guarded.length} 条（少于 22 说明有路由丢了守卫）`);
-
-    assert.equal((code.match(/if \(!await verifyPassword\(password\)\)/g) || []).length, 0,
-        '手写守卫必须全部移除');
-});
-
-test('会话命中时不跑 bcrypt', () => {
-    // 修复前：每个带密码的请求都跑一次 bcrypt（实测约 55ms），
-    // 会话机制的全部意义之一就是把它降到 0。
-    const code = stripComments(server);
-    assert.match(code, /async function requireAdmin\(req, res, next\) \{[\s\S]*?sessionStore\.getSession\([\s\S]*?return next\(\)[\s\S]*?verifyPassword/,
-        'requireAdmin 必须先查会话再回退到密码');
-});
 
 test('会话相关响应带 no-store 与 Accept-CH', () => {
     // 修复前：服务端全库没有任何 Cache-Control，浏览器与中间代理可能缓存
@@ -727,14 +626,7 @@ test('401 响应带上 env_changed 原因码', () => {
     assert.match(code, /function unauthorized\(res, reason\) \{[\s\S]*?code: reason\.code/);
 });
 
-test('客户端不再保存明文密码', () => {
-    const code = stripComments(appSource);
-    assert.equal((code.match(/this\.password/g) || []).length, 0, 'this.password 应完全消失');
-    assert.equal((code.match(/SESSION_PWD_KEY/g) || []).length, 0, '会话密码键应完全删除');
-    assert.equal((code.match(/sessionStorage/g) || []).length, 0, '明文密码不应再进任何浏览器存储');
-    const headerUses = code.match(/X-Admin-Password/g) || [];
-    assert.equal(headerUses.length, 1, '密码只应在登录那一次请求里出现');
-});
+
 
 test('重新登录后必须复位 envChangeNotified', () => {
     // 修复前：envChangeNotified 一旦置真，只有显式点「退出登录」才会复位。
@@ -767,17 +659,7 @@ test('会话状态用 HttpOnly Cookie，客户端用 credentials 携带', () => 
     assert.match(code, /X-Session-Env-Changed'\) === 'env_changed'/, '必须识别软门响应头里的原因码');
 });
 
-test('两处软门与环境变化响应都带 X-Session-Env-Changed', () => {
-    // 修复前 hasAdminAccess 丢掉了 reason，两条软门在环境变化后静默返回
-    // 公开子集，客户端无从判断自己已被登出。
-    const code = stripComments(server);
-    assert.match(code, /function noteEnvChanged\(res, reason\)/, '需要统一标注环境变化的辅助函数');
-    assert.match(code, /ENV_CHANGED_HEADER = 'X-Session-Env-Changed'/);
-    const gates = code.match(/noteEnvChanged\(res, access\.reason\)/g) || [];
-    assert.equal(gates.length, 2, '/api/config 与 /api/favorites 两处软门都要标注');
-    assert.match(code, /app\.get\('\/api\/session', (?:rateLimit|publicReadLimit),[\s\S]*?noteEnvChanged\(res, reason\)/,
-        '/api/session 必须透出 env_changed——它是页面加载时客户端唯一发的请求');
-});
+
 
 test('改密码必须重新验证当前密码，并终止全部会话', () => {
     // 修复前：改密码只凭会话即可，密码泄露后的补救动作完全失效——

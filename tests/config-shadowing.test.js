@@ -65,6 +65,7 @@ function stage(userConfig) {
     if (userConfig !== undefined && userConfig !== null) {
         fs.writeFileSync(path.join(dir, 'server-config.json'), JSON.stringify(userConfig, null, 2));
     }
+    fs.writeFileSync(path.join(dir, '.admin-password.json'), JSON.stringify({ passwordHash: require('bcrypt').hashSync('ConfigTest123!', 4) }));
     return dir;
 }
 
@@ -120,9 +121,11 @@ function stopServer(srv) {
 
 /** 拨自签开关。默认管理密码见 server-config/defaults.js 的 defaultPassword。 */
 async function saveSelfSigned(srv) {
+    const login = await fetch(`${srv.base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'ConfigTest123!', 'X-Sylph-Request': '1' } });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
     return fetch(`${srv.base}/api/server-flags`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Password': 'admin123' },
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-Sylph-Request': '1' },
         body: JSON.stringify({ selfSignedCert: true })
     });
 }

@@ -16,13 +16,14 @@ function loadApp(document, window = {}, sandbox = {}) {
         window,
         document,
         setTimeout,
+        setInterval: () => 0,
         clearTimeout,
         // autoGrowPasteInput clamps against the CSS ceiling, so the sandbox
         // needs a getComputedStyle; individual tests override maxHeight.
         getComputedStyle: () => ({ maxHeight: 'none' }),
         ...sandbox
     });
-    return Object.create(window.AppForTest.prototype);
+    return Object.assign(Object.create(window.AppForTest.prototype), { authenticated: true });
 }
 
 // Build a DOM stub covering exactly what togglePasteMode and the key handlers touch.
@@ -111,6 +112,7 @@ function createComposerDom() {
         '#engineBtn': engineBtn,
         '#engineDropdown': dropdown,
         '#modeBtn': modeBtn,
+        '#favSearchHint': el('span'),
         '.search-btn': searchBtn,
         '#grid': grid,
         '#favDropdown': favDropdown,

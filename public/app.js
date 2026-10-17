@@ -74,7 +74,8 @@
             if (API.envChangeNotified) return;
             API.envChangeNotified = true;
             if (window.app) {
-                window.app.authenticated = false;
+                window.app.clearPrivateState();
+                location.reload();
                 // 模块区与布局按钮是登录态的产物，必须一起收起。
                 // 少了这一行，环境变化后首页仍留着可点的模块入口。
                 window.app.syncModuleVisibility();
@@ -85,10 +86,17 @@
         // 否则一律在此解析：body stream 只能读一次，调用方再 res.json()
         // 会抛 "body stream already read"。
         async request(url, options, binary = false) {
-            const res = await fetch(url, { credentials: 'same-origin', ...options });
+            const epoch = window.app?.privateEpoch || 0;
+            const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Sylph-Request': '1' } });
+            if (res.status === 401 && window.app?.authenticated) {
+                window.app.clearPrivateState();
+                location.reload();
+            }
+            if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
             if (binary) return { res, data: null };
             let data = null;
             try { data = await res.json(); } catch (e) {}
+            if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
             // 200 的响应也可能带 env_changed（软门），所以不看状态码，只看两个信号源
             API.notifyEnvChanged(data, res.headers);
             return { res, data };
@@ -447,6 +455,7 @@
          * 单个模块加载失败不影响其它模块——失败的那个渲染出错误与重试按钮。
          */
         async renderModuleZone() {
+            const epoch = this.privateEpoch || 0;
             const zone = $('#moduleZone');
             if (!zone) return;
             // 是否**由隐藏变可见**：只有这一次才播出现动画。主题切换、视口
@@ -462,6 +471,7 @@
                 return;
             }
             if (!this.modulesConfig) await this.loadModulesConfig();
+            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
 
             // ⚠️ 定义必须在 `syncRail()` **之前**注册好：宽栏判定读的是模块定义里的
             // `wideRail`，而定义是模块脚本执行时才注册的。首屏第一次渲染时脚本还没
@@ -481,6 +491,7 @@
             // 让位要快，卡片落点仍等终态。
             const ids = this.enabledModuleIds();
             await this.preloadModuleDefs(ids);
+            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
 
             const app = $('#app');
             if (wasHidden && app) app.classList.add('is-railing');
@@ -527,6 +538,7 @@
             // 前一个的脚本下载**加**挂载都完成；真实网络下这一段是成倍的等待。
             const firstRound = [];
             const parts = await Promise.all(ids.map(id => this.mountModule(id, firstRound)));
+            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
             for (const part of parts) inner.appendChild(part);
 
             // 等首轮数据再首次布局。卡片高度依赖首轮数据：服务器卡片没有数据
@@ -535,6 +547,7 @@
             // margin-top 过渡（给 metrics 注入 600ms 延迟模拟远端网络）。
             // 等过之后卡片出现时就是终态。
             await this.waitFirstRound(firstRound);
+            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
 
             // ===== 入场排期 =====
             // 让位早在 preload 之后就已经开始（见上面那段注释），这里只排卡片：
@@ -1137,7 +1150,6 @@
                 // 会话状态放在首屏之后查，不为它增加首屏的往返等待。
                 requestAnimationFrame(() => {
                     this.restoreSession();
-                    this.loadFavorites();
                     this.checkVersionUpdate();
                 });
                 const registerServiceWorker = () => {
@@ -1366,6 +1378,24 @@
         }
 
         bind() {
+            $('#modeBtn').hidden = !this.authenticated;
+            $('#favSearchHint').hidden = !this.authenticated;
+            window.addEventListener('storage', event => {
+                if (event.key === 'nav-sylph-auth-reset') {
+                    this.clearPrivateState();
+                    location.reload();
+                }
+            });
+            setInterval(() => {
+                if (this.authenticated) this.loadSession().then(session => {
+                    if (!session.authenticated) { this.clearPrivateState(); location.reload(); }
+                }).catch(() => this.clearPrivateState());
+            }, 30000);
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && this.authenticated) this.loadSession().then(session => {
+                    if (!session.authenticated) { this.clearPrivateState(); location.reload(); }
+                }).catch(() => this.clearPrivateState());
+            });
             $('#modeBtn').onclick = () => {
                 const input = $('#searchInput');
                 const value = input.value;
@@ -2122,15 +2152,52 @@
 
         // ========== 书签模糊检索 ==========
 
+        clearPrivateState() {
+            this.authenticated = false;
+            this.sessionTrusted = false;
+            this.privateEpoch = (this.privateEpoch || 0) + 1;
+            this.favorites = [];
+            this.adminFavorites = null;
+            this.favManagerFiltered = [];
+            this.favManagerSelected = new Set();
+            this.favManagerCurrentCategory = '';
+            this.favHaystack = [];
+            this.publicFavIndices = [];
+            this.publicFavHaystack = [];
+            this.favResults = [];
+            this.uf = null;
+            this.webdavConfig = null;
+            this.webdavRendered = false;
+            this.modulesConfig = null;
+            this.modulesLoaded = false;
+            window.Pinyin?.clearLearnedWords();
+            $('#favDropdown')?.remove();
+            $('#modeBtn').hidden = true;
+            $('#favSearchHint').hidden = true;
+            this.favSearchMode = false;
+            this.privacySearchActive = false;
+            this.toggleFavSearchMode(false);
+            this.updateFavStat();
+            // 关闭管理与模块弹窗，同时丢弃闭包中的私人草稿。
+            $('#modal').hidden = true;
+            $('.admin-panels')?.replaceChildren();
+            $$('.ui-dialog-overlay, .fav-manager-overlay').forEach(el => el.remove());
+            this.syncModuleVisibility();
+        }
+
         async loadFavorites() {
+            if (!this.authenticated) return;
+            const epoch = this.privateEpoch || 0;
             this.favoritesLoading = true;
             this.favoritesLoadError = false;
             try {
                 const data = await API.get('/api/favorites');
+                if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
                 this.favorites = data.favorites || [];
                 // 拼音库只在构建搜索索引时才需要，按需加载，不阻塞首屏。
                 // 加载失败则索引不含拼音（普通搜索仍可用），不阻断书签加载。
                 await this.loadScript('lib/pinyin.js').catch(() => {});
+                if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
                 this.buildSearchIndex();
             } catch (e) {
                 console.error('Load favorites failed:', e);
@@ -2437,6 +2504,9 @@
                 .then(session => {
                     if (session.authenticated) {
                         this.authenticated = true;
+                        $('#modeBtn').hidden = false;
+                $('#favSearchHint').hidden = false;
+                        this.loadFavorites();
                         this.adoptServerTheme();
                         // 记录当前会话是否被信任，管理面板里的开关要反映真实状态
                         this.sessionTrusted = !!session.trusted;
@@ -2520,8 +2590,10 @@
             if (!this.authenticated) return false;
             if (this.adminFavoritesLoading) return false;
             this.adminFavoritesLoading = true;
+            const epoch = this.privateEpoch || 0;
             try {
                 const data = await API.get('/api/favorites');
+                if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return false;
                 this.adminFavorites = data.favorites || [];
                 this.favorites = this.adminFavorites;
                 return true;
@@ -2547,6 +2619,7 @@
         }
 
         buildSearchIndex() {
+            if (!this.authenticated) return;
             // 先学习所有分类和标签
             if (typeof Pinyin !== 'undefined') {
                 this.favorites.forEach(f => {
@@ -2733,7 +2806,7 @@
                 searchBtn.title = '书签检索';
                 this.showFavDropdown();
             } else {
-                input.placeholder = '搜索网页或书签';
+                input.placeholder = this.authenticated ? '搜索网页或书签' : '搜索网页';
                 $('#engineBtn').style.display = '';
                 searchBtn.textContent = '搜索';
                 searchBtn.title = '搜索';
@@ -2963,7 +3036,7 @@
             const value = (e.target ?? e).value;
 
             // 检查书签检索模式（/ 或 //）
-            const isFavMode = value.length > 0 && this.isFavSearchTrigger(value[0]);
+            const isFavMode = this.authenticated && value.length > 0 && this.isFavSearchTrigger(value[0]);
 
             // 检测是否为隐私模式触发（//）
             const isPrivacyTrigger = isFavMode && value.length >= 2 && this.isFavSearchTrigger(value[1]);
@@ -3066,6 +3139,7 @@
 
             // 左侧按钮在分享态下变为「退出」，与书签模式共用同一套标签切换
             const modeBtn = $('#modeBtn');
+            modeBtn.hidden = !enabled && !this.authenticated;
             this.showModeLabel(enabled ? 'exit' : 'web');
             modeBtn.setAttribute('aria-label', enabled ? '退出文本分享' : '切换搜索模式，当前为网页');
 
@@ -3080,7 +3154,7 @@
                 searchBtn.textContent = '发送';
                 searchBtn.title = '发送分享';
             } else {
-                input.placeholder = '搜索网页或书签';
+                input.placeholder = this.authenticated ? '搜索网页或书签' : '搜索网页';
                 input.setAttribute('aria-label', '搜索网页或书签');
                 input.style.height = '';
                 this.pasteUserResized = false;
@@ -3379,7 +3453,15 @@
                     await this.notice('密码错误', '无法进入管理');
                     return;
                 }
+                if (res.data.passwordChangeRequired) {
+                    this.passwordChangeRequired = true;
+                    await this.changePassword();
+                    return;
+                }
                 this.authenticated = true;
+                $('#modeBtn').hidden = false;
+                $('#favSearchHint').hidden = false;
+                this.loadFavorites();
                 this.adoptServerTheme();
                 // 重新登录后必须复位这个标志，否则本轮会话再遇到环境变化时
                 // 提示会被静默吞掉——用户只看到自己被登出，却没有任何说明。
@@ -3398,17 +3480,7 @@
                     this.sessionTrusted = false;
                 }
 
-                // 检测是否为默认密码，提示修改
-                if (pwd === 'admin123') {
-                    const shouldChange = await this.confirmAction('您正在使用默认密码，建议立即修改。', '修改默认密码');
-                    if (shouldChange) {
-                        this.beginConfigEdit();
-                        this.renderAdminPanel();
-                        $('#modal').hidden = false;
-                        setTimeout(() => this.changePassword(), 100);
-                        return;
-                    }
-                }
+
             }
             this.beginConfigEdit();
             // 两个请求互不依赖，仍并发发出。会话 Cookie 命中时服务端不再跑
@@ -4259,36 +4331,13 @@
             // 登出按钮
             $('#logoutBtn').onclick = async () => {
                 if (!await this.closeAdmin()) return;
-                this.authenticated = false;
-                this.sessionTrusted = false;
-                // 换会话后远程备份配置不再可信，必须清掉：内存里不留上一个会话的
-                // 配置。真正决定「展开时要不要重新加载」的是 webdavRendered
-                //（见 toggleSection），所以两样一起清。
-                this.webdavConfig = null;
-                this.webdavRendered = false;
-                // 通知服务端销毁会话并清 Cookie；失败也要继续清理本地状态
+                this.clearPrivateState();
                 try { await API.post('/api/logout', {}); } catch (e) {
-                    console.error('Logout failed:', e);
+                    this.showToast('退出请求失败，请检查网络后重试', 'error');
+                    return;
                 }
-                // 重新允许下次登录后再次弹出环境变化提示
-                API.envChangeNotified = false;
-                this.privacySearchActive = false;
-                // 丢弃全量缓存，页面回到匿名可见的公开子集
-                this.adminFavorites = null;
-                await this.loadFavorites();
-                // loadFavorites 之前若有请求在途，可能在登出后才把全量列表写回来。
-                // 此刻已是匿名身份，必须把私密条目就地剔除，否则页面会一边声称
-                // 未登录、一边握着完整的私密列表（保存/渲染路径都看得到）。
-                if (!this.authenticated && this.favorites.some(fav => fav && fav.private)) {
-                    this.favorites = this.favorites.filter(fav => fav && !fav.private);
-                    this.buildSearchIndex();
-                }
-                // 模块区最后收起：先清空配置缓存，再退出编辑模式，
-                // 顺序与 restoreSession 的展示路径相反。
-                this.modulesConfig = null;
-                this.modulesLoaded = false;
-                this.modulesError = null;
-                await this.syncModuleVisibility();
+                try { localStorage.setItem('nav-sylph-auth-reset', String(Date.now())); } catch {}
+                location.reload();
             };
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
@@ -5924,11 +5973,11 @@
         }
 
         async changePassword() {
-            if (!this.authenticated) { await this.notice('请先进入管理模式'); return; }
+            if (!this.authenticated && !this.passwordChangeRequired) { await this.notice('请先进入管理模式'); return; }
             // 必须填当前密码：服务端只凭会话不放行改密码，
             // 这是为了防止拿到会话的人直接改掉密码完成接管。
             const values = await this.showUiDialog({
-                title: '修改管理密码',
+                title: this.passwordChangeRequired ? '密码强度不足，请修改密码；取消将退出' : '修改管理密码',
                 fields: [
                     { label: '当前密码', type: 'password' },
                     { label: '新密码', type: 'password' },
@@ -5936,10 +5985,16 @@
                 ],
                 validate: ([cur, newPwd, repeated]) =>
                     !cur ? '请输入当前密码'
-                        : newPwd.length < 8 ? '密码至少 8 位'
+                        : !(newPwd.length >= 12 && new TextEncoder().encode(newPwd).length <= 72 && [/[A-Z]/, /[a-z]/, /[0-9]/, /[^A-Za-z0-9\s]/].filter(re => re.test(newPwd)).length >= 3) ? '密码至少12个字符，包含大写、小写、数字、符号中至少三类，且不超过72字节'
                         : newPwd !== repeated ? '两次输入不一致' : ''
             });
-            if (!values) return;
+            if (!values) {
+                if (this.passwordChangeRequired) {
+                    await API.post('/api/logout', {});
+                    this.passwordChangeRequired = false;
+                }
+                return;
+            }
             const currentPwd = values.values[0];
             const newPwd = values.values[1];
 
@@ -5948,27 +6003,10 @@
                 newPassword: newPwd
             });
             if (res.success) {
-                // 服务端改密码后终止了全部会话，本设备的凭据也已失效，需重新登录。
-                this.authenticated = false;
-                API.envChangeNotified = false;
-                this.adminFavorites = null;
-                // 全部会话已被销毁，模块区必须一起收起——否则页面一边提示
-                // 「请重新登录」，一边还亮着只有登录态才有的模块入口。
-                this.modulesConfig = null;
-                this.modulesLoaded = false;
-                this.modulesError = null;
-                await this.syncModuleVisibility();
-                this.showToast('密码已修改，请重新登录', 'success', 5000);
-
-                // 未能迁移的凭据必须说出来——服务端为此专门收集了 details，
-                // 但它到不了用户就等于没有：用户不知道哪台 agent 要重填 token，
-                // 只会在某次备份或看监控时才撞上，那时已经想不起是改密码导致的。
-                const moved = res.credentials && res.credentials.details;
-                if (Array.isArray(moved) && moved.length) {
-                    await this.notice(
-                        `以下凭据未能随新密码重新加密，需要手动重新输入：\n\n· ${moved.join('\n· ')}`,
-                        '凭据需要重新输入');
-                }
+                this.passwordChangeRequired = false;
+                this.clearPrivateState();
+                try { localStorage.setItem('nav-sylph-auth-reset', String(Date.now())); } catch {}
+                location.reload();
             } else {
                 this.showToast(res.error || '修改失败', 'error');
             }

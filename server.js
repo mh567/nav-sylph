@@ -352,6 +352,7 @@ setInterval(() => {
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
 const FAVORITES_FILE = path.join(config.rootDir, 'favorites.json');
 const PASSWORD_FILE = config.security.adminPasswordFile;
+const CREDENTIAL_ROTATION_FILE = path.join(config.rootDir, '.credential-rotation.json');
 const WEBDAV_CONFIG_FILE = path.join(config.rootDir, '.webdav-config.json');
 // 登录后模块的平台配置：服务器监控目标、社交账号、自选代码、widget 布局。
 // 独立于 config.json —— 那里的新 key 默认会经 toPublicConfig 下发给匿名用户，
@@ -515,6 +516,19 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Password');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
+});
+
+app.use('/api', (req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+        || ['/modules/enroll', '/modules/agent-push', '/p', '/p/code'].includes(req.path) || req.path.startsWith('/p/')) return next();
+    const origin = req.headers.origin;
+    const expected = `${req.protocol}://${req.get('host')}`;
+    if (req.headers['x-sylph-request'] !== '1'
+        || (origin && origin !== expected)
+        || req.headers['sec-fetch-site'] === 'cross-site') {
+        return res.status(403).json({ error: '请求来源校验失败，请刷新页面后重试' });
+    }
     next();
 });
 
@@ -827,7 +841,7 @@ async function writeJSON(file, data) {
 }
 
 async function verifyPassword(password) {
-    if (!password) return false;
+    if (typeof password !== 'string' || !password) return false;
     try {
         const { passwordHash } = await readJSON(PASSWORD_FILE);
         return await bcrypt.compare(password, passwordHash);
@@ -852,6 +866,9 @@ let db;
 /** 时间线模块的装配结果（repo/service/scheduler）。init() 里创建，关停时先停调度器。 */
 let timeline = null;
 let sessionStore;
+let passwordChanging = false;
+let authGeneration = 0;
+let activeAdminWrites = 0;
 
 // 会话相关的响应带 Accept-CH（高熵 Client Hints 需要它才会被发送）。
 // 只在这些响应上下发，不放静态资源与 /api/config 上，避免拖累首页首屏。
@@ -867,20 +884,35 @@ function unauthorized(res, reason) {
     return res.status(401).json({ error: '未登录或登录已过期' });
 }
 
-/**
- * 统一管理端守卫。会话命中即放行（零 bcrypt）；否则回退到明文密码，
- * 保证已打开的旧页面仍可用。环境变化导致的登出由 reason 透传给调用方。
- */
-async function requireAdmin(req, res, next) {
+function strongPassword(password) {
+    return typeof password === 'string' && password.length >= 12 && Buffer.byteLength(password) <= 72
+        && [/[A-Z]/, /[a-z]/, /[0-9]/, /[^A-Za-z0-9\s]/].filter(re => re.test(password)).length >= 3;
+}
+
+function requireSession(req, res, next, allowPasswordChange) {
+    setSessionHeaders(res);
+    if (fsSync.existsSync(CREDENTIAL_ROTATION_FILE)) return res.status(503).json({ error: '凭据恢复未完成，请重启服务后重试' });
     req.sessionReason = {};
     const found = sessionStore.getSession(req, req.sessionReason);
-    if (found) {
-        req.adminSession = found;
-        sessionStore.refreshSessionCookie(res, found, req);
-        return next();
+    if (!found || (found.session.purpose === 'password-change' && !allowPasswordChange)) {
+        return unauthorized(res, req.sessionReason);
     }
-    if (await verifyPassword(req.headers['x-admin-password'])) return next();
-    return unauthorized(res, req.sessionReason);
+    if (!['GET', 'HEAD'].includes(req.method) && !allowPasswordChange) {
+        if (passwordChanging) return res.status(503).json({ error: '正在修改密码，请稍后重试' });
+        activeAdminWrites++;
+        res.once('finish', () => { activeAdminWrites--; });
+    }
+    req.adminSession = found;
+    sessionStore.refreshSessionCookie(res, found, req);
+    next();
+}
+
+function requireAdmin(req, res, next) {
+    return requireSession(req, res, next, false);
+}
+
+function requirePasswordChange(req, res, next) {
+    return requireSession(req, res, next, true);
 }
 
 /**
@@ -902,8 +934,7 @@ function noteEnvChanged(res, reason) {
 async function hasAdminAccess(req) {
     const reason = {};
     const found = sessionStore.getSession(req, reason);
-    if (found) return { ok: true, reason };
-    if (await verifyPassword(req.headers['x-admin-password'])) return { ok: true, reason };
+    if (found && found.session.purpose !== 'password-change') return { ok: true, reason };
     return { ok: false, reason };
 }
 
@@ -928,6 +959,7 @@ async function init() {
     // 打开（必要时创建）SQLite 库并跑完迁移，再据此构造会话存储。
     // 顺序固定：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。
     db = openDatabase(config.paths.database);
+    await recoverCredentialRotation();
     sessionStore = new SessionStore({
         cookieName: config.security.sessionCookieName,
         ttlTrusted: config.security.sessionTtlTrusted,
@@ -1098,19 +1130,24 @@ app.post('/api/config', rateLimit, requireAdmin, async (req, res) => {
 // 顺序不能调换：失败锁定排在总量封顶之前，且总量阈值必须高于单 IP 锁定阈值，
 // 否则总量桶先触发，锁定功能形同虚设（详见 globalLoginLimit 上方注释）。
 app.post('/api/verify-password', rateLimit, loginGuard, globalLoginLimit, async (req, res) => {
+    const generation = authGeneration;
+    if (passwordChanging) return res.status(503).json({ error: '正在修改密码，请稍后重试' });
     const password = req.headers['x-admin-password'];
     const valid = await verifyPassword(password);
+    if (passwordChanging || generation !== authGeneration) return res.status(503).json({ error: '密码已变化，请重新登录' });
     notePasswordResult(loginFailMap, res.locals.loginIp, valid, Date.now());
     if (valid) {
         // 登录即换发新会话令牌（OWASP：权限级别变化后必须换发会话 ID）
-        const token = sessionStore.issueSession(res, req, false);
+        const passwordChangeRequired = !strongPassword(password);
+        const token = sessionStore.issueSession(res, req, false, passwordChangeRequired ? 'password-change' : 'admin');
+        res.locals.passwordChangeRequired = passwordChangeRequired;
         if (!token) {
             // 会话数已满：明确报错，不静默驱逐他人仍在有效期内的登录
             return res.status(503).json({ error: '登录会话过多，请稍后再试' });
         }
         setSessionHeaders(res);
     }
-    res.json({ valid });
+    res.json({ valid, passwordChangeRequired: !!res.locals.passwordChangeRequired });
 });
 
 // 首屏静默确认登录态。未登录返回 200 + { authenticated:false } 而非 401，
@@ -1128,7 +1165,8 @@ app.get('/api/session', publicReadLimit, async (req, res) => {
     }
     sessionStore.refreshSessionCookie(res, found, req);
     res.json({
-        authenticated: true,
+        authenticated: found.session.purpose !== 'password-change',
+        passwordChangeRequired: found.session.purpose === 'password-change',
         trusted: found.session.trusted,
         expiresAt: found.session.expiresAt
     });
@@ -1182,6 +1220,31 @@ app.post('/api/logout', rateLimit, async (req, res) => {
  *
  * @returns {Promise<{reencrypted:number, details:string[]}>}
  */
+// 恢复记录在提交完成前保留，进程中断后先回滚再开放服务。
+async function recoverCredentialRotation() {
+    let snapshot;
+    try { snapshot = await readJSON(CREDENTIAL_ROTATION_FILE); }
+    catch (err) { if (err.code === 'ENOENT') return; throw err; }
+    const files = [WEBDAV_CONFIG_FILE, MODULES_FILE, PASSWORD_FILE];
+    if (!Array.isArray(snapshot.files) || snapshot.files.length !== files.length || !Array.isArray(snapshot.timeline)) {
+        throw new Error('凭据恢复记录损坏');
+    }
+    for (let i = 0; i < files.length; i++) {
+        const content = snapshot.files[i];
+        if (content === null) await fs.rm(files[i], { force: true });
+        else {
+            if (typeof content !== 'string') throw new Error('凭据恢复记录无效');
+            await fs.writeFile(files[i], content, { mode: 0o600 });
+            await fs.chmod(files[i], 0o600);
+        }
+    }
+    db.transaction(() => {
+        const update = db.prepare('UPDATE timeline_credentials SET envelope_json = ? WHERE source_id = ? AND envelope_json != ?');
+        for (const row of snapshot.timeline) update.run(row.envelope_json, row.source_id, row.envelope_json);
+    })();
+    await fs.unlink(CREDENTIAL_ROTATION_FILE);
+}
+
 async function reencryptCredentials(oldHash, newHash) {
     const details = [];
     let reencrypted = 0;
@@ -1190,8 +1253,8 @@ async function reencryptCredentials(oldHash, newHash) {
     let webdavRaw = null;
     try {
         webdavRaw = await readJSON(WEBDAV_CONFIG_FILE);
-    } catch {
-        webdavRaw = null;
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
     }
     if (webdavRaw && isEnvelope(webdavRaw.password)) {
         try {
@@ -1200,9 +1263,7 @@ async function reencryptCredentials(oldHash, newHash) {
             reencrypted++;
             details.push('WebDAV 密码');
         } catch (e) {
-            // 旧密文本身已解不开（可能更早改过密码）：不能挡着改密码，
-            // 保留原样并记录，让用户在该分区看到需要重新输入。
-            details.push('WebDAV 密码（无法解密，已保留原值）');
+            throw new Error('WebDAV 凭据无法解密');
         }
     }
 
@@ -1210,8 +1271,8 @@ async function reencryptCredentials(oldHash, newHash) {
     let modulesRaw = null;
     try {
         modulesRaw = await readJSON(MODULES_FILE);
-    } catch {
-        modulesRaw = null;
+    } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
     }
     if (modulesRaw && Array.isArray(modulesRaw.servers)) {
         for (const server of modulesRaw.servers) {
@@ -1222,7 +1283,7 @@ async function reencryptCredentials(oldHash, newHash) {
                 reencrypted++;
                 details.push(`${server.name || server.id} 的凭据`);
             } catch (e) {
-                details.push(`${server.name || server.id} 的凭据（无法解密，已保留原值）`);
+                throw new Error('监控凭据无法解密');
             }
         }
     }
@@ -1247,25 +1308,41 @@ async function reencryptCredentials(oldHash, newHash) {
                 });
                 details.push(`${source.name || source.id} 的时间线凭据`);
             } catch (e) {
-                // 单条解不开（可能更早改过密码）：保留原值并记录，
-                // 绝不因此挡住改密码——只是那一行需要用户重新授权。
-                details.push(`${source.name || source.id} 的时间线凭据（无法解密，已保留原值）`);
+                throw new Error('时间线凭据无法解密');
             }
         }
     }
 
-    // 全部算完才写。writeJSON 各自 chmod 600，与首次创建时同一套收紧。
-    if (webdavRaw) await writeJSON(WEBDAV_CONFIG_FILE, webdavRaw);
-    if (modulesRaw) await writeJSON(MODULES_FILE, modulesRaw);
+    const files = [];
+    for (const file of [WEBDAV_CONFIG_FILE, MODULES_FILE, PASSWORD_FILE]) {
+        try { files.push(await fs.readFile(file, 'utf8')); }
+        catch (err) { if (err.code !== 'ENOENT') throw err; files.push(null); }
+    }
+    const snapshot = { files, timeline: db.prepare('SELECT source_id, envelope_json FROM timeline_credentials').all() };
+    // 先原子发布完整恢复记录，再触碰任何凭据。
+    const pending = CREDENTIAL_ROTATION_FILE + '.tmp';
+    await fs.writeFile(pending, JSON.stringify(snapshot), { mode: 0o600 });
+    await fs.chmod(pending, 0o600);
+    await fs.rename(pending, CREDENTIAL_ROTATION_FILE);
+    try {
+        if (webdavRaw) await writeJSON(WEBDAV_CONFIG_FILE, webdavRaw);
+        if (modulesRaw) await writeJSON(MODULES_FILE, modulesRaw);
 
-    // 时间线那一批最后写，且在一个事务里：要么全部换新密钥，要么一条不动。
-    // 计数也等到真正落库之后再算——「算出来」不等于「写进去了」。
-    if (timelinePending.length) {
-        const applyReencrypted = db.transaction(rows => {
-            for (const row of rows) timeline.repo.setCredentials(row.id, row.envelope);
-        });
-        applyReencrypted(timelinePending);
-        reencrypted += timelinePending.length;
+        // 时间线那一批最后写，且在一个事务里：要么全部换新密钥，要么一条不动。
+        // 计数也等到真正落库之后再算——「算出来」不等于「写进去了」。
+        if (timelinePending.length) {
+            const applyReencrypted = db.transaction(rows => {
+                for (const row of rows) timeline.repo.setCredentials(row.id, row.envelope);
+            });
+            applyReencrypted(timelinePending);
+            reencrypted += timelinePending.length;
+        }
+        await writeJSON(PASSWORD_FILE, { passwordHash: newHash });
+        db.prepare('DELETE FROM sessions').run();
+        await fs.unlink(CREDENTIAL_ROTATION_FILE);
+    } catch (err) {
+        await recoverCredentialRotation();
+        throw err;
     }
 
     return { reencrypted, details };
@@ -1275,14 +1352,17 @@ async function reencryptCredentials(oldHash, newHash) {
 // 密码是这里唯一的根凭据：只凭一个会话就改掉它，等于让任何拿到会话的人
 // 完成账号接管，而且受害者改完密码反而把自己锁在门外。
 // OWASP Authentication Cheat Sheet 要求凭据变更前重新认证。
-app.post('/api/change-password', rateLimit, requireAdmin, async (req, res) => {
+app.post('/api/change-password', rateLimit, requirePasswordChange, async (req, res) => {
+    if (passwordChanging || activeAdminWrites) return res.status(503).json({ error: '管理操作进行中，请稍后重试' });
+    passwordChanging = true;
+    res.once('finish', () => { passwordChanging = false; });
     const { newPassword, currentPassword } = req.body || {};
-    if (!newPassword || newPassword.length < 8) {
-        return res.status(400).json({ error: '新密码至少8位' });
+    if (!strongPassword(newPassword)) {
+        return res.status(400).json({ error: '新密码至少12个字符，包含大写、小写、数字、符号中至少三类，且不超过72字节' });
     }
 
-    // 优先取当前密码；不传时回落到旧版放在请求头的写法。
-    const provided = currentPassword || req.headers['x-admin-password'];
+    // 敏感操作必须重新验证当前密码。
+    const provided = currentPassword;
     if (!provided) {
         return res.status(401).json({ error: '请输入当前密码' });
     }
@@ -1308,16 +1388,13 @@ app.post('/api/change-password', rateLimit, requireAdmin, async (req, res) => {
             }
         }
 
-        await writeJSON(PASSWORD_FILE, { passwordHash });
-        // 换密码后终止全部会话（含本会话），否则已泄露的令牌仍能继续用，
-        // 这个补救动作就失去意义。客户端已无凭据可重放，需重新登录。
+        // 撤销全部旧会话，再为当前设备签发新的正常会话。
+        authGeneration++;
         const revoked = sessionStore.destroyAll();
         console.log(`[Server] 密码已修改，终止 ${revoked} 个会话`
             + (migration.reencrypted ? `，重加密 ${migration.reencrypted} 项凭据` : ''));
-        sessionStore.clearSessionCookie(res, req);
-        // details 告诉前端哪些凭据没能迁移——不能静默：用户不知道
-        // WebDAV 与 agent 需要重新填 token，就会在某次备份时才撞上。
-        res.json({ success: true, reauth: true, credentials: migration });
+        sessionStore.issueSession(res, req, false);
+        res.json({ success: true, reauth: false, credentials: migration });
     } catch (err) {
         console.error('修改密码失败:', err);
         res.status(500).json({ error: '修改密码失败' });
@@ -1679,23 +1756,11 @@ function mergeModulesConfig(existing, incoming) {
 }
 
 // 获取收藏夹里的书签
-app.get('/api/favorites', publicReadLimit, async (req, res) => {
+app.get('/api/favorites', publicReadLimit, requireAdmin, async (req, res) => {
     try {
         const data = await readJSON(FAVORITES_FILE);
-        // 会话或正确管理密码时返回全量列表，供管理面板与私密检索使用
-        const access = await hasAdminAccess(req);
-        if (access.ok) {
-            return res.json({
-                version: data?.version || 1,
-                favorites: Array.isArray(data?.favorites) ? data.favorites : []
-            });
-        }
-        // 环境变化时这里返回的是被截断的公开子集，必须让客户端知道，
-        // 否则它会把残缺列表当成完整数据建索引，私密检索随即报「无匹配」。
-        noteEnvChanged(res, access.reason);
-        res.json(toPublicFavorites(data));
+        res.json({ version: data?.version || 1, favorites: Array.isArray(data?.favorites) ? data.favorites : [] });
     } catch (err) {
-        console.error('读取书签失败:', err);
         res.status(500).json({ error: '读取书签失败' });
     }
 });

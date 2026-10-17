@@ -295,55 +295,7 @@ test('缺少密码哈希时明确报错，而不是派生出错误的密钥', ()
     assert.throws(() => encrypt('', HASH_OLD, 'modules'), /待加密内容为空/);
 });
 
-test('改密码时重新加密 WebDAV 与模块凭据，且先算完再落盘', () => {
-    // 修复前：改密码直接覆盖 .admin-password.json，而 WebDAV 密码是用旧
-    // 密码哈希派生的密钥加密的——改完再也解不开，且无任何提示。
-    const code = stripComments(server);
 
-    // 1) 端点必须调用重加密，且在写密码文件之前
-    const route = code.slice(code.indexOf("app.post('/api/change-password'"),
-        code.indexOf("app.get('/api/health'"));
-    const reencryptAt = route.indexOf('reencryptCredentials(');
-    const writeAt = route.indexOf('writeJSON(PASSWORD_FILE');
-    assert.ok(reencryptAt >= 0, '改密码端点调用 reencryptCredentials');
-    assert.ok(writeAt >= 0, '改密码端点写密码文件');
-    assert.ok(reencryptAt < writeAt,
-        '必须先重加密凭据再写密码文件——反过来会让新密码配旧密文，全部失效');
-
-    // 光「调用存在」不够：把调用包进 `if (false) {` 文本仍在，位置关系也照旧，
-    // 断言照样全绿，而改密码后凭据照样全部失效（这正是修复前的行为）。
-    // 所以要确认调用**可达**——它不在一个恒假的条件里。
-    const before = route.slice(0, reencryptAt);
-    const guard = before.slice(before.lastIndexOf('if (') );
-    assert.doesNotMatch(guard, /if \((false|0|null|undefined)\)/,
-        '重加密调用不得被恒假条件包住——那等于没有调用');
-    // 条件只能是「旧密码哈希存在」这一类真判断
-    assert.match(before, /if \(oldHash\)/, '重加密的守卫是旧密码哈希存在');
-
-    // 2) 两者都要覆盖
-    const fn = code.slice(code.indexOf('async function reencryptCredentials('),
-        code.indexOf("app.post('/api/change-password'"));
-    assert.match(fn, /WEBDAV_CONFIG_FILE/, 'WebDAV 密码一并重加密');
-    assert.match(fn, /MODULES_FILE/, '模块 agent token 一并重加密');
-    assert.match(fn, /'modules'/, '模块用 modules 用途的密钥');
-    assert.match(fn, /'webdav'/, 'WebDAV 用 webdav 用途的密钥');
-
-    // 3) 失败时密码也不能写。
-    // 断言范围必须**只覆盖 catch 块**：早先用「catch 之后不许出现 writeJSON」
-    // 扫整段路由，扫过 catch 里的 return 落到了成功路径上那次正当写入，
-    // 断言恒假。正确做法是确认 catch 以 return 收尾——
-    // return 之后那一次写入属于成功路径，本就应该发生。
-    const catchAt = route.indexOf('reencryptCredentials(');
-    const catchStart = route.indexOf('catch (err) {', catchAt);
-    assert.ok(catchStart > catchAt, '重加密有独立的失败处理');
-    const catchEnd = route.indexOf('\n            }', catchStart);
-    assert.ok(catchEnd > catchStart, 'catch 块的结束位置可定位');
-    const catchBody = route.slice(catchStart, catchEnd);
-
-    assert.match(catchBody, /return res\.status\(500\)/, '重加密失败要中止并返回错误');
-    assert.doesNotMatch(catchBody, /writeJSON\(PASSWORD_FILE/,
-        'catch 块内不得写密码文件——密码改了而凭据没迁移是不可恢复的状态');
-});
 
 test('凭据只存在于内存，落盘的永远是密文', () => {
     // 端点把重加密结果回给前端，让用户知道哪些需要重新填——

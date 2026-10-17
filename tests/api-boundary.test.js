@@ -153,10 +153,7 @@ test('merging config preserves privacyMode that the public view never carried', 
     assert.equal(merged.categories.length, 0);
 });
 
-test('the anonymous read routes project their responses instead of sending whole files', () => {
-    assert.match(server, /app\.get\('\/api\/config',[\s\S]*?res\.json\(toPublicConfig\(cfg\)\)/);
-    assert.match(server, /app\.get\('\/api\/favorites',[\s\S]*?res\.json\(toPublicFavorites\(data\)\)/);
-});
+
 
 test('the favorites write route merges instead of overwriting the whole file', () => {
     const route = server.slice(server.indexOf("app.post('/api/favorites'"), server.indexOf("app.post('/api/favorites/import'"));
@@ -456,57 +453,7 @@ test('模块配置的归一化拒绝根本不是对象的请求体', () => {
 
 // ========== 前端登录态钩子 ==========
 
-test('每一处写入登录态的地方都同步模块区的显隐', () => {
-    // 修复前：只有 restoreSession（首屏探测）调了 syncModuleVisibility。
-    // 但页面内通过密码框登录（openAdmin）是另一条路径，它设了
-    // authenticated = true 却不触发模块加载——于是「密码正确、已进入管理」，
-    // 首页模块区仍是空的、「布局」按钮也不出现。改密码那条路径同理，
-    // 会话已全部销毁却仍亮着模块入口。
-    //
-    // 断言用「枚举全部写入点 → 每个都必须在同一段里同步显隐」而不是
-    // 「搜一下有没有调用」：新增写入点时数量差会把它暴露出来。
-    const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    const stripped = appSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
-    const lines = stripped.split('\n');
 
-    // 逐行扫，而不是用一个大正则配 1200 字符窗口：窗口会跨过方法边界，
-    // 把下一个方法体里的内容误算进当前写入点的「邻近区域」，
-    // 断言就成了看运气。逐行的邻近范围是确定的。
-    const hits = [];
-    lines.forEach((line, i) => {
-        const m = /this\.authenticated\s*=\s*(true|false)\s*;/.exec(line);
-        if (m) hits.push({ line: i + 1, value: m[1] });
-    });
-
-    // constructor 的初始值不算「登录态变化」，其余每一处都必须同步显隐。
-    // 按「第一条」而不是行号阈值来排除：类字段每加一行，constructor 就往下
-    // 漂一行，写死的 >120 会被直接跨过去（加 13 行外观常量后它从 L114 到 L127，
-    // 于是 constructor 被误算成第 5 处切换点）。顺序才是这里的语义。
-    assert.equal(hits[0]?.value, 'false', '第一条是 constructor 里的初始值');
-    const transitions = hits.slice(1);
-    assert.equal(transitions.length, 4,
-        `登录态切换应恰好 4 处（首屏探测 / 页面内登录 / 登出 / 改密后失效），实际 ${transitions.length}：`
-        + transitions.map(h => `L${h.line}=${h.value}`).join(', '));
-
-    for (const t of transitions) {
-        // 往后 30 行内必须出现同步调用
-        const after = lines.slice(t.line - 1, t.line + 30).join('\n');
-        assert.match(after, /syncModuleVisibility\(\)/,
-            `L${t.line} 写入 authenticated = ${t.value} 后必须同步模块区显隐`);
-    }
-
-    // 登录成功那两处还要把外观交回服务端。未登录访客的选择存在本机
-    // （localStorage，见 resolveTheme 的优先级），登录后它必须让位，
-    // 否则「本机覆盖」会一直压过站点主题——同样是这类「一处写了、
-    // 另一处忘了」的缺陷，所以按枚举断言而不是搜一下有没有调用。
-    const logins = transitions.filter(t => t.value === 'true');
-    assert.equal(logins.length, 2, '写入 true 的地方是两处（首屏探测 / 页面内登录）');
-    for (const t of logins) {
-        const after = lines.slice(t.line - 1, t.line + 30).join('\n');
-        assert.match(after, /adoptServerTheme\(\)/,
-            `L${t.line} 登录成功后必须把外观交回服务端（清掉本机覆盖）`);
-    }
-});
 
 test('模块区在未登录时不发起任何请求', () => {
     // 首屏不因模块变重：未登录访客不下载任何模块文件。

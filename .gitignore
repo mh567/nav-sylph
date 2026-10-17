@@ -11,6 +11,8 @@ server-config.json
 
 # Security files
 .admin-password.json
+.credential-rotation.json
+.credential-rotation.json.tmp
 .webdav-config.json
 
 # User bookmarks config (personal data)
