@@ -74,6 +74,16 @@
             <span id="favSearchHint" hidden><kbd>/</kbd> 查书签</span>
             <span><kbd>&gt;</kbd> 分享文本</span>
         </div>
+        <section id="localNavigationTools" class="local-navigation-tools" aria-label="个人导航设置">
+            <span id="localNavigationStatus" role="status" aria-live="polite">正在读取本地导航</span>
+            <button type="button" class="btn btn-sm" id="localSettingsBtn">导航设置</button>
+            <button type="button" class="btn btn-sm" id="localUndoBtn">撤销上一操作</button>
+            <button type="button" class="btn btn-sm" id="localExportBtn">导出导航</button>
+            <button type="button" class="btn btn-sm" id="localImportBtn">导入导航</button>
+            <input type="file" id="localImportFile" accept="application/json,.json" hidden>
+            <button type="button" class="btn btn-sm" id="localResetBtn">重置为当前默认</button>
+            <button type="button" class="btn btn-sm" id="localAdoptBtn" hidden>采用其他标签页版本</button>
+        </section>
         <main class="grid" id="grid"></main>
         </div>
         <!-- 登录后模块区：在 .backboard **之外**、作为 .app 的子节点。
@@ -109,6 +119,8 @@
     <script src="lib/uFuzzy.iife.min.js"></script>
     <!-- pinyin.js（拼音搜索）与 qrcode.js（分享二维码）改为按需加载，
          见 app.js loadScript；仍在 sw.js 的 ASSETS 预缓存清单里 -->
+    <script src="navigation-schema.js"></script>
+    <script src="local-navigation.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

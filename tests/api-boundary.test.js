@@ -585,6 +585,7 @@ test('保存编辑一次提交两套存储，且布局失败即中止', () => {
     const calls = [];
     let widgetSaveSucceeds = true;
     const makeApp = () => ({
+        authenticated: true,
         editSession: { config: { a: 1 }, widgets: [{ id: 'w1' }] },
         modulesConfig: { widgets: [{ id: 'w1', order: 0 }] },
         config: { a: 1 },
@@ -626,6 +627,7 @@ test('保存编辑传给 saveWidgetLayout 的是对象而不是裸数组', () =>
     // 断言的是**实际传出去的值**，不是源码里有没有 `widgets:` 字样。
     let received;
     const app = {
+        authenticated: true,
         editSession: { config: {}, widgets: [{ id: 'w1' }, { id: 'w2' }] },
         modulesConfig: { widgets: [{ id: 'w1' }] },
         config: {},

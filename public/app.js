@@ -981,7 +981,6 @@
          */
         async toggleEditLayout() {
             if (this.editLayout) return this.saveEditSession();
-            if (!this.authenticated) return;
             this.editSession = {
                 config: JSON.parse(JSON.stringify(this.config)),
                 widgets: JSON.parse(JSON.stringify(this.modulesConfig?.widgets || []))
@@ -996,7 +995,7 @@
             const btn = $('#layoutBtn');
             const editing = this.editLayout;
             if (btn) {
-                btn.textContent = editing ? '保存编辑' : '编辑';
+                btn.textContent = editing ? (this.authenticated ? '保存编辑' : '完成编辑') : '编辑';
                 btn.title = editing ? '保存全部改动并退出编辑' : '编辑首页导航';
                 btn.setAttribute('aria-pressed', String(editing));
                 btn.classList.toggle('is-active', editing);
@@ -1016,6 +1015,7 @@
 
         /** 提交草稿：模块布局与首页书签分两套存储，串行提交，前者失败即中止。 */
         async saveEditSession() {
+            if (!this.authenticated) { await this.localQueue; this.editSession = null; this.exitEditLayout(); return; }
             if (!this.editSession) { this.exitEditLayout(); return; }
             if (this.modulesConfig) {
                 // 传**对象**而不是裸数组：saveWidgetLayout 的回滚分支读的是
@@ -1053,6 +1053,7 @@
 
         /** Esc 放弃编辑：有改动时先问一句，没改动则静默退出。 */
         async cancelEditSession() {
+            if (!this.authenticated) { this.editSession = null; this.exitEditLayout(); return; }
             if (!this.editSession) { this.exitEditLayout(); return; }
             const changed =
                 JSON.stringify(this.config) !== JSON.stringify(this.editSession.config)
@@ -1107,11 +1108,11 @@
             const btn = $('#layoutBtn');
             if (!this.authenticated) {
                 // 会话已失效，无可保存，也不该弹确认框：直接丢弃草稿。
-                this.rollbackEditSession();
+                if (this.personalNavigationLoaded) this.rollbackEditSession();
                 this.exitEditLayout();
                 const zone = $('#moduleZone');
                 if (zone) { zone.hidden = true; zone.replaceChildren(); }
-                if (btn) btn.hidden = true;
+                if (btn) btn.hidden = false;
                 this.modulesConfig = null;
                 this.modulesLoaded = false;
                 this.modulesError = null;
@@ -1121,9 +1122,233 @@
             await this.renderModuleZone();
         }
 
+        setLocalStatus(message, error = false) {
+            const status = $('#localNavigationStatus');
+            if (status) status.textContent = message;
+            const tools = $('#localNavigationTools');
+            if (tools) tools.dataset.state = error ? 'error' : '';
+        }
+
+        async loadLocalNavigation() {
+            this.localStore = new window.LocalNavigation();
+            this.localQueue = Promise.resolve();
+            this.localPending = 0;
+            let record;
+            try { record = await this.localStore.read(); }
+            catch (error) {
+                this.localUnavailable = true;
+                this.localError = '未能保存到本机：' + error.message;
+            }
+            if (!record) {
+                const config = await (window.__navSylphConfigPromise || API.get('/api/config'));
+                try { const legacy = localStorage.getItem(THEME_STORAGE_KEY); if (APPEARANCE_ORDER.includes(legacy)) config.theme = legacy; } catch (e) {}
+                window.NavigationSchema.validate(config);
+                if (!this.localUnavailable) {
+                    try { record = await this.localStore.write(config, 0); }
+                    catch (error) {
+                        // 另一个首次访问标签页可能已经建立了副本。
+                        record = await this.localStore.read();
+                        if (!record) throw error;
+                    }
+                }
+                this.config = structuredClone(record?.config || config);
+            } else this.config = structuredClone(record.config);
+            if (record) { try { localStorage.removeItem(THEME_STORAGE_KEY); } catch (e) {} }
+            this.localRevision = record?.revision || 0;
+            this.localSaved = structuredClone(record?.config || this.config);
+        }
+
+        saveLocalNavigation(config = this.config, undo = false) {
+            if (this.authenticated || this.personalNavigationLoaded) return Promise.resolve(false);
+            const candidate = window.NavigationSchema.publicConfig(structuredClone(config));
+            this.localPending++;
+            this.setLocalStatus('正在保存到本机');
+            const task = this.localQueue.then(async () => {
+                try {
+                    if (this.localUnavailable) throw new Error('本地存储不可用，请导出导航保留副本');
+                    const record = await this.localStore.write(candidate, this.localRevision, undo);
+                    this.localRevision = record.revision;
+                    this.localSaved = structuredClone(record.config);
+                    this.localError = null;
+                    if (undo && !this.authenticated) { this.config = structuredClone(record.config); this.applyTheme(); this.render(); }
+                    this.localChannel?.postMessage(record.revision);
+                    if (!this.authenticated) this.setLocalStatus('仅保存在本机');
+                    return true;
+                } catch (error) {
+                    this.localError = '未能保存到本机：' + error.message;
+                    if (error.code === 'conflict') $('#localAdoptBtn').hidden = false;
+                    this.setLocalStatus(this.localError, true);
+                    this.showToast(this.localError, 'error', 8000);
+                    return false;
+                } finally { this.localPending--; }
+            });
+            this.localQueue = task;
+            return task;
+        }
+
+        async refreshLocalNavigation(adopt = false) {
+            if (this.authenticated || this.personalNavigationLoaded || this.localPending) return;
+            try {
+                const record = await this.localStore.read();
+                if (this.authenticated || this.personalNavigationLoaded || this.localPending || !record || record.revision === this.localRevision) return;
+                if (!adopt && (this.editLayout || $('.ui-dialog-overlay') || this.localError)) {
+                    this.setLocalStatus('其他标签页已修改导航，当前输入已保留。请先导出或采用其他标签页版本。', true);
+                    $('#localAdoptBtn').hidden = false;
+                    return;
+                }
+                this.localRevision = record.revision;
+                this.localSaved = structuredClone(record.config);
+                this.config = structuredClone(record.config);
+                this.localError = null;
+                $('#localAdoptBtn').hidden = true;
+                this.applyTheme(); this.render();
+                this.setLocalStatus('仅保存在本机');
+            } catch (error) { this.setLocalStatus('无法读取本地导航：' + error.message, true); }
+        }
+
+        exportLocalNavigation() {
+            const blob = new Blob([JSON.stringify({ schemaVersion: 1, config: window.NavigationSchema.publicConfig(this.config) }, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url; link.download = 'sylph-navigation.json'; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        async importLocalNavigation(file) {
+            if (!file || this.authenticated) return;
+            const revision = this.localRevision;
+            try {
+                if (file.size > 1024 * 1024) throw new Error('配置超过 1 MiB');
+                const data = JSON.parse(await file.text());
+                if (data.schemaVersion !== 1 || Object.keys(data).some(k => !['schemaVersion', 'config'].includes(k))) throw new Error('配置文件版本或字段无效');
+                const config = data.config;
+                if (Array.isArray(config?.searchEngines) && config.searchEngines.length && !config.searchEngines.some(e => e.id === config.searchEngine)) config.searchEngine = config.searchEngines[0].id;
+                window.NavigationSchema.validate(config);
+                if (!await this.confirmAction('导入将替换本机导航，可通过撤销恢复上一份配置。', '导入导航')) return;
+                if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新导入');
+                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); }
+            } catch (error) { this.showToast('导入失败：' + error.message, 'error'); }
+        }
+
+        async resetLocalNavigation() {
+            if (this.authenticated) return;
+            const revision = this.localRevision;
+            try {
+                const config = await API.get('/api/config');
+                window.NavigationSchema.validate(config);
+                if (!await this.confirmAction('用当前已发布默认首页替换本机导航？可通过撤销恢复。', '重置导航')) return;
+                if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新重置');
+                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); }
+            } catch (error) { this.showToast('重置失败，原导航已保留：' + error.message, 'error'); }
+        }
+
+        async editLocalSettings() {
+            if (this.authenticated) return;
+            const draft = window.NavigationSchema.publicConfig(structuredClone(this.config));
+            const pending = this.showUiDialog({
+                title: '导航设置',
+                message: '搜索地址填写关键词前缀，例如 https://example.com/?q=。有效设置确认后保存到本机。清除站点数据、浏览器回收存储或结束隐私浏览可能删除导航，请定期导出备份。',
+                options: [{ name: 'icons', kind: 'checkbox', label: '显示导航图标', value: '1', checked: draft.showBookmarkIcons }],
+                validate: (values, choices) => {
+                    try {
+                        if (!draft.searchEngines.some(e => e.id === draft.searchEngine)) draft.searchEngine = draft.searchEngines[0]?.id;
+                        draft.showBookmarkIcons = !!choices.icons;
+                        window.NavigationSchema.validate(draft);
+                        return '';
+                    } catch (error) { return error.message; }
+                }
+            });
+            const form = $('.ui-dialog-form');
+            const dialog = form.closest('.ui-dialog');
+            dialog.classList.add('local-settings-dialog');
+            dialog.addEventListener('keydown', event => {
+                if (event.key !== 'Tab') return;
+                const controls = [...form.querySelectorAll('input:not(:disabled), select:not(:disabled), button:not(:disabled)')];
+                if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+                else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+                event.stopPropagation();
+            }, true);
+            const editor = html('<div class="local-engine-editor"></div>');
+            const render = () => {
+                editor.innerHTML = `<label class="ui-dialog-field"><span>当前搜索引擎</span><select id="localCurrentEngine"></select></label><div class="local-engine-list">` + draft.searchEngines.map((e, i) => `<fieldset data-index="${i}"><legend>引擎 ${i + 1}</legend>${['id', 'name', 'url'].map((key, j) => `<label class="ui-dialog-field"><span>${['ID', '名称', '搜索地址'][j]}</span><input data-field="${key}" aria-label="引擎 ${i + 1} ${['ID', '名称', '搜索地址'][j]}" value="${this.esc(e[key])}"></label>`).join('')}<button type="button" class="btn btn-sm" data-action="up" ${i === 0 ? 'disabled' : ''}>上移</button> <button type="button" class="btn btn-sm" data-action="down" ${i === draft.searchEngines.length - 1 ? 'disabled' : ''}>下移</button> <button type="button" class="btn btn-sm" data-action="delete" ${draft.searchEngines.length === 1 ? 'disabled' : ''}>删除</button></fieldset>`).join('') + '</div><button type="button" class="btn btn-sm" data-action="add">添加引擎</button>';
+                renderSelection();
+            };
+            const renderSelection = () => {
+                const select = editor.querySelector('select');
+                select.innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
+                select.value = draft.searchEngine;
+            };
+            editor.oninput = event => {
+                const field = event.target.dataset.field;
+                if (!field) return;
+                const engine = draft.searchEngines[+event.target.closest('fieldset').dataset.index];
+                const wasCurrent = engine.id === draft.searchEngine;
+                engine[field] = event.target.value;
+                if (field === 'id' && wasCurrent) draft.searchEngine = engine.id;
+                renderSelection();
+            };
+            editor.onchange = event => { if (event.target.tagName === 'SELECT') draft.searchEngine = event.target.value; };
+            editor.onclick = event => {
+                const action = event.target.dataset.action;
+                if (!action) return;
+                const list = draft.searchEngines;
+                const index = +(event.target.closest('fieldset')?.dataset.index || 0);
+                if (action === 'add') {
+                    if (list.length >= 50) { this.showToast('搜索引擎最多 50 个', 'error'); return; }
+                    list.push({ id: uid(), name: '新引擎', url: 'https://' });
+                } else if (action === 'delete' && list.length > 1) {
+                    const [removed] = list.splice(index, 1);
+                    if (removed.id === draft.searchEngine) draft.searchEngine = list[0].id;
+                } else {
+                    const target = action === 'up' ? index - 1 : index + 1;
+                    if (target < 0 || target >= list.length) return;
+                    [list[index], list[target]] = [list[target], list[index]];
+                }
+                render();
+            };
+            render(); form.prepend(editor); editor.querySelector('input')?.focus();
+            const result = await pending;
+            if (result && !this.authenticated && await this.saveLocalNavigation(draft) && !this.authenticated) {
+                this.config = structuredClone(draft); this.render();
+            }
+        }
+
+        bindLocalNavigation() {
+            this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
+            $('#localSettingsBtn').onclick = () => this.editLocalSettings();
+            $('#localUndoBtn').onclick = () => this.saveLocalNavigation(this.config, true);
+            $('#localExportBtn').onclick = () => this.exportLocalNavigation();
+            $('#localImportBtn').onclick = () => $('#localImportFile').click();
+            $('#localImportFile').onchange = event => { this.importLocalNavigation(event.target.files[0]); event.target.value = ''; };
+            $('#localResetBtn').onclick = () => this.resetLocalNavigation();
+            $('#localAdoptBtn').onclick = async () => {
+                if (await this.confirmAction('放弃当前草稿并采用其他标签页已保存的版本？', '采用已保存版本')) {
+                    this.editSession = null; this.exitEditLayout();
+                    await this.refreshLocalNavigation(true);
+                }
+            };
+            if ('BroadcastChannel' in window) {
+                this.localChannel = new BroadcastChannel('nav-sylph-local-navigation');
+                this.localChannel.onmessage = () => this.refreshLocalNavigation();
+            }
+            window.addEventListener('beforeunload', event => {
+                if (!this.authenticated && (this.localPending || this.localError || $('.ui-dialog-overlay input, .ui-dialog-overlay textarea'))) { event.preventDefault(); event.returnValue = ''; }
+            });
+            window.addEventListener('focus', () => this.refreshLocalNavigation());
+            window.addEventListener('online', () => { if (!this.authenticated) this.restoreSession(); });
+        }
+
+        async finishLocalDraft() {
+            if (this.editLayout || $('.ui-dialog-overlay')) this.setLocalStatus('管理员会话已确认，请完成当前编辑后切换管理员首页');
+            while (this.editLayout || $('.ui-dialog-overlay')) await new Promise(resolve => setTimeout(resolve, 100));
+            await this.localQueue;
+        }
+
         async init() {
             try {
-                this.config = await (window.__navSylphConfigPromise || API.get('/api/config'));
+                this.initialSession = this.loadSession();
+                this.initialSession.catch(() => {});
+                await this.loadLocalNavigation();
                 this.migrateConfig();
                 // 用户配置一到就先把外观定下来，**不等**下面那趟 server-flags：
                 // 服务端强制了主题（theme 不是 auto）时，全靠这一步把首屏的
@@ -1166,7 +1391,9 @@
                 }
             } catch (e) {
                 console.error('Init failed:', e);
-                $('#loader').textContent = '加载失败';
+                $('#loader').classList.remove('loader');
+                $('#loader').textContent = '加载失败，请联网后重试。' + e.message;
+                const retry = document.createElement('button'); retry.textContent = '重试'; retry.onclick = () => location.reload(); $('#loader').append(retry);
             }
         }
 
@@ -1254,16 +1481,11 @@
          */
         async setTheme(theme) {
             if (!this.authenticated) {
-                try {
-                    localStorage.setItem(THEME_STORAGE_KEY, theme);
-                    this.themeOverride = null;
-                } catch (e) {
-                    // 存不住（隐私模式 / 禁用站点数据）：本会话先按内存值生效，
-                    // 并说明刷新后会丢。静默吞掉会让这次点击看起来毫无反应。
-                    this.themeOverride = theme;
-                    this.showToast('这台设备无法保存外观选择，刷新后会恢复', 'error');
-                }
+                this.config.theme = theme;
+                this.themeOverride = null;
+                try { localStorage.removeItem(THEME_STORAGE_KEY); } catch (e) {}
                 this.applyTheme();
+                await this.saveLocalNavigation();
                 return;
             }
 
@@ -1378,6 +1600,8 @@
         }
 
         bind() {
+            this.bindLocalNavigation();
+            $('#layoutBtn').hidden = false;
             $('#modeBtn').hidden = !this.authenticated;
             $('#favSearchHint').hidden = !this.authenticated;
             window.addEventListener('storage', event => {
@@ -1521,6 +1745,7 @@
                 const option = e.target.closest('.engine-option');
                 if (option) {
                     this.config.searchEngine = option.dataset.id;
+                    if (!this.authenticated) this.saveLocalNavigation();
                     this.renderEngines();
                     dropdown.hidden = true;
                     engineBtn.setAttribute('aria-expanded', 'false');
@@ -2074,7 +2299,7 @@
             cat.bookmarks.push({ id: uid(), title: title.trim(), url: url.trim() });
             this.renderGrid();
             this.markConfigDirty();
-            this.showToast('导航已添加，点「保存编辑」生效');
+            if (this.authenticated) this.showToast('导航已添加，点「保存编辑」生效');
         }
 
         async editHomeBookmark(catIdx, bmIdx) {
@@ -2154,6 +2379,7 @@
 
         clearPrivateState() {
             this.authenticated = false;
+            $('#localNavigationTools').hidden = false;
             if (this.publicNavigation) {
                 this.config = structuredClone(this.publicNavigation);
                 this.publicNavigation = null;
@@ -2511,9 +2737,12 @@
         // 期间 authenticated 仍是 false。此时输入 // 会被当成普通搜索词，
                 // 私密书签「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
-            const probe = this.sessionProbe = this.loadSession()
+            const session = this.initialSession || this.loadSession();
+            this.initialSession = null;
+            const probe = this.sessionProbe = session
                 .then(async session => {
                     if (session.authenticated) {
+                        await this.finishLocalDraft();
                         this.authenticated = true;
                         await this.loadPersonalNavigation();
                         $('#modeBtn').hidden = false;
@@ -2533,6 +2762,7 @@
                 })
                 .catch(e => {
                     console.error('Restore session failed:', e);
+                    this.setLocalStatus('无法确认管理员登录，可继续使用本地导航，网络恢复后重新确认', true);
                     return false;
                 });
             return probe;
@@ -2604,6 +2834,7 @@
             this.recoveredNavigationDraft = null;
             this.navigationRevision = data.revision;
             this.personalNavigationLoaded = true;
+            $('#localNavigationTools').hidden = true;
             this.migrateConfig();
             this.adoptServerTheme();
             this.render();
@@ -3636,7 +3867,9 @@
                     await this.changePassword();
                     return;
                 }
+                await this.finishLocalDraft();
                 this.authenticated = true;
+                await this.loadPersonalNavigation();
                 $('#modeBtn').hidden = false;
                 $('#favSearchHint').hidden = false;
                 this.loadFavorites();
@@ -3683,6 +3916,7 @@
         }
 
         markConfigDirty() {
+            if (!this.authenticated) { this.saveLocalNavigation(); return; }
             this.configDirty = JSON.stringify(this.config) !== this.configSnapshot;
             this.updateConfigStatus();
         }

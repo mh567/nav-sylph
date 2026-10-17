@@ -714,7 +714,7 @@ test('编辑按钮的文案随状态切换，且初值是「编辑」', () => {
         '#layoutBtn 带初始 aria-pressed');
 
     const body = methodBody(appSource, 'syncEditLayoutUI');
-    assert.match(body, /textContent\s*=\s*editing\s*\?\s*'保存编辑'\s*:\s*'编辑'/,
+    assert.match(body, /textContent\s*=\s*editing\s*\?\s*\(this\.authenticated\s*\?\s*'保存编辑'\s*:\s*'完成编辑'\)\s*:\s*'编辑'/,
         'syncEditLayoutUI 必须按 editing 切换按钮文案');
     assert.match(body, /btn\.setAttribute\(\s*'aria-pressed',\s*String\(editing\)\s*\)/,
         'aria-pressed 跟着同一个 editing 走，不另开真相来源');
@@ -1601,21 +1601,14 @@ test('三态循环：自动 → 浅色 → 深色 → 自动（取模回绕）',
         '循环走共用的那格计算，不自己再算一遍');
 });
 
-test('未登录只写本机，登录后保存管理员个人主题', () => {
+test('管理员个人主题保存继续使用独立接口并在失败后还原', () => {
     const body = methodBodyOf(appCode, 'async setTheme(theme) {');
     const guestStart = body.indexOf('if (!this.authenticated) {');
-    assert.ok(guestStart >= 0, '有未登录分支');
-    const guest = body.slice(guestStart, body.indexOf('return;', guestStart));
-    assert.match(guest, /localStorage\.setItem\(THEME_STORAGE_KEY, theme\)/, '未登录写本机');
-    assert.doesNotMatch(guest, /api\/config/, '未登录不发保存请求（服务端也会 401）');
-
     // 登录分支：先走登录收尾（清本机覆盖）再写服务端 —— 顺序反了的话，
     // 本机旧值会一直压过刚写下的值。
     const clearAt = body.indexOf('this.adoptServerTheme()');
     const saveAt = body.indexOf("this.saveNavigation()");
     assert.ok(clearAt > guestStart && saveAt > clearAt, '先交回服务端（清本机覆盖），再保存');
-    assert.doesNotMatch(body, /localStorage\.removeItem/,
-        '清本机覆盖只写在 adoptServerTheme 一处，别在两个调用点各写一遍');
     assert.match(body, /this\.config\.theme = previous[\s\S]*?this\.applyTheme\(\)/,
         '保存失败要还原，不能把界面停在一个没存住的档位上');
 });
@@ -1626,7 +1619,7 @@ test('编辑态下切换外观要先确认——它会连同未保存的草稿�
     // 就替用户按下了「保存编辑」，而且不可逆。
     const body = methodBodyOf(appCode, 'async setTheme(theme) {');
     const confirmAt = body.indexOf('this.editLayout');
-    const mutateAt = body.indexOf('this.config.theme = theme');
+    const mutateAt = body.lastIndexOf('this.config.theme = theme');
     const saveAt = body.indexOf("this.saveNavigation()");
     assert.ok(confirmAt > 0 && confirmAt < mutateAt && mutateAt < saveAt,
         '确认必须排在改内存与提交之前，否则拦不住');
@@ -1634,16 +1627,7 @@ test('编辑态下切换外观要先确认——它会连同未保存的草稿�
     assert.match(body, /if \(!ok\) return;/, '用户取消就什么都不做');
 });
 
-test('localStorage 写不进去时给出提示，并让这次点击仍然生效', () => {
-    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
-    const guest = body.slice(body.indexOf('if (!this.authenticated) {'));
-    assert.match(guest, /this\.themeOverride = theme/,
-        '内存兜底——没有它，隐私模式下点击后画面纹丝不动');
-    assert.match(guest, /this\.showToast\([^)]*无法保存外观选择/,
-        '静默吞掉会让用户以为按钮坏了');
-    // 写侧兜底了，读侧也得认，否则写了没人读
-    assert.match(methodBodyOf(appCode, 'resolveTheme() {'), /includes\(this\.themeOverride\)/);
-});
+// 普通主题的 IndexedDB 失败与刷新回访由 tests/browser/local-navigation.cjs 验证。
 
 test('applyTheme 排在 server-flags 之前——服务端主题不该多等一个往返', () => {
     const init = methodBodyOf(appCode, 'async init() {');

@@ -3972,3 +3972,16 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-ghost { min-height: 44px; font-size: 12px; }
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
+
+.local-navigation-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 12px; }
+.local-navigation-tools [role="status"] { flex-basis: 100%; }
+.local-navigation-tools[data-state="error"] [role="status"] { color: #b54a3d; }
+
+.local-engine-list { margin-bottom: 10px; }
+.local-engine-list fieldset { border: 1px solid currentColor; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.local-engine-editor select { width: 100%; padding: 8px; }
+
+.local-settings-dialog { display: flex; flex-direction: column; }
+.local-settings-dialog .ui-dialog-form { display: flex; flex-direction: column; min-height: 0; }
+.local-settings-dialog .local-engine-editor { overflow-y: auto; min-height: 0; padding: 2px; margin-bottom: 12px; }
+.local-settings-dialog .ui-dialog-options, .local-settings-dialog .ui-dialog-actions, .local-settings-dialog .ui-dialog-error { flex-shrink: 0; }
