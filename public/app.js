@@ -2594,6 +2594,8 @@
             // 初始化 uFuzzy（宽松模式，适合中英文混合）
             if (typeof uFuzzy !== 'undefined') {
                 this.uf = new uFuzzy({
+                    unicode: true,
+                    interSplit: "[^\\p{L}\\p{N}']+",
                     intraMode: 1,
                     intraIns: 1,
                     interIns: 3,

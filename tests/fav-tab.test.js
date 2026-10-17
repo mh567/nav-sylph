@@ -33,6 +33,49 @@ function methodBody(src, name) {
     throw new Error(`${name} 方法体未闭合`);
 }
 
+test('书签检索执行真实实现：中文、混合输入、拼音与英文均可匹配且隔离私密条目', () => {
+    const uFuzzy = new Function(fs.readFileSync(path.join(__dirname, '..', 'public/lib/uFuzzy.iife.min.js'), 'utf8') + '\nreturn uFuzzy;')();
+    const Pinyin = require('../public/lib/pinyin.js');
+    const dropdown = { innerHTML: '' };
+    const state = { favorites: [
+        { id: 'private', title: '私密中文', url: 'https://private.example', private: true },
+        { id: 'zh', title: '知乎', url: 'https://zhihu.com', category: '阅读', description: '中文问答社区', tags: ['知识'] },
+        { id: 'stock', title: '雪球', url: 'https://xueqiu.com', description: '股票行情' },
+        { id: 'dev', title: 'GitHub 开发', url: 'https://github.com', category: '技术' }
+    ], privacySearchActive: false, renderFavResults(rows) { this.results = rows; },
+    renderFavManagerList(rows) { this.managerResults = rows; } };
+    const loadMethod = (signature) => {
+        const start = appSource.indexOf(`        ${signature} {`);
+        assert.ok(start >= 0, `${signature} 存在`);
+        const end = appSource.indexOf('\n        }', start);
+        assert.ok(end > start, `${signature} 末端存在`);
+        return new Function('uFuzzy', 'Pinyin', '$', `return ({ ${appSource.slice(start, end + 10)} });`)(uFuzzy, Pinyin, () => dropdown);
+    };
+    for (const signature of ['buildSearchIndex()', 'getSearchableFavorites()', 'searchFavorites(query)', 'filterFavManager(query, category)']) {
+        Object.assign(state, loadMethod(signature));
+    }
+    state.buildSearchIndex();
+    for (const [query, expected] of [['知乎', 'zh'], ['股票行情', 'stock'], ['知识', 'zh'], ['阅读', 'zh'], ['GitHub 开发', 'dev'], ['zhihu', 'zh'], ['ZH', 'zh'], ['github', 'dev']]) {
+        state.results = [];
+        state.searchFavorites(query);
+        assert.ok(state.results.some(row => row.id === expected), `首页 ${query} 命中 ${expected}`);
+        state.filterFavManager(query, '');
+        assert.ok(state.managerResults.some(row => row.id === expected), `后台 ${query} 命中 ${expected}`);
+    }
+    state.results = [];
+    state.searchFavorites('私密中文');
+    assert.deepEqual(state.results, []);
+    state.adminFavorites = state.favorites;
+    state.privacySearchActive = true;
+    state.searchFavorites('私密中文');
+    assert.deepEqual(state.results.map(row => row.id), ['private']);
+    state.filterFavManager('知乎', '技术');
+    assert.deepEqual(state.managerResults, []);
+    state.results = [];
+    state.searchFavorites('不存在的条目');
+    assert.deepEqual(state.results, []);
+});
+
 test('后台 tab 栏：收藏夹是第二个，顺序为 导航 · 收藏夹 · 模块 · 账户', () => {
     const tabs = [...appSource.matchAll(
         /<button type="button" class="admin-tab" role="tab" id="adminTab(\w+)" aria-controls="adminPanel\1" aria-selected="false" tabindex="-1" data-panel="(\w+)">([^<]+)/g
@@ -166,12 +209,12 @@ test('placeholder 在 index.html 与 app.js 两层一致（搜索网页或书签
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v105，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v105';/);
-    assert.match(swJs, /nav-v105：让位（背板收窄）不再等模块挂载与首轮数据/);
+test('sw.js：CACHE 升到 nav-v106，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v106';/);
+    assert.match(swJs, /nav-v106：修正书签检索的 Unicode 分词/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v105', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v106', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });

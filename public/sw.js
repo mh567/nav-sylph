@@ -1,3 +1,4 @@
+// nav-v106：修正书签检索的 Unicode 分词，中文查询不再被当作空查询。
 // nav-v105：让位（背板收窄）不再等模块挂载与首轮数据——紧跟模块脚本预加载之后
 // 就收窄，卡片仍在数据就绪后按落点逐个落入（起跑延迟取让位剩余时间）。用户报
 // 「从导航宽屏模式到识别登录状态再到收缩导航部分宽度这个过程太慢了」：同口径实测
@@ -267,7 +268,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v105';
+const CACHE = 'nav-v106';
 const ASSETS = [
     '/',
     '/index.html',
