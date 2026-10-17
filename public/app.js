@@ -1038,7 +1038,7 @@
                 }
             }
             try {
-                const res = await API.post('/api/config', this.config);
+                const res = await this.saveNavigation();
                 if (!res.success) throw new Error(res.error || '保存失败');
             } catch (e) {
                 this.rollbackEditSession();
@@ -1286,7 +1286,7 @@
             const select = $('#themeModeSelect');
             if (select) select.value = theme;
             try {
-                const res = await API.post('/api/config', this.config);
+                const res = await this.saveNavigation();
                 if (!res.success) throw new Error(res.error || '保存失败');
             } catch (e) {
                 this.config.theme = previous;
@@ -2154,6 +2154,17 @@
 
         clearPrivateState() {
             this.authenticated = false;
+            if (this.publicNavigation) {
+                this.config = structuredClone(this.publicNavigation);
+                this.publicNavigation = null;
+                this.applyTheme();
+                this.render();
+            }
+            this.personalNavigationLoaded = false;
+            this.navigationRevision = null;
+            this.pendingNavigation = null;
+            sessionStorage.removeItem('nav-sylph-pending-navigation');
+            sessionStorage.removeItem('nav-sylph-pending-default');
             this.sessionTrusted = false;
             this.privateEpoch = (this.privateEpoch || 0) + 1;
             this.favorites = [];
@@ -2501,9 +2512,10 @@
                 // 私密书签「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
             const probe = this.sessionProbe = this.loadSession()
-                .then(session => {
+                .then(async session => {
                     if (session.authenticated) {
                         this.authenticated = true;
+                        await this.loadPersonalNavigation();
                         $('#modeBtn').hidden = false;
                 $('#favSearchHint').hidden = false;
                         this.loadFavorites();
@@ -2572,11 +2584,177 @@
 
         // privacyMode 属于管理端设置，不在公开配置视图里。
         // 带会话取回；失败时保持现状。
+        async loadPersonalNavigation() {
+            const epoch = this.privateEpoch || 0;
+            const pending = sessionStorage.getItem('nav-sylph-pending-navigation');
+            if (pending) {
+                const result = await API.post('/api/admin/navigation', JSON.parse(pending));
+                if (!result.success && !result.error) throw new Error('保存结果尚未确认，请刷新后重试');
+                if (!result.success) {
+                    sessionStorage.removeItem('nav-sylph-pending-navigation');
+                    const keep = await this.showUiDialog({ title: '上次保存未确认', message: (result.error || '保存失败') + '。可保留待确认内容继续编辑，下一次保存将覆盖当前服务器配置；也可采用服务器版本。', confirmText: '保留草稿继续编辑', cancelText: '采用服务器版本' });
+                    if (keep) this.recoveredNavigationDraft = JSON.parse(pending).config;
+                }
+                sessionStorage.removeItem('nav-sylph-pending-navigation');
+            }
+            const data = await API.get('/api/admin/navigation');
+            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) throw new Error('登录状态已变化');
+            if (!this.personalNavigationLoaded) this.publicNavigation = structuredClone(this.config);
+            this.config = this.recoveredNavigationDraft || data.config;
+            this.recoveredNavigationDraft = null;
+            this.navigationRevision = data.revision;
+            this.personalNavigationLoaded = true;
+            this.migrateConfig();
+            this.adoptServerTheme();
+            this.render();
+        }
+
+        async saveNavigation(options = {}) {
+            if (!this.personalNavigationLoaded) throw new Error('个人导航未加载，请刷新后重试');
+            const content = JSON.stringify(this.config);
+            if (this.navigationSaving) throw new Error('正在保存，请稍后重试');
+            // 响应丢失时复用操作标识，避免把已提交结果误报为版本冲突。
+            if (!this.pendingNavigation || this.pendingNavigation.content !== content) {
+                this.pendingNavigation = { content, body: { config: JSON.parse(content), revision: this.navigationRevision, operationId: crypto.randomUUID() } };
+            }
+            this.navigationSaving = true;
+            try {
+                sessionStorage.setItem('nav-sylph-pending-navigation', JSON.stringify(this.pendingNavigation.body));
+                const res = await API.post('/api/admin/navigation', this.pendingNavigation.body, options);
+                if (!res.success) { if (res.error) sessionStorage.removeItem('nav-sylph-pending-navigation'); throw new Error(res.error || '保存结果尚未确认，请刷新后重试'); }
+                sessionStorage.removeItem('nav-sylph-pending-navigation');
+                this.navigationRevision = res.revision;
+                this.pendingNavigation = null;
+                return res;
+            } finally { this.navigationSaving = false; }
+        }
+
+        async openDefaultHomepage() {
+            try {
+                const retry = sessionStorage.getItem('nav-sylph-pending-default');
+                if (retry) {
+                    const request = JSON.parse(retry);
+                    const result = await API.post('/api/admin/default-homepage/' + request.domain, request.body);
+                    if (!result.success) { if (result.error) sessionStorage.removeItem('nav-sylph-pending-default'); throw new Error(result.error || '上次操作结果尚未确认，请刷新后重试'); }
+                    sessionStorage.removeItem('nav-sylph-pending-default');
+                }
+                const data = await API.get('/api/admin/default-homepage');
+                if (!this.authenticated) return;
+                const overlay = html(`<div class="ui-dialog-overlay"><div class="ui-dialog default-homepage-dialog" role="dialog" aria-modal="true" aria-labelledby="defaultHomepageTitle">
+                    <h3 id="defaultHomepageTitle">站点默认首页</h3>
+                    <p class="ui-dialog-message">草稿与个人导航独立保存。发布后供首次访问和主动重置使用。</p>
+                    <label class="ui-dialog-field"><span>主题</span><select id="defaultTheme"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+                    <label class="ui-dialog-field"><span><input id="defaultIcons" type="checkbox"> 显示链接图标</span></label>
+                    <label class="ui-dialog-field"><span>默认搜索引擎</span><select id="defaultEngine"></select></label>
+                    <div id="defaultFields"></div>
+                    <p role="status" id="defaultStatus">草稿版本 ${data.revision}，发布版本 ${data.publishedRevision}</p>
+                    <div class="default-homepage-preview" id="defaultPreview" hidden></div>
+                    <div class="ui-dialog-actions"><button type="button" id="defaultClose" class="btn">关闭</button><button type="button" id="defaultPreviewBtn" class="btn">预览</button><button type="button" id="defaultSave" class="btn">保存草稿</button><button type="button" id="defaultPublish" class="btn primary">发布默认首页</button></div>
+                </div></div>`);
+                const previousFocus = document.activeElement;
+                document.body.appendChild(overlay);
+                const find = s => overlay.querySelector(s);
+                find('#defaultTheme').value = data.config.theme;
+                find('#defaultIcons').checked = data.config.showBookmarkIcons;
+                const draft = structuredClone(data.config);
+                const controls = (type, index, category = '') => `<button type="button" class="btn" data-action="up" data-type="${type}" data-index="${index}" data-category="${category}" aria-label="上移">↑</button><button type="button" class="btn" data-action="down" data-type="${type}" data-index="${index}" data-category="${category}" aria-label="下移">↓</button><button type="button" class="btn" data-action="delete" data-type="${type}" data-index="${index}" data-category="${category}">删除</button>`;
+                const input = (label, value, type, index, field, category = '') => `<label class="ui-dialog-field"><span>${label}</span><input value="${this.esc(value)}" data-type="${type}" data-index="${index}" data-field="${field}" data-category="${category}"></label>`;
+                const renderFields = () => {
+                    find('#defaultEngine').innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
+                    find('#defaultEngine').value = draft.searchEngine;
+                    find('#defaultFields').innerHTML = `<h4>搜索引擎</h4>` + draft.searchEngines.map((e, i) => `<div class="default-editor-row">${input('引擎名称', e.name, 'engine', i, 'name')}${input('搜索地址前缀', e.url, 'engine', i, 'url')}${controls('engine', i)}</div>`).join('') + `<button type="button" class="btn" data-action="add-engine">添加引擎</button><h4>导航分类</h4>` + draft.categories.map((c, i) => `<fieldset><legend>分类 ${i + 1}</legend>${input('分类名称', c.name, 'category', i, 'name')}${controls('category', i)}${c.bookmarks.map((b, j) => `<div class="default-editor-row">${input('链接标题', b.title, 'bookmark', j, 'title', i)}${input('链接地址', b.url, 'bookmark', j, 'url', i)}${controls('bookmark', j, i)}</div>`).join('')}<button type="button" class="btn" data-action="add-bookmark" data-category="${i}">添加链接</button></fieldset>`).join('') + `<button type="button" class="btn" data-action="add-category">添加分类</button>`;
+                };
+                const listFor = el => el.dataset.type === 'engine' ? draft.searchEngines : el.dataset.type === 'category' ? draft.categories : draft.categories[+el.dataset.category].bookmarks;
+                find('#defaultEngine').onchange = e => { draft.searchEngine = e.target.value; };
+                find('#defaultFields').oninput = e => {
+                    const el = e.target;
+                    if (!el.dataset.field) return;
+                    listFor(el)[+el.dataset.index][el.dataset.field] = el.value;
+                    if (el.dataset.type === 'engine' && el.dataset.field === 'name') {
+                        find('#defaultEngine').options[+el.dataset.index].textContent = el.value;
+                    }
+                };
+                find('#defaultFields').onclick = e => {
+                    const el = e.target.closest('button[data-action]'); if (!el) return;
+                    const action = el.dataset.action;
+                    if (action === 'add-engine') draft.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
+                    else if (action === 'add-category') draft.categories.push({ id: uid(), name: '新分类', bookmarks: [] });
+                    else if (action === 'add-bookmark') draft.categories[+el.dataset.category].bookmarks.push({ id: uid(), title: '新链接', url: 'https://' });
+                    else {
+                        const list = listFor(el), i = +el.dataset.index;
+                        if (action === 'delete') {
+                            if (el.dataset.type === 'engine' && list.length === 1) { find('#defaultStatus').textContent = '至少保留一个搜索引擎'; return; }
+                            const [removed] = list.splice(i, 1);
+                            if (el.dataset.type === 'engine' && removed.id === draft.searchEngine) draft.searchEngine = list[0].id;
+                        } else {
+                            const to = action === 'up' ? i - 1 : i + 1;
+                            if (to >= 0 && to < list.length) [list[i], list[to]] = [list[to], list[i]];
+                        }
+                    }
+                    renderFields();
+                };
+                renderFields();
+                const read = () => ({ ...structuredClone(draft), theme: find('#defaultTheme').value, showBookmarkIcons: find('#defaultIcons').checked });
+                let saved = JSON.stringify(data.config), pending = null, busy = false;
+                const close = () => { if (busy) return; overlay.remove(); previousFocus?.focus(); };
+                find('#defaultClose').onclick = close;
+                overlay.onkeydown = e => {
+                    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+                    if (e.key === 'Tab') {
+                        const nodes = [...overlay.querySelectorAll('button, input, select, textarea')].filter(n => !n.disabled);
+                        const first = nodes[0], last = nodes.at(-1);
+                        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                    }
+                };
+                find('#defaultPreviewBtn').onclick = () => {
+                    try {
+                        const cfg = read(); const preview = find('#defaultPreview'); preview.replaceChildren();
+                        preview.dataset.theme = cfg.theme;
+                        const engine = document.createElement('p'); engine.textContent = '搜索引擎：' + cfg.searchEngines.map(e => e.name + (e.id === cfg.searchEngine ? '（默认）' : '')).join('、'); preview.append(engine);
+                        for (const c of cfg.categories) {
+                            const heading = document.createElement('h4'); heading.textContent = c.name; preview.append(heading);
+                            for (const b of c.bookmarks) {
+                                const a = document.createElement('a'); a.textContent = b.title;
+                                if (['http:', 'https:'].includes(new URL(b.url).protocol)) a.href = b.url;
+                                a.target = '_blank'; a.rel = 'noopener noreferrer'; preview.append(a);
+                            }
+                        }
+                        preview.hidden = false;
+                    } catch { find('#defaultStatus').textContent = '配置格式无效，请检查名称和链接地址'; }
+                };
+                const submit = async publish => {
+                    if (busy) return;
+                    try {
+                        const cfg = read(); const content = JSON.stringify(cfg);
+                        if (publish && content !== saved) throw new Error('请先保存当前草稿并预览，再发布');
+                        const domain = publish ? 'publish' : 'draft';
+                        if (!pending || pending.domain !== domain || pending.content !== content) pending = { domain, content, body: { ...(publish ? { publishedRevision: data.publishedRevision } : { config: cfg }), revision: data.revision, operationId: crypto.randomUUID() } };
+                        busy = true;
+                        overlay.querySelectorAll('input, select, textarea, button').forEach(n => { n.disabled = true; });
+                        sessionStorage.setItem('nav-sylph-pending-default', JSON.stringify(pending));
+                        const result = await API.post('/api/admin/default-homepage/' + domain, pending.body);
+                        if (!result.success) { if (result.error) sessionStorage.removeItem('nav-sylph-pending-default'); throw new Error(result.error || '保存结果尚未确认，请刷新后重试'); }
+                        sessionStorage.removeItem('nav-sylph-pending-default');
+                        if (!this.authenticated || !overlay.isConnected) return;
+                        if (publish) data.publishedRevision = result.revision;
+                        else { data.revision = result.revision; saved = content; }
+                        pending = null;
+                        find('#defaultStatus').textContent = publish ? '默认首页已发布，个人导航保持原样' : '草稿已保存，公开首页保持原样';
+                    } catch (e) { find('#defaultStatus').textContent = e.message; }
+                    finally { busy = false; overlay.querySelectorAll('input, select, textarea, button').forEach(n => { n.disabled = false; }); }
+                };
+                find('#defaultSave').onclick = () => submit(false);
+                find('#defaultPublish').onclick = () => submit(true);
+                find('#defaultTheme').focus();
+            } catch (e) { this.showToast(e.message, 'error'); }
+        }
+
         async loadPrivacyMode() {
             if (!this.authenticated) return null;
             try {
-                const cfg = await API.get('/api/config');
-                return typeof cfg.privacyMode === 'boolean' ? cfg.privacyMode : null;
+                const cfg = await API.get('/api/admin/navigation');
+                return typeof cfg.config.privacyMode === 'boolean' ? cfg.config.privacyMode : null;
             } catch (e) {
                 console.error('Load privacy mode failed:', e);
                 return null;
@@ -3482,6 +3660,7 @@
 
 
             }
+            if (!this.personalNavigationLoaded) await this.loadPersonalNavigation();
             this.beginConfigEdit();
             // 两个请求互不依赖，仍并发发出。会话 Cookie 命中时服务端不再跑
             // bcrypt，但两个请求的串行等待仍是两倍往返。
@@ -4155,7 +4334,7 @@
                 <div class="admin-panels">
                 <div class="admin-panel" role="tabpanel" id="adminPanelSite" aria-labelledby="adminTabSite" hidden>
                 <div class="section">
-                    <div class="section-title">界面设置</div>
+                    <div class="section-title">个人首页设置</div><p class="fav-hint">保存仅更新管理员个人导航。</p><button type="button" class="btn" id="defaultHomepageBtn">编辑站点默认首页</button>
                     <div class="setting-row">
                         <label>
                             <span>主题模式</span>
@@ -4277,6 +4456,7 @@
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
             this.selectAdminTab(this.adminTab || 'site');
 
+            $('#defaultHomepageBtn').onclick = () => this.openDefaultHomepage();
             $('#themeModeSelect').onchange = (e) => {
                 this.config.theme = e.target.value;
                 this.applyTheme();
@@ -5008,7 +5188,7 @@
                 if ($('#modal').hidden) this.showToast(message, 'error');
             };
             try {
-                const res = await API.post('/api/config', this.config, { signal });
+                const res = await this.saveNavigation({ signal });
                 if (res.success) {
                     this.configDirty = false;
                     this.render();

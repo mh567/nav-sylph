@@ -588,6 +588,7 @@ test('保存编辑一次提交两套存储，且布局失败即中止', () => {
         editSession: { config: { a: 1 }, widgets: [{ id: 'w1' }] },
         modulesConfig: { widgets: [{ id: 'w1', order: 0 }] },
         config: { a: 1 },
+        saveNavigation: async () => { calls.push('/api/admin/navigation'); return { success: true }; },
         saveWidgetLayout: async () => { calls.push('modules'); return widgetSaveSucceeds; },
         rollbackEditSession: () => calls.push('rollback'),
         exitEditLayout: () => calls.push('exit'),
@@ -601,7 +602,7 @@ test('保存编辑一次提交两套存储，且布局失败即中止', () => {
         widgetSaveSucceeds = true;
         const ok = makeApp();
         await runMethod(appSource, 'saveEditSession', ok, { API });
-        assert.deepEqual(calls, ['modules', '/api/config', 'exit', 'toast:(默认)'],
+        assert.deepEqual(calls, ['modules', '/api/admin/navigation', 'exit', 'toast:(默认)'],
             '布局成功后串行提交书签，随后退出编辑态并提示「已保存」');
         assert.equal(ok.editSession, null, '成功后清空 editSession');
 

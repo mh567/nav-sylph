@@ -1,3 +1,4 @@
+// nav-v108：个人导航与默认模板使用独立管理入口。
 // nav-v107：收藏仅供管理员访问，更新静态资源并清理旧缓存。
 // nav-v106：修正书签检索的 Unicode 分词，中文查询不再被当作空查询。
 // nav-v105：让位（背板收窄）不再等模块挂载与首轮数据——紧跟模块脚本预加载之后
@@ -269,7 +270,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v107';
+const CACHE = 'nav-v108';
 const ASSETS = [
     '/',
     '/index.html',

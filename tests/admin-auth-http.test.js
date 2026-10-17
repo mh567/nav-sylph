@@ -85,8 +85,8 @@ test('HTTP: upgrade revokes legacy sessions and restricted credentials expire wi
     const Database = require('better-sqlite3');
     const { MIGRATIONS } = require('../lib/db');
     let db = new Database(path.join(app.dir, 'nav-sylph.db'));
-    for (const migration of MIGRATIONS.slice(0, -1)) migration(db);
-    db.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+    for (const migration of MIGRATIONS.slice(0, 6)) migration(db);
+    db.pragma(`user_version = ${6}`);
     const old = 'a'.repeat(64);
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?)').run(old, 0, Date.now() + 86400000,
         JSON.stringify(collectFingerprint({ headers: { 'user-agent': 'sylph-auth-test' } })), null);

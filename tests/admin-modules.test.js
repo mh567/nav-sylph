@@ -193,7 +193,7 @@ test('后台保存期间「取消」不能被静默挡回（历史上它看着�
     // 没有超时时，一个卡住的请求会让 finally 永不执行：configSaving 一直是 true、
     // 「保存」一直是禁用的「保存中...」，只能刷新页面。
     assert.match(save, /AbortSignal\.timeout\(/, '保存请求带超时');
-    assert.match(save, /API\.post\('\/api\/config', this\.config, \{ signal \}\)/, '超时信号真的传给了请求');
+    assert.match(save, /this\.saveNavigation\(\{ signal \}\)/, '超时信号真的传给了请求');
     // ⚠️ 这条曾经写成 `assert.match(save, /reportFailure/)`——它匹配的是**定义那一行**，
     // 于是「面板已关掉时说出口」这个行为连同两个调用点都不受保护（变异实测：删掉
     // `if ($('#modal').hidden) this.showToast(...)` 与两处调用，测试照样全绿）。

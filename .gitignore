@@ -13,6 +13,8 @@ server-config.json
 .admin-password.json
 .credential-rotation.json
 .credential-rotation.json.tmp
+.navigation-upgrade-snapshot/
+.navigation-upgrade-snapshot.tmp/
 .webdav-config.json
 
 # User bookmarks config (personal data)

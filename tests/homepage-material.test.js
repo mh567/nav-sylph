@@ -1601,7 +1601,7 @@ test('三态循环：自动 → 浅色 → 深色 → 自动（取模回绕）',
         '循环走共用的那格计算，不自己再算一遍');
 });
 
-test('未登录只写本机，登录后改的是服务端站点主题', () => {
+test('未登录只写本机，登录后保存管理员个人主题', () => {
     const body = methodBodyOf(appCode, 'async setTheme(theme) {');
     const guestStart = body.indexOf('if (!this.authenticated) {');
     assert.ok(guestStart >= 0, '有未登录分支');
@@ -1612,7 +1612,7 @@ test('未登录只写本机，登录后改的是服务端站点主题', () => {
     // 登录分支：先走登录收尾（清本机覆盖）再写服务端 —— 顺序反了的话，
     // 本机旧值会一直压过刚写下的值。
     const clearAt = body.indexOf('this.adoptServerTheme()');
-    const saveAt = body.indexOf("API.post('/api/config'");
+    const saveAt = body.indexOf("this.saveNavigation()");
     assert.ok(clearAt > guestStart && saveAt > clearAt, '先交回服务端（清本机覆盖），再保存');
     assert.doesNotMatch(body, /localStorage\.removeItem/,
         '清本机覆盖只写在 adoptServerTheme 一处，别在两个调用点各写一遍');
@@ -1627,7 +1627,7 @@ test('编辑态下切换外观要先确认——它会连同未保存的草稿�
     const body = methodBodyOf(appCode, 'async setTheme(theme) {');
     const confirmAt = body.indexOf('this.editLayout');
     const mutateAt = body.indexOf('this.config.theme = theme');
-    const saveAt = body.indexOf("API.post('/api/config'");
+    const saveAt = body.indexOf("this.saveNavigation()");
     assert.ok(confirmAt > 0 && confirmAt < mutateAt && mutateAt < saveAt,
         '确认必须排在改内存与提交之前，否则拦不住');
     assert.match(body, /await this\.confirmAction\(/);

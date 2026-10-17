@@ -995,3 +995,12 @@
     .special-line-source-state { grid-column: 2; justify-self: start; }
     .special-line-source-actions .btn { min-height: 44px; }
 }
+
+.default-homepage-dialog { width: min(760px, 94vw); max-width: 760px; max-height: 88vh; overflow-y: auto; }
+.default-homepage-dialog fieldset { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.default-editor-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.default-homepage-dialog .ui-dialog-actions { flex-wrap: wrap; }
+.default-homepage-preview { padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.default-homepage-preview a { display: inline-block; padding: 8px; }
+.default-homepage-preview[data-theme="dark"] { color: #eee; background: #211f1c; }
+.default-homepage-preview[data-theme="light"] { color: #211f1c; background: #efede8; }

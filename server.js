@@ -374,6 +374,8 @@ const {
     ENV_CHANGED_MESSAGE
 } = require('./lib/session');
 const { openDatabase } = require('./lib/db');
+const { snapshot: snapshotNavigation, createNavigation } = require('./lib/navigation');
+let navigation;
 const { createSqliteBackend } = require('./lib/session-sqlite');
 const {
     readLocalMetrics, fetchRemoteMetrics, probeTcp, probeAgentHealth
@@ -481,6 +483,7 @@ process.on('unhandledRejection', (reason) => {
     console.error('[Server] 未处理的 Promise 拒绝:', reason && reason.message ? reason.message : reason);
 });
 
+app.use(['/api/admin/navigation', '/api/admin/default-homepage'], express.json({ limit: '1100kb' }));
 app.use(express.json());
 app.use(compression({ threshold: 1024 }));
 
@@ -945,6 +948,7 @@ async function init() {
         console.log(`Created: ${path.basename(logDir)}/`);
     }
 
+    snapshotNavigation(config.rootDir, config.paths.database, PASSWORD_FILE);
     await ensureFile(CONFIG_FILE, defaultConfig);
     await ensureFile(FAVORITES_FILE, defaultFavorites);
     await ensureFile(MODULES_FILE, defaultModulesConfig);
@@ -959,6 +963,7 @@ async function init() {
     // 打开（必要时创建）SQLite 库并跑完迁移，再据此构造会话存储。
     // 顺序固定：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。
     db = openDatabase(config.paths.database);
+    navigation = createNavigation(db, await readJSON(CONFIG_FILE), defaultConfig);
     await recoverCredentialRotation();
     sessionStore = new SessionStore({
         cookieName: config.security.sessionCookieName,
@@ -1084,47 +1089,38 @@ app.post('/api/server-flags', rateLimit, requireAdmin, async (req, res) => {
     }
 });
 
-app.get('/api/config', publicReadLimit, async (req, res) => {
-    try {
-        // 允许浏览器缓存但每次用 ETag 校验：配置未变时返 304（零响应体），
-        // 省去首屏往返的传输量，又保证配置始终最新。客户端以
-        // cache: 'no-cache' 发起（见 index.html），二者配合才生效。
-        res.setHeader('Cache-Control', 'no-cache');
-        const cfg = await readJSON(CONFIG_FILE);
-        // 会话或正确管理密码时返回完整配置，供管理面板读取 privacyMode
-        const access = await hasAdminAccess(req);
-        if (access.ok) {
-            return res.json(cfg);
-        }
-        noteEnvChanged(res, access.reason);
-        res.json(toPublicConfig(cfg));
-    } catch (err) {
-        console.error('读取配置失败:', err);
-        res.status(500).json({ error: '读取配置失败' });
-    }
+app.get('/api/config', publicReadLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.json(navigation.read('published').config);
 });
 
-app.post('/api/config', rateLimit, requireAdmin, async (req, res) => {
-    try {
-        const cfg = req.body;
-        if (!cfg.categories || !Array.isArray(cfg.categories)) {
-            return res.status(400).json({ error: '无效的配置格式' });
-        }
+app.post('/api/config', rateLimit, requireAdmin, (req, res) => {
+    res.status(409).json({ error: '页面版本不兼容，请刷新后使用个人导航保存入口' });
+});
 
-        // 客户端持有的配置来自公开视图，不含 privacyMode，
-        // 整份覆盖会静默抹掉该设置，因此以现有文件为基底合并。
-        let existing = {};
+app.get('/api/admin/navigation', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(navigation.read('admin'));
+});
+app.get('/api/admin/default-homepage', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ...navigation.read('draft'), publishedRevision: navigation.read('published').revision });
+});
+for (const [route, domain] of [
+    ['/api/admin/navigation', 'admin'],
+    ['/api/admin/default-homepage/draft', 'draft'],
+    ['/api/admin/default-homepage/publish', 'published']
+]) {
+    app.post(route, rateLimit, requireAdmin, (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
         try {
-            existing = await readJSON(CONFIG_FILE);
-        } catch {}
-
-        await writeJSON(CONFIG_FILE, mergeConfig(existing, cfg));
-        res.json({ success: true });
-    } catch (err) {
-        console.error('保存配置失败:', err);
-        res.status(500).json({ error: '保存配置失败' });
-    }
-});
+            const result = navigation.write(domain, req.body);
+            if (domain === 'admin') scheduleAutoSync();
+            res.json(result);
+        }
+        catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '保存失败，请稍后重试' }); }
+    });
+}
 
 // 登录入口：三层依次是「IP 请求速率 → 失败锁定 → 全站总量」。
 // 顺序不能调换：失败锁定排在总量封顶之前，且总量阈值必须高于单 IP 锁定阈值，
@@ -1916,7 +1912,7 @@ function scheduleAutoSync() {
 
 /** 数据文件的内容与路径 → 备份载荷。手动与自动两条路径共用。 */
 async function collectBackupPayload() {
-    const configData = await readJSON(CONFIG_FILE);
+    const configData = navigation.read('admin').config;
     // ⚠️ 只吞 ENOENT（文件不存在，旧版本升级后的正常情况）。
     // 文件**损坏**时不能吞：favorites 的兜底是空数组，上传它等于用一份空书签
     // **直接抹掉**远端那一份；而自动同步是在用户没点任何按钮的情况下发生的，
@@ -2191,7 +2187,7 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         try {
             // Write restored data
             if (result.data.config && restoreConfig) {
-                await writeJSON(CONFIG_FILE, result.data.config);
+                navigation.write('admin', { config: result.data.config, revision: navigation.read('admin').revision, operationId: nodeCrypto.randomUUID() });
             }
 
             if (result.data.favorites && restoreBookmarks) {
