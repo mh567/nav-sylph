@@ -73,13 +73,19 @@
         if (claim && (typeof claim.id !== 'string' || !claim.id || !Number.isSafeInteger(claim.at))) out.claim = null;
         if (record.lastSuccessAt != null && !Number.isSafeInteger(record.lastSuccessAt)) out.lastSuccessAt = null;
         if (record.uploadedPayloadKey != null && typeof record.uploadedPayloadKey !== 'string') out.uploadedPayloadKey = null;
+        // 连接代次：读出来永远是整数（缺字段按 0），它是「这条记录属于哪一次连接」的
+        // 唯一凭据，迟到写入靠它被拒（见 writeSync 的第三个参数）。
+        out.connEpoch = Number.isSafeInteger(record.connEpoch) && record.connEpoch >= 0 ? record.connEpoch : 0;
         return out;
     }
     /** 记录里的可选字段：缺席（不是显式 null）表示「保持原值」。 */
     // `uploadedPayloadKey` = 最近一次「确认上传成功」时**内容**的指纹（见 app.js 的
     // syncPayloadKey）。「已同步」只有在它等于当前内容指纹时才成立——本机后来改过
     // 就该显示别的词。用指纹而不是修订号：模块改动不动导航的修订号。
-    const SYNC_FIELDS = ['connection', 'recovery', 'pending', 'claim', 'lastSuccessAt', 'uploadedPayloadKey'];
+    //
+    // `connEpoch` = **连接代次**：停止/删除/重新连接时递增。所有落盘都要带期望值，
+    // 事务内比较——这是「迟到的连接请求或旧标签页不能把凭据写回」的全部实现。
+    const SYNC_FIELDS = ['connection', 'recovery', 'pending', 'claim', 'lastSuccessAt', 'uploadedPayloadKey', 'connEpoch'];
     class LocalNavigation {
         async open() {
             if (!this.database) this.database = new Promise((resolve, reject) => {
@@ -183,7 +189,7 @@
          * 隐私模式、配额、其他标签页持锁而失败，而失败是完全静默的——先显示
          * 「已连接」再补写，用户会以为下一次打开还在，实际打开就是未连接。
          */
-        async writeSync(patch, revision) {
+        async writeSync(patch, revision, expectedEpoch) {
             const db = await this.open();
             return new Promise((resolve, reject) => {
                 const tx = db.transaction('navigation', 'readwrite');
@@ -194,6 +200,12 @@
                         const current = checkSync(event.target.result);
                         if ((current?.revision || 0) !== revision) {
                             throw Object.assign(new Error('其他标签页已修改同步状态，请刷新后重试'), { code: 'conflict' });
+                        }
+                        // ⚠️ 连接代次必须在**事务内**比较，不能靠调用方先读后写：
+                        // 「停止同步」是在另一个标签页里发生的（或就在本页的另一条异步
+                        // 链上），先读后写的窗口里它随时会变。期望值给了就一定要比。
+                        if (expectedEpoch !== undefined && (current?.connEpoch || 0) !== expectedEpoch) {
+                            throw Object.assign(new Error('连接状态已变化，本次写入已作废'), { code: 'epoch' });
                         }
                         const next = {};
                         for (const key of SYNC_FIELDS) {

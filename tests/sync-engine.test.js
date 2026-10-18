@@ -24,13 +24,21 @@ const cleanApp = stripComments(appSource);
 // 调度参数一律**从源码解析**再注入：手写 500/2000 之类的字面量会让「改了真常量」
 // 这类变异照样全绿（本仓库踩过）。
 const CONST_NAMES = ['SYNC_DEBOUNCE_MS', 'SYNC_MAX_WAIT_MS', 'SYNC_POLL_MS', 'SYNC_BACKOFF_START_MS',
-    'SYNC_BACKOFF_MAX_MS', 'SYNC_CLAIM_TTL_MS', 'SYNC_CLAIM_PING_MS', 'SYNC_RECEIPT_WINDOW_MS'];
+    'SYNC_BACKOFF_MAX_MS', 'SYNC_CLAIM_TTL_MS', 'SYNC_CLAIM_PING_MS', 'SYNC_RECEIPT_WINDOW_MS',
+    'SYNC_PASSPHRASE_MIN', 'SYNC_PASSPHRASE_MAX'];
 const CONSTANTS = Object.fromEntries(CONST_NAMES.map(name => {
     const parsed = new RegExp(`const ${name} = (\\d+)`).exec(cleanApp);
     assert.ok(parsed, `解析出 ${name}`);
     return [name, Number(parsed[1])];
 }));
-const CONST_SOURCE = CONST_NAMES.map(name => `const ${name} = ${CONSTANTS[name]};`).join('\n');
+// 口令派生标签是字符串常量，但同样是「真代码读的东西」，一样从源码解析。
+const CONNECT_LABEL = (() => {
+    const parsed = /const CONNECT_LABEL = '([^']*)'/.exec(cleanApp);
+    assert.ok(parsed, '解析出 CONNECT_LABEL');
+    return parsed[1];
+})();
+const CONST_SOURCE = CONST_NAMES.map(name => `const ${name} = ${CONSTANTS[name]};`).join('\n')
+    + `\nconst CONNECT_LABEL = ${JSON.stringify(CONNECT_LABEL)};`;
 
 const METHODS = [
     'hasLocalDraft', 'setSyncStatus', 'markSyncDirty', 'scheduleSyncUpload', 'startSyncUpload',
@@ -39,7 +47,11 @@ const METHODS = [
     'handleSyncUploadFailure', 'handleSyncConflict', 'fetchSyncCloud', 'reconcileAgedPending',
     'syncPullCheck', 'applyCloudConfig', 'startSyncPolling', 'stopSyncPolling', 'stopSyncTimers',
     'syncSettledStatus', 'syncPayloadKey', 'syncClaimHeldElsewhere', 'loadSyncState', 'bindSyncChannel',
-    'onSyncVisibilityChange', 'onSyncOnline', 'onSyncOffline', 'pauseSyncForAdmin', 'resumeSyncAfterAdmin', 'notifySyncPeers', 'resolveSyncConflict', 'clearSyncConnection'
+    'onSyncVisibilityChange', 'onSyncOnline', 'onSyncOffline', 'pauseSyncForAdmin', 'resumeSyncAfterAdmin', 'notifySyncPeers', 'resolveSyncConflict', 'clearSyncConnection',
+    'writeSyncWithEpochRetry', 'refreshSyncRecord', 'stopSyncLocal', 'syncTerminalOf', 'handleSyncTerminal', 'applySyncHalt', 'retrySyncAfterHalt',
+    'confirmStopSync', 'requestDeleteSpace', 'confirmDeleteSpace', 'openSyncDialog',
+    'finishSyncConnection', 'persistSyncConnection', 'writeCloudConfig', 'syncCheckQuiet',
+    'deriveSyncProof', 'validateSyncPassphrase'
 ];
 
 /** 假时钟：定时器可推进，`advance` 会把到期的回调按时间顺序跑完。 */
@@ -97,10 +109,16 @@ function makeLocalStore(seed = null) {
         snapshot: () => record,
         seed: value => { record = value; },
         async readSync() { return record ? { ...record } : undefined; },
-        async writeSync(patch, revision) {
+        async writeSync(patch, revision, expectedEpoch) {
             const current = record || { revision: 0 };
             if ((current.revision || 0) !== revision) throw Object.assign(new Error('其他地方改过了'), { code: 'conflict' });
-            const next = { schemaVersion: 1, revision: revision + 1 };
+            // 连接代次的比较在**事务内**——与 local-navigation.js 同语义。夹具不建模
+            // 这一条的话，「迟到的落盘被拒」这条验收在测试里根本不存在（假货比真货宽松）。
+            if (expectedEpoch !== undefined && (current.connEpoch || 0) !== expectedEpoch) {
+                throw Object.assign(new Error('连接状态已变化'), { code: 'epoch' });
+            }
+            const next = { schemaVersion: 1, revision: revision + 1,
+                connEpoch: Object.prototype.hasOwnProperty.call(patch || {}, 'connEpoch') ? (patch.connEpoch || 0) : (current.connEpoch || 0) };
             // ⚠️ 这个列表必须与 local-navigation.js 的 SYNC_FIELDS 一致：
             // 漏一个字段的表现不是报错，而是真代码读到 undefined、状态判断悄悄走错。
             for (const key of ['connection', 'recovery', 'pending', 'claim', 'lastSuccessAt', 'uploadedPayloadKey']) {
@@ -135,6 +153,9 @@ function makeHarness(options = {}) {
         syncRecordRevision: 0,
         syncStatus: 'synced',
         syncConnEpoch: 0,
+        // #9：删除挡板（删除期间暂停上传）与停用挡板（空间被管理员停用后不再自动重试）
+        syncDeleting: false,
+        syncHalted: false,
         syncUploadedPayloadKey: 'k7',   // 与当前内容指纹一致 = 内容已经传上去过
         syncUploadSettled: false,
         syncBackoffMs: 0,
@@ -150,6 +171,7 @@ function makeHarness(options = {}) {
         syncConflict: null,
         syncLastSuccessAt: null,
         syncError: '',
+        syncState: 'disconnected',
         localSettingsChanged: () => false,
         localModulePayload: () => ({ enabled: [], widgets: [], settings: {} }),
         markSyncEntry: () => {},
@@ -159,7 +181,9 @@ function makeHarness(options = {}) {
         // 用桩就把它自己换掉了（本轮第一版就是这样，测试看不见真实现）。
 
         adoptCloudConfig: async cloud => { app.config = cloud.config; app.adopted = cloud.revision; },
-        setSyncState: () => {}
+        // 忠实到能读回状态：桩成空函数的话，「连接到底建没建起来」在夹具里就看不见了
+        // （本轮就是这么漏掉一个真缺陷的）。
+        setSyncState: (state, message = '') => { app.syncState = state; app.syncError = message; }
     };
     const api = {
         async get(url, opts) {
@@ -179,9 +203,18 @@ function makeHarness(options = {}) {
             return result;
         }
     };
-    const documentStub = { hidden: false, querySelector: () => (options.openDialog ? {} : null) };
+    const documentStub = {
+        hidden: false,
+        querySelector: () => (options.openDialog ? {} : null),
+        // 删除确认框里的口令输入：用例通过 `options.deletePassphrase` 提供。
+        getElementById: id => (id === 'syncDeletePassphrase' && options.deletePassphrase !== undefined
+            ? { value: options.deletePassphrase } : null)
+    };
     const navigatorStub = { onLine: options.onLine !== false };
-    const windowStub = { NavigationSchema: { publicConfig: value => value, validate: () => {} }, BroadcastChannel: function () { return channel; } };
+    // 口令派生走真实现（`deriveSyncProof` + 真的 SHA-256），所以 window.crypto
+    // 给的是 Node 的 webcrypto——给个假 digest 就等于把「证明怎么算出来的」这条
+    // 链路换掉了；这里只有它是真的，服务端的 proofId 才对得上。
+    const windowStub = { NavigationSchema: { publicConfig: value => value, validate: () => {} }, crypto: require('node:crypto').webcrypto, BroadcastChannel: function () { return channel; } };
     const cryptoStub = { randomUUID: (() => { let n = 0; return () => `op-${++n}`; })() };
     // 假 BroadcastChannel：`holder` 非空时，收到 claim-check 就回一声「还活着」。
     const channel = {
@@ -223,7 +256,7 @@ function makeHarness(options = {}) {
 }
 
 const seedRecord = (over = {}) => ({
-    schemaVersion: 1, revision: 1,
+    schemaVersion: 1, revision: 1, connEpoch: 0,
     connection: { spaceId: 'space-1', deviceToken: 'tok'.repeat(20), generation: 1, revision: 3, connectedAt: 1 },
     recovery: null, pending: null, claim: null, lastSuccessAt: null, uploadedPayloadKey: 'k7', ...over
 });
@@ -642,4 +675,331 @@ test('清除连接会递增本机连接代次，之后旧连接的响应一律�
     await h.flush(20);
     assert.equal(h.app.syncStatus, 'local', '旧响应不许把状态改回去');
     assert.equal(h.localStore.snapshot().revision, recordAfterClear, '旧响应不许再写记录');
+});
+
+// ==================== #9：停止同步与删除云端空间 ====================
+
+test('停止同步：一次事务递增连接代次并清掉凭据与待上传，本地导航与替换前的副本留下', async () => {
+    const recovery = { direction: 'cloud', savedAt: 5, config: { theme: 'dark' }, modules: { enabled: [], widgets: [], settings: {} } };
+    const pending = { operationId: 'op-9', baseRevision: 3, createdAt: 1, payloadKey: 'k7', content: { config: FULL_CONFIG, modules: {} } };
+    const h = makeHarness({ record: seedRecord({ recovery, pending }) });
+    const before = h.localStore.snapshot();
+    const localRevisionBefore = h.app.localRevision;
+    const configBefore = JSON.stringify(h.app.config);
+    // 先让定时器真的活着再停：不然「停下轮询」那条断言在空夹具上恒真
+    // （本仓库对「守卫必须能变红」的要求）。
+    h.app.startSyncPolling();
+    h.app.scheduleSyncUpload();
+    assert.ok(h.clock.intervals() > 0, '停止前轮询在跑');
+    assert.ok(h.clock.pending() > 0, '停止前有排着的上传');
+
+    const token = await h.app.stopSyncLocal();
+    const after = h.localStore.snapshot();
+
+    assert.equal(after.connEpoch, before.connEpoch + 1, '连接代次要 +1');
+    assert.equal(after.revision, before.revision + 1, '整个断开只写一次事务（修订号只走一格）');
+    assert.equal(after.connection, null, '凭据清掉');
+    assert.equal(after.pending, null, '待上传任务清掉');
+    assert.equal(after.claim, null, '跨标签页的认领清掉');
+    assert.equal(after.uploadedPayloadKey, null);
+    assert.deepEqual(after.recovery, recovery, '替换前的副本要留下（停止不是撤销替换）');
+    assert.equal(after.config, undefined, '同步记录里不该有导航内容——本地导航根本不在这个存储里');
+    assert.equal(h.app.localRevision, localRevisionBefore, '本地导航修订号不动');
+    assert.equal(JSON.stringify(h.app.config), configBefore, '本地导航内容不动');
+    assert.equal(h.app.syncStatus, 'local');
+    assert.equal(h.clock.intervals(), 0, '轮询要停下来');
+    assert.equal(h.clock.pending(), 0, '排着的上传定时器也要清掉');
+    assert.ok(h.channel.posted.some(m => m.type === 'stopped'), '要通知其它标签页取消调度');
+    assert.equal(token, 'tok'.repeat(20), '撤销用的是刚才那把令牌');
+    assert.equal(h.calls.posts.filter(p => p.url === '/api/sync/device/revoke').length, 1, '在线时尽力撤销本设备令牌');
+});
+
+test('离线停止：撤销请求不发，但本地断开照样完成', async () => {
+    const h = makeHarness({ onLine: false });
+    await h.app.stopSyncLocal();
+    assert.equal(h.localStore.snapshot().connection, null, '离线也必须能停止');
+    assert.equal(h.calls.posts.filter(p => p.url === '/api/sync/device/revoke').length, 0, '离线不发撤销请求');
+});
+
+test('别的标签页停止后，本标签页迟到的落盘被拒，凭据不会被写回', async () => {
+    // ① 真实情形：那边的停止推进了修订号，这一侧的每次落盘都会先撞上修订号 CAS。
+    const h = makeHarness();
+    const before = h.localStore.snapshot();
+    h.localStore.seed({ ...before, revision: before.revision + 1, connEpoch: before.connEpoch + 1, connection: null, pending: null, claim: null });
+    assert.equal(h.app.syncConnEpoch, 0, '本标签页内存里还停在旧代次（它不知道那边停了）');
+    await assert.rejects(() => h.app.persistSyncRecord({
+        connection: { spaceId: 'space-1', deviceToken: 'tok'.repeat(20), generation: 1, revision: 4 }
+    }));
+    let after = h.localStore.snapshot();
+    assert.equal(after.connection, null, '存储里的连接没有被写回');
+    assert.equal(after.revision, before.revision + 1, '被拒的写入没有推进修订号');
+
+    // ② 修订号恰好一致的情形：这时**只有**连接代次能挡住它。这一条钉的是新守卫
+    //    自己的契约——没有它的话，将来任何「代次变了但修订号没变」的路径都会
+    //    静默把旧凭据写回去（本仓库对「守卫必须能变红」的要求）。
+    const h2 = makeHarness();
+    const seed2 = h2.localStore.snapshot();
+    h2.localStore.seed({ ...seed2, connEpoch: seed2.connEpoch + 1, connection: null, pending: null, claim: null });
+    await assert.rejects(() => h2.app.persistSyncRecord({
+        connection: { spaceId: 'space-1', deviceToken: 'tok'.repeat(20), generation: 1, revision: 4 }
+    }), error => error.code === 'epoch');
+    assert.equal(h2.localStore.snapshot().connection, null);
+    assert.equal(h2.localStore.snapshot().connEpoch, seed2.connEpoch + 1, '代次没有被倒回去');
+});
+
+test('删除期间暂停上传：脏标记与排程都不生效', async () => {
+    const h = makeHarness();
+    h.app.syncDeleting = true;
+    h.app.markSyncDirty();
+    h.app.scheduleSyncUpload();
+    assert.equal(h.clock.pending(), 0, '删除期间不排任何上传定时器');
+    await h.app.startSyncUpload();
+    assert.equal(h.calls.posts.length, 0, '删除期间一次请求都不发');
+});
+
+test('删除/停用开始时已经排好的那一轮，到期也不许发出去', async () => {
+    const h = makeHarness();
+    // 先排一轮（模拟「用户刚改完，500ms 防抖还没到，接着点了删除」）
+    h.app.markSyncDirty();
+    const scheduled = h.clock.pending();
+    assert.ok(scheduled > 0, '删除前确实排着上传');
+    h.app.syncDeleting = true;
+    // 让定时器到期：排程那一刻的守卫挡不住这一轮，得靠发请求那一处的守卫。
+    await h.clock.advance(1000);
+    assert.equal(h.calls.posts.length, 0, '删除期间到期的那一轮不许发请求');
+    // 空间被停用同理（停用不停在排程那一刻，而是发请求那一刻）。
+    const h2 = makeHarness();
+    h2.app.markSyncDirty();
+    assert.ok(h2.clock.pending() > 0);
+    h2.app.syncHalted = true;
+    await h2.clock.advance(1000);
+    assert.equal(h2.calls.posts.length, 0, '空间停用后到期的那一轮不许发请求');
+});
+
+test('删除云端空间：第一次网络不确定，第二次拿到「已删除」就按删除收尾（不重建）', async () => {
+    let attempt = 0;
+    const recovery = { direction: 'local', savedAt: 11, config: { theme: 'light' }, modules: {} };
+    const h = makeHarness({
+        deletePassphrase: 'Correct-Passphrase-1',
+        record: seedRecord({ recovery }),
+        // 第 1 次网络错（结果不确定），第 2 次明确回答「空间已不存在」——
+        // 这就是设计要求的那次核对，不需要额外的查询接口。
+        post: () => {
+            attempt++;
+            if (attempt === 1) throw Object.assign(new Error('网络中断'), { status: 0 });
+            throw Object.assign(new Error('云端空间已被删除'), { status: 410, code: 'space_deleted' });
+        }
+    });
+    const localRevisionBefore = h.app.localRevision;
+    await h.app.confirmDeleteSpace();
+    assert.equal(attempt, 2, '结果不确定要再试一次');
+    assert.equal(h.localStore.snapshot().connection, null, '核对确认已删除 → 本地断开');
+    assert.deepEqual(h.localStore.snapshot().recovery, recovery, '本机保留的副本留下');
+    assert.equal(h.app.localRevision, localRevisionBefore, '本地导航不动');
+    assert.equal(h.calls.posts.filter(p => p.url === '/api/sync/space/create').length, 0, '任何路径都不重建空间');
+    assert.equal(h.app.syncError, '', '收尾不留错误提示');
+});
+
+test('删除云端空间：口令不正确就保留连接，什么都不删', async () => {
+    const h = makeHarness({
+        deletePassphrase: 'Wrong-Passphrase-1',
+        post: () => { throw Object.assign(new Error('口令不正确，未删除任何内容'), { status: 403, code: 'proof_mismatch' }); }
+    });
+    await h.app.confirmDeleteSpace();
+    assert.equal(h.localStore.snapshot().connection !== null, true, '口令错不能断开连接');
+    assert.match(h.app.syncError, /口令不正确/);
+    assert.equal(h.calls.posts.filter(p => p.url === '/api/sync/space/delete').length, 1, '口令错不重试（重试没有意义）');
+    assert.equal(h.app.syncDeleting, false, '失败后挡板要撤掉，否则上传永远停摆');
+    // 失败分支**也不能**去建新空间（否则「拒绝创建就不该触发错误重建」这条就落空了）
+    assert.equal(h.calls.posts.filter(p => p.url === '/api/sync/space/create').length, 0, '失败路径不重建空间');
+});
+
+test('空间被管理员停用：保留连接、停自动重试，本地编辑不再排上传', async () => {
+    const h = makeHarness({ get: () => { throw Object.assign(new Error('空间已停用'), { status: 403, code: 'space_disabled' }); } });
+    await h.app.syncPullCheck();
+    assert.equal(h.localStore.snapshot().connection !== null, true, '停用不等于断开：连接与凭据都留着');
+    assert.equal(h.app.syncHalted, true);
+    assert.equal(h.clock.intervals(), 0, '停自动重试');
+    // 文案要点名「停用」这个**状态**（而不是笼统的「连接已失效」——那会让用户
+    // 去重新输口令，而这里重新输口令根本没用）。注意断言用「停用」两字：
+    // 实际文案是「已被管理员停用」，「已停用」并不是它的子串。
+    const haltToast = h.calls.toasts.map(t => t.message).find(m => /停用/.test(m));
+    assert.ok(haltToast, '要说清是停用，不是笼统的失败');
+    assert.doesNotMatch(haltToast, /重新输入口令|连接已失效/);
+    h.app.markSyncDirty();
+    assert.equal(h.clock.pending(), 0, '停用后本地编辑不再排上传（否则对着 403 无限退避）');
+});
+
+test('空间已被删除：读路径判为终态 → 本地断开、保留本地导航、文案说清是删除', async () => {
+    const h = makeHarness({ get: () => { throw Object.assign(new Error('云端空间已被删除'), { status: 410, code: 'space_deleted' }); } });
+    const recovery = { direction: 'local', savedAt: 7, config: {}, modules: {} };
+    await h.app.persistSyncRecord({ recovery });
+    await h.app.syncPullCheck();
+    assert.equal(h.localStore.snapshot().connection, null, '终态要断开');
+    assert.deepEqual(h.localStore.snapshot().recovery, recovery, '本地保留的副本不能跟着被清');
+    assert.ok(h.calls.toasts.some(t => /云端空间已被删除/.test(t.message)), '文案要区分「删除」与「连接失效」');
+});
+
+test('错误码映射：删除/撤销/过期/停用四种各有自己的话，且只有一处映射', () => {
+    const h = makeHarness();
+    assert.match(h.app.syncTerminalOf({ code: 'space_deleted' }).message, /已被删除/);
+    assert.match(h.app.syncTerminalOf({ code: 'device_revoked' }).message, /这台设备/);
+    assert.match(h.app.syncTerminalOf({ code: 'device_expired' }).message, /重新输入口令/);
+    assert.equal(h.app.syncTerminalOf({ code: 'space_disabled' }).halt, true);
+    assert.equal(h.app.syncTerminalOf({ status: 500 }), null, '普通失败不是终态，交给退避');
+    // 「只有一处映射」由 tests/sync-client.test.js 的那条守卫拥有：它逐句统计
+    // app.js 里的出现次数。这里不再重复，更不能用「>= 1」这种恒真的形式充当唯一性。
+});
+
+test('连接成功时，代次递增与写入连接必须在同一次落盘里（否则刚连上就「同步失败」）', async () => {
+    // 这一条钉的是真实浏览器验收抓到的缺陷：finishSyncConnection 曾经只在**内存**里
+    // 把代次 +1，记录里的还是旧值，于是连接建好之后每一次落盘都被事务拒掉
+    // （症状：刚连上 → 立刻显示「同步失败」，而连接其实已经在盘上了）。
+    const h = makeHarness({ record: seedRecord({ connection: null, pending: null, uploadedPayloadKey: null }) });
+    h.app.syncConnection = null;
+    h.app.syncConnEpoch = 0;
+    await h.app.finishSyncConnection(
+        { spaceId: 'space-1', deviceToken: 'tok'.repeat(20), generation: 1, revision: 4 },
+        'local'
+    );
+    const record = h.localStore.snapshot();
+    assert.equal(h.app.syncState, 'connected', '连接要真的建立');
+    assert.equal(record.connEpoch, 1, '代次落盘了');
+    assert.equal(h.app.syncConnEpoch, record.connEpoch, '内存与记录里的代次必须一致');
+    // 连接之后的落盘不许再被代次挡住（这正是那个缺陷的症状）
+    await h.app.persistSyncRecord({ uploadedPayloadKey: 'k7' });
+    assert.equal(h.localStore.snapshot().uploadedPayloadKey, 'k7');
+});
+
+test('另一个标签页刚停止时，本标签页的连接不会被写回去（代次 CAS 拦住连接落盘）', async () => {
+    const h = makeHarness({ record: seedRecord({ connection: null, pending: null, uploadedPayloadKey: null }) });
+    h.app.syncConnection = null;
+    h.app.syncConnEpoch = 0;
+    // 另一个标签页在同一时刻停止了同步：记录里的代次推进到 1（修订号保持不变，
+    // 这样撞上的必然是代次那一条守卫）。
+    const seed = h.localStore.snapshot();
+    h.localStore.seed({ ...seed, connEpoch: 1, connection: null });
+    await h.app.finishSyncConnection(
+        { spaceId: 'space-1', deviceToken: 'tok'.repeat(20), generation: 1, revision: 4 },
+        'local'
+    );
+    assert.equal(h.localStore.snapshot().connection, null, '迟到的那份凭据不能写回记录');
+    assert.equal(h.localStore.snapshot().connEpoch, 1, '代次没有被倒回去');
+    assert.match(h.app.syncError, /其它标签页/, '要告诉用户重来一次，而不是笼统的失败');
+});
+
+test('删除时凭据已经失效：按终态断开，不是挂着一把死令牌反复报「删除失败」', async () => {
+    const h = makeHarness({
+        deletePassphrase: 'Correct-Passphrase-1',
+        post: () => { throw Object.assign(new Error('设备凭据无效'), { status: 401, code: 'device_invalid' }); }
+    });
+    await h.app.confirmDeleteSpace();
+    assert.equal(h.localStore.snapshot().connection, null, '死令牌要按终态断开');
+    assert.ok(h.calls.toasts.some(t => /重新输入口令/.test(t.message)), '给的是能指导下一步的话');
+    assert.equal(h.app.syncDeleting, false);
+});
+
+test('删除时空间被停用：保留连接、说清状态（不把「现在删不了」当成凭据失效）', async () => {
+    const h = makeHarness({
+        deletePassphrase: 'Correct-Passphrase-1',
+        post: () => { throw Object.assign(new Error('该空间已停用'), { status: 403, code: 'space_disabled' }); }
+    });
+    await h.app.confirmDeleteSpace();
+    assert.equal(h.localStore.snapshot().connection !== null, true, '停用不等于断开');
+    assert.match(h.app.syncError, /停用/);
+    assert.equal(h.app.syncHalted, true, '说了「已暂停」就要真的停下来（否则调度照常恢复，要等下一轮再撞 403）');
+    assert.equal(h.clock.intervals(), 0, '轮询也要停');
+});
+
+test('空间被停用后管理员恢复：点一次「立即同步」就解除挡板，停用期间的改动重新上传', async () => {
+    let mode = 'disabled';
+    const h = makeHarness({
+        get: () => {
+            if (mode === 'disabled') throw Object.assign(new Error('空间已停用'), { status: 403, code: 'space_disabled' });
+            return h.app.syncCloud;
+        }
+    });
+    h.app.syncUploadedPayloadKey = 'stale';   // 本机有一份还没传上去的内容
+    await h.app.syncPullCheck();
+    assert.equal(h.app.syncHalted, true, '停用要先落地');
+    h.app.markSyncDirty();
+    assert.equal(h.clock.pending(), 0, '停用期间本地编辑一次都不排上传');
+    assert.equal(h.app.syncStatus, 'failed', '状态要说出来是停用');
+    // 对话框要有自己的状态：落到 error 会渲染「口令 + 再输一次」表单，而这里输口令没用。
+    assert.equal(h.app.syncState, 'halted');
+
+    mode = 'ok';
+    await h.app.retrySyncAfterHalt();     // 用户点「重试同步」
+    assert.equal(h.app.syncHalted, false, '读成功 = 停用解除');
+    assert.ok(h.clock.intervals() > 0, '轮询接回来');
+    assert.ok(h.clock.pending() > 0, '停用期间没排过的改动要补排');
+    await h.clock.advance(1000);
+    await flush();
+    assert.ok(h.calls.posts.some(p => p.url === '/api/sync/config'), '补排的那一轮要真的发出去');
+    assert.equal(h.app.syncState, 'connected', '解除停用后对话框回到已连接态');
+});
+
+test('代次被别的标签页推进过：认领时读回代次，上传不会卡死在「失败 + 退避」', async () => {
+    const h = makeHarness();
+    const seed = h.localStore.snapshot();
+    h.localStore.seed({ ...seed, connEpoch: seed.connEpoch + 1 });   // 修订号对齐、只有代次变了
+    assert.equal(h.app.syncConnEpoch, seed.connEpoch, '内存停在旧代次（广播没送达）');
+    h.app.markSyncDirty();
+    await h.clock.advance(1000);
+    await flush();
+    assert.equal(h.app.syncConnEpoch, seed.connEpoch + 1, '认领时要把代次读回内存');
+    assert.notEqual(h.app.syncStatus, 'failed', '不该当成网络失败');
+    assert.equal(h.app.syncRetryTimer, null, '不该排退避重试');
+});
+
+test('上传收尾遇到 epoch：重读记录并排下一轮，不当成网络失败去退避', async () => {
+    const h = makeHarness();
+    const seed = h.localStore.snapshot();
+    h.localStore.seed({ ...seed, connEpoch: seed.connEpoch + 1 });
+    await h.app.handleSyncUploadFailure(Object.assign(new Error('连接状态已变化'), { code: 'epoch' }));
+    assert.equal(h.app.syncConnEpoch, seed.connEpoch + 1, '重读把代次同步回来');
+    assert.equal(h.app.syncRetryTimer, null, '不走退避');
+    assert.notEqual(h.app.syncStatus, 'failed');
+});
+
+test('本机断开落盘失败：不抛出去、明确说「断开未保存」，也不假装代次走过了', async () => {
+    const h = makeHarness();
+    const original = h.app.localStore.writeSync;
+    h.app.localStore.writeSync = async () => { throw new Error('配额已满'); };
+    const token = await h.app.stopSyncLocal();     // 不许 throw（调用点有 4 处，漏掉就是未处理的 rejection）
+    h.app.localStore.writeSync = original;
+    assert.equal(token, 'tok'.repeat(20));
+    assert.match(h.app.syncError, /本机断开未保存/, '要说出来，别假装断开成功');
+    assert.equal(h.app.syncConnEpoch, 0, '没写成功就不该动内存代次');
+});
+
+test('删除失败后把被清掉的那一轮上传接回来（否则页脚写「同步中」却没人传）', async () => {
+    const h = makeHarness({
+        deletePassphrase: 'Wrong-Passphrase-1',
+        post: () => { throw Object.assign(new Error('口令不正确，未删除任何内容'), { status: 403, code: 'proof_mismatch' }); }
+    });
+    h.app.syncUploadedPayloadKey = 'stale';   // 本机有未上传内容
+    await h.app.confirmDeleteSpace();
+    // ⚠️ 断言要指名**上传**的定时器：`clock.pending()` 把轮询的 interval 也算进去，
+    // 「只把轮询接回来、没补排上传」那种缺陷照样能通过（本仓库对守卫能变红的要求）。
+    assert.ok(h.app.syncDebounceTimer || h.app.syncMaxWaitTimer, '失败后要按指纹补排一次上传');
+});
+
+test('收到别的标签页的停止通知：停表、回到未连接（不刷新页面）', async () => {
+    const h = makeHarness();
+    h.app.bindSyncChannel();      // 消息处理器是它装的；不调它就不是在测真实接线
+    h.app.startSyncPolling();
+    h.app.markSyncDirty();
+    assert.ok(h.clock.intervals() > 0 && h.clock.pending() > 0, '先让调度真的活着');
+    // 另一个标签页刚停止：记录里已经没有连接，随后投递 stopped 通知。
+    const seed = h.localStore.snapshot();
+    h.localStore.seed({ ...seed, revision: seed.revision + 1, connEpoch: seed.connEpoch + 1, connection: null, pending: null, claim: null });
+    h.channel.receive({ type: 'stopped' });
+    await flush(30);
+    assert.equal(h.app.syncConnection, null, '内存里的连接清掉');
+    assert.equal(h.app.syncPending, null);
+    assert.equal(h.clock.intervals(), 0, '轮询停下');
+    assert.equal(h.clock.pending(), 0, '排着的上传清掉');
+    assert.equal(h.app.syncStatus, 'local');
+    assert.equal(h.localStore.snapshot().connection, null);
 });

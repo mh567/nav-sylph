@@ -1072,6 +1072,11 @@
 .sync-actions .btn { flex: 1 1 auto; }
 .sync-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
 .sync-link:hover { color: var(--accent-hover); }
+/* 危险区：删除云端空间是这个对话框里唯一**不可撤销**的动作，所以它不占按钮行，
+   单独落在分隔线下面，而且文字的按钮名就是它的后果（不能藏在「更多」之类后面）。 */
+.sync-danger-zone { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.sync-danger { color: var(--admin-error); }
+.sync-danger:hover { color: var(--admin-error); opacity: .82; }
 
 .sync-invite-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .sync-invite-issued { min-width: 0; color: var(--accent); font-size: 12px; line-height: 1.5; word-break: break-all; }

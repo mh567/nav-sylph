@@ -168,7 +168,10 @@
             // 混成一句话会让用户完全找不到下一步——同一个限流桶曾同时表现为
             // 「模块加载不出来」与「监控数据读取失败」两种听起来无关的症状。
             if (!res.ok) {
-                throw Object.assign(new Error(res.statusText || `HTTP ${res.status}`), { status: res.status, data });
+                // `code` 和状态码一起带出来：服务端把「空间已删」「本设备被撤销」
+                // 「令牌过期」「空间停用」分开返回，客户端要按码给不同的话和不同
+                // 的下一步。读路径（30 秒轮询）往往是最先撞上这些的那个。
+                throw Object.assign(new Error(data?.error || res.statusText || `HTTP ${res.status}`), { status: res.status, code: data?.code, data });
             }
             return data;
         },
@@ -284,6 +287,12 @@
             // 发起时的代次已经变了就作废——「停止/切换后旧响应不许写回」靠它，
             // 与管理员侧的 privateEpoch 是同一个形状。
             this.syncConnEpoch = 0;
+            // 删除云端空间期间**挡住一切上传**（设计要求「删除期间暂停本浏览器上传」）：
+            // 删除与写在同一张表上串行，让删除先落地才是有序的做法。
+            this.syncDeleting = false;
+            // 服务端说这台空间被停用时置上：停自动重试，等用户主动点「立即同步」
+            // 或管理员恢复。不置的话会对着一个 403 无限退避。
+            this.syncHalted = false;
             this.syncUploadInFlight = false;
             this.syncUploadAgain = false; // 在途期间又有改动 → 完成后排下一轮
             this.syncUploadSettled = false; // 本次上传已确认 → 放下在途闩后再读一次
@@ -1892,6 +1901,7 @@
             try { record = await this.localStore.readSync(); }
             catch (error) { this.setSyncState('error', '未能读取本机同步状态：' + error.message); return; }
             this.syncRecordRevision = record?.revision || 0;
+            this.syncConnEpoch = record?.connEpoch || 0;
             this.syncConnection = record?.connection || null;
             this.syncRecovery = record?.recovery || null;
             this.syncPending = record?.pending || null;
@@ -1933,7 +1943,17 @@
             button.title = status === 'local' ? '用口令连接云端空间' : `云端空间：${SYNC_STATUS_TEXT[status] || ''}`;
         }
 
-        clearSyncConnection(message) {
+        /**
+         * 本地断开——**唯一的**断开路径：停止同步、删除空间、服务端判为终态都走它。
+         *
+         * ⚠️ 三件事必须在**同一个** IndexedDB 写事务里完成：
+         *   ① 连接代次 +1；② 清掉凭据与待上传任务；③ 清掉跨标签页的 claim。
+         * 分开写就会出现「代次变了但凭据还在」的中间态，而那个窗口里一个在飞的
+         * 连接请求完全可以把凭据写回来（验收：「迟到响应及排队写入不能恢复凭据」）。
+         * 本地导航与「替换前的副本」**不动**——停止只断开同步，不碰用户的导航。
+         */
+        async clearSyncConnection(message) {
+            const token = this.syncConnection?.deviceToken || null;
             this.syncConnection = null;
             this.syncProof = null;
             this.syncSpaceInfo = null;
@@ -1944,16 +1964,92 @@
             this.syncBackoffMs = 0;
             this.syncUploadInFlight = false;
             this.syncUploadedPayloadKey = null;
-            this.setSyncStatus('local');
             this.syncUploadAgain = false;
-            // 递增连接代次：在飞的读/写回来时发现代次变了就整份作废，
-            // 不会把上一个连接的响应写回新状态（#9 的「停止/切换」也走这条）。
-            this.syncConnEpoch = (this.syncConnEpoch || 0) + 1;
+            this.syncHalted = false;
+            this.setSyncStatus('local');
             this.stopSyncTimers();
             this.setSyncState(message ? 'error' : 'disconnected', message);
-            return this.localStore.writeSync({ connection: null, pending: null, claim: null }, this.syncRecordRevision)
-                .then(record => { this.syncRecordRevision = record.revision; this.syncLastSuccessAt = record.lastSuccessAt; })
-                .catch(error => { this.setSyncState('error', '未能保存到本机：' + error.message); });
+            try {
+                await this.writeSyncWithEpochRetry({ connection: null, pending: null, claim: null, uploadedPayloadKey: null }, { bumpEpoch: true });
+            } catch (error) {
+                // 落盘失败必须**在这里**收口：调用点有 4 处（停止、删除、终态、上传/拉取内部），
+                // 漏掉的 promise 会变成未处理的 rejection，而界面已经显示「未连接」了。
+                // 说白了：内存已断开、记录里的凭据还在，刷新会「又连上」——告诉用户，
+                // 让他再点一次，而不是假装断开成功。
+                this.setSyncState('error', '本机断开未保存：' + error.message + '（刷新后可能仍显示已连接，请再试一次）');
+                return token;
+            }
+            // 通知其它标签页取消调度（设计：「随后通知全部标签页取消调度」）。
+            // 正确性不靠它：上面那次事务提交才算断开完成。
+            this.notifySyncPeers('stopped');
+            return token;
+        }
+
+        /**
+         * 带一次重读重试的落盘。两种失败都值得重试一次：
+         *   · `epoch`——别的标签页刚断开/重连（停止是幂等的，重读后再写）；
+         *   · `conflict`——别的标签页刚写了记录（修订号推进了一格）。
+         * 重试仍失败就**报错退出，绝不硬写**：硬写等于把别人的状态覆盖掉。
+         */
+        async writeSyncWithEpochRetry(patch, options = {}) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                // ⚠️ 代次要在**循环内**重算：`patch` 里的 `+1` 只在调用处求值一次，
+                // 而重试前刚做过一次重读，记录里的代次可能已经比它高——拿旧值写回去
+                // 会让「只增不减」的代次回退，之后内存代次更高的标签页每次落盘都被拒。
+                const body = options.bumpEpoch ? { ...patch, connEpoch: (this.syncConnEpoch || 0) + 1 } : patch;
+                try {
+                    const record = await this.persistSyncRecord(body);
+                    return record;
+                } catch (error) {
+                    if (error.code !== 'epoch' && error.code !== 'conflict') {
+                        this.setSyncState('error', '未能保存到本机：' + error.message);
+                        throw error;
+                    }
+                    await this.refreshSyncRecord();
+                }
+            }
+            this.setSyncState('error', '本机同步状态被其它标签页改动，未能保存');
+            throw Object.assign(new Error('本机同步状态被其它标签页改动'), { code: 'conflict' });
+        }
+
+        /** 重新读一遍本机记录并同步到内存（别的标签页改了状态后用）。 */
+        async refreshSyncRecord() {
+            let record = null;
+            try { record = await this.localStore.readSync(); }
+            catch (error) { this.setSyncState('error', '未能读取本机同步状态：' + error.message); return null; }
+            this.syncRecordRevision = record?.revision || 0;
+            this.syncConnEpoch = record?.connEpoch || 0;
+            const had = !!this.syncConnection;
+            this.syncConnection = record?.connection || null;
+            this.syncRecovery = record?.recovery || null;
+            this.syncPending = record?.pending || null;
+            this.syncClaim = record?.claim || null;
+            this.syncLastSuccessAt = record?.lastSuccessAt || null;
+            this.syncUploadedPayloadKey = record?.uploadedPayloadKey ?? null;
+            if (!this.syncConnection) {
+                this.stopSyncTimers();
+                this.setSyncStatus('local');
+                if (had) this.setSyncState('disconnected');
+            }
+            return record;
+        }
+
+        /**
+         * 停止同步（用户主动）。
+         *
+         * 顺序是刻意的：**先本地断开、再尽力撤销服务端令牌**。离线时撤销失败不影响
+         * 断开——设计明确要求「离线断开允许完成，在线尽力撤销令牌」，所以这里不
+         * await 那个请求，也不把它做成用户可见的错误。
+         */
+        async stopSyncLocal() {
+            const token = await this.clearSyncConnection();
+            if (token && navigator.onLine !== false) {
+                API.post('/api/sync/device/revoke', {}, { token }).catch(() => {});
+            }
+            this.setSyncStatus('local');
+            this.markSyncEntry();
+            this.renderSyncDialog();
+            return token;
         }
 
         /**
@@ -1999,6 +2095,16 @@
                 const action = event.target.dataset ? event.target.dataset.action : '';
                 if (action === 'close' || id === 'syncClose') return this.closeSyncDialog();
                 if (id === 'syncBack') { this.syncProof = null; this.syncBusy = false; return this.setSyncState(this.syncConnection ? 'connected' : 'disconnected'); }
+                // 停止同步：先问一句再断（本地断开不可逆的是「要重新输口令」这一步，
+                // 云端与其他设备不受影响，所以文案要说清这两点）。
+                if (id === 'syncRetry') return this.retrySyncAfterHalt();
+                if (id === 'syncStop') return this.setSyncState('confirm_stop');
+                if (id === 'syncStopBack') return this.setSyncState('connected');
+                if (id === 'syncStopConfirm') return this.confirmStopSync();
+                // 删除云端空间：危险操作，只从这个**名字就是它后果**的按钮进入。
+                if (id === 'syncDelete') return this.requestDeleteSpace();
+                if (id === 'syncDeleteBack') return this.setSyncState('connected');
+                if (id === 'syncDeleteConfirm') return this.confirmDeleteSpace();
                 if (id === 'syncCheck') return this.submitSyncPassphrase();
                 if (id === 'syncCreate') return this.createSyncSpace();
                 if (id === 'syncPull') return this.connectSyncSpace('cloud');
@@ -2012,8 +2118,12 @@
             });
             overlay.addEventListener('keydown', event => {
                 if (event.key === 'Escape') { event.preventDefault(); return this.closeSyncDialog(); }
-                // 口令框里按回车 = 点「检查并连接」。
-                if (event.key === 'Enter' && event.target.tagName === 'INPUT') { event.preventDefault(); this.submitSyncPassphrase(); }
+                // 口令框里按回车 = 点「检查并连接」；删除确认框里按回车 = 确认删除。
+                if (event.key === 'Enter' && event.target.tagName === 'INPUT') {
+                    event.preventDefault();
+                    if (event.target.id === 'syncDeletePassphrase') return this.confirmDeleteSpace();
+                    this.submitSyncPassphrase();
+                }
             });
             this.renderSyncDialog();
             const first = overlay.querySelector('input, button');
@@ -2057,10 +2167,49 @@
                     <p class="sync-note">云端空间 <code>${this.esc(String(space.spaceId || '').slice(0, 8))}</code> · 版本 ${this.esc(String(cloud.revision ?? space.revision ?? '—'))} · 最近更新 ${this.esc(cloud.updatedAt ? this.syncRelTime(cloud.updatedAt) : '—')}${this.syncLastSuccessAt ? ` · 最近成功同步 ${this.esc(this.syncRelTime(this.syncLastSuccessAt))}` : ''}</p>
                     ${recovery}
                     ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
-                    <p class="sync-hint">其他设备用同一口令连接即可看到这份配置；本机的修改会自动同步过去。停止同步与删除云端空间在后续版本提供。</p>
+                    <p class="sync-hint">其他设备用同一口令连接即可看到这份配置；本机的修改会自动同步过去。</p>
                     <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncStop">停止同步</button>
                         <button type="button" class="btn" id="syncNow">立即同步</button>
+                        <button type="button" class="btn btn-primary" id="syncClose">关闭</button>
+                    </div>
+                    <p class="sync-note sync-danger-zone"><button type="button" class="sync-link sync-danger" id="syncDelete">删除云端空间</button><br>删除后旧设备全部失效，本机导航保留，但无法撤销。</p>`;
+                return;
+            }
+            if (this.syncState === 'halted' && this.syncConnection) {
+                body.innerHTML = `
+                    <p class="sync-state">空间已被停用</p>
+                    <p class="sync-note">云端空间 <code>${this.esc(String(this.syncConnection.spaceId || '').slice(0, 8))}</code> 被管理员停用，自动同步已暂停。</p>
+                    <p class="sync-hint">本机导航不受影响。管理员重新启用后点「重试同步」即可继续；重新输入口令没有用，连接凭据仍然有效。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncStop">停止同步</button>
+                        <button type="button" class="btn btn-primary" id="syncRetry" ${this.syncBusy ? 'disabled' : ''}>重试同步</button>
                         <button type="button" class="btn" id="syncClose">关闭</button>
+                    </div>`;
+                return;
+            }
+            if (this.syncState === 'confirm_stop') {
+                body.innerHTML = `
+                    <p class="sync-state">停止同步？</p>
+                    <p class="sync-note">本机导航会原样保留，只是不再与云端空间同步。云端空间与其他设备不受影响。</p>
+                    <p class="sync-hint">已经到达服务端的上传可能已经完成——停止不会撤回那一次写入。</p>
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncStopBack">返回</button>
+                        <button type="button" class="btn btn-primary" id="syncStopConfirm" ${this.syncBusy ? 'disabled' : ''}>${this.syncBusy ? '停止中…' : '确认停止同步'}</button>
+                    </div>`;
+                return;
+            }
+            if (this.syncState === 'confirm_delete') {
+                body.innerHTML = `
+                    <p class="sync-state">删除云端空间？</p>
+                    <p class="sync-note">云端配置会被删除，这台设备与其他所有已连接的设备都会立刻失效。本机导航会保留，但这一步无法撤销。</p>
+                    <label class="ui-dialog-field"><span>重新输入口令</span><input id="syncDeletePassphrase" type="password" autocomplete="current-password" spellcheck="false" placeholder="用于确认这是你的空间"></label>
+                    <p class="sync-hint">删除后如果想再用同一口令同步，需要用新的邀请码重新创建空空间——旧内容不会回来。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncDeleteBack">返回</button>
+                        <button type="button" class="btn btn-danger" id="syncDeleteConfirm" ${this.syncBusy ? 'disabled' : ''}>${this.syncBusy ? '删除中…' : '确认删除云端空间'}</button>
                     </div>`;
                 return;
             }
@@ -2216,11 +2365,20 @@
                 connectedAt: Date.now()
             };
             try {
-                await this.persistSyncConnection({ connection, recovery });
+                // ⚠️ 连接代次的递增必须和「写入连接」在**同一次**落盘里（与 clearSyncConnection
+                // 同一个规矩）。只在内存里 +1 的话，记录里的代次还是旧值，而之后每一次
+                // `persistSyncRecord` 都会拿「内存的新代次」去比「记录里的旧代次」——
+                // 于是连接明明建好了，紧接着的上传/指纹落盘全被事务拒掉，
+                // 症状是刚连上就显示「同步失败」（真实浏览器验收抓到过）。
+                await this.persistSyncConnection({ connection, recovery, connEpoch: (this.syncConnEpoch || 0) + 1 });
             } catch (error) {
                 this.syncBusy = false;
                 this.syncConnection = null;
-                this.setSyncState('error', '未能保存到本机，连接未建立：' + error.message);
+                // 代次不匹配 = 另一个标签页刚刚停止/删除/重连了：不能把这一份凭据写回去，
+                // 也不能重试（重试就是在覆盖别人的状态），只能请用户重来一次。
+                this.setSyncState('error', error.code === 'epoch'
+                    ? '连接状态已被其它标签页改动，请重新打开同步'
+                    : '未能保存到本机，连接未建立：' + error.message);
                 return;
             }
             this.syncConnection = connection;
@@ -2249,9 +2407,9 @@
             this.syncProof = null;
             this.syncCloud = cloud;
             this.setSyncState('connected');
-            // 新连接：连接代次 +1，让上一个连接的在飞响应全部作废；状态按
-            // 「盘上还有没有待上传」给——连接那一刻内容已经对齐，通常是已同步。
-            this.syncConnEpoch = (this.syncConnEpoch || 0) + 1;
+            // 代次已经在上面那次事务里 +1 了（不要在这里再动内存：只动内存不落盘
+            // 就是上面注释里那个 bug）。状态按「盘上还有没有待上传」给——连接那一刻
+            // 内容已经对齐，通常是已同步。
             this.syncBackoffMs = 0;
             // ⚠️ 指纹要在**内容定下来之后**才落盘（采用方向会替换本机内容）：
             // 只在内存里设的话，连接后一刷新，loadSyncState 会读到「没上传过的
@@ -2370,6 +2528,7 @@
             if (this.syncAdopting) return;
             if (!this.syncConnection || this.authenticated || this.localUnavailable) return;
             if (this.syncStatus === 'conflict') return;   // 冲突未决时不动，等用户选
+            if (this.syncDeleting || this.syncHalted) return;   // 删除中 / 空间已停用
             this.setSyncStatus(navigator.onLine === false ? 'pending' : 'syncing');
             this.scheduleSyncUpload();
         }
@@ -2383,6 +2542,7 @@
          */
         scheduleSyncUpload() {
             if (!this.syncConnection || this.authenticated || this.syncStatus === 'conflict') return;
+            if (this.syncDeleting || this.syncHalted) return;
             clearTimeout(this.syncDebounceTimer);
             this.syncDebounceTimer = setTimeout(() => this.startSyncUpload(), SYNC_DEBOUNCE_MS);
             // ⚠️ 上限只在**本批第一次脏**时起算：已经排着就不再重置，
@@ -2393,6 +2553,7 @@
         }
 
         startSyncUpload() {
+            if (this.syncDeleting) return;
             clearTimeout(this.syncDebounceTimer); this.syncDebounceTimer = null;
             clearTimeout(this.syncMaxWaitTimer); this.syncMaxWaitTimer = null;
             clearTimeout(this.syncRetryTimer); this.syncRetryTimer = null;
@@ -2446,10 +2607,18 @@
                 && JSON.stringify(window.NavigationSchema.publicConfig(structuredClone(a))) === JSON.stringify(window.NavigationSchema.publicConfig(structuredClone(b)));
         }
 
+        /**
+         * 落盘同步记录。**一律带上当前连接代次**作为期望值：写事务里比较，
+         * 代次被别的路径（停止/删除/另一个标签页）推进过就整份作废。
+         * 这是验收「所有连接落盘和任务入队均事务比较代次」的落点——所以**不要**
+         * 直接调 `localStore.writeSync`，只有「推进代次的那些操作」才用
+         * `writeSyncWithEpochRetry`（它知道自己在换代次）。
+         */
         async persistSyncRecord(patch) {
             if (!this.localStore) throw new Error('本地存储不可用');
-            const record = await this.localStore.writeSync(patch, this.syncRecordRevision);
+            const record = await this.localStore.writeSync(patch, this.syncRecordRevision, this.syncConnEpoch || 0);
             this.syncRecordRevision = record.revision;
+            this.syncConnEpoch = record.connEpoch;
             this.syncConnection = record.connection;
             this.syncRecovery = record.recovery;
             this.syncPending = record.pending;
@@ -2486,6 +2655,10 @@
                 try { record = await this.localStore.readSync(); }
                 catch (error) { throw new Error('未能读取本机同步状态：' + error.message); }
                 this.syncRecordRevision = record?.revision || 0;
+                // 代次也要读回内存：只跟修订号的话，代次落后时这条落盘永远被拒，
+                // 上传就卡在「失败 + 无限退避」，而恢复实际上依赖 BroadcastChannel 送达
+                // ——架构文档明说正确性不靠它。
+                this.syncConnEpoch = record?.connEpoch || 0;
                 const claim = record?.claim;
                 // 别人的认领还没过期 → 先**问一声**它是不是还活着，别只看时间戳。
                 // 只看时间戳的话，关掉页面再重开（新标签页、新 id）会读到上一条
@@ -2534,6 +2707,9 @@
          */
         async uploadOnce() {
             if (!this.syncConnection || this.authenticated || this.syncStatus === 'conflict') return;
+            // 删除/停用期间绝不发上传：它是真正发请求的那一处，排程那一层的挡板
+            // 挡不住「删除开始时已经排好但还没跑」的那一轮。
+            if (this.syncDeleting || this.syncHalted) return;
             // 单飞：本标签页已经有一个在途 → 只记「还有下一轮」，绝不并行第二条。
             if (this.syncUploadInFlight) { this.syncUploadAgain = true; return; }
             this.syncUploadInFlight = true;
@@ -2626,6 +2802,18 @@
         }
 
         async handleSyncUploadFailure(error) {
+            // 终态错误（空间被删 / 设备被撤销 / 令牌过期 / 空间停用）先拦掉：
+            // 它们不该退避重试，也不该塌成同一句「连接已失效」——用户看到的
+            // 下一句话完全不同（要不要重新输口令、要不要等管理员）。
+            if (await this.handleSyncTerminal(error)) return;
+            // 代次被别的标签页推进过（广播可能没送达：没有 BroadcastChannel 的浏览器，
+            // 或者消息丢了）→ 重读一次记录、排下一轮，而不是当成网络失败去无限退避。
+            if (error.code === 'epoch') {
+                await this.refreshSyncRecord();
+                this.setSyncStatus(this.syncConnection ? this.syncSettledStatus() : 'local');
+                if (this.syncPending || this.syncPayloadKey() !== this.syncUploadedPayloadKey) this.scheduleSyncUpload();
+                return;
+            }
             if (error.status === 401 || error.status === 403) {
                 await this.clearSyncConnection('连接已失效，请重新输入口令');
                 return;
@@ -2649,9 +2837,184 @@
         }
 
         /**
+         * 停止同步（确认之后）。
+         *
+         * 本地断开本身在 `clearSyncConnection` 里一次事务做完；这里只负责交互
+         * （忙态、收尾文案）与**尽力**撤销服务端那一条令牌——离线时它失败不影响
+         * 断开，所以不 await 结果，也不把它变成用户可见的错误。
+         */
+        async confirmStopSync() {
+            if (this.syncBusy) return;
+            this.syncBusy = true;
+            this.renderSyncDialog();
+            let failed = false;
+            try { await this.stopSyncLocal(); }
+            catch (error) { failed = true; this.setSyncState('error', '停止同步失败：' + error.message); }
+            this.syncBusy = false;
+            if (!failed) {
+                this.setSyncState('disconnected');
+                this.showToast('已停止同步，本机导航保持不变', 'success', 5000);
+            }
+            this.renderSyncDialog();
+        }
+
+        /**
+         * 进入删除确认。**在线是硬要求**：删除要在服务端发生，离线时连「到底删没删」
+         * 都无法确定（设计要求「网络结果不确定时先查询原空间代次是否仍存在」）。
+         */
+        requestDeleteSpace() {
+            if (navigator.onLine === false) {
+                this.syncError = '删除云端空间需要在线：离线时无法确认删除结果';
+                this.renderSyncDialog();
+                return;
+            }
+            this.syncError = '';
+            this.setSyncState('confirm_delete');
+        }
+
+        /**
+         * 确认删除云端空间。
+         *
+         * 顺序与取舍：
+         *   ① 先挡住一切上传（`syncDeleting`）——删除与写在同一张表上串行，让删除
+         *      先落地才是有序的；
+         *   ② 带上**设备令牌 + 重新输入的口令**两个要素（服务端按令牌钉住空间、
+         *      按口令再验一次，所以「口令错」与「空间已删」是两件可分辨的事）；
+         *   ③ 结果不确定（网络错/5xx）**再试一次**：第二次若得 `space_deleted`，
+         *      就确认「原空间已不存在」——这就是设计要求的核对，不需要额外的查询接口；
+         *   ④ 任何失败都**保留连接**；任何路径都**不重建**空间（本轮没有一处调用创建）。
+         */
+        async confirmDeleteSpace() {
+            if (this.syncBusy || !this.syncConnection) return;
+            const input = document.getElementById('syncDeletePassphrase');
+            const passphrase = input ? input.value : '';
+            const verdict = this.validateSyncPassphrase(passphrase);
+            if (!verdict.ok) { this.syncError = verdict.reason; return this.renderSyncDialog(); }
+            this.syncBusy = true;
+            this.syncDeleting = true;
+            this.stopSyncTimers();
+            this.syncError = '';
+            this.renderSyncDialog();
+            const token = this.syncConnection.deviceToken;
+            let done = false;
+            let dead = '';
+            let halted = false;
+            let failure = '';
+            try {
+                const proof = await this.deriveSyncProof(passphrase);
+                for (let attempt = 0; attempt < 2 && !done; attempt++) {
+                    try {
+                        await API.post('/api/sync/space/delete', { proof }, { token });
+                        done = true;
+                    } catch (error) {
+                        if (error.code === 'space_deleted') { done = true; break; }   // 已经不存在了 = 目的达到
+                        if (error.code === 'proof_mismatch') { failure = '口令不正确，未删除任何内容'; break; }
+                        // 凭据已经不能用了（被撤销/过期/无效）：这条连接本身要按终态收尾，
+                        // 而不是挂着一把死令牌反复报「删除失败」。空间被停用则相反——
+                        // 连接还在，只是现在删不了，说清状态、留着连接等管理员恢复。
+                        const terminal = this.syncTerminalOf(error);
+                        if (terminal) {
+                            if (terminal.halt) { failure = terminal.message; halted = true; } else dead = terminal.message;
+                            break;
+                        }
+                        if (error.status && error.status < 500) { failure = '删除失败：' + error.message; break; }
+                        // 网络错/5xx：结果不确定，再试一次；第二次的答案是确定的。
+                        if (attempt === 1) failure = '删除结果未能确认，请稍后重试';
+                    }
+                }
+            } catch (error) {
+                failure = '删除失败：' + error.message;
+            }
+            this.syncDeleting = false;
+            this.syncBusy = false;
+            if (done) {
+                // 与「停止同步」同样的本地断开；空间已经没了，不必再去撤销令牌。
+                await this.clearSyncConnection();
+                this.syncError = '';
+                this.setSyncState('disconnected');
+                this.showToast('云端空间已删除，本机导航已保留', 'success', 8000);
+            } else if (dead) {
+                // 删除没做成，但凭据已经废了：按终态断开（本地导航照旧保留），
+                // 用户拿到的是一句能指导下一步的话，而不是一个删不掉的对话框。
+                await this.clearSyncConnection(dead);
+                this.showToast(dead, 'error', 8000);
+            } else if (halted) {
+                // 说「已暂停」就要真的停：把 halt 落地（否则界面写着暂停、调度却照常恢复，
+                // 要等下一次轮询再撞 403 才真的停下）。
+                this.applySyncHalt(failure);
+            } else {
+                this.syncError = failure || '删除失败';
+                // 失败保留连接，并把调度接回去（挡板已经撤了）。
+                this.startSyncPolling();
+                if (this.syncConnection && this.syncStatus !== 'conflict') this.setSyncStatus(this.syncSettledStatus());
+                // 删除一开始就停了全部定时器，可能把「刚改完还没到 2 秒上限」的那一轮
+                // 一起清掉了：那时页脚会写「同步中」而其实没有任何东西在传。按指纹补一次。
+                if (this.syncConnection && this.syncPayloadKey() !== this.syncUploadedPayloadKey) this.scheduleSyncUpload();
+            }
+            this.renderSyncDialog();
+        }
+
+        /** 停用后的「重试同步」：再读一次，成功就回到已连接态。 */
+        async retrySyncAfterHalt() {
+            if (this.syncBusy) return;
+            this.syncBusy = true;
+            this.renderSyncDialog();
+            await this.syncPullCheck();
+            this.syncBusy = false;
+            if (!this.syncHalted) this.setSyncState('connected');
+            else this.renderSyncDialog();
+        }
+
+        /**
+         * 服务端错误码 → 「怎么处理 + 给用户一句什么话」。**只有这一处**做这个映射。
+         *
+         * 分成两种终态：
+         *   · `disconnect` —— 这条连接再也用不了了（空间被删 / 本设备被撤销 /
+         *     令牌过期或无效）：本地断开、**保留本地导航**、说清原因。设计明确
+         *     要求这几条不能塌成同一句「连接已失效」：用户看到的下一句话完全不同。
+         *   · `halt` —— 连接**本身**还在，只是空间被管理员停用：停自动重试、
+         *     保留连接与本地配置，等用户主动重试或管理员恢复（设计 §7）。
+         * 返回 null 表示不是终态错误，按普通失败交给退避重试。
+         */
+        syncTerminalOf(error) {
+            const code = error && error.code;
+            if (code === 'space_deleted') return { disconnect: true, message: '云端空间已被删除，已转为仅保存在本机' };
+            if (code === 'device_revoked') return { disconnect: true, message: '这台设备已断开同步，请重新输入口令' };
+            if (code === 'device_expired' || code === 'device_invalid') return { disconnect: true, message: '连接已失效，请重新输入口令' };
+            if (code === 'space_disabled') return { halt: true, message: '该空间已被管理员停用，自动同步已暂停' };
+            return null;
+        }
+
+        /** 终态错误的统一处理。返回 true 表示已经处理掉了（调用方别再做退避）。 */
+        async handleSyncTerminal(error) {
+            const terminal = this.syncTerminalOf(error);
+            if (!terminal) return false;
+            if (terminal.halt) { this.applySyncHalt(terminal.message); return true; }
+            if (!terminal.disconnect) return false;
+            await this.clearSyncConnection(terminal.message);
+            this.showToast(terminal.message, 'error', 8000);
+            return true;
+        }
+
+        /**
+         * 「空间被管理员停用」的落地：**停自动重试、保留连接与本地数据、把状态说出来**。
+         * 解除只有一条路：读一次成功（`syncPullCheck` 的成功分支）——计划里承诺的
+         * 「管理员恢复后点『立即同步』」就落在那里。
+         */
+        applySyncHalt(message) {
+            this.syncHalted = true;
+            this.stopSyncTimers();
+            this.setSyncStatus('failed');
+            // ⚠️ 必须有**自己的**对话框状态：落到 error → 渲染的是「口令 + 再输一次」表单，
+            // 而这里重新输口令根本没用（真实浏览器验收看到的就是这个）。
+            this.setSyncState('halted', message);
+            this.showToast(message, 'error', 8000);
+        }
+
+        /**
          * 409 之后先**核对**再报冲突。
          *
-         * 直接弹「存在配置冲突」会把很多「其实已经落上去了」的情况也报成冲突
+         * 直接弹「存在配置冲突」会把很多「其实已经落上去」的情况也报成冲突
          * （比如自己的上一次写成功了但响应丢了，这次带着旧基线重发）。所以先读
          * 一次：内容一致就说明目标状态已经达到，清掉 pending 收工。
          */
@@ -2715,6 +3078,15 @@
                 // 迟到的响应一律丢弃：连接换过、或者本机在飞行期间又改了。
                 if (epoch !== this.syncConnEpoch) return;
                 this.syncCloud = cloud;
+                if (this.syncHalted) {
+                    // 读得动 = 这个连接又能用了（管理员把空间恢复了）：**先解除挡板**，
+                    // 再把停掉的调度接回来，并补排停用期间一次都没排过的本地改动。
+                    // 然后继续走正常流程——云端若更早就顺带采用，不必再等下一轮轮询。
+                    this.syncHalted = false;
+                    this.startSyncPolling();
+                    if (this.syncPayloadKey() !== this.syncUploadedPayloadKey) this.scheduleSyncUpload();
+                    if (this.syncState === 'halted') this.setSyncState('connected');
+                }
                 if (this.syncPending || this.syncUploadInFlight) { this.setSyncStatus('syncing'); return; }
                 if (payloadKey !== this.syncPayloadKey()) return;
                 if (cloud.revision === this.syncConnection.revision) { this.setSyncStatus(this.syncSettledStatus()); return; }
@@ -2738,7 +3110,7 @@
                 this.setSyncStatus('synced');
             } catch (error) {
                 if (epoch !== this.syncConnEpoch) return;
-                if (error.status === 401 || error.status === 403) { await this.clearSyncConnection('连接已失效，请重新输入口令'); return; }
+                if (await this.handleSyncTerminal(error)) return;
                 this.setSyncStatus(navigator.onLine === false ? 'pending' : 'failed');
             } finally {
                 this.syncChecking = false;
@@ -2836,6 +3208,10 @@
                     if (this.syncClaim && this.syncClaim.id === event.data.id) this.syncChannel.postMessage({ type: 'claim-held', id: event.data.id });
                     return;
                 }
+                // 别的标签页停止/删除了连接：本机重新读一遍记录（此刻已经没有
+                // 连接），于是停表、页脚回到「同步」——不需要用户刷新。
+                // 正确性不靠这条消息：记录本身与连接代次才是判据。
+                if (event.data.type === 'stopped') { this.refreshSyncRecord(); return; }
                 if (event.data.type !== 'changed') return;
                 // 别的标签页刚上传过：本机若无待上传改动就去看一眼，
                 // 免得两边显示不同的内容。

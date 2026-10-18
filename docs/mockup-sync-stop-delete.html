@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>口令空间 · 停止同步与删除云端空间 仿真样例</title>
+<!--
+  仿真样例：停止同步的确认态、删除云端空间的确认态（含口令错误），以及空间被停用时的对话框。
+  ⚠️ 直接引用 ../public/styles.css 与 ../public/admin.css：对话框外观、按钮、危险区、
+  状态行都取真实实现那一份，不会像手抄设计令牌的样例那样走形。
+  对应实现：Issue #9（`public/app.js` 的 `renderSyncDialog` / `clearSyncConnection` / `confirmDeleteSpace` /
+  `applySyncHalt`）。打开：open docs/mockup-sync-stop-delete.html
+  工具栏可以强制：五个状态 / 浅色深色 / 宽窄两档（窄档把对话框压到 390px，看按钮换行后的排布）。
+-->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+    body { margin: 0; padding: 28px 20px 60px; background: var(--bg); color: var(--text); font-family: var(--font-ui, system-ui, -apple-system, "Segoe UI", sans-serif); }
+    .mock-note { max-width: 720px; margin: 0 auto 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+    .mock-note code { padding: 1px 5px; border-radius: 5px; background: var(--admin-row); font-size: 12px; }
+    .mock-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 720px; margin: 0 auto 22px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--admin-row); }
+    .mock-toolbar span { margin-right: 4px; color: var(--text-secondary); font-size: 12px; }
+    .mock-toolbar button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    .mock-toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    /* 舞台：真对话框是覆盖全屏的 .ui-dialog-overlay，样例里只留居中效果，便于并排比较 */
+    .mock-stage { display: flex; justify-content: center; }
+    .mock-stage .ui-dialog-overlay { position: static; display: block; background: transparent; padding: 0; }
+    .mock-stage .ui-dialog { width: min(400px, 92vw); }
+    .mock-stage.narrow .ui-dialog { width: 390px; max-width: 92vw; }
+</style>
+</head>
+<body>
+<div class="mock-note">
+    <strong>停止同步与删除云端空间（#9）</strong>：对话框里新增的两条路。左起第三个状态是这一轮修掉的那个缺陷——
+    原来「空间被停用」复用了错误态，渲染出来的是<strong>首连的「口令 + 再输一次」表单</strong>，而那里重新输口令没有用
+    （凭据仍然有效，只是空间被停用）。
+</div>
+
+<div class="mock-toolbar" role="group" aria-label="状态切换">
+    <span>状态</span>
+    <button data-state="connected" aria-pressed="true">已连接</button>
+    <button data-state="confirm_stop">停止确认</button>
+    <button data-state="confirm_delete">删除确认</button>
+    <button data-state="confirm_delete_error">删除·口令错</button>
+    <button data-state="deleting">删除中</button>
+    <button data-state="halted">空间停用</button>
+    <span style="margin-left:12px">主题</span>
+    <button data-theme="dark" aria-pressed="true">深色</button>
+    <button data-theme="light">浅色</button>
+    <span style="margin-left:12px">宽度</span>
+    <button data-width="wide" aria-pressed="true">宽档</button>
+    <button data-width="narrow">窄档 390px</button>
+</div>
+
+<div class="mock-stage" id="stage">
+    <div class="ui-dialog-overlay" id="dialog">
+        <div class="ui-dialog" role="dialog" aria-modal="true">
+            <h3>云端空间</h3>
+            <div class="sync-dialog-body" id="body"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 这些片段与 public/app.js 的 renderSyncDialog 逐字对应（含危险区的类名与文案），
+    // 改实现时请一起改，别让样例变成另一套设计。
+    const VIEWS = {
+        connected: `
+            <p class="sync-state">已同步</p>
+            <p class="sync-note">云端空间 <code>7c4733bc</code> · 版本 2 · 最近更新 刚刚</p>
+            <p class="sync-hint">其他设备用同一口令连接即可看到这份配置；本机的修改会自动同步过去。</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" id="syncStop">停止同步</button>
+                <button type="button" class="btn" id="syncNow">立即同步</button>
+                <button type="button" class="btn btn-primary" id="syncClose">关闭</button>
+            </div>
+            <p class="sync-note sync-danger-zone"><button type="button" class="sync-link sync-danger" id="syncDelete">删除云端空间</button><br>删除后旧设备全部失效，本机导航保留，但无法撤销。</p>`,
+        confirm_stop: `
+            <p class="sync-state">停止同步？</p>
+            <p class="sync-note">本机导航会原样保留，只是不再与云端空间同步。云端空间与其他设备不受影响。</p>
+            <p class="sync-hint">已经到达服务端的上传可能已经完成——停止不会撤回那一次写入。</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" id="syncStopBack">返回</button>
+                <button type="button" class="btn btn-primary" id="syncStopConfirm">确认停止同步</button>
+            </div>`,
+        confirm_delete: `
+            <p class="sync-state">删除云端空间？</p>
+            <p class="sync-note">云端配置会被删除，这台设备与其他所有已连接的设备都会立刻失效。本机导航会保留，但这一步无法撤销。</p>
+            <label class="ui-dialog-field"><span>重新输入口令</span><input type="password" placeholder="用于确认这是你的空间"></label>
+            <p class="sync-hint">删除后如果想再用同一口令同步，需要用新的邀请码重新创建空空间——旧内容不会回来。</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" id="syncDeleteBack">返回</button>
+                <button type="button" class="btn btn-danger" id="syncDeleteConfirm">确认删除云端空间</button>
+            </div>`,
+        confirm_delete_error: `
+            <p class="sync-state">删除云端空间？</p>
+            <p class="sync-note">云端配置会被删除，这台设备与其他所有已连接的设备都会立刻失效。本机导航会保留，但这一步无法撤销。</p>
+            <label class="ui-dialog-field"><span>重新输入口令</span><input type="password" placeholder="用于确认这是你的空间"></label>
+            <p class="sync-hint">删除后如果想再用同一口令同步，需要用新的邀请码重新创建空空间——旧内容不会回来。</p>
+            <p class="sync-error" role="alert">口令不正确，未删除任何内容</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" id="syncDeleteBack">返回</button>
+                <button type="button" class="btn btn-danger" id="syncDeleteConfirm">确认删除云端空间</button>
+            </div>`,
+        deleting: `
+            <p class="sync-state">删除云端空间？</p>
+            <p class="sync-note">云端配置会被删除，这台设备与其他所有已连接的设备都会立刻失效。本机导航会保留，但这一步无法撤销。</p>
+            <label class="ui-dialog-field"><span>重新输入口令</span><input type="password" placeholder="用于确认这是你的空间"></label>
+            <p class="sync-hint">删除后如果想再用同一口令同步，需要用新的邀请码重新创建空空间——旧内容不会回来。</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" disabled>返回</button>
+                <button type="button" class="btn btn-danger" disabled>删除中…</button>
+            </div>`,
+        halted: `
+            <p class="sync-state">空间已被停用</p>
+            <p class="sync-note">云端空间 <code>7c4733bc</code> 被管理员停用，自动同步已暂停。</p>
+            <p class="sync-hint">本机导航不受影响。管理员重新启用后点「重试同步」即可继续；重新输入口令没有用，连接凭据仍然有效。</p>
+            <p class="sync-error" role="alert">该空间已被管理员停用，自动同步已暂停</p>
+            <div class="ui-dialog-actions sync-actions">
+                <button type="button" class="btn" id="syncStop">停止同步</button>
+                <button type="button" class="btn btn-primary" id="syncRetry">重试同步</button>
+                <button type="button" class="btn" id="syncClose">关闭</button>
+            </div>`
+    };
+    const body = document.getElementById('body');
+    const stage = document.getElementById('stage');
+    const buttons = [...document.querySelectorAll('.mock-toolbar button')];
+    const paint = () => {
+        const state = document.querySelector('[data-state][aria-pressed="true"]').dataset.state;
+        body.innerHTML = VIEWS[state];
+    };
+    for (const button of buttons) {
+        button.addEventListener('click', () => {
+            const group = button.dataset.state ? 'state' : button.dataset.theme ? 'theme' : 'width';
+            if (group === 'width') {
+                stage.classList.toggle('narrow', button.dataset.width === 'narrow');
+            } else {
+                document.documentElement.dataset.theme = button.dataset.theme;
+            }
+            for (const other of buttons) if ((other.dataset.state && group === 'state') || (other.dataset.theme && group === 'theme') || (other.dataset.width && group === 'width')) {
+                other.setAttribute('aria-pressed', String(other === button));
+            }
+            paint();
+        });
+    }
+    document.documentElement.dataset.theme = 'dark';
+    paint();
+</script>
+</body>
+</html>

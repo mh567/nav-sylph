@@ -1285,6 +1285,24 @@ app.post('/api/sync/config', syncDeviceGuard('write'), (req, res) => {
     catch (error) { syncFailure(res, error); }
 });
 
+// 删除云端空间。鉴权是**双要素**：Bearer 令牌把空间钉住，body 里的口令证明再验证
+// 一次（设计要求的「重新输入口令」）——只凭口令分不清「口令打错了」与「空间早被
+// 删了」，而这两种的下一步完全不同。挂连接桶是因为口令是这里唯一的暴力面。
+app.post('/api/sync/space/delete', syncConnectLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.deleteSpace(readDeviceToken(req), req.body || {})); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 停止同步时撤销**本设备**令牌。调用方（浏览器）已经先做完了本地断开，这里只是
+// 尽力而为：无论令牌在不在、空间删没删，都返回成功——把失败做成用户可见的错误
+// 只会让「离线也能停止」这条要求落空。
+app.post('/api/sync/device/revoke', syncConnectLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.revokeDevice(readDeviceToken(req))); }
+    catch (error) { syncFailure(res, error); }
+});
+
 // 邀请码管理。三条都走 rateLimit + requireAdmin：邀请码本身就是「能新建一个
 // 云空间」的凭据，拿到它等于拿到一次开通权。本段不读 Authorization 头，
 // 所以普通设备令牌在这里没有任何入口（tests/sync-http.test.js 有断言）。
