@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>口令云端空间 · 仿真样例</title>
+<!--
+  仿真样例：普通访客的「同步」对话框五个状态 + 后台「同步空间邀请码」列表。
+  ⚠️ 本页**直接引用 ../public/styles.css 与 ../public/admin.css**，只把演示外壳写在页内——
+  对话框外观（.ui-dialog / .ui-dialog-field / :is(.ui-dialog) .btn）与邀请码行的样式
+  都取真实实现那一份，不会像手抄设计令牌的样例那样走形。
+  对应实现：Issue #7 —— 邀请码创建与口令连接云端空间。
+  打开：open docs/mockup-sync-space.html
+-->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+    /* ================= 演示外壳（不属于产品样式） ================= */
+    body { margin: 0; padding: 18px 18px 80px; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .toolbar { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: -18px -18px 18px; padding: 12px 18px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+    .toolbar b { font-size: 12px; font-weight: 620; }
+    .toolbar .group { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .toolbar button { min-height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font-size: 11px; cursor: pointer; }
+    .toolbar button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+    .stage { max-width: 1180px; margin: 0 auto; }
+    .stage h2 { margin: 26px 0 10px; font-size: 13px; font-weight: 650; color: var(--text-secondary); }
+    .stage p.note { margin: 0 0 14px; font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+    .frame { position: relative; min-height: 520px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); }
+    /* 让 .ui-dialog-overlay 落在框里而不是整页：产品里它是 position: fixed，这里改成绝对定位只影响演示 */
+    .frame .ui-dialog-overlay { position: absolute; }
+    .stage.narrow .frame { width: 390px; }
+    .admin-mock { padding: 22px 24px; }
+    .admin-mock .section-title { margin-bottom: 11px; color: var(--text-secondary); font-size: 11px; font-weight: 650; letter-spacing: .065em; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+    <b>口令云端空间 · 仿真</b>
+    <span class="group">状态
+        <button type="button" data-state="disconnected" aria-pressed="true">未连接</button>
+        <button type="button" data-state="not_found" aria-pressed="false">口令无空间</button>
+        <button type="button" data-state="exists" aria-pressed="false">空间已存在</button>
+        <button type="button" data-state="connected" aria-pressed="false">已连接</button>
+        <button type="button" data-state="failed" aria-pressed="false">本地保存失败</button>
+    </span>
+    <span class="group">主题
+        <button type="button" data-theme-set="light" aria-pressed="false">浅色</button>
+        <button type="button" data-theme-set="dark" aria-pressed="true">深色</button>
+        <button type="button" data-theme-set="auto" aria-pressed="false">跟随系统</button>
+    </span>
+    <span class="group">宽度
+        <button type="button" data-width="wide" aria-pressed="true">宽 1180</button>
+        <button type="button" data-width="narrow" aria-pressed="false">窄 390</button>
+    </span>
+    <span class="group">
+        <button type="button" data-toggle-admin aria-pressed="true">邀请码列表：开</button>
+    </span>
+</div>
+
+<div class="stage" id="stage">
+    <h2>访客侧：页脚「同步」打开的对话框（单层，状态就地切换）</h2>
+    <p class="note">
+        五个状态共用一个对话框，不开第二层弹窗。口令与「再输一次」只在未连接态出现；
+        「空间已存在」给出两个方向，两个方向都先把被替换的那一份留在本机（已连接态那行「已保留替换前的副本」）。
+        按钮文案即后果：没有额外确认层，所以「以本机配置替换云端」必须在按钮上写清楚它会覆盖别处。
+    </p>
+    <div class="frame" id="frame">
+        <div class="ui-dialog-overlay" id="dialog">
+            <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
+                <h3 id="syncDialogTitle">云端空间</h3>
+                <div class="sync-dialog-body" id="syncDialogBody"></div>
+            </div>
+        </div>
+    </div>
+
+    <h2>管理侧：后台「首页导航」分区里的邀请码（真实 .section 结构）</h2>
+    <p class="note">
+        列表只显示提示（前 4 位）：库里存的是哈希，邀请码明文只在生成响应里出现一次。
+        用过 / 撤销 / 过期的一律淡出——它们只是历史记录。撤销按钮只在仍然有效的那一行出现。
+    </p>
+    <div class="frame" id="adminFrame">
+        <div class="admin-mock">
+            <div class="section" id="syncInvitesSection">
+                <div class="section-title">同步空间邀请码</div>
+                <p class="fav-hint">邀请码用于让访客创建新的云端空间：一次性、48 小时后失效、可撤销。已有空间的其他设备连接时不需要邀请码。</p>
+                <div class="sync-invite-actions">
+                    <button type="button" class="btn btn-sm btn-primary">生成邀请码</button>
+                    <span class="sync-invite-issued">新邀请码：7156-0163-d3e7-23bd-13ad-aee6（48 小时内有效，只显示这一次）</span>
+                </div>
+                <div class="sync-invite-list">
+                    <div class="sync-invite-row">
+                        <code>7156…</code>
+                        <span class="sync-invite-state">有效至 2026/10/20 20:05:36</span>
+                        <button type="button" class="btn btn-sm">撤销</button>
+                    </div>
+                    <div class="sync-invite-row is-stale">
+                        <code>9f2c…</code>
+                        <span class="sync-invite-state">已使用 3 分钟前</span>
+                    </div>
+                    <div class="sync-invite-row is-stale">
+                        <code>04ab…</code>
+                        <span class="sync-invite-state">已撤销</span>
+                    </div>
+                    <div class="sync-invite-row is-stale">
+                        <code>d17e…</code>
+                        <span class="sync-invite-state">已过期</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 镜像 App.renderSyncDialog 的模板（真实实现在 public/app.js 里）。
+// ⚠️ 这是**手抄的一份**：只用于看状态与文案，改真模板时这里不会跟着变——
+// 它不参与任何断言，别把它当成实现。
+const RECOVERY =
+    '<p class="sync-note">已保留替换前的副本（本机，刚刚） <button type="button" class="sync-link">导出</button></p>';
+const STATES = {
+    disconnected: `
+        <label class="ui-dialog-field"><span>口令</span><input type="password" autocomplete="new-password"></label>
+        <label class="ui-dialog-field"><span>再输一次</span><input type="password" autocomplete="new-password"></label>
+        <p class="sync-hint">知道口令的人都能读写这个空间，口令遗失无法找回。本机不保存口令，只保存一台设备的连接凭据。</p>
+        <p class="sync-error" role="alert">口令至少 6 个字符</p>
+        <div class="ui-dialog-actions sync-actions">
+            <button type="button" class="btn">取消</button>
+            <button type="button" class="btn btn-primary">检查并连接</button>
+        </div>`,
+    not_found: `
+        <p class="sync-state">该口令还没有云端空间</p>
+        <label class="ui-dialog-field"><span>邀请码</span><input type="text" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></label>
+        <p class="sync-hint">需要管理员发放的一次性邀请码。将把本机当前的导航配置上传为新空间。</p>
+        <div class="ui-dialog-actions sync-actions">
+            <button type="button" class="btn">返回</button>
+            <button type="button" class="btn btn-primary">用本机配置创建</button>
+        </div>`,
+    exists: `
+        <p class="sync-state">该口令已存在云端空间</p>
+        <p class="sync-note">最近更新 4 分钟前 · 9 个条目</p>
+        <p class="sync-hint">选择覆盖方向。两个方向都会先把被替换的那一份留在本机。</p>
+        <div class="ui-dialog-actions sync-actions">
+            <button type="button" class="btn">返回</button>
+            <button type="button" class="btn">使用云端配置</button>
+            <button type="button" class="btn btn-primary">以本机配置替换云端</button>
+        </div>`,
+    connected: `
+        <p class="sync-state">已连接云端空间 <code>9a3a8f8d</code></p>
+        <p class="sync-note">云端版本 3 · 最近更新 3 分钟前</p>
+        ${RECOVERY}
+        <p class="sync-hint">其他设备用同一口令连接即可看到这份配置。停止同步与删除云端空间在后续版本提供。</p>
+        <div class="ui-dialog-actions sync-actions"><button type="button" class="btn">关闭</button></div>`,
+    failed: `
+        <label class="ui-dialog-field"><span>口令</span><input type="password" autocomplete="new-password"></label>
+        <label class="ui-dialog-field"><span>再输一次</span><input type="password" autocomplete="new-password"></label>
+        <p class="sync-hint">知道口令的人都能读写这个空间，口令遗失无法找回。本机不保存口令，只保存一台设备的连接凭据。</p>
+        <p class="sync-error" role="alert">未能保存到本机，连接未建立：配额已满</p>
+        <div class="ui-dialog-actions sync-actions">
+            <button type="button" class="btn">取消</button>
+            <button type="button" class="btn btn-primary">检查并连接</button>
+        </div>`
+};
+
+const body = document.getElementById('syncDialogBody');
+const stage = document.getElementById('stage');
+function paint(state) { body.innerHTML = STATES[state]; }
+function press(attr, value) {
+    for (const button of document.querySelectorAll(`.toolbar [data-${attr}]`)) {
+        button.setAttribute('aria-pressed', String(button.dataset[attr.replace(/-(\w)/g, (_, c) => c.toUpperCase())] === value));
+    }
+}
+document.querySelector('.toolbar').addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.state) { paint(button.dataset.state); press('state', button.dataset.state); }
+    if (button.dataset.themeSet) {
+        document.documentElement.dataset.theme = button.dataset.themeSet;
+        press('theme-set', button.dataset.themeSet);
+    }
+    if (button.dataset.width) {
+        stage.classList.toggle('narrow', button.dataset.width === 'narrow');
+        press('width', button.dataset.width);
+    }
+    if (button.dataset.toggleAdmin !== undefined) {
+        const open = button.getAttribute('aria-pressed') !== 'true';
+        button.setAttribute('aria-pressed', String(open));
+        button.textContent = `邀请码列表：${open ? '开' : '关'}`;
+        document.getElementById('adminFrame').hidden = !open;
+    }
+});
+paint('disconnected');
+document.documentElement.dataset.theme = 'dark';
+</script>
+</body>
+</html>

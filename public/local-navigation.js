@@ -6,6 +6,12 @@
     // 支持任意键——多一个键是最小的改动，也不会碰到 #4 已经写下的导航数据。
     const MODULES_KEY = 'modules';
     const MODULES_SCHEMA_VERSION = 1;
+    // 第三个键：普通口令空间的**连接状态**与「替换前的副本」。
+    // 同样不新开存储、不升库版本（理由同上）。这里存的是设备令牌——它是凭据，
+    // 所以只能待在 IndexedDB，**不能**进 Service Worker 的静态缓存，也不能进
+    // localStorage（那两者都会被别的脚本读到，且 SW 缓存是不可控的持久面）。
+    const SYNC_KEY = 'sync';
+    const SYNC_SCHEMA_VERSION = 1;
     function check(record) {
         if (record && (record.schemaVersion !== SCHEMA_VERSION || !Number.isSafeInteger(record.revision) || record.revision < 1)) {
             throw new Error('本地配置版本无法读取，请升级应用并保留站点数据');
@@ -34,6 +40,24 @@
             throw new Error('本地模块配置版本无法读取，请升级应用并保留站点数据');
         }
         if (record) validateModulesShape(record.modules);
+        return record;
+    }
+    /**
+     * 连接状态与恢复副本的**形状**校验。
+     *
+     * 令牌缺失时按「未连接」处理而不是抛错：记录损坏/被清空一半的结果应该是
+     * 「回到未连接、用户重新输口令」，而不是整个本地存储读不出来——后者会让
+     * 导航配置一起消失。
+     */
+    function checkSync(record) {
+        if (!record) return record;
+        if (record.schemaVersion !== SYNC_SCHEMA_VERSION || !Number.isSafeInteger(record.revision) || record.revision < 1) {
+            throw new Error('本地同步状态版本无法读取，请升级应用并保留站点数据');
+        }
+        const connection = record.connection;
+        if (connection && (typeof connection.spaceId !== 'string' || typeof connection.deviceToken !== 'string' || !connection.deviceToken)) {
+            return { ...record, connection: null };
+        }
         return record;
     }
     class LocalNavigation {
@@ -110,6 +134,45 @@
                         }
                         result = { schemaVersion: MODULES_SCHEMA_VERSION, revision: revision + 1, modules };
                         store.put(result, MODULES_KEY);
+                    } catch (e) { failure = e; tx.abort(); }
+                };
+                tx.oncomplete = () => resolve(result);
+                tx.onabort = () => reject(failure || tx.error || new Error('未能保存到本机'));
+            });
+        }
+        /** 读同步连接记录。从未写过时返回 undefined。 */
+        async readSync() {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('navigation');
+                const request = tx.objectStore('navigation').get(SYNC_KEY);
+                tx.oncomplete = () => { try { resolve(checkSync(request.result)); } catch (e) { reject(e); } };
+                tx.onabort = () => reject(tx.error || new Error('无法读取本地同步状态'));
+            });
+        }
+        /**
+         * 写同步记录。乐观并发同款：事务内比较 revision。
+         *
+         * ⚠️ 这一条是「凭据保存失败不得显示连接成功」的落点：调用方必须
+         * **等这个 Promise 成功**之后才把内存状态置为已连接。IndexedDB 会因
+         * 隐私模式、配额、其他标签页持锁而失败，而失败是完全静默的——先显示
+         * 「已连接」再补写，用户会以为下一次打开还在，实际打开就是未连接。
+         */
+        async writeSync(sync, revision) {
+            const shape = checkSync({ ...sync, schemaVersion: SYNC_SCHEMA_VERSION, revision: revision + 1 });
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('navigation', 'readwrite');
+                const store = tx.objectStore('navigation');
+                let result, failure;
+                store.get(SYNC_KEY).onsuccess = event => {
+                    try {
+                        const current = checkSync(event.target.result);
+                        if ((current?.revision || 0) !== revision) {
+                            throw Object.assign(new Error('其他标签页已修改同步状态，请刷新后重试'), { code: 'conflict' });
+                        }
+                        result = { schemaVersion: SYNC_SCHEMA_VERSION, revision: revision + 1, connection: shape.connection || null, recovery: shape.recovery || null };
+                        store.put(result, SYNC_KEY);
                     } catch (e) { failure = e; tx.abort(); }
                 };
                 tx.oncomplete = () => resolve(result);

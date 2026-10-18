@@ -134,10 +134,12 @@
             <button type="button" class="btn btn-sm" id="localAdoptBtn" hidden>采用其他标签页版本</button>
         </div>
         <!-- 页面级操作栏：背板底部的纯文字一行，随编辑态换词。
-             说明 / 外观（仅管理员）/ 编辑（编辑态换成 取消 + 保存配置）/ 管理。 -->
+             说明 / 同步（仅普通访客）/ 外观（仅管理员）/ 编辑（编辑态换成 取消 + 保存配置）/ 管理。 -->
         <footer class="site-footer" aria-label="页面操作">
             <nav class="site-footer-links">
                 <button type="button" class="site-footer-link" id="helpBtn" title="帮助">说明</button>
+                <span class="site-footer-sep" id="syncSep" aria-hidden="true">·</span>
+                <button type="button" class="site-footer-link" id="syncBtn" title="用口令连接云端空间">同步</button>
                 <span class="site-footer-sep" id="appearanceSep" aria-hidden="true" hidden>·</span>
                 <button type="button" class="site-footer-link" id="appearanceBtn" hidden title="外观" aria-label="外观">外观</button>
                 <span class="site-footer-sep" aria-hidden="true">·</span>

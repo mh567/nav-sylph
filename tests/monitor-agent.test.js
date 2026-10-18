@@ -3666,7 +3666,7 @@ test('模块轮询接口有自己的限流桶，不占管理操作的额度', ()
     const appCode = stripComments(appSource);
     assert.match(mod, /e\.status === 429/, '监控轮询失败时区分 429');
     assert.match(appCode, /e\.status === 429/, '模块配置加载失败时区分 429');
-    assert.match(appCode, /throw Object\.assign\(new Error\([^)]*\), \{ status: res\.status \}\)/,
+    assert.match(appCode, /throw Object\.assign\(new Error\([^)]*\), \{ status: res\.status[^}]*\}\)/,
         'API.get 要把状态码带出来，否则调用方无从区分');
 });
 

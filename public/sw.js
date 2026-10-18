@@ -1,3 +1,11 @@
+// nav-v118：普通访客的口令云端空间——管理员在后台「首页导航」分区生成/撤销一次性
+// 邀请码（48 小时有效），访客在页脚「同步」里自设口令创建空间、其他设备用同一口令
+// 连接并选择覆盖方向。口令在浏览器用 Web Crypto 派生成连接证明（服务端只存证明的
+// 哈希）；连接凭据是设备令牌，落在同一 IndexedDB 的 'sync' 键。新增 /api/sync/*
+// （证明+设备令牌）与 /api/admin/sync-invites（管理员会话）两组接口，新增 SQLite
+// 迁移 v9（sync_spaces / sync_devices / sync_invites / sync_receipts）。
+// 改了 app.js、local-navigation.js、index.html、admin.css、server.js、lib/db.js、
+// lib/credentials.js、lib/sync-store.js（新增）。
 // nav-v117：模块分类边界——模块在开发时声明 admin/public，管理员可把公开模块
 // 「对普通访客开放」（weibo-hot 默认关闭）。普通访客在本机（同一 IndexedDB 的
 // 'modules' 键）保存开关、布局与偏好，策略撤回后立刻卸载并停表。新增
@@ -284,7 +292,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v117';
+const CACHE = 'nav-v118';
 const ASSETS = [
     '/',
     '/index.html',

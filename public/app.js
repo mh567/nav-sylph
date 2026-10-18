@@ -66,6 +66,15 @@
     // 「未登录还去请求管理员接口」这种明显的错误。
     const ANONYMOUS_MODULE_ROUTES = /^\/api\/modules\/public$/;
 
+    // 口令 → 连接证明的用途/版本标签。**必须与 lib/sync-store.js 的 CONNECT_LABEL
+    // 逐字一致**：两侧算出来的证明不同，服务端就定位不到空间，而症状只是
+    // 「口令明明对，却说不存在空间」。有一条用例从两份源码里各解析出来对拍。
+    const CONNECT_LABEL = 'sylph-space-connect-v1';
+    // 口令长度按 **Unicode 码点** 计（见 App.validateSyncPassphrase），
+    // 与设计文档的「6 至 128 个 Unicode 码点」一致。
+    const SYNC_PASSPHRASE_MIN = 6;
+    const SYNC_PASSPHRASE_MAX = 128;
+
     // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
     // 服务端把「因环境变化被自动登出」用两种方式表达：401 响应体里的
     // code:'env_changed'，以及两处软门（200 响应）上的 X-Session-Env-Changed 头。
@@ -86,6 +95,17 @@
                 window.app.syncModuleVisibility();
                 window.app.showToast('检测到登录环境变化，已自动退出，请重新登录', 'error', 8000);
             }
+        },
+        /**
+         * 把 `{ token }` 选项翻成 `Authorization: Bearer` 头。
+         *
+         * 设备令牌**只走请求头**，不进 URL：URL 会落到访问日志、Referer 与
+         * 浏览器历史里，而这是一枚能读写整个空间的凭据。
+         */
+        authOptions(options) {
+            if (!options || !options.token) return options || {};
+            const { token, ...rest } = options;
+            return { ...rest, headers: { ...rest.headers, Authorization: `Bearer ${token}` } };
         },
         // binary=true 时不碰 body，把流留给调用方用 res.blob() 读。
         // 否则一律在此解析：body stream 只能读一次，调用方再 res.json()
@@ -109,23 +129,30 @@
             API.notifyEnvChanged(data, res.headers);
             return { res, data };
         },
-        async get(url) {
-            const { res, data } = await API.request(url);
+        async get(url, options = {}) {
+            const { res, data } = await API.request(url, API.authOptions(options));
             // 带上状态码：调用方要能区分「请求过于频繁（429）」与「真的读不到」。
             // 混成一句话会让用户完全找不到下一步——同一个限流桶曾同时表现为
             // 「模块加载不出来」与「监控数据读取失败」两种听起来无关的症状。
             if (!res.ok) {
-                throw Object.assign(new Error(res.statusText || `HTTP ${res.status}`), { status: res.status });
+                throw Object.assign(new Error(res.statusText || `HTTP ${res.status}`), { status: res.status, data });
             }
             return data;
         },
         async post(url, body, options = {}) {
-            const { data } = await API.request(url, {
+            const auth = API.authOptions(options);
+            const { res, data } = await API.request(url, {
+                ...auth,
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                ...options
+                headers: { 'Content-Type': 'application/json', ...auth.headers },
+                body: JSON.stringify(body)
             });
+            if (!res.ok && data && data.error) {
+                // 带业务码抛错：口令空间那几条要按 code 区分
+                // 「邀请码用过了」「云端版本变了」「连接材料失效」，
+                // 只给一句 HTTP 文案的话调用方分不出下一步该做什么。
+                throw Object.assign(new Error(data.error), { status: res.status, code: data.code });
+            }
             return data || {};
         }
     };
@@ -197,6 +224,23 @@
             // 公开模块策略：管理员把哪些公开模块对外开放了。null = 未知。
             // 未知时一个公开模块都不加载——「未知授权不加载」。
             this.publicModulePolicy = null;
+            // 普通口令空间。this.syncProof 是这次流程里口令派生出的连接证明，
+            // **只在内存里**，关掉对话框即清——它等价于口令，不进任何持久存储。
+            this.syncConnection = null;
+            this.syncCloud = null;
+            this.syncRecovery = null;
+            this.syncRecordRevision = 0;
+            this.syncState = 'disconnected';
+            this.syncBusy = false;
+            this.syncError = '';
+            this.syncSpaceInfo = null;
+            this.syncProof = null;
+            // 对话框节点：临开临建、关掉就删。不能常驻——`.ui-dialog-overlay`
+            // 在本文件里是「有没有对话框开着」的判据（见 openSyncDialog 的注释）。
+            this.syncDialogEl = null;
+            // 管理员「站点」分区里的邀请码列表：缓存 + 「已渲染」闩锁。
+            this.syncInvites = null;
+            this.syncInvitesRendered = false;
             // 身份或策略代次。在飞的模块区渲染发现它变了就作废
             // （管理员那侧另有 privateEpoch 管登录态变化）。
             this.moduleGeneration = 0;
@@ -1325,6 +1369,13 @@
             const sep = $('#appearanceSep');
             if (btn) btn.hidden = hidden;
             if (sep) sep.hidden = hidden;
+            // 口令同步是**普通访客**的功能（管理员走服务端管理员配置，不需要口令），
+            // 所以它与「外观」正好相反：这里传进来的 hidden 是「不是管理员」。
+            const sync = $('#syncBtn');
+            const syncSep = $('#syncSep');
+            if (sync) sync.hidden = !hidden;
+            if (syncSep) syncSep.hidden = !hidden;
+            if (!hidden) this.markSyncEntry();
         }
 
         syncEditLayoutUI() {
@@ -1653,6 +1704,508 @@
             return candidate;
         }
 
+        // ==================== 普通口令云端空间 ====================
+        //
+        // 与管理员那套（服务端管理员配置 + 会话）完全独立：这里的凭据是**用户
+        // 自设的口令**派生出的连接证明 + 签发下来的设备令牌，普通访客无需登录。
+        //
+        // 三条不能改坏的约定（都在用例里钉着）：
+        //   1. 口令**只**在内存里，且只在这一次流程内（this.syncProof）。
+        //      不写 IndexedDB、不写 localStorage、不回显到任何 DOM 值里。
+        //   2. 设备令牌落 IndexedDB（同库第三个键），**先写成功再置「已连接」**——
+        //      反过来的话，存储失败时用户会看到已连接，下次打开却是未连接。
+        //   3. 两个替换方向都要先留下被替换的那一份（this.syncRecovery），
+        //      且上传方向基于检查时拿到的 revision，冲突就回来重选。
+
+        /** 口令校验：6–128 个 **Unicode 码点**，不裁空格、不归一化，全空白拒绝。 */
+        validateSyncPassphrase(value) {
+            if (typeof value !== 'string' || value.length === 0) return { ok: false, reason: '请输入口令' };
+            // Array.from 按码点迭代：emoji（代理对）与带组合符的字符都算 1 个。
+            // 用 value.length 会把它算成 2，于是「6 个字符」在中文/emoji 下会误判。
+            const points = Array.from(value).length;
+            if (!/\S/u.test(value)) return { ok: false, reason: '口令不能全是空白字符' };
+            if (points < SYNC_PASSPHRASE_MIN) return { ok: false, reason: `口令至少 ${SYNC_PASSPHRASE_MIN} 个字符` };
+            if (points > SYNC_PASSPHRASE_MAX) return { ok: false, reason: `口令最多 ${SYNC_PASSPHRASE_MAX} 个字符` };
+            return { ok: true };
+        }
+
+        /**
+         * 口令 → 连接证明（64 位十六进制）。
+         *
+         * 标签里同时带**用途**（space-connect）和**版本**（v1）：换用途或换版本就是
+         * 换标签，同一个口令算出来的证明不同，服务端因此定位不到旧空间——不需要
+         * 额外的命名空间字段。标签必须与 lib/sync-store.js 的 CONNECT_LABEL 逐字一致。
+         *
+         * 需要安全上下文（HTTPS 或 localhost）：纯 http 的局域网访问下
+         * `crypto.subtle` 不存在，这里明确报错而不是退回明文。
+         */
+        async deriveSyncProof(passphrase) {
+            if (!window.crypto || !window.crypto.subtle) throw new Error('当前访问方式无法安全派生口令，请通过 HTTPS 或 localhost 访问');
+            const bytes = new TextEncoder().encode(`${CONNECT_LABEL}\u0000${passphrase}`);
+            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+            return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+        }
+
+        // ---- 管理员：同步空间邀请码 ----
+        //
+        // 只有三个动作：生成、列出、撤销。列表**只显示提示（前 4 位）**，
+        // 因为库里存的是哈希——邀请码本身只在生成的响应里出现一次，
+        // 丢了就撤销重发一张，而不是让它在界面或数据库里长期可读。
+
+        renderSyncInvites() {
+            const list = $('#syncInviteList');
+            if (!list) return;
+            if (this.syncInvites) { this.paintSyncInvites(); return; }
+            API.get('/api/admin/sync-invites')
+                .then(result => {
+                    this.syncInvites = result.invites || [];
+                    this.syncInvitesRendered = true;
+                    this.paintSyncInvites();
+                })
+                .catch(error => {
+                    list.innerHTML = `<p class="fav-hint">邀请码读取失败：${this.esc(error.message)}</p>
+                        <button type="button" class="btn btn-sm" data-action="retry-invites">重试</button>`;
+                });
+        }
+
+        paintSyncInvites() {
+            const list = $('#syncInviteList');
+            if (!list) return;
+            const invites = this.syncInvites || [];
+            if (!invites.length) {
+                list.innerHTML = '<p class="fav-hint">还没有邀请码。生成一张发给要创建空间的人。</p>';
+                return;
+            }
+            list.innerHTML = invites.map(invite => {
+                const stale = invite.revoked || invite.expired || invite.used;
+                const state = invite.used ? `已使用 ${this.esc(this.syncRelTime(invite.usedAt))}`
+                    : invite.revoked ? '已撤销'
+                        : invite.expired ? '已过期'
+                            : `有效至 ${this.esc(new Date(invite.expiresAt).toLocaleString())}`;
+                const action = stale ? ''
+                    : `<button type="button" class="btn btn-sm" data-action="revoke-invite" data-id="${this.esc(invite.id)}">撤销</button>`;
+                return `<div class="sync-invite-row${stale ? ' is-stale' : ''}">
+                    <code>${this.esc(invite.hint)}…</code>
+                    <span class="sync-invite-state">${state}</span>${action}
+                </div>`;
+            }).join('');
+        }
+
+        async createSyncInvite() {
+            const button = $('#createInviteBtn');
+            if (button) button.disabled = true;
+            try {
+                const result = await API.post('/api/admin/sync-invites', {});
+                this.syncInvites = null;
+                await this.renderSyncInvites();
+                const issued = $('#inviteIssued');
+                if (issued) issued.textContent = `新邀请码：${result.invite.code}（48 小时内有效，只显示这一次）`;
+                this.showToast('已生成邀请码，请复制后发给用户');
+            } catch (error) {
+                this.showToast('生成邀请码失败：' + error.message, 'error');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async revokeSyncInvite(id) {
+            try {
+                await API.post(`/api/admin/sync-invites/${encodeURIComponent(id)}/revoke`, {});
+                this.syncInvites = null;
+                await this.renderSyncInvites();
+                this.showToast('邀请码已撤销');
+            } catch (error) {
+                this.showToast('撤销失败：' + error.message, 'error');
+            }
+        }
+
+        /** 读本机连接记录；有连接就向服务端确认一次（刷新后复用，不重新签发）。 */
+        async loadSyncState() {
+            if (!this.localStore) return;
+            let record;
+            try { record = await this.localStore.readSync(); }
+            catch (error) { this.setSyncState('error', '未能读取本机同步状态：' + error.message); return; }
+            this.syncRecordRevision = record?.revision || 0;
+            this.syncConnection = record?.connection || null;
+            this.syncRecovery = record?.recovery || null;
+            this.markSyncEntry();
+            if (!this.syncConnection) { this.setSyncState('disconnected'); return; }
+            try {
+                // ⚠️ 必须带令牌：漏掉它这条读取恒 401，而 401 会被下面当成
+                // 「连接已失效」把凭据清掉——「刷新后复用设备连接」就变成了
+                // 「每次刷新都掉线」。测试里对**每一处**读取都断言带令牌，
+                // 因为只断言「有一处带」会被另一处正确的调用点满足。
+                const cloud = await API.get('/api/sync/config', { token: this.syncConnection.deviceToken });
+                this.syncCloud = cloud;
+                this.setSyncState('connected');
+            } catch (error) {
+                // 令牌被撤销 / 过期 / 空间停用：清掉本机连接，要求用户重新输入口令。
+                // 这是**唯一**该清连接的时机之一——不能因为一次网络抖动就丢凭据。
+                if (error.status === 401 || error.status === 403) {
+                    await this.clearSyncConnection('连接已失效，请重新输入口令');
+                } else {
+                    this.setSyncState('error', '暂时无法确认同步状态：' + error.message);
+                }
+            }
+        }
+
+        setSyncState(state, message = '') {
+            this.syncState = state;
+            this.syncError = message;
+            if (state !== 'connected') this.syncCloud = state === 'error' ? this.syncCloud : null;
+            this.markSyncEntry();
+            this.renderSyncDialog();
+        }
+
+        /** 页脚入口的文案/状态由这一处决定，别在别处再写一遍。 */
+        markSyncEntry() {
+            const button = $('#syncBtn');
+            if (!button) return;
+            button.textContent = this.syncState === 'connected' ? '已同步' : '同步';
+            button.dataset.state = this.syncState;
+            button.title = this.syncState === 'connected' ? '已连接云端空间' : '用口令连接云端空间';
+        }
+
+        clearSyncConnection(message) {
+            this.syncConnection = null;
+            this.syncProof = null;
+            this.syncSpaceInfo = null;
+            this.setSyncState(message ? 'error' : 'disconnected', message);
+            return this.localStore.writeSync({ connection: null, recovery: this.syncRecovery }, this.syncRecordRevision)
+                .then(record => { this.syncRecordRevision = record.revision; })
+                .catch(error => { this.setSyncState('error', '未能保存到本机：' + error.message); });
+        }
+
+        /**
+         * 把连接写进本机，**成功之后**才置「已连接」。
+         * 失败一律停在 error 态并把原因说出来——这是验收里
+         * 「凭据保存失败不显示连接成功」那一条的落点。
+         */
+        async persistSyncConnection(snapshot) {
+            if (!this.localStore) throw new Error('本地存储不可用');
+            const record = await this.localStore.writeSync(snapshot, this.syncRecordRevision);
+            this.syncRecordRevision = record.revision;
+            this.syncRecovery = record.recovery;
+            return record;
+        }
+
+        /**
+         * 打开同步对话框。
+         *
+         * ⚠️ 界面**必须临开临建、关掉就删**，不能像页脚按钮那样常驻一个 hidden 节点。
+         * `.ui-dialog-overlay` 在本文件里是「现在有没有对话框开着」的判据（阻止关闭
+         * 页面、管理员登录前等用户结束编辑都用它查），放一个隐藏的常驻节点进去会
+         * 让那些判据**恒真**——实测症状是「密码输对了，管理面板永远打不开」
+         * （`finishLocalDraft` 在里面死等一个不会到来的循环）。这正是
+         * `showUiDialog` 自己也临建临删的原因。
+         */
+        openSyncDialog() {
+            if (this.syncDialogEl) return;
+            const overlay = html(`
+                <div class="ui-dialog-overlay" id="syncDialog" data-action="close">
+                    <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
+                        <h3 id="syncDialogTitle">云端空间</h3>
+                        <div class="sync-dialog-body" id="syncDialogBody"></div>
+                    </div>
+                </div>
+            `);
+            document.body.appendChild(overlay);
+            this.syncDialogEl = overlay;
+            this.syncProof = null;
+            this.syncSpaceInfo = null;
+            this.syncError = '';
+            this.syncState = this.syncConnection ? 'connected' : 'disconnected';
+            overlay.addEventListener('click', event => {
+                // 只认「点在遮罩或关闭按钮上」：内部控件的事件会冒泡到这里，
+                // 但那时 event.target 是控件自己。
+                const id = event.target.id;
+                const action = event.target.dataset ? event.target.dataset.action : '';
+                if (action === 'close' || id === 'syncClose') return this.closeSyncDialog();
+                if (id === 'syncBack') { this.syncProof = null; this.syncBusy = false; return this.setSyncState(this.syncConnection ? 'connected' : 'disconnected'); }
+                if (id === 'syncCheck') return this.submitSyncPassphrase();
+                if (id === 'syncCreate') return this.createSyncSpace();
+                if (id === 'syncPull') return this.connectSyncSpace('cloud');
+                if (id === 'syncPush') return this.connectSyncSpace('local');
+                if (id === 'syncRecoveryExport') return this.exportSyncRecovery();
+            });
+            overlay.addEventListener('keydown', event => {
+                if (event.key === 'Escape') { event.preventDefault(); return this.closeSyncDialog(); }
+                // 口令框里按回车 = 点「检查并连接」。
+                if (event.key === 'Enter' && event.target.tagName === 'INPUT') { event.preventDefault(); this.submitSyncPassphrase(); }
+            });
+            this.renderSyncDialog();
+            const first = overlay.querySelector('input, button');
+            if (first) first.focus();
+        }
+
+        closeSyncDialog() {
+            if (this.syncDialogEl) { this.syncDialogEl.remove(); this.syncDialogEl = null; }
+            // 口令与证明只服务于这次流程，关掉即弃。
+            this.syncProof = null;
+            this.syncSpaceInfo = null;
+        }
+
+        renderSyncDialog() {
+            const dialog = this.syncDialogEl;
+            const body = dialog && dialog.querySelector('#syncDialogBody');
+            if (!body) return;
+            const recovery = this.syncRecovery
+                ? `<p class="sync-note">已保留替换前的副本（${this.esc(this.syncRecovery.direction === 'cloud' ? '云端' : '本机')}，${this.esc(this.syncRelTime(this.syncRecovery.savedAt))}） <button type="button" class="sync-link" id="syncRecoveryExport">导出</button></p>`
+                : '';
+            if (this.syncState === 'connected') {
+                const space = this.syncConnection || {};
+                const cloud = this.syncCloud || {};
+                body.innerHTML = `
+                    <p class="sync-state">已连接云端空间 <code>${this.esc(String(space.spaceId || '').slice(0, 8))}</code></p>
+                    <p class="sync-note">云端版本 ${this.esc(String(cloud.revision ?? space.revision ?? '—'))} · 最近更新 ${this.esc(cloud.updatedAt ? this.syncRelTime(cloud.updatedAt) : '—')}</p>
+                    ${recovery}
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <p class="sync-hint">其他设备用同一口令连接即可看到这份配置。停止同步与删除云端空间在后续版本提供。</p>
+                    <div class="ui-dialog-actions sync-actions"><button type="button" class="btn" id="syncClose">关闭</button></div>`;
+                return;
+            }
+            if (this.syncState === 'not_found') {
+                body.innerHTML = `
+                    <p class="sync-state">该口令还没有云端空间</p>
+                    <label class="ui-dialog-field"><span>邀请码</span><input id="syncInvite" type="text" autocomplete="off" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"></label>
+                    <p class="sync-hint">需要管理员发放的一次性邀请码。将把本机当前的导航配置上传为新空间。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncBack">返回</button>
+                        <button type="button" class="btn btn-primary" id="syncCreate" ${this.syncBusy ? 'disabled' : ''}>${this.syncBusy ? '创建中…' : '用本机配置创建'}</button>
+                    </div>`;
+                return;
+            }
+            if (this.syncState === 'exists') {
+                const info = this.syncSpaceInfo || {};
+                body.innerHTML = `
+                    <p class="sync-state">该口令已存在云端空间</p>
+                    <p class="sync-note">最近更新 ${this.esc(info.updatedAt ? this.syncRelTime(info.updatedAt) : '—')} · ${this.esc(String(info.entryCount ?? 0))} 个条目</p>
+                    <p class="sync-hint">选择覆盖方向。两个方向都会先把被替换的那一份留在本机。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncBack">返回</button>
+                        <button type="button" class="btn" id="syncPull" ${this.syncBusy ? 'disabled' : ''}>使用云端配置</button>
+                        <button type="button" class="btn btn-primary" id="syncPush" ${this.syncBusy ? 'disabled' : ''}>以本机配置替换云端</button>
+                    </div>`;
+                return;
+            }
+            // disconnected / checking：口令与确认输入。
+            const disabled = this.syncBusy ? 'disabled' : '';
+            body.innerHTML = `
+                <label class="ui-dialog-field"><span>口令</span><input id="syncPassphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
+                <label class="ui-dialog-field"><span>再输一次</span><input id="syncPassphraseConfirm" type="password" autocomplete="new-password" spellcheck="false"></label>
+                    <p class="sync-hint">知道口令的人都能读写这个空间，口令遗失无法找回。本机不保存口令，只保存一台设备的连接凭据。</p>
+                ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                <div class="ui-dialog-actions sync-actions">
+                    <button type="button" class="btn" id="syncClose">取消</button>
+                    <button type="button" class="btn btn-primary" id="syncCheck" ${disabled}>${this.syncBusy ? '检查中…' : '检查并连接'}</button>
+                </div>`;
+        }
+
+        /** 「检查并连接」：先本地校验，再问服务端这个口令有没有空间。 */
+        async submitSyncPassphrase() {
+            const passphrase = $('#syncPassphrase') ? $('#syncPassphrase').value : '';
+            const confirm = $('#syncPassphraseConfirm') ? $('#syncPassphraseConfirm').value : '';
+            const verdict = this.validateSyncPassphrase(passphrase);
+            if (!verdict.ok) { this.setSyncState('disconnected', verdict.reason); return; }
+            if (passphrase !== confirm) { this.setSyncState('disconnected', '两次输入的口令不一致'); return; }
+            this.syncBusy = true;
+            this.setSyncState('checking');
+            try {
+                const proof = await this.deriveSyncProof(passphrase);
+                const result = await API.post('/api/sync/space/check', { proof });
+                if (result.exists) {
+                    this.syncProof = proof;
+                    this.syncSpaceInfo = result;
+                    this.syncBusy = false;
+                    this.setSyncState('exists');
+                } else {
+                    this.syncProof = proof;
+                    this.syncBusy = false;
+                    this.setSyncState('not_found');
+                }
+            } catch (error) {
+                this.syncBusy = false;
+                this.setSyncState('disconnected', '检查失败：' + error.message);
+            }
+        }
+
+        async createSyncSpace() {
+            const inviteCode = $('#syncInvite') ? $('#syncInvite').value : '';
+            if (!inviteCode.trim()) { this.setSyncState('not_found', '请输入邀请码'); return; }
+            this.syncBusy = true;
+            this.setSyncState('not_found');
+            try {
+                const result = await API.post('/api/sync/space/create', {
+                    proof: this.syncProof,
+                    inviteCode,
+                    operationId: crypto.randomUUID(),
+                    config: window.NavigationSchema.publicConfig(structuredClone(this.config)),
+                    modules: this.localModulePayload()
+                });
+                await this.finishSyncConnection(result, 'local');
+            } catch (error) {
+                // 邀请码已被用掉 / 空间已被别人建出来：回到「已存在」让用户重新选。
+                this.syncBusy = false;
+                if (error.status === 409 || (error.status === 403 && /invite_used|space_exists/.test(error.code || ''))) {
+                    const refreshed = await this.syncCheckQuiet();
+                    if (refreshed && refreshed.exists) { this.syncSpaceInfo = refreshed; this.setSyncState('exists', '该口令已经建好空间了，请选择方向'); return; }
+                }
+                this.setSyncState('not_found', '创建失败：' + error.message);
+            }
+        }
+
+        async syncCheckQuiet() {
+            try { return await API.post('/api/sync/space/check', { proof: this.syncProof }); }
+            catch { return null; }
+        }
+
+        /**
+         * 连接既有空间。direction='cloud' 用云端配置覆盖本机，'local' 反过来。
+         * 两个方向都先把**被替换的那份**写进 recovery，再动另一侧。
+         */
+        async connectSyncSpace(direction) {
+            this.syncBusy = true;
+            this.setSyncState('exists');
+            try {
+                const connection = await API.post('/api/sync/space/connect', { proof: this.syncProof, operationId: crypto.randomUUID() });
+                const cloud = await API.get('/api/sync/config', { token: connection.deviceToken });
+                await this.finishSyncConnection({ ...connection, cloud }, direction);
+            } catch (error) {
+                this.syncBusy = false;
+                if (error.status === 409 || error.status === 404) {
+                    const refreshed = await this.syncCheckQuiet();
+                    if (refreshed) { this.syncSpaceInfo = refreshed; this.setSyncState(refreshed.exists ? 'exists' : 'not_found', '云端状态已变化，请重新选择'); return; }
+                }
+                this.setSyncState('exists', '连接失败：' + error.message);
+            }
+        }
+
+        localModulePayload() {
+            const raw = this.localModules || { enabled: [], widgets: [], settings: {} };
+            return {
+                enabled: [...raw.enabled],
+                widgets: structuredClone(raw.widgets || []),
+                settings: structuredClone(raw.settings || {})
+            };
+        }
+
+        /**
+         * 收尾：先落盘，再采用内容，最后才说「已连接」。
+         *
+         * 顺序是有意的，三条都在验收里：
+         *   · 落盘失败 → 不显示已连接（persistSyncConnection 抛错就到此为止）；
+         *   · recovery 在改内容**之前**写，否则「替换前的副本」存的是替换后的；
+         *   · 采用云端配置时先写本机 recovery 再覆盖 this.config。
+         */
+        async finishSyncConnection(material, direction) {
+            // 只有**替换**才有「替换前的副本」。新建空间时云端本来就没有内容，
+            // 那时写一份空的 recovery 只会在界面上写出一句没有意义的
+            // 「已保留替换前的副本（云端）」——判据就取「这次动的是哪一侧」。
+            const recovery = direction === 'cloud'
+                ? { direction: 'local', savedAt: Date.now(), config: window.NavigationSchema.publicConfig(structuredClone(this.config)), modules: this.localModulePayload() }
+                : material.cloud
+                    ? { direction: 'cloud', savedAt: Date.now(), config: material.cloud.config, modules: material.cloud.modules || {} }
+                    : null;
+            const connection = {
+                spaceId: material.spaceId,
+                deviceToken: material.deviceToken,
+                generation: material.generation,
+                revision: material.revision,
+                connectedAt: Date.now()
+            };
+            try {
+                await this.persistSyncConnection({ connection, recovery });
+            } catch (error) {
+                this.syncBusy = false;
+                this.syncConnection = null;
+                this.setSyncState('error', '未能保存到本机，连接未建立：' + error.message);
+                return;
+            }
+            this.syncConnection = connection;
+            let cloud = material.cloud || null;
+            try {
+                if (direction === 'local') {
+                    const written = await this.writeCloudConfig(material.deviceToken, connection.revision);
+                    connection.revision = written.revision;
+                    await this.persistSyncConnection({ connection, recovery });
+                    // 上传成功后云端就是刚写下的这一版：把版本号与时间补上，
+                    // 否则状态行会一直显示上传**前**的版本（或一个空的「—」）。
+                    cloud = { revision: written.revision, updatedAt: Date.now() };
+                } else {
+                    await this.adoptCloudConfig(material.cloud);
+                }
+            } catch (error) {
+                // 凭据已经落盘（连接算建立了），失败的是这一方向的内容替换。
+                // 说清是哪一半没成，别笼统报「连接失败」——两者的下一步不一样。
+                this.syncBusy = false;
+                this.setSyncState('error', direction === 'local'
+                    ? '已连接，但上传云端失败：' + error.message
+                    : '已连接，但采用云端配置失败：' + error.message);
+                return;
+            }
+            this.syncBusy = false;
+            this.syncProof = null;
+            this.syncCloud = cloud;
+            this.setSyncState('connected');
+            this.showToast(direction === 'cloud' ? '已连接，已采用云端配置' : '已连接，已上传本机配置');
+        }
+
+        /** 「3 分钟前」这类相对时间。不走 Intl（首屏预算），也不引库。 */
+        syncRelTime(timestamp) {
+            const delta = Date.now() - Number(timestamp || 0);
+            if (!Number.isFinite(delta) || delta < 60000) return '刚刚';
+            if (delta < 3600000) return `${Math.floor(delta / 60000)} 分钟前`;
+            if (delta < 86400000) return `${Math.floor(delta / 3600000)} 小时前`;
+            return `${Math.floor(delta / 86400000)} 天前`;
+        }
+
+        async writeCloudConfig(token, revision) {
+            return API.post('/api/sync/config', {
+                revision,
+                operationId: crypto.randomUUID(),
+                config: window.NavigationSchema.publicConfig(structuredClone(this.config)),
+                modules: this.localModulePayload()
+            }, { token });
+        }
+
+        async adoptCloudConfig(cloud) {
+            if (!cloud || !cloud.config) return;
+            window.NavigationSchema.validate(cloud.config);
+            if (await this.saveLocalNavigation(cloud.config) === false) throw new Error('本机导航未保存，已取消采用云端配置');
+            this.config = structuredClone(cloud.config);
+            // 模块偏好走与「本机模块开关」同一条写路径（队列 + 白名单 + 乐观并发），
+            // 不另开一条：两条写同一份记录必然漂移。
+            if (cloud.modules) {
+                await this.saveLocalModules({
+                    enabledModules: [...(cloud.modules.enabled || [])],
+                    widgets: structuredClone(cloud.modules.widgets || []),
+                    settings: structuredClone(cloud.modules.settings || {})
+                });
+            }
+            this.applyTheme();
+            this.render();
+            if (this.editLayout) this.renderLocalSettings();
+        }
+
+        exportSyncRecovery() {
+            if (!this.syncRecovery) return;
+            const payload = { schemaVersion: 1, direction: this.syncRecovery.direction, savedAt: this.syncRecovery.savedAt, config: this.syncRecovery.config, modules: this.syncRecovery.modules };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'sylph-sync-recovery.json';
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+
+        /** 只挂页脚入口。对话框本体是临开临建的，监听器在那时挂（见 openSyncDialog）。 */
+        bindSyncDialog() {
+            const button = $('#syncBtn');
+            if (button) button.onclick = () => this.openSyncDialog();
+        }
+
         localSettingsChanged() {
             return !!this.localSettingsDraft && LOCAL_SETTINGS_FIELDS.some(key => JSON.stringify(this.localSettingsDraft[key]) !== JSON.stringify(this.config[key]));
         }
@@ -1922,6 +2475,9 @@
                 requestAnimationFrame(() => {
                     this.restoreSession();
                     this.checkVersionUpdate();
+                    // 口令空间的连接状态同样放在首屏之后：有连接就要多一个
+                    // 服务端往返，压在首屏前面等于给可见页面加一次网络等待。
+                    this.loadSyncState();
                 });
                 const registerServiceWorker = () => {
                     if ('serviceWorker' in navigator) {
@@ -2177,6 +2733,7 @@
 
         bind() {
             this.bindLocalNavigation();
+            this.bindSyncDialog();
             this.syncEditEntries();
             $('#modeBtn').hidden = !this.authenticated;
             $('#favSearchHint').hidden = !this.authenticated;
@@ -5016,6 +5573,10 @@
             if (panel === 'modules' && !this.modulesEditorRendered) {
                 this.renderModulesEditor();
             }
+            // 「邀请码」只在首次进入站点分区时拉一次，之后重画缓存——
+            // 把它挂在 renderAdminPanel 里拉取的话，每次配置保存引起的重渲染
+            // 都会再打一次接口，攒进同一个限流桶。
+            if (panel === 'site' && !this.syncInvitesRendered) this.renderSyncInvites();
             // 「收藏夹」同理：管理器只在首次进入分区时渲染，
             // 之后切走切回保留现场（当前分类、搜索词、勾选都在）。
             if (panel === 'fav' && !this.favManagerRendered) {
@@ -5508,6 +6069,15 @@
                         </div>
                     </div>
                 </div>
+                <div class="section" id="syncInvitesSection">
+                    <div class="section-title">同步空间邀请码</div>
+                    <p class="fav-hint">邀请码用于让访客创建新的云端空间：一次性、48 小时后失效、可撤销。已有空间的其他设备连接时不需要邀请码。</p>
+                    <div class="sync-invite-actions">
+                        <button type="button" class="btn btn-sm btn-primary" id="createInviteBtn">生成邀请码</button>
+                        <span class="sync-invite-issued" id="inviteIssued" role="status" aria-live="polite"></span>
+                    </div>
+                    <div class="sync-invite-list" id="syncInviteList"><p class="fav-hint">加载中…</p></div>
+                </div>
                 <div class="section section-collapsible">
                     <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
                         <span class="section-title">搜索引擎</span>
@@ -5594,6 +6164,9 @@
             // ⚠️ 它必须排在**上面那三行之后**：那三行是一条被测试钉住的「成组复位」，
             // 中间插语句会破坏那个形状（tests/login-guard.test.js）。
             this.expandedDisabled.clear();
+            // 邀请码块的闩锁同理：面板重建后 #syncInviteList 是新的「加载中…」节点，
+            // 不复位就不会再去加载。缓存（syncInvites）保留，重画不必再打接口。
+            this.syncInvitesRendered = false;
             // 回到上次停留的分区，而不是每次都弹回第一个。
             // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
@@ -5604,6 +6177,14 @@
             if (!this.template) this.loadTemplateEditor();
             else this.mountTemplateEditor();
             $('#templateEditBtn').onclick = () => this.templateSetMode('edit');
+            // 邀请码：生成按钮固定，列表里的「撤销 / 重试」用事件委托——
+            // 列表会整块重画，逐项挂 onclick 会在重画后全部丢掉。
+            $('#createInviteBtn').onclick = () => this.createSyncInvite();
+            $('#syncInviteList').addEventListener('click', event => {
+                const action = event.target.dataset.action;
+                if (action === 'revoke-invite') return this.revokeSyncInvite(event.target.dataset.id);
+                if (action === 'retry-invites') { this.syncInvites = null; this.syncInvitesRendered = false; return this.renderSyncInvites(); }
+            });
             $('#templateCancelBtn').onclick = () => this.templateCancel();
             $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
             $('#templatePublishBtn').onclick = () => this.templateSubmit(true);

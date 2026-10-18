@@ -1043,3 +1043,53 @@
     .template-editor-actions > div { margin-inline-start: 0; width: 100%; }
     .template-editor-actions > div .btn { flex: 1 1 auto; }
 }
+
+/* ===== 普通口令云端空间 =====
+
+   访客侧的「同步」对话框与管理员侧的邀请码列表。
+
+   为什么写在 admin.css 而不是 styles.css：对话框那一族的规则全在本文件
+   （`.ui-dialog` 的外观，以及 `:is(.modal, .fav-dialog, .ui-dialog) .btn` 这种
+   作用域到宿主类的按钮样式）。新内容样式写进 styles.css 就拿不到 `.btn` 的外观，
+   而且会变成「两个样式表各声明一半」——本仓库为此改错过两次。
+
+   ⚠️ 本段**不得**声明 .ui-dialog-overlay / .ui-dialog / .fav-dialog-overlay：
+   那两条（三条）已被 tests/dialog-regressions.test.js 逐条断言——overlay 的内边距
+   必须用四边简写、且 .fav-dialog-overlay 不得出现 padding 简写（会覆盖
+   styles.css ≤768px 块里的安全区规则）。复用现成类，别在别处另立门户。 */
+
+.sync-dialog-body { min-height: 0; }
+.sync-state { margin: 0 0 8px; color: var(--text); font-size: 14px; font-weight: 600; }
+.sync-state code { padding: 1px 5px; border-radius: 5px; background: var(--admin-row); font-size: 12px; font-weight: 500; }
+.sync-note { margin: 0 0 10px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.sync-hint { margin: 0 0 12px; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+.sync-error { margin: 0 0 10px; color: var(--admin-error); font-size: 12px; line-height: 1.6; }
+/* 三个按钮一行放不下时换行，而不是把最后那个挤出对话框 */
+.sync-actions { flex-wrap: wrap; }
+.sync-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.sync-link:hover { color: var(--accent-hover); }
+
+.sync-invite-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.sync-invite-issued { min-width: 0; color: var(--accent); font-size: 12px; line-height: 1.5; word-break: break-all; }
+.sync-invite-list { display: grid; gap: 6px; }
+.sync-invite-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--admin-edge);
+    border-radius: 9px;
+    background: var(--admin-row);
+    font-size: 12px;
+}
+.sync-invite-row code { color: var(--text); }
+/* 用过、撤销、过期的一律淡出：它们只是历史记录，不再能用来创建空间 */
+.sync-invite-row.is-stale { opacity: .62; }
+.sync-invite-state { flex: 1 1 auto; color: var(--text-secondary); }
+
+@media (max-width: 480px) {
+    /* 窄屏下按钮整行排开，触控目标不被压扁 */
+    .sync-actions .btn { flex: 1 1 auto; }
+    .sync-invite-row { flex-wrap: wrap; }
+    .sync-invite-state { flex-basis: 100%; }
+}
