@@ -57,8 +57,12 @@
 
 ## 交付及限制
 
-实现提交 `7e14244` 已提交到本地 `main`，**未推送、未发布**。本次会话授权为 `/implement`（实现 + 提交），推送、Issue 收尾与版本发布均未授权。
+实现提交 `7e14244`、验收交接 `893c1c2`、版本提交 `baeb37a`；推送后读取远端 `main` 确认为 `baeb37a`。
+
+发布：[v2.0.1](https://github.com/mh567/nav-sylph/releases/tag/v2.0.1)（tag 指向 `baeb37a`，非草稿、非预发布）。按用户指定的「小版本」取补丁号，内容为本任务的公开模块分类与开放授权。下载实际附件核对：`nav-sylph-v2.0.1.tar.gz` 13,514,340 字节，SHA-256 `bc0db4d592dbeaddc92a7bb508408a24ed87aa8906ae74ea6b6fff49a7e7f9fc`，与 GitHub asset digest 一致；包内 `version.json` / `package.json` / `CHANGELOG.json` 同为 2.0.1，`public/sw.js` 的 `CACHE` = `nav-v117`，新功能标记（`validateModuleDef`、`preparePublicModules`、`data-module-open`、`teardownUnusedModules`、`readModules`、`category: 'public'`、`PUBLIC_MODULE_IDS`、`/api/modules/public`、`publicModuleAccess`）齐全，`agent/dist` 仅三个 Linux 产物，私有文件与 `.env` 均不在包内。
+
+[Issue #6](https://github.com/mh567/nav-sylph/issues/6) 七项验收已勾选，[完成说明](https://github.com/mh567/nav-sylph/issues/6#issuecomment-6249117449) 已发布并读取核对；远端状态为 CLOSED、关闭原因为 completed。父 Issue #1 保持打开（其余子任务与综合验收尚未完成）。
 
 未执行：目标服务器、移动实机、两台物理设备、其他浏览器、24 小时容量或断电持久性验收；管理员后台「对普通访客开放」开关在 ≤899px 的窄屏形态与深色模式未逐像素截图核对（功能由真实管理员入口的浏览器用例覆盖，样式仅经源码与规则检查）。本机 Chrome 的隔离上下文证明存储与会话隔离，不能代替物理多设备。
 
-保留：仓库根目录 `sylph-handoff-2026-10-18.md`（上一会话的未跟踪交接件）原样未动；`/private/tmp/sylph-debug-vEYrXW` 下用户自己的调试实例（PID 42087，监听 127.0.0.1:4000）本轮未重启也未终止。
+保留与运行中的实例：仓库根目录 `sylph-handoff-2026-10-18.md`（上一会话的未跟踪交接件）原样未动。上一会话的调试实例（PID 42087，`/private/tmp/sylph-debug-vEYrXW`）已按用户要求停止，目录未删除；当前运行的演示实例在 `/private/tmp/sylph-dev-AWfXBj`（127.0.0.1:4000，由本轮代码新装、无私有数据，演示口令只在会话中告知）。
