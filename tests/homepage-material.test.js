@@ -367,11 +367,13 @@ test('搜索按钮实心填充的中间停靠点与仿真一致', () => {
         '三档渐变与仿真逐字一致，中间档不得改用 --accent-hover');
 });
 
-test('背板包住搜索区与收藏网格，操作条留在外面', () => {
-    const board = /<div class="backboard">([\s\S]*?)<nav class="utility-dock"/.exec(indexHtml);
-    assert.ok(board, '背板包裹层应存在并终止于 .utility-dock 之前');
+test('背板包住搜索区、收藏网格与底部操作栏', () => {
+    const board = /<div class="backboard">([\s\S]*?)<section class="module-zone"/.exec(indexHtml);
+    assert.ok(board, '背板包裹层应存在并终止于模块区之前');
     assert.match(board[1], /<header class="header">/, '背板内含 header');
     assert.match(board[1], /<main class="grid" id="grid">/, '背板内含收藏网格');
+    // 操作栏本轮从右下角固定药丸改成背板底部的纯文字一行，与内容同宽同列
+    assert.match(board[1], /<footer class="site-footer"/, '底部操作栏在背板内');
     // 光感与按压都按 ID 委托在这两个容器上，包裹不能改变它们的祖先结构
     assert.match(indexHtml, /<form class="search" id="searchForm">[\s\S]*?<textarea[^>]*id="searchInput"/, 'searchInput 仍嵌套在 searchForm 内');
     assert.match(indexHtml, /<div class="engine-dropdown" id="engineDropdown"[\s\S]*?<\/div>\s*<\/div>\s*<\/header>/, '引擎下拉仍是 .search-wrapper 的子节点，绝对定位锚点才不位移');
@@ -533,9 +535,10 @@ test('触屏点按关掉 UA 蓝色高亮', () => {
     // iOS Safari / 移动 Chrome 的 -webkit-tap-highlight-color 默认是
     // rgba(51,181,229,.4)，那抹蓝会盖在暖灰拟物材质上。
     // 此前只有 .fav-item / .fav-manager-item / .btn 被覆盖，搜索栏三个
-    // 按钮、书签和右下角 dock 都会漏出蓝框。
+    // 按钮、书签和右下角工具条都会漏出蓝框（工具条本轮改成背板底部的
+    // 纯文字操作栏 .site-footer-link，仍要留在兜底选择器里）。
     const block = mediaBlock(code, '@media (hover: none) and (pointer: coarse)', '-webkit-tap-highlight-color');
-    for (const sel of ['.search-mode', '.search-engine', '.search-btn', '.bookmark', '.engine-option', '.fab']) {
+    for (const sel of ['.search-mode', '.search-engine', '.search-btn', '.bookmark', '.engine-option', '.site-footer-link']) {
         assert.match(block, new RegExp(sel.replace('.', '\\.') + '(?![\\w-])'),
             `${sel} 应在触屏高亮的兜底选择器里`);
     }
@@ -705,19 +708,29 @@ function methodBody(source, name) {
     throw new Error(`${name} 的方法体没有闭合`);
 }
 
-test('编辑按钮的文案随状态切换，且初值是「编辑」', () => {
-    // 按钮承担两个动作：进入编辑 / 保存编辑。停在「布局」会与模块区那条
-    // 旧语义混淆，而实际可编辑的早已不止模块。
+test('编辑入口随状态显隐，文案只有一处来源', () => {
+    // 底栏那一行里「编辑」与编辑态的「取消 / 保存配置」互斥显示。文案（尤其
+    // 管理员的「保存编辑」）只写在 syncEditEntries 一处，别处不许再写一遍。
     assert.match(indexHtml, /id="layoutBtn"[^>]*>编辑</,
         'index.html 里 #layoutBtn 的初值文案是「编辑」');
     assert.match(indexHtml, /id="layoutBtn"[^>]*aria-pressed="false"/,
         '#layoutBtn 带初始 aria-pressed');
+    assert.match(indexHtml, /id="localCancelBtn"[^>]*hidden>取消</,
+        '「取消」初值收起');
+    assert.match(indexHtml, /id="localDoneBtn"[^>]*hidden>保存配置</,
+        '「保存配置」初值收起');
+
+    const entries = methodBody(appSource, 'syncEditEntries');
+    assert.match(entries, /btn\.hidden\s*=\s*editing/, '编辑态收起「编辑」');
+    assert.match(entries, /cancel\.hidden\s*=\s*!editing/, '非编辑态收起「取消」');
+    assert.match(entries, /save\.textContent\s*=\s*this\.authenticated\s*\?\s*'保存编辑'\s*:\s*'保存配置'/,
+        '保存入口的文案按身份切换');
+    assert.match(entries, /btn\.setAttribute\(\s*'aria-pressed',\s*String\(editing\)\s*\)/,
+        'aria-pressed 跟着同一个 editing 走，不另开真相来源');
 
     const body = methodBody(appSource, 'syncEditLayoutUI');
-    assert.match(body, /textContent\s*=\s*editing\s*\?\s*\(this\.authenticated\s*\?\s*'保存编辑'\s*:\s*'完成编辑'\)\s*:\s*'编辑'/,
-        'syncEditLayoutUI 必须按 editing 切换按钮文案');
-    assert.match(body, /btn\.setAttribute\(\s*'aria-pressed',\s*String\(editing\)\s*\)/,
-        'aria-pressed 跟着同一个 editing 走，不另开真相来源');
+    assert.match(body, /this\.syncEditEntries\(\)/,
+        'syncEditLayoutUI 走同一处入口同步，不在这里重写文案');
     // 两处 is-editing 都要切：模块区拖拽把手与网格增删控件各靠一个 class
     assert.match(body, /zone\.classList\.toggle\(\s*'is-editing',\s*editing\s*\)/,
         '模块区的 is-editing 由状态驱动');
@@ -729,8 +742,8 @@ test('网格的编辑控件由模板分支生成，且只在编辑态出现', ()
     // 非编辑态的模板与改动前逐字相同，所以正常访问的首页零回归；
     // 正因如此，增删入口必须挂在 editing 分支里而不是一直渲染。
     const body = methodBody(appSource, 'renderGrid');
-    assert.match(body, /const editing = this\.editLayout;/,
-        'renderGrid 必须按 editLayout 分支');
+    assert.match(body, /const editing = surface\.isEditing\(\);/,
+        'renderGrid 必须按表面的可编辑判据分支');
     assert.match(body, /bookmark bookmark-add/, '编辑态追加「＋」占位卡');
     assert.match(body, /category-add/, '编辑态追加「＋ 添加分类」');
     assert.match(body, /category-del/, '编辑态分类头有删除按钮');
@@ -758,7 +771,7 @@ test('网格的编辑控件由模板分支生成，且只在编辑态出现', ()
 test('编辑态书签的点击被拦下，不会跳转', () => {
     // 书签卡本体是 <a href>。不拦就会一边打开新标签页、一边想编辑。
     const body = methodBody(appSource, 'bindGridEdit');
-    assert.match(body, /if \(!this\.editLayout\) return;/,
+    assert.match(body, /if \(!surface\.isEditing\(\)\) return;/,
         '网格交互必须先判编辑态，否则常态下会被劫持');
     assert.match(body, /addEventListener\(\s*'click'/, '有 click 分支处理增删改');
     assert.match(body, /addEventListener\(\s*'dragstart'/, '有 dragstart 分支处理拖拽');
@@ -911,6 +924,8 @@ function mountGridEdit(editLayout = true) {
     const app = {
         editLayout,
         config,
+        // 方法体现在按 surface 取值：给一个最小表面，宿主就是下面那个记录监听的桩。
+        surfaceOf: value => value,
         moveCategory: (from, to) => calls.push(['cat', from, to]),
         moveBookmark: (fc, fb, tc, tb) => calls.push(['bm', fc, fb, tc, tb]),
         renderGrid() {}, markConfigDirty() {},
@@ -918,14 +933,15 @@ function mountGridEdit(editLayout = true) {
         // 少了这个桩，方法体会抛「is not a function」，读起来像产品代码炸了。
         bindTouchGridDrag() {}
     };
-    // 方法体通过文件级 $ 拿 grid；这里让它返回能记录监听的桩。
+    // 方法体通过 surface 拿 grid；这里让它返回能记录监听的桩。
     // ⚠️ 监听必须**全部**留存成数组：bindGridEdit 对 pointerdown 注册了两次
     // （定性 + 既有的 card.focus()），只留最后一个会把定性那个悄悄丢掉，
     // 于是测试读起来像「代码没生效」，其实是桩自己丢了监听。
     // ⚠️ listeners 建在 vm 沙箱**内**，挂到宿主对象上再回读是拿不到的
     // （跨上下文属性不可见），所以由方法体自己 return 出来。
     const grid = { querySelectorAll: () => [] };
-    const mount = vm.runInNewContext(`(function (grid) {
+    const surface = { host: grid, getConfig: () => config, isEditing: () => editLayout, changed: () => {} };
+    const mount = vm.runInNewContext(`(function (grid, surface) {
         const $ = () => grid;
         const $$ = () => [];
         const listeners = {};
@@ -933,7 +949,7 @@ function mountGridEdit(editLayout = true) {
         ${methodBody(appSource, 'bindGridEdit')}
         return listeners;
     })`);
-    const listeners = mount.call(app, grid);
+    const listeners = mount.call(app, grid, surface);
 
     // 浏览器语义：同一类型的所有监听按注册顺序依次收到事件
     const fire = (type, event) =>
@@ -1172,10 +1188,13 @@ function mountTouchDrag({ editLayout = true, hit: initialHit } = {}) {
     const app = {
         editLayout,
         config,
+        // 同 mountGridEdit：方法体按 surface 取值，宿主是记录监听的 grid 桩。
+        surfaceOf: value => value,
         moveCategory: (from, to) => calls.push(['cat', from, to]),
         moveBookmark: (fc, fb, tc, tb) => calls.push(['bm', fc, fb, tc, tb]),
         renderGrid() {}, markConfigDirty() {}
     };
+    const surface = { host: grid, getConfig: () => config, isEditing: () => editLayout, changed: () => {} };
 
     const mount = vm.runInNewContext(`(function (deps) {
         const $ = () => deps.grid;
@@ -1184,10 +1203,11 @@ function mountTouchDrag({ editLayout = true, hit: initialHit } = {}) {
         const setTimeout = deps.setTimeout;
         const clearTimeout = deps.clearTimeout;
         const window = deps.window;
+        let surface = deps.surface;
         ${methodBody(appSource, 'bindTouchGridDrag')}
     })`);
     mount.call(app, {
-        grid, document: { elementFromPoint: () => hit },
+        grid, surface, document: { elementFromPoint: () => hit },
         setTimeout: setTimeoutStub, clearTimeout: clearTimeoutStub,
         window: {
             addEventListener: (t, f) => { (windowListeners[t] ||= []).push(f); },
@@ -1527,22 +1547,23 @@ function methodBodyOf(src, signature) {
     throw new Error(`${signature} 方法体未闭合`);
 }
 
-test('外观按钮在右下角 dock 内、排在「编辑」与「管理」之间，且不随登录态隐藏', () => {
-    const dockStart = indexCode.indexOf('class="utility-dock"');
-    assert.ok(dockStart > 0, '首页仍有 dock');
-    const dock = indexCode.slice(dockStart, indexCode.indexOf('</nav>', dockStart));
-    assert.ok(dock.length > 100, '取到 dock 区块');
+test('底栏入口顺序固定，外观只给管理员', () => {
+    const footerStart = indexCode.indexOf('class="site-footer"');
+    assert.ok(footerStart > 0, '首页仍有页面操作栏');
+    const footer = indexCode.slice(footerStart, indexCode.indexOf('</footer>', footerStart));
+    assert.ok(footer.length > 100, '取到操作栏区块');
 
-    const order = ['id="helpBtn"', 'id="layoutBtn"', 'id="appearanceBtn"', 'id="adminBtn"']
-        .map(id => dock.indexOf(id));
-    assert.ok(order.every(i => i >= 0), '四个按钮都在 dock 内');
-    assert.deepEqual(order, [...order].sort((a, b) => a - b), '顺序：说明 → 编辑 → 外观 → 管理');
+    const order = ['id="helpBtn"', 'id="appearanceBtn"', 'id="layoutBtn"', 'id="adminBtn"']
+        .map(id => footer.indexOf(id));
+    assert.ok(order.every(i => i >= 0), '四个入口都在操作栏内');
+    assert.deepEqual(order, [...order].sort((a, b) => a - b), '顺序：说明 → 外观 → 编辑 → 管理');
 
-    // 「编辑」靠 hidden 控制登录可见性；外观按钮带上 hidden 未登录就看不到，
-    // 而这正是本次要求「未登录也可见」的那一半。
+    // 外观入口带上 hidden，未登录就看不到，普通访客的外观在编辑区里设置。
     const btnTag = indexCode.match(/<button[^>]*id="appearanceBtn"[^>]*>/)[0];
-    assert.doesNotMatch(btnTag, /\bhidden\b/, '外观按钮不随登录态隐藏');
-    assert.doesNotMatch(appCode, /appearanceBtn'\)\.hidden\s*=/, 'JS 里也不隐藏它');
+    assert.match(btnTag, /\bhidden\b/, '普通外观入口默认收起，设置位于编辑区域');
+    assert.match(appCode, /syncAppearanceEntry\(!this\.authenticated\)/, '编辑状态同步时仅显示管理员外观快捷入口');
+    // 分隔符必须跟入口同显隐，否则会剩下一个悬空的「·」
+    assert.match(appCode, /if \(sep\) sep\.hidden = hidden/, '外观分隔符跟随外观入口');
 });
 
 test('本机主题的键名在 index.html 与 app.js 两处一致', () => {
@@ -1647,22 +1668,42 @@ test('架构文档记录了外观三态的优先级与首屏那条顺序约束',
         '记下首屏那条顺序约束');
 });
 
-test('按钮的图标与无障碍文案跟着当前态走', () => {
+test('外观入口的无障碍文案跟着当前态走', () => {
     const fn = methodBodyOf(appCode, 'renderAppearanceButton(theme) {');
-    assert.match(fn, /icon\.innerHTML = APPEARANCE_ICONS\[theme\]/, '图标随状态更换');
-    // 图标是纯视觉，aria-label 才是读屏用户拿到的唯一信息，必须同源
+    // 入口本轮改成纯文字，当前态只走 title / aria-label 两条通道——
+    // 读屏用户拿到的唯一信息就是这里写的，必须与可见语义同源。
+    assert.match(fn, /btn\.title = label/, 'title 同步更新');
     assert.match(fn, /btn\.setAttribute\('aria-label', label\)/, 'aria-label 同步更新');
-    const icons = appCode.match(/const APPEARANCE_ICONS = \{([\s\S]*?)\n    \};/);
-    assert.ok(icons, '图标表存在');
+    assert.match(fn, /APPEARANCE_TEXT\[theme\]/, '文案取自同一张文本表');
+    assert.ok(!/innerHTML/.test(fn), '纯文字入口不再往按钮里写图标');
+    const texts = appCode.match(/const APPEARANCE_TEXT = \{([^}]*)\}/);
+    assert.ok(texts, '文本表存在');
     ['auto', 'light', 'dark'].forEach(k =>
-        assert.ok(new RegExp(`(^|\\s)${k}:`).test(icons[1]), `${k} 态有图标`));
+        assert.ok(new RegExp(`(^|\\s)${k}:`).test(texts[1]), `${k} 态有文案`));
 });
 
-test('外观按钮与旁边按钮同高、只收窄宽度，触摸目标不缩水', () => {
-    const rule = code.match(/\.utility-dock \.appearance-btn \{([^}]*)\}/);
-    assert.ok(rule, '材质层有 .utility-dock .appearance-btn 规则');
-    assert.match(rule[1], /width:\s*40px/, '宽度收窄成图标按钮');
-    assert.match(rule[1], /min-height:\s*44px/,
-        '高度不缩水——32–36px 低于触摸目标底线，手机上会误触紧邻的「管理」');
-    assert.match(fullCode, /\.appearance-btn:focus-visible/, '键盘可达');
+test('底栏入口的排版与窄屏触控下限', () => {
+    const rule = code.match(/\.site-footer-link \{([^}]*)\}/);
+    assert.ok(rule, '材质层有 .site-footer-link 规则');
+    assert.match(rule[1], /color:\s*var\(--text-muted\)/, '常态是弱化文字');
+    assert.match(code, /\.site-footer-link\.is-save \{[^}]*color:\s*var\(--accent\)/, '保存项用强调色');
+    assert.match(code, /\.site-footer-link:focus-visible/, '键盘可达');
+    // 窄屏上底栏就是手指在点，相邻两条入口必须各撑到 44px
+    const narrow = mediaBlock(fullCode, '@media (max-width: 600px)', '.site-footer-link');
+    assert.match(narrow, /\.site-footer-link \{[^}]*min-height:\s*44px/,
+        '窄屏把底栏入口撑到 44px 触控下限');
+});
+
+test('引擎行的事件委托锚点与模板标记同源', () => {
+    const fn = methodBodyOf(appCode, 'renderLocalSettings() {');
+    // 委托用 closest() 找行容器，模板用 class 造行容器——两者必须是同一个名字。
+    // 本轮把 fieldset 改成一行一项的 div 时只改了模板，输入不落草稿、删除按钮
+    // 点不动，而全部源码形状断言仍然是绿的（只有真实浏览器会红）。
+    const rowClass = /class="(local-engine-item)"/.exec(fn);
+    assert.ok(rowClass, '模板里有引擎行的容器类名');
+    const anchor = /closest\('\.([\w-]+)'\)/.exec(fn);
+    assert.ok(anchor, '委托里用 closest 定位行容器');
+    assert.equal(anchor[1], rowClass[1], '委托锚点与模板类名一致');
+    assert.ok(!fn.includes("closest('fieldset')"), '旧的 fieldset 锚点不得残留');
+    assert.ok(fn.includes('.local-engine-item:last-child input'), '新增后聚焦新行用的是同一类名');
 });

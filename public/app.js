@@ -127,13 +127,9 @@
     // （那里要抢在样式表之前把它应用上，避免首屏闪一下系统色），
     // 两处必须一致——tests 里有跨文件断言钉住。
     const THEME_STORAGE_KEY = 'nav-sylph-theme';
+    const LOCAL_SETTINGS_FIELDS = ['searchEngine', 'searchEngines', 'theme', 'showBookmarkIcons'];
     const APPEARANCE_ORDER = ['auto', 'light', 'dark'];
     const APPEARANCE_TEXT = { auto: '自动（跟随系统）', light: '浅色模式', dark: '深色模式' };
-    const APPEARANCE_ICONS = {
-        auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 3.7a8.3 8.3 0 0 1 0 16.6Z" fill="currentColor" stroke="none"/></svg>',
-        light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.1"/><path d="M12 2.7v2.1M12 19.2v2.1M2.7 12h2.1M19.2 12h2.1M5.4 5.4l1.5 1.5M17.1 17.1l1.5 1.5M18.6 5.4l-1.5 1.5M6.9 17.1l-1.5 1.5"/></svg>',
-        dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.4 14.7A8.6 8.6 0 0 1 9.3 3.6a8.6 8.6 0 1 0 11.1 11.1Z"/></svg>'
-    };
     /** 三态循环的下一格（深色之后回绕到自动）。 */
     const nextTheme = current => APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(current) + 1) % APPEARANCE_ORDER.length];
 
@@ -202,6 +198,10 @@
             // 编辑会话的草稿快照：进入编辑模式时对 config 与 widgets 各存一份，
             // 「保存编辑」才落盘，Esc/退出则整体丢弃。
             this.editSession = null;
+            // 站点默认首页的草稿与网格表面：面板打开时才建立，退出登录时清空。
+            // 显式初始化，不靠 undefined 参与判断（本文件既有纪律）。
+            this.template = null;
+            this.templateSurface = null;
             // 网格上一次渲染时是否处于编辑态。显式初始化而不是靠 undefined
             // 与 false 的隐式比较：syncEditLayoutUI 靠它判断「状态真的翻转了」，
             // 而 undefined !== false 成立纯属巧合。
@@ -209,6 +209,14 @@
             // 同一帧内多次纵向重排请求合并成一个（见 requestWidgetStack）。
             // 与 _gridEditing 同理显式初始化，不靠 undefined 的隐式比较。
             this._stackFrame = null;
+            // 首页网格的编辑表面。后台「站点默认首页」编辑器会另建一份，
+            // 两份的配置互不共享（见 gridSurface 的注释）。
+            this.homeSurface = this.gridSurface({
+                getConfig: () => this.config,
+                isEditing: () => this.editLayout,
+                host: $('#grid'),
+                changed: () => this.markConfigDirty()
+            });
             this.init();
         }
 
@@ -977,20 +985,52 @@
                 widgets: JSON.parse(JSON.stringify(this.modulesConfig?.widgets || []))
             };
             this.editLayout = true;
+            if (!this.authenticated) this.renderLocalSettings();
             this.syncEditLayoutUI();
+        }
+
+        /** 底栏三条编辑入口互斥：「编辑」与编辑态的「取消 / 保存配置」。
+         *  文案只有一处来源，其余位置只调这一个方法，避免两处各写一遍后漂移。 */
+        syncEditEntries() {
+            const editing = this.editLayout;
+            const btn = $('#layoutBtn');
+            if (btn) {
+                btn.hidden = editing;
+                btn.setAttribute('aria-pressed', String(editing));
+            }
+            const cancel = $('#localCancelBtn');
+            if (cancel) cancel.hidden = !editing;
+            const save = $('#localDoneBtn');
+            if (save) {
+                save.hidden = !editing;
+                save.textContent = this.authenticated ? '保存编辑' : '保存配置';
+                save.title = this.authenticated ? '保存全部改动并退出编辑' : '保存导航设置并退出编辑';
+            }
+        }
+
+        /** 外观入口只给管理员，它的分隔符必须跟着一起显隐，否则剩下一个悬空「·」。 */
+        syncAppearanceEntry(hidden) {
+            const btn = $('#appearanceBtn');
+            const sep = $('#appearanceSep');
+            if (btn) btn.hidden = hidden;
+            if (sep) sep.hidden = hidden;
         }
 
         syncEditLayoutUI() {
             const zone = $('#moduleZone');
             const grid = $('#grid');
-            const btn = $('#layoutBtn');
             const editing = this.editLayout;
-            if (btn) {
-                btn.textContent = editing ? (this.authenticated ? '保存编辑' : '完成编辑') : '编辑';
-                btn.title = editing ? '保存全部改动并退出编辑' : '编辑首页导航';
-                btn.setAttribute('aria-pressed', String(editing));
-                btn.classList.toggle('is-active', editing);
+            this.syncEditEntries();
+            const tools = $('#localNavigationTools');
+            if (tools) tools.hidden = this.authenticated || !editing;
+            const status = $('#localNavigationStatus');
+            if (status) status.hidden = this.authenticated || (!editing && !this.localStatusError);
+            const engine = $('#engineBtn');
+            if (engine && !this.authenticated) {
+                engine.disabled = editing || !!this.suspendedAdministrator;
+                engine.title = editing ? '在下方设置默认搜索引擎' : '切换搜索引擎';
             }
+            this.syncAppearanceEntry(!this.authenticated);
             if (zone) zone.classList.toggle('is-editing', editing);
             if (grid) grid.classList.toggle('is-editing', editing);
             // 网格的增删控件（＋卡片、分类删除把手）由模板分支生成，
@@ -1006,7 +1046,45 @@
 
         /** 提交草稿：模块布局与首页书签分两套存储，串行提交，前者失败即中止。 */
         async saveEditSession() {
-            if (!this.authenticated) { await this.localQueue; this.editSession = null; this.exitEditLayout(); return; }
+            if (!this.authenticated) {
+                if (this.localSettingsSaving) return;
+                this.localSettingsSaving = true;
+                $('#localSettingsForm').inert = true;
+                $('#grid').inert = true;
+                $('#engineBtn').disabled = true;
+                $('#localDoneBtn').disabled = true;
+                $('#localSettingsError').hidden = true;
+                this.setLocalStatus('正在保存到本机');
+                try {
+                    await this.localQueue;
+                    const candidate = this.localNavigationCandidate();
+                    window.NavigationSchema.validate(candidate);
+                    if (JSON.stringify(candidate) !== JSON.stringify(this.localSaved) || this.localError) {
+                        if (!await this.saveLocalNavigation(candidate) || this.authenticated) return;
+                    }
+                    this.setLocalStatus('仅保存在本机');
+                    this.config = candidate;
+                    this.applyTheme();
+                    this.render();
+                    this.localSettingsDraft = null;
+                    this.editSession = null;
+                    this.exitEditLayout();
+                    $('#layoutBtn').focus();
+                    this.showToast('导航设置已保存到本机');
+                } catch (error) {
+                    const status = $('#localSettingsError');
+                    status.textContent = error.message;
+                    status.hidden = false;
+                } finally {
+                    this.localSettingsSaving = false;
+                    $('#localSettingsForm').inert = false;
+                    $('#grid').inert = false;
+                    $('#engineBtn').disabled = this.editLayout || !!this.suspendedAdministrator;
+                    $('#localDoneBtn').disabled = false;
+                    if (!$('#localSettingsError').hidden) $('#localSettingsError').focus();
+                }
+                return;
+            }
             if (!this.editSession) { this.exitEditLayout(); return; }
             if (this.modulesConfig && JSON.stringify(this.modulesConfig.widgets) !== JSON.stringify(this.editSession.widgets)) {
                 const ok = await this.saveWidgetLayout();
@@ -1030,7 +1108,17 @@
 
         /** Esc 放弃编辑：有改动时先问一句，没改动则静默退出。 */
         async cancelEditSession() {
-            if (!this.authenticated) { this.editSession = null; this.exitEditLayout(); return; }
+            if (!this.authenticated) {
+                if (this.localSettingsSaving) return;
+                if (this.localSettingsChanged() && !await this.confirmAction('放弃尚未保存的导航设置？已保存的分类与链接调整会保留。', '取消设置')) return;
+                this.localSettingsDraft = null;
+                this.editSession = null;
+                this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
+                this.exitEditLayout();
+                $('#layoutBtn').focus();
+                this.refreshLocalNavigation();
+                return;
+            }
             if (!this.editSession) { this.exitEditLayout(); return; }
             const changed =
                 JSON.stringify(this.config) !== JSON.stringify(this.editSession.config)
@@ -1094,19 +1182,24 @@
                 this.exitEditLayout();
                 const zone = $('#moduleZone');
                 if (zone) { zone.hidden = true; zone.replaceChildren(); }
-                if (btn) btn.hidden = false;
+                if (btn) btn.hidden = this.editLayout;
                 this.modulesConfig = null;
                 this.modulesLoaded = false;
                 this.modulesError = null;
                 return;
             }
-            if (btn) btn.hidden = false;
+            if (btn) btn.hidden = this.editLayout;
             await this.renderModuleZone();
         }
 
         setLocalStatus(message, error = false) {
             const status = $('#localNavigationStatus');
-            if (status) status.textContent = message;
+            if (status) {
+                status.textContent = message;
+                status.hidden = this.authenticated || (!this.editLayout && !error);
+                this.localStatusError = error;
+                status.dataset.state = error ? 'error' : '';
+            }
             const tools = $('#localNavigationTools');
             if (tools) tools.dataset.state = error ? 'error' : '';
         }
@@ -1152,7 +1245,7 @@
                     this.localRevision = record.revision;
                     this.localSaved = structuredClone(record.config);
                     this.localError = null;
-                    if (undo && !this.authenticated) { this.config = structuredClone(record.config); this.applyTheme(); this.render(); }
+                    if (undo && !this.authenticated) { this.config = structuredClone(record.config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
                     this.localChannel?.postMessage(record.revision);
                     if (!this.authenticated) this.setLocalStatus('仅保存在本机');
                     return true;
@@ -1189,7 +1282,7 @@
         }
 
         exportLocalNavigation() {
-            const blob = new Blob([JSON.stringify({ schemaVersion: 1, config: window.NavigationSchema.publicConfig(this.config) }, null, 2)], { type: 'application/json' });
+            const blob = new Blob([JSON.stringify({ schemaVersion: 1, config: window.NavigationSchema.publicConfig(this.localNavigationCandidate()) }, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url; link.download = 'sylph-navigation.json'; link.click();
@@ -1208,7 +1301,7 @@
                 window.NavigationSchema.validate(config);
                 if (!await this.confirmAction('导入将替换本机导航，可通过撤销恢复上一份配置。', '导入导航')) return;
                 if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新导入');
-                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); }
+                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
             } catch (error) { this.showToast('导入失败：' + error.message, 'error'); }
         }
 
@@ -1218,67 +1311,87 @@
             try {
                 const config = await API.get('/api/config');
                 window.NavigationSchema.validate(config);
-                if (!await this.confirmAction('用当前已发布默认首页替换本机导航？可通过撤销恢复。', '重置导航')) return;
+                if (!await this.confirmAction('用当前已发布默认首页替换本机导航及未保存设置？可通过撤销恢复。', '重置导航')) return;
                 if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新重置');
-                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); }
+                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
             } catch (error) { this.showToast('重置失败，原导航已保留：' + error.message, 'error'); }
         }
 
-        async editLocalSettings() {
-            if (this.authenticated) return;
-            const draft = window.NavigationSchema.publicConfig(structuredClone(this.config));
-            const pending = this.showUiDialog({
-                title: '导航设置',
-                message: '搜索地址填写关键词前缀，例如 https://example.com/?q=。有效设置确认后保存到本机。清除站点数据、浏览器回收存储或结束隐私浏览可能删除导航，请定期导出备份。',
-                options: [{ name: 'icons', kind: 'checkbox', label: '显示导航图标', value: '1', checked: draft.showBookmarkIcons }],
-                validate: (values, choices) => {
-                    try {
-                        if (!draft.searchEngines.some(e => e.id === draft.searchEngine)) draft.searchEngine = draft.searchEngines[0]?.id;
-                        draft.showBookmarkIcons = !!choices.icons;
-                        window.NavigationSchema.validate(draft);
-                        return '';
-                    } catch (error) { return error.message; }
-                }
-            });
-            const form = $('.ui-dialog-form');
-            const dialog = form.closest('.ui-dialog');
-            dialog.classList.add('local-settings-dialog');
-            dialog.addEventListener('keydown', event => {
-                if (event.key !== 'Tab') return;
-                const controls = [...form.querySelectorAll('input:not(:disabled), select:not(:disabled), button:not(:disabled)')];
-                if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
-                else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
-                event.stopPropagation();
-            }, true);
-            const editor = html('<div class="local-engine-editor"></div>');
-            const render = () => {
-                editor.innerHTML = `<label class="ui-dialog-field"><span>当前搜索引擎</span><select id="localCurrentEngine"></select></label><div class="local-engine-list">` + draft.searchEngines.map((e, i) => `<fieldset data-index="${i}"><legend>引擎 ${i + 1}</legend>${['id', 'name', 'url'].map((key, j) => `<label class="ui-dialog-field"><span>${['ID', '名称', '搜索地址'][j]}</span><input data-field="${key}" aria-label="引擎 ${i + 1} ${['ID', '名称', '搜索地址'][j]}" value="${this.esc(e[key])}"></label>`).join('')}<button type="button" class="btn btn-sm" data-action="up" ${i === 0 ? 'disabled' : ''}>上移</button> <button type="button" class="btn btn-sm" data-action="down" ${i === draft.searchEngines.length - 1 ? 'disabled' : ''}>下移</button> <button type="button" class="btn btn-sm" data-action="delete" ${draft.searchEngines.length === 1 ? 'disabled' : ''}>删除</button></fieldset>`).join('') + '</div><button type="button" class="btn btn-sm" data-action="add">添加引擎</button>';
-                renderSelection();
-            };
+        localNavigationCandidate() {
+            const candidate = window.NavigationSchema.publicConfig(structuredClone(this.config));
+            if (this.localSettingsDraft) for (const key of LOCAL_SETTINGS_FIELDS) candidate[key] = structuredClone(this.localSettingsDraft[key]);
+            return candidate;
+        }
+
+        localSettingsChanged() {
+            return !!this.localSettingsDraft && LOCAL_SETTINGS_FIELDS.some(key => JSON.stringify(this.localSettingsDraft[key]) !== JSON.stringify(this.config[key]));
+        }
+
+        renderLocalSettings() {
+            const draft = this.localSettingsDraft = window.NavigationSchema.publicConfig(structuredClone(this.config));
+            const select = $('#localCurrentEngine');
+            const editor = $('#localEngineEditor');
+            $('#localThemeSelect').value = draft.theme;
+            $('#localIconsToggle').checked = draft.showBookmarkIcons;
+            $('#localSettingsError').hidden = true;
             const renderSelection = () => {
-                const select = editor.querySelector('select');
                 select.innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
                 select.value = draft.searchEngine;
             };
+            const render = () => {
+                editor.innerHTML = draft.searchEngines.map((e, i) => {
+                    const position = `引擎 ${i + 1}`;
+                    const [name, url] = ['name', 'url'].map((key, j) => {
+                        const label = ['名称', '搜索地址'][j];
+                        return `<input data-field="${key}" aria-label="${position} ${label}" aria-describedby="localEngineHint" value="${this.esc(e[key])}" ${key === 'url' ? 'type="url" spellcheck="false"' : 'type="text"'}>`;
+                    });
+                    // 默认项就在它自己的名称右侧标出来，与上方「默认搜索引擎」下拉同源。
+                    // 默认项标记：每个引擎都留一个空槽，切默认时只改文本，不整表重绘
+                    // （整表重绘会把正在输入的框和焦点一起换掉）。空槽由 :empty 隐藏。
+                    const badge = `<span class="local-engine-badge">${e.id === draft.searchEngine ? '默认' : ''}</span>`;
+                    // 操作是图标，可访问名与 title 都带上序号：图标本身读不出是给哪一项的。
+                    const actions = [
+                        ['up', '↑', '上移', i === 0],
+                        ['down', '↓', '下移', i === draft.searchEngines.length - 1],
+                        ['delete', '✕', '删除', draft.searchEngines.length === 1]
+                    ].map(([action, glyph, label, disabled]) =>
+                        `<button type="button" class="btn btn-sm" data-action="${action}" title="${label}" aria-label="${position} ${label}"${disabled ? ' disabled' : ''}>${glyph}</button>`).join('');
+                    return `<div class="local-engine-item" data-index="${i}">`
+                        + `<span class="local-engine-index" aria-hidden="true">${i + 1}</span>`
+                        + `<div class="local-engine-name">${name}${badge}</div>`
+                        + url
+                        + `<div class="local-engine-actions">${actions}</div>`
+                        + `</div>`;
+                }).join('');
+                $('#localEngineCount').textContent = `${draft.searchEngines.length} 个`;
+                renderSelection();
+            };
+            // 事件委托都在 #localEngineEditor 上，行序号从最近的 .local-engine-item 读——
+            // 引擎行已从 fieldset 改成一行一项的 div，选择器必须跟着走。
+            const indexOf = event => +event.target.closest('.local-engine-item').dataset.index;
             editor.oninput = event => {
                 const field = event.target.dataset.field;
                 if (!field) return;
-                const engine = draft.searchEngines[+event.target.closest('fieldset').dataset.index];
-                const wasCurrent = engine.id === draft.searchEngine;
-                engine[field] = event.target.value;
-                if (field === 'id' && wasCurrent) draft.searchEngine = engine.id;
+                draft.searchEngines[indexOf(event)][field] = event.target.value;
                 renderSelection();
             };
-            editor.onchange = event => { if (event.target.tagName === 'SELECT') draft.searchEngine = event.target.value; };
+            // 切换默认引擎只改动草稿与「默认」标记，不重绘整张表——
+            // 重绘会把正在输入的框和焦点一起换掉。
+            const syncDefaultBadge = () => {
+                [...editor.children].forEach((row, i) => {
+                    const badge = row.querySelector('.local-engine-badge');
+                    if (badge) badge.textContent = draft.searchEngines[i]?.id === draft.searchEngine ? '默认' : '';
+                });
+            };
+            select.onchange = () => { draft.searchEngine = select.value; syncDefaultBadge(); };
+            $('#localThemeSelect').onchange = event => { draft.theme = event.target.value; };
+            $('#localIconsToggle').onchange = event => { draft.showBookmarkIcons = event.target.checked; };
             editor.onclick = event => {
                 const action = event.target.dataset.action;
                 if (!action) return;
                 const list = draft.searchEngines;
-                const index = +(event.target.closest('fieldset')?.dataset.index || 0);
-                if (action === 'add') {
-                    if (list.length >= 50) { this.showToast('搜索引擎最多 50 个', 'error'); return; }
-                    list.push({ id: uid(), name: '新引擎', url: 'https://' });
-                } else if (action === 'delete' && list.length > 1) {
+                const index = indexOf(event);
+                if (action === 'delete' && list.length > 1) {
                     const [removed] = list.splice(index, 1);
                     if (removed.id === draft.searchEngine) draft.searchEngine = list[0].id;
                 } else {
@@ -1288,23 +1401,30 @@
                 }
                 render();
             };
-            render(); form.prepend(editor); editor.querySelector('input')?.focus();
-            const result = await pending;
-            if (result && !this.authenticated && await this.saveLocalNavigation(draft) && !this.authenticated) {
-                this.config = structuredClone(draft); this.render();
-            }
+            $('#localAddEngineBtn').onclick = () => {
+                if (draft.searchEngines.length >= 50) { this.showToast('搜索引擎最多 50 个', 'error'); return; }
+                draft.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
+                render();
+                editor.querySelector('.local-engine-item:last-child input').focus();
+            };
+            render();
         }
 
         bindLocalNavigation() {
             this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
-            $('#localSettingsBtn').onclick = () => this.editLocalSettings();
-            $('#localUndoBtn').onclick = () => this.saveLocalNavigation(this.config, true);
+            $('#localSettingsForm').onsubmit = event => { event.preventDefault(); this.saveEditSession(); };
+            $('#localCancelBtn').onclick = () => this.cancelEditSession();
+            $('#localUndoBtn').onclick = async () => {
+                if (this.localSettingsChanged() && !await this.confirmAction('撤销将替换尚未保存的设置，是否继续？', '撤销上一操作')) return;
+                await this.saveLocalNavigation(this.config, true);
+            };
             $('#localExportBtn').onclick = () => this.exportLocalNavigation();
             $('#localImportBtn').onclick = () => $('#localImportFile').click();
             $('#localImportFile').onchange = event => { this.importLocalNavigation(event.target.files[0]); event.target.value = ''; };
             $('#localResetBtn').onclick = () => this.resetLocalNavigation();
             $('#localAdoptBtn').onclick = async () => {
                 if (await this.confirmAction('放弃当前草稿并采用其他标签页已保存的版本？', '采用已保存版本')) {
+                    this.localSettingsDraft = null;
                     this.editSession = null; this.exitEditLayout();
                     await this.refreshLocalNavigation(true);
                 }
@@ -1314,7 +1434,7 @@
                 this.localChannel.onmessage = () => this.refreshLocalNavigation();
             }
             window.addEventListener('beforeunload', event => {
-                if (!this.authenticated && (this.localPending || this.localError || $('.ui-dialog-overlay input, .ui-dialog-overlay textarea'))) { event.preventDefault(); event.returnValue = ''; }
+                if (!this.authenticated && (this.localPending || this.localError || this.localSettingsChanged() || $('.ui-dialog-overlay input, .ui-dialog-overlay textarea'))) { event.preventDefault(); event.returnValue = ''; }
             });
             window.addEventListener('focus', () => this.refreshLocalNavigation());
             window.addEventListener('online', () => this.checkAdministratorSync());
@@ -1426,12 +1546,10 @@
             this.renderAppearanceButton(theme);
         }
 
-        /** 右下角按钮的图标与无障碍文案跟着当前态走。 */
+        /** 底栏外观入口的当前态只走无障碍文案（入口本身是纯文字）。 */
         renderAppearanceButton(theme) {
             const btn = $('#appearanceBtn');
-            const icon = $('#appearanceIcon');
-            if (!btn || !icon) return;
-            icon.innerHTML = APPEARANCE_ICONS[theme] || APPEARANCE_ICONS.auto;
+            if (!btn) return;
             const label = `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
             btn.title = label;
             btn.setAttribute('aria-label', label);
@@ -1516,13 +1634,44 @@
             ).join('');
         }
 
-        renderGrid() {
-            const grid = $('#grid');
+        /**
+         * 网格编辑表面：一份配置 + 一个宿主元素 + 一个可编辑判据 + 一个变更回调。
+         *
+         * 首页与后台「站点默认首页」编辑器各用一份，渲染与交互只有下面这一套方法
+         * （renderGrid / bindGridEdit / bindTouchGridDrag / move* 都接受 surface）。
+         * 复制一份拖拽代码必然漂移，这个仓库已经付过同形重复的代价。
+         *
+         * 约定：同一时刻只有一个表面处于可编辑态。后台面板是模态的，首页在它后面只读，
+         * 所以两套 handler 按各自宿主绑定、互不串扰即可。
+         */
+        gridSurface({ getConfig, isEditing, host, changed }) {
+            return { getConfig, isEditing, host, changed };
+        }
+
+        /** 取表面：显式传入 > 首页表面 > 现场兜底建一份。
+         *  兜底那条是给测试夹具用的——有些用例用 Object.create 绕过构造函数，
+         *  this.homeSurface 不存在，默认参数会直接抛 TypeError。 */
+        surfaceOf(surface) {
+            if (surface) return surface;
+            if (!this.homeSurface) {
+                this.homeSurface = this.gridSurface({
+                    getConfig: () => this.config,
+                    isEditing: () => this.editLayout,
+                    host: $('#grid'),
+                    changed: () => this.markConfigDirty()
+                });
+            }
+            return this.homeSurface;
+        }
+
+        renderGrid(surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const grid = surface.host;
             const fragment = document.createDocumentFragment();
             // 编辑态多生成两类节点：分类头的手柄/删除按钮，与每类末尾的
             // ＋占位卡。**不进编辑态的模板与改动前逐字相同**，
             // 所以正常访问的首页零回归。
-            const editing = this.editLayout;
+            const editing = surface.isEditing();
             // ⚠️ 分类的拖拽宿主必须是 **.category-header**，不是那个 ⠿ 按钮，
             // 也**不能是整块 <section>**。两条都是实测出来的：
             //  1. <button> 不可拖拽，原生 DnD 只从最近的 draggable 起手，
@@ -1537,7 +1686,7 @@
             // 「拖分类」与「拖书签」在该事件上无法区分（书签卡是 section 的子节点、
             // 也是 draggable，命中它时 target 就是 <a> 本身）——
             // 分流靠 pointerdown 记住的真实落点。
-            this.config.categories.forEach((cat, catIdx) => {
+            surface.getConfig().categories.forEach((cat, catIdx) => {
                 const section = html(`
                     <section class="category" data-cat="${catIdx}">
                         <div class="category-header"${editing ? ' draggable="true"' : ''}>
@@ -1551,7 +1700,7 @@
                 `);
                 const bms = $('.bookmarks', section);
                 cat.bookmarks.forEach((bm, bmIdx) => {
-                    bms.appendChild(this.createBookmark(bm, catIdx, bmIdx));
+                    bms.appendChild(this.createBookmark(bm, catIdx, bmIdx, surface));
                 });
                 if (editing) {
                     bms.appendChild(html(`<button type="button" class="bookmark bookmark-add" data-add-cat="${catIdx}" title="为「${this.esc(cat.name)}」添加导航" aria-label="为 ${this.esc(cat.name)} 添加导航">＋</button>`));
@@ -1564,10 +1713,11 @@
             grid.replaceChildren(fragment);
         }
 
-        createBookmark(bm, catIdx, bmIdx) {
+        createBookmark(bm, catIdx, bmIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
             // 编辑态下 data-cat/data-bm 是拖拽与增删改的定位依据；
             // 非编辑态不写，首页 DOM 与改动前完全一致。
-            const editing = this.editLayout;
+            const editing = surface.isEditing();
             const attrs = editing ? ` data-cat="${catIdx}" data-bm="${bmIdx}" draggable="true"` : '';
             // 删除按钮压在卡的右上角：整张卡是拖拽宿主，按钮必须自己
             // stopPropagation，否则拖拽起手会把它一起带走。
@@ -1583,7 +1733,7 @@
 
         bind() {
             this.bindLocalNavigation();
-            $('#layoutBtn').hidden = false;
+            this.syncEditEntries();
             $('#modeBtn').hidden = !this.authenticated;
             $('#favSearchHint').hidden = !this.authenticated;
             const identityChanged = () => this.checkAdministratorSync();
@@ -1827,8 +1977,8 @@
             });
         }
 
-        bindBookmarkPress() {
-            const grid = $('#grid');
+        bindBookmarkPress(host) {
+            const grid = host || this.surfaceOf().host;
             const releaseTimers = new WeakMap();
             let pressedBookmark = null;
             const press = (bookmark) => {
@@ -1869,21 +2019,23 @@
             });
         }
 
-        moveBookmark(fromCat, fromBm, toCat, toBm) {
-            const cats = this.config.categories;
+        moveBookmark(fromCat, fromBm, toCat, toBm, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const cats = surface.getConfig().categories;
             const [item] = cats[fromCat].bookmarks.splice(fromBm, 1);
             if (fromCat === toCat && fromBm < toBm) toBm--;
             cats[toCat].bookmarks.splice(toBm, 0, item);
-            this.renderGrid();
-            this.markConfigDirty();
+            this.renderGrid(surface);
+            surface.changed();
         }
 
-        moveCategory(from, to) {
-            const cats = this.config.categories;
+        moveCategory(from, to, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const cats = surface.getConfig().categories;
             const [item] = cats.splice(from, 1);
             cats.splice(to, 0, item);
-            this.renderGrid();
-            this.markConfigDirty();
+            this.renderGrid(surface);
+            surface.changed();
         }
 
         // ========== 首页编辑模式（书签 / 分类的增删改与拖拽） ==========
@@ -1894,8 +2046,9 @@
         // click（规范行为），所以同一张卡既能拖又能点开编辑框，
         // 不需要额外的计时器去区分。
 
-        bindGridEdit() {
-            const grid = $('#grid');
+        bindGridEdit(surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const grid = surface.host;
             if (!grid) return;
             let dragFrom = null;
             let dragKind = null;
@@ -1917,7 +2070,7 @@
             };
 
             grid.addEventListener('pointerdown', event => {
-                if (!this.editLayout || event.button !== 0) return;
+                if (!surface.isEditing() || event.button !== 0) return;
                 // ⚠️ 落在 ✎/✕ 上必须取消这次按压，否则会连累按钮。
                 // 分类头整块 draggable，而**后代的 draggable="false" 并不能豁免**：
                 // 实测 Chrome 里可拖拽祖先的后代（普通 button、写死 draggable=false 的
@@ -1936,7 +2089,7 @@
             });
 
             grid.addEventListener('dragstart', event => {
-                if (!this.editLayout) return;
+                if (!surface.isEditing()) return;
                 if (downOnCategory) {
                     dragKind = 'cat';
                     dragFrom = catIndexOf(event.target);
@@ -1968,7 +2121,7 @@
             });
 
             grid.addEventListener('dragover', event => {
-                if (!this.editLayout || !dragKind) return;
+                if (!surface.isEditing() || !dragKind) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = 'move';
                 if (dragKind !== 'cat') return;
@@ -1982,12 +2135,12 @@
             });
 
             grid.addEventListener('drop', event => {
-                if (!this.editLayout || !dragKind) return;
+                if (!surface.isEditing() || !dragKind) return;
                 event.preventDefault();
                 if (dragKind === 'cat') {
                     const to = catIndexOf(event.target);
                     // 落在自己身上不算移动，必须严格不同才搬
-                    if (to >= 0 && to !== dragFrom) this.moveCategory(dragFrom, to);
+                    if (to >= 0 && to !== dragFrom) this.moveCategory(dragFrom, to, surface);
                     $$('.category.drop-target', grid).forEach(n => n.classList.remove('drop-target'));
                 } else {
                     const section = event.target.closest('.category');
@@ -2003,8 +2156,8 @@
                     // 落在空白书签区（没有具体书签）时追加到该分类末尾
                     const toBm = targetBm && !targetBm.classList.contains('bookmark-add')
                         ? +targetBm.dataset.bm
-                        : this.config.categories[toCat].bookmarks.length;
-                    if (toBm >= 0) this.moveBookmark(dragFrom.cat, dragFrom.bm, toCat, toBm);
+                        : surface.getConfig().categories[toCat].bookmarks.length;
+                    if (toBm >= 0) this.moveBookmark(dragFrom.cat, dragFrom.bm, toCat, toBm, surface);
                 }
                 dragKind = null;
                 dragFrom = null;
@@ -2025,19 +2178,19 @@
             });
 
             grid.addEventListener('click', event => {
-                if (!this.editLayout) return;
+                if (!surface.isEditing()) return;
                 const target = event.target;
 
                 const addCard = target.closest('.bookmark-add');
-                if (addCard) { event.preventDefault(); this.addHomeBookmark(+addCard.dataset.addCat); return; }
+                if (addCard) { event.preventDefault(); this.addHomeBookmark(+addCard.dataset.addCat, surface); return; }
 
-                if (target.closest('.category-add')) { event.preventDefault(); this.addHomeCategory(); return; }
+                if (target.closest('.category-add')) { event.preventDefault(); this.addHomeCategory(surface); return; }
 
                 const delCat = target.closest('.category-del');
-                if (delCat) { event.preventDefault(); this.deleteHomeCategory(+delCat.dataset.delCat); return; }
+                if (delCat) { event.preventDefault(); this.deleteHomeCategory(+delCat.dataset.delCat, surface); return; }
 
                 const editCat = target.closest('.category-edit');
-                if (editCat) { event.preventDefault(); this.renameHomeCategory(+editCat.dataset.editCat); return; }
+                if (editCat) { event.preventDefault(); this.renameHomeCategory(+editCat.dataset.editCat, surface); return; }
 
                 // 删除按钮优先于卡片本身：它压在卡右上角，
                 // 若继续往下走会当成「点卡片」而打开编辑框。
@@ -2045,7 +2198,7 @@
                 if (delBm) {
                     event.preventDefault();
                     event.stopPropagation();
-                    this.deleteHomeBookmark(catIndexOf(delBm), +delBm.dataset.delBm);
+                    this.deleteHomeBookmark(catIndexOf(delBm), +delBm.dataset.delBm, surface);
                     return;
                 }
 
@@ -2053,20 +2206,20 @@
                 if (card) {
                     // 编辑态下书签卡不再是链接入口，点了是打开编辑框
                     event.preventDefault();
-                    this.editHomeBookmark(catIndexOf(card), bmIndexOf(card));
+                    this.editHomeBookmark(catIndexOf(card), bmIndexOf(card), surface);
                 }
             });
 
             // 编辑态下书签卡整体是拖拽宿主，按下即进入原生拖拽。
             // 链接默认导航由下面的 click 分支拦（编辑态点了是打开编辑框，不是跳转）。
             grid.addEventListener('pointerdown', event => {
-                if (!this.editLayout || event.button !== 0) return;
+                if (!surface.isEditing() || event.button !== 0) return;
                 const card = event.target.closest('.bookmark');
                 if (!card || card.classList.contains('bookmark-add')) return;
                 card.focus();
             });
 
-            this.bindTouchGridDrag();
+            this.bindTouchGridDrag(surface);
         }
 
         /**
@@ -2092,8 +2245,9 @@
          * 实时几何与缓存中线都可能失效（模块那条路径踩过这个坑，
          * 见 reorderWhileDragging 的注释）。
          */
-        bindTouchGridDrag() {
-            const grid = $('#grid');
+        bindTouchGridDrag(surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const grid = surface.host;
             if (!grid) return;
             const HOLD_MS = 400;
             const HOLD_TOLERANCE = 25;
@@ -2126,7 +2280,7 @@
                 if (toCat < 0) return null;
                 const toBm = card && card.dataset.bm !== undefined
                     ? +card.dataset.bm
-                    : this.config.categories[toCat].bookmarks.length;
+                    : surface.getConfig().categories[toCat].bookmarks.length;
                 return { card: !!card, cat: toCat, bm: toBm, section };
             };
 
@@ -2134,7 +2288,7 @@
                 // 只接触摸。鼠标走已验证的原生 DnD，两条路径**互不重叠**：
                 // 桌面端若也进这条路径，就要额外处理「一按就拖 vs 选文字」。
                 if (event.pointerType !== 'touch' || event.button !== 0) return;
-                if (!this.editLayout) return;
+                if (!surface.isEditing()) return;
                 // ✎/✕ 上按下不拖（同 pointerdown 的排除，见 bindGridEdit）
                 if (event.target.closest('.category-action:not(.category-drag)')) return;
 
@@ -2227,9 +2381,9 @@
                 //   变异验证显示删掉它没有任何用例转红，即它是死代码。）
                 if (!to) return;
                 if (kind === 'cat') {
-                    if (to.cat !== from) this.moveCategory(from, to.cat);
+                    if (to.cat !== from) this.moveCategory(from, to.cat, surface);
                 } else if (to.cat !== from.cat || to.bm !== from.bm) {
-                    this.moveBookmark(from.cat, from.bm, to.cat, to.bm);
+                    this.moveBookmark(from.cat, from.bm, to.cat, to.bm, surface);
                 }
             };
 
@@ -2263,8 +2417,9 @@
             return '';
         }
 
-        async addHomeBookmark(catIdx) {
-            const cat = this.config.categories[catIdx];
+        async addHomeBookmark(catIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const cat = surface.getConfig().categories[catIdx];
             if (!cat) return;
             const result = await this.showUiDialog({
                 title: `为「${cat.name}」添加导航`,
@@ -2275,17 +2430,19 @@
             if (!result) return;
             const [title, url] = result.values;
             cat.bookmarks.push({ id: uid(), title: title.trim(), url: url.trim() });
-            this.renderGrid();
-            this.markConfigDirty();
-            if (this.authenticated) this.showToast('导航已添加，点「保存编辑」生效');
+            this.renderGrid(surface);
+            surface.changed();
+            // 提示语要指向真正能提交这次改动的那颗按钮：模板表面提交的是草稿。
+            if (this.authenticated) this.showToast(surface === this.templateSurface ? '导航已添加，点「保存草稿」生效' : '导航已添加，点「保存编辑」生效');
         }
 
-        async editHomeBookmark(catIdx, bmIdx) {
-            const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
+        async editHomeBookmark(catIdx, bmIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const bm = surface.getConfig().categories[catIdx]?.bookmarks[bmIdx];
             if (!bm) return;
             const result = await this.showUiDialog({
                 title: '编辑导航',
-                message: `所属分类：${this.config.categories[catIdx].name}`,
+                message: `所属分类：${surface.getConfig().categories[catIdx].name}`,
                 fields: [{ label: '标题', value: bm.title }, { label: '网址', value: bm.url }],
                 confirmText: '保存',
                 validate: values => this.bookmarkFieldError(values)
@@ -2294,29 +2451,32 @@
             const [title, url] = result.values;
             bm.title = title.trim();
             bm.url = url.trim();
-            this.renderGrid();
-            this.markConfigDirty();
+            this.renderGrid(surface);
+            surface.changed();
         }
 
-        async deleteHomeBookmark(catIdx, bmIdx) {
-            const bm = this.config.categories[catIdx]?.bookmarks[bmIdx];
+        async deleteHomeBookmark(catIdx, bmIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const bm = surface.getConfig().categories[catIdx]?.bookmarks[bmIdx];
             if (!bm) return;
             if (!await this.confirmAction(`删除导航「${bm.title}」？`, '删除导航', true)) return;
-            this.config.categories[catIdx].bookmarks.splice(bmIdx, 1);
-            this.renderGrid();
-            this.markConfigDirty();
+            surface.getConfig().categories[catIdx].bookmarks.splice(bmIdx, 1);
+            this.renderGrid(surface);
+            surface.changed();
         }
 
-        async addHomeCategory() {
+        async addHomeCategory(surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
             const name = await this.promptValue('添加分类', '分类名称', { validate: ([v]) => (v && v.trim()) ? '' : '请填写分类名称' });
             if (name === null) return;
-            this.config.categories.push({ id: uid(), name: name.trim(), bookmarks: [] });
-            this.renderGrid();
-            this.markConfigDirty();
+            surface.getConfig().categories.push({ id: uid(), name: name.trim(), bookmarks: [] });
+            this.renderGrid(surface);
+            surface.changed();
         }
 
-        async renameHomeCategory(catIdx) {
-            const cat = this.config.categories[catIdx];
+        async renameHomeCategory(catIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
+            const cat = surface.getConfig().categories[catIdx];
             if (!cat) return;
             const name = await this.promptValue('重命名分类', '分类名称', {
                 value: cat.name,
@@ -2324,25 +2484,26 @@
             });
             if (name === null) return;
             cat.name = name.trim();
-            this.renderGrid();
-            this.markConfigDirty();
+            this.renderGrid(surface);
+            surface.changed();
         }
 
-        async deleteHomeCategory(catIdx) {
+        async deleteHomeCategory(catIdx, surface = this.homeSurface) {
+            surface = this.surfaceOf(surface);
             // 至少留一个分类：首页要有一个容器，否则网格整块空掉
-            if (this.config.categories.length <= 1) {
+            if (surface.getConfig().categories.length <= 1) {
                 this.showToast('至少保留一个分类', 'error');
                 return;
             }
-            const cat = this.config.categories[catIdx];
+            const cat = surface.getConfig().categories[catIdx];
             if (!cat) return;
             const message = cat.bookmarks.length
                 ? `删除分类「${cat.name}」及其中的 ${cat.bookmarks.length} 个导航？`
                 : `删除分类「${cat.name}」？`;
             if (!await this.confirmAction(message, '删除分类', true)) return;
-            this.config.categories.splice(catIdx, 1);
-            this.renderGrid();
-            this.markConfigDirty();
+            surface.getConfig().categories.splice(catIdx, 1);
+            this.renderGrid(surface);
+            surface.changed();
         }
 
         search() {
@@ -2419,7 +2580,10 @@
             $('#appearanceBtn').disabled = true;
             $('#engineBtn').disabled = true;
             $('#localNavigationTools').hidden = true;
+            // 三条编辑入口一起收起：此刻页面已被清空，任何一条留着都会指向不存在的内容。
             $('#layoutBtn').hidden = true;
+            $('#localCancelBtn').hidden = true;
+            $('#localDoneBtn').hidden = true;
             const login = await this.showUiDialog({ title: '登录已失效', message: '私人内容已隐藏，未保存草稿仅保留在当前标签页。重新登录后恢复草稿，或放弃草稿恢复普通首页。', confirmText: '重新登录', cancelText: '放弃草稿' });
             if (login) await this.openAdmin();
             if (!this.authenticated && this.suspendedAdministrator) {
@@ -2429,14 +2593,17 @@
             if (!this.suspendedAdministrator) {
                 $('#appearanceBtn').disabled = false;
                 $('#engineBtn').disabled = false;
-                $('#localNavigationTools').hidden = this.authenticated;
-                $('#layoutBtn').hidden = false;
+                $('#localNavigationTools').hidden = true;
+                this.syncEditEntries();
             }
         }
 
         clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
-            $('#localNavigationTools').hidden = false;
+            $('#localNavigationTools').hidden = true;
+            $('#localNavigationStatus').hidden = !this.localError;
+            this.syncAppearanceEntry(true);
+            this.localSettingsDraft = null;
             if (this.publicNavigation) {
                 this.config = structuredClone(this.publicNavigation);
                 this.publicNavigation = null;
@@ -2446,6 +2613,10 @@
             this.editSession = null;
             this.configDirty = false;
             this.configSnapshot = null;
+            // 模板草稿属于私人内容：退出登录时连同表面一起丢掉，
+            // 否则下一次会话会看到上一个人的默认首页草稿。
+            this.template = null;
+            this.templateSurface = null;
             this.modulesRevision = null;
             this.pendingModules = null;
             this.personalNavigationLoaded = false;
@@ -2933,6 +3104,8 @@
             $('#appearanceBtn').disabled = false;
             $('#engineBtn').disabled = false;
             $('#localNavigationTools').hidden = true;
+            $('#localNavigationStatus').hidden = true;
+            this.syncAppearanceEntry(false);
             this.migrateConfig();
             this.adoptServerTheme();
             this.render();
@@ -2958,125 +3131,211 @@
             } finally { this.navigationSaving = false; }
         }
 
-        async openDefaultHomepage() {
+        // ========== 站点默认首页：面板内可视化编辑 ==========
+        //
+        // 编辑的是「模板草稿」，与管理员个人导航是两份独立存储：
+        //   面板右上角 保存 / 取消 → config.json 与管理员个人导航
+        //   编辑器底栏 取消 / 保存草稿 / 发布 → /api/admin/default-homepage
+        // 两套提交模型同屏，靠位置与文案分开，谁也不替谁提交。
+        //
+        // 只读态就是预览：画布始终渲染草稿的真实结果，所以没有单独的「预览」按钮。
+
+        /** 读取草稿（含上次未确认的发布重放），成功后挂到当前面板 DOM 上。 */
+        async loadTemplateEditor() {
+            const note = $('#templateNote');
+            if (note) note.textContent = '正在读取默认首页草稿…';
             try {
                 const retry = sessionStorage.getItem('nav-sylph-pending-default');
                 if (retry) {
                     const request = JSON.parse(retry);
                     const result = await API.post('/api/admin/default-homepage/' + request.domain, request.body);
-                    if (!result.success) { if (result.error) sessionStorage.removeItem('nav-sylph-pending-default'); throw new Error(result.error || '上次操作结果尚未确认，请刷新后重试'); }
+                    if (!result.success) {
+                        if (result.error) sessionStorage.removeItem('nav-sylph-pending-default');
+                        throw new Error(result.error || '上次发布结果尚未确认，请刷新后重试');
+                    }
                     sessionStorage.removeItem('nav-sylph-pending-default');
                 }
                 const data = await API.get('/api/admin/default-homepage');
                 if (!this.authenticated) return;
-                const overlay = html(`<div class="ui-dialog-overlay"><div class="ui-dialog default-homepage-dialog" role="dialog" aria-modal="true" aria-labelledby="defaultHomepageTitle">
-                    <h3 id="defaultHomepageTitle">站点默认首页</h3>
-                    <p class="ui-dialog-message">草稿与个人导航独立保存。发布后供首次访问和主动重置使用。</p>
-                    <label class="ui-dialog-field"><span>主题</span><select id="defaultTheme"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
-                    <label class="ui-dialog-field"><span><input id="defaultIcons" type="checkbox"> 显示链接图标</span></label>
-                    <label class="ui-dialog-field"><span>默认搜索引擎</span><select id="defaultEngine"></select></label>
-                    <div id="defaultFields"></div>
-                    <p role="status" id="defaultStatus">草稿版本 ${data.revision}，发布版本 ${data.publishedRevision}</p>
-                    <div class="default-homepage-preview" id="defaultPreview" hidden></div>
-                    <div class="ui-dialog-actions"><button type="button" id="defaultClose" class="btn">关闭</button><button type="button" id="defaultPreviewBtn" class="btn">预览</button><button type="button" id="defaultSave" class="btn">保存草稿</button><button type="button" id="defaultPublish" class="btn primary">发布默认首页</button></div>
-                </div></div>`);
-                const previousFocus = document.activeElement;
-                document.body.appendChild(overlay);
-                const find = s => overlay.querySelector(s);
-                find('#defaultTheme').value = data.config.theme;
-                find('#defaultIcons').checked = data.config.showBookmarkIcons;
-                const draft = structuredClone(data.config);
-                const controls = (type, index, category = '') => `<button type="button" class="btn" data-action="up" data-type="${type}" data-index="${index}" data-category="${category}" aria-label="上移">↑</button><button type="button" class="btn" data-action="down" data-type="${type}" data-index="${index}" data-category="${category}" aria-label="下移">↓</button><button type="button" class="btn" data-action="delete" data-type="${type}" data-index="${index}" data-category="${category}">删除</button>`;
-                const input = (label, value, type, index, field, category = '') => `<label class="ui-dialog-field"><span>${label}</span><input value="${this.esc(value)}" data-type="${type}" data-index="${index}" data-field="${field}" data-category="${category}"></label>`;
-                const renderFields = () => {
-                    find('#defaultEngine').innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
-                    find('#defaultEngine').value = draft.searchEngine;
-                    find('#defaultFields').innerHTML = `<h4>搜索引擎</h4>` + draft.searchEngines.map((e, i) => `<div class="default-editor-row">${input('引擎名称', e.name, 'engine', i, 'name')}${input('搜索地址前缀', e.url, 'engine', i, 'url')}${controls('engine', i)}</div>`).join('') + `<button type="button" class="btn" data-action="add-engine">添加引擎</button><h4>导航分类</h4>` + draft.categories.map((c, i) => `<fieldset><legend>分类 ${i + 1}</legend>${input('分类名称', c.name, 'category', i, 'name')}${controls('category', i)}${c.bookmarks.map((b, j) => `<div class="default-editor-row">${input('链接标题', b.title, 'bookmark', j, 'title', i)}${input('链接地址', b.url, 'bookmark', j, 'url', i)}${controls('bookmark', j, i)}</div>`).join('')}<button type="button" class="btn" data-action="add-bookmark" data-category="${i}">添加链接</button></fieldset>`).join('') + `<button type="button" class="btn" data-action="add-category">添加分类</button>`;
+                this.template = {
+                    draft: structuredClone(data.config),
+                    base: structuredClone(data.config),
+                    revision: data.revision,
+                    publishedRevision: data.publishedRevision,
+                    mode: 'readonly',
+                    busy: false,
+                    pending: null
                 };
-                const listFor = el => el.dataset.type === 'engine' ? draft.searchEngines : el.dataset.type === 'category' ? draft.categories : draft.categories[+el.dataset.category].bookmarks;
-                find('#defaultEngine').onchange = e => { draft.searchEngine = e.target.value; };
-                find('#defaultFields').oninput = e => {
-                    const el = e.target;
-                    if (!el.dataset.field) return;
-                    listFor(el)[+el.dataset.index][el.dataset.field] = el.value;
-                    if (el.dataset.type === 'engine' && el.dataset.field === 'name') {
-                        find('#defaultEngine').options[+el.dataset.index].textContent = el.value;
-                    }
+                this.mountTemplateEditor();
+            } catch (e) {
+                if (note) note.textContent = e.message;
+            }
+        }
+
+        /** 把草稿挂到当前面板 DOM 上。面板每次重渲染都会换一批节点，所以每次都要重绑。
+         *  ⚠️ 已知项：bindBookmarkPress / bindTouchGridDrag 在 window 上挂的 5 条监听
+         *  没有随旧节点回收，每开一次面板会多 5 条（闭包留住旧宿主与旧 surface）。
+         *  面板每次重渲染都会重挂，所以历史上限就是「本次会话开过几次面板」。 */
+        mountTemplateEditor() {
+            const grid = $('#templateGrid');
+            if (!grid || !this.template) return;
+            // 面板每次重渲染都换一批节点。网格上的监听随旧节点一起消失，
+            // 但 bindBookmarkPress / bindTouchGridDrag 还在 window 上挂了 5 条——
+            // 不摘掉就会每开一次面板永久多 5 条，并把旧宿主与旧 surface 留在闭包里。
+            // 第二份网格表面：配置取草稿，宿主是面板里的画布。
+            // 与首页共用同一套 renderGrid / bindGridEdit，不复制拖拽代码。
+            this.templateSurface = this.gridSurface({
+                getConfig: () => this.template.draft,
+                isEditing: () => this.template.mode === 'edit',
+                host: grid,
+                changed: () => this.renderTemplateEditor()
+            });
+            this.bindGridEdit(this.templateSurface);
+            this.bindBookmarkPress(grid);
+            this.renderTemplateEditor();
+        }
+
+        /** 画布头部只是草稿的静态外观，不参与交互：不带 id，避免与首页的搜索框撞。 */
+        renderTemplateCanvas() {
+            const header = $('#templateHeader');
+            if (!header || !this.template) return;
+            const config = this.template.draft;
+            const engine = config.searchEngines.find(e => e.id === config.searchEngine) || config.searchEngines[0];
+            header.innerHTML = `<div class="search-wrapper"><div class="search" role="presentation">
+                <span class="search-engine" aria-hidden="true"><span class="engine-name">${this.esc(engine ? engine.name : '')}</span><svg class="engine-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></span>
+                <textarea class="search-input" rows="1" readonly tabindex="-1" aria-hidden="true" placeholder="搜索网页"></textarea>
+                <span class="search-btn" aria-hidden="true">搜索</span>
+            </div></div>`;
+        }
+
+        /** 刷新模式、dirty 与操作栏，然后按草稿重绘画布。结构变更也走这里。 */
+        renderTemplateEditor() {
+            const t = this.template;
+            if (!t) return;
+            const editing = t.mode === 'edit';
+            const dirty = JSON.stringify(t.draft) !== JSON.stringify(t.base);
+            const badge = $('#templateBadge');
+            if (badge) badge.textContent = dirty
+                ? `发布版 v${t.publishedRevision} · 有未保存改动`
+                : `发布版 v${t.publishedRevision}`;
+            const note = $('#templateNote');
+            if (note) note.textContent = editing
+                ? (dirty ? '编辑中 · 有未保存改动' : '编辑中 · 拖拽分类与链接，点 ＋ 增删')
+                : '只读预览 · 与真实首页同一套 DOM 与样式';
+            const canvas = $('#templateCanvas');
+            if (canvas) canvas.hidden = false;
+            const editBtn = $('#templateEditBtn');
+            if (editBtn) editBtn.hidden = editing;
+            // 操作栏常显：「发布」是终态动作，不该要求先回到编辑态才能点。
+            // 编辑态才多出「取消 / 保存草稿」两条。
+            const state = $('#templateState');
+            if (state) {
+                state.textContent = dirty
+                    ? '有未保存改动'
+                    : `草稿版本 ${t.revision} · 发布版本 ${t.publishedRevision}`;
+                state.dataset.dirty = String(dirty);
+            }
+            const publish = $('#templatePublishBtn');
+            if (publish) {
+                const published = t.revision === t.publishedRevision;
+                publish.disabled = dirty || published || t.busy;
+                publish.title = dirty ? '请先保存草稿，再发布'
+                    : published ? '当前草稿已是发布版本'
+                        : '发布后供首次访问和主动重置使用';
+            }
+            const save = $('#templateSaveBtn');
+            if (save) {
+                save.hidden = !editing;
+                save.disabled = !dirty || t.busy;
+            }
+            const cancel = $('#templateCancelBtn');
+            if (cancel) {
+                cancel.hidden = !editing;
+                cancel.disabled = t.busy;
+            }
+            const editor = $('#templateEditor');
+            if (editor) editor.dataset.mode = editing ? 'edit' : 'readonly';
+            // 增删控件的显隐由 `.grid.is-editing` 决定（既定纪律：JS 不写 hidden）。
+            // 首页那份由 syncEditLayoutUI 加，画布这份必须自己加，否则编辑态下
+            // 按钮渲染了却仍是 display:none——「点了编辑什么都没出现」。
+            const grid = $('#templateGrid');
+            if (grid) grid.classList.toggle('is-editing', editing);
+            this.renderTemplateCanvas();
+            this.renderGrid(this.templateSurface);
+        }
+
+        templateSetMode(mode) {
+            if (!this.template || this.template.busy) return;
+            this.template.mode = mode;
+            this.renderTemplateEditor();
+        }
+
+        /** 取消只回退编辑器里的草稿改动，不动面板里已填的个人设置。 */
+        templateCancel() {
+            const t = this.template;
+            if (!t || t.busy) return;
+            t.draft = structuredClone(t.base);
+            t.mode = 'readonly';
+            this.renderTemplateEditor();
+        }
+
+        /** 模板草稿是否有未保存改动。面板还没打开过（没有草稿）也算没有。 */
+        templateDirty() {
+            const t = this.template;
+            return !!t && JSON.stringify(t.draft) !== JSON.stringify(t.base);
+        }
+
+        /** 保存草稿或发布。发布前必须没有未保存改动（沿用原有规则）。 */
+        async templateSubmit(publish) {
+            const t = this.template;
+            if (!t || t.busy) return;
+            const content = JSON.stringify(t.draft);
+            if (publish && content !== JSON.stringify(t.base)) {
+                this.showToast('请先保存草稿，再发布', 'error');
+                return;
+            }
+            const domain = publish ? 'publish' : 'draft';
+            // 响应丢失时重放同一个操作标识，沿用既有的幂等形状。
+            if (!t.pending || t.pending.domain !== domain || t.pending.content !== content) {
+                t.pending = {
+                    domain,
+                    content,
+                    body: publish
+                        ? { publishedRevision: t.publishedRevision, revision: t.revision, operationId: crypto.randomUUID() }
+                        : { config: structuredClone(t.draft), revision: t.revision, operationId: crypto.randomUUID() }
                 };
-                find('#defaultFields').onclick = e => {
-                    const el = e.target.closest('button[data-action]'); if (!el) return;
-                    const action = el.dataset.action;
-                    if (action === 'add-engine') draft.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
-                    else if (action === 'add-category') draft.categories.push({ id: uid(), name: '新分类', bookmarks: [] });
-                    else if (action === 'add-bookmark') draft.categories[+el.dataset.category].bookmarks.push({ id: uid(), title: '新链接', url: 'https://' });
-                    else {
-                        const list = listFor(el), i = +el.dataset.index;
-                        if (action === 'delete') {
-                            if (el.dataset.type === 'engine' && list.length === 1) { find('#defaultStatus').textContent = '至少保留一个搜索引擎'; return; }
-                            const [removed] = list.splice(i, 1);
-                            if (el.dataset.type === 'engine' && removed.id === draft.searchEngine) draft.searchEngine = list[0].id;
-                        } else {
-                            const to = action === 'up' ? i - 1 : i + 1;
-                            if (to >= 0 && to < list.length) [list[i], list[to]] = [list[to], list[i]];
-                        }
-                    }
-                    renderFields();
-                };
-                renderFields();
-                const read = () => ({ ...structuredClone(draft), theme: find('#defaultTheme').value, showBookmarkIcons: find('#defaultIcons').checked });
-                let saved = JSON.stringify(data.config), pending = null, busy = false;
-                const close = () => { if (busy) return; overlay.remove(); previousFocus?.focus(); };
-                find('#defaultClose').onclick = close;
-                overlay.onkeydown = e => {
-                    if (e.key === 'Escape') { e.stopPropagation(); close(); }
-                    if (e.key === 'Tab') {
-                        const nodes = [...overlay.querySelectorAll('button, input, select, textarea')].filter(n => !n.disabled);
-                        const first = nodes[0], last = nodes.at(-1);
-                        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-                        if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-                    }
-                };
-                find('#defaultPreviewBtn').onclick = () => {
-                    try {
-                        const cfg = read(); const preview = find('#defaultPreview'); preview.replaceChildren();
-                        preview.dataset.theme = cfg.theme;
-                        const engine = document.createElement('p'); engine.textContent = '搜索引擎：' + cfg.searchEngines.map(e => e.name + (e.id === cfg.searchEngine ? '（默认）' : '')).join('、'); preview.append(engine);
-                        for (const c of cfg.categories) {
-                            const heading = document.createElement('h4'); heading.textContent = c.name; preview.append(heading);
-                            for (const b of c.bookmarks) {
-                                const a = document.createElement('a'); a.textContent = b.title;
-                                if (['http:', 'https:'].includes(new URL(b.url).protocol)) a.href = b.url;
-                                a.target = '_blank'; a.rel = 'noopener noreferrer'; preview.append(a);
-                            }
-                        }
-                        preview.hidden = false;
-                    } catch { find('#defaultStatus').textContent = '配置格式无效，请检查名称和链接地址'; }
-                };
-                const submit = async publish => {
-                    if (busy) return;
-                    try {
-                        const cfg = read(); const content = JSON.stringify(cfg);
-                        if (publish && content !== saved) throw new Error('请先保存当前草稿并预览，再发布');
-                        const domain = publish ? 'publish' : 'draft';
-                        if (!pending || pending.domain !== domain || pending.content !== content) pending = { domain, content, body: { ...(publish ? { publishedRevision: data.publishedRevision } : { config: cfg }), revision: data.revision, operationId: crypto.randomUUID() } };
-                        busy = true;
-                        overlay.querySelectorAll('input, select, textarea, button').forEach(n => { n.disabled = true; });
-                        sessionStorage.setItem('nav-sylph-pending-default', JSON.stringify(pending));
-                        const result = await API.post('/api/admin/default-homepage/' + domain, pending.body);
-                        if (!result.success) { if (result.error) sessionStorage.removeItem('nav-sylph-pending-default'); throw new Error(result.error || '保存结果尚未确认，请刷新后重试'); }
+            }
+            t.busy = true;
+            this.renderTemplateEditor();
+            try {
+                sessionStorage.setItem('nav-sylph-pending-default', JSON.stringify(t.pending));
+                const result = await API.post('/api/admin/default-homepage/' + domain, t.pending.body);
+                if (!result.success) {
+                    if (result.error) {
                         sessionStorage.removeItem('nav-sylph-pending-default');
-                        if (!this.authenticated || !overlay.isConnected) return;
-                        if (publish) data.publishedRevision = result.revision;
-                        else { data.revision = result.revision; saved = content; }
-                        pending = null;
-                        find('#defaultStatus').textContent = publish ? '默认首页已发布，个人导航保持原样' : '草稿已保存，公开首页保持原样';
-                    } catch (e) { find('#defaultStatus').textContent = e.message; }
-                    finally { busy = false; overlay.querySelectorAll('input, select, textarea, button').forEach(n => { n.disabled = false; }); }
-                };
-                find('#defaultSave').onclick = () => submit(false);
-                find('#defaultPublish').onclick = () => submit(true);
-                find('#defaultTheme').focus();
-            } catch (e) { this.showToast(e.message, 'error'); }
+                        t.pending = null;
+                    }
+                    throw new Error(result.error || '保存结果尚未确认，请刷新后重试');
+                }
+                sessionStorage.removeItem('nav-sylph-pending-default');
+                t.pending = null;
+                if (publish) {
+                    t.publishedRevision = result.revision;
+                    this.showToast('默认首页已发布，个人导航保持原样');
+                } else {
+                    t.revision = result.revision;
+                    t.base = structuredClone(t.draft);
+                    t.mode = 'readonly';
+                    this.showToast('草稿已保存，公开首页保持原样');
+                }
+            } catch (e) {
+                if (this.template) this.showToast(e.message, 'error');
+            } finally {
+                if (this.template) {
+                    this.template.busy = false;
+                    this.renderTemplateEditor();
+                }
+            }
         }
 
         async loadPrivacyMode() {
@@ -4204,6 +4463,16 @@
             // `configDirty` 在保存期间仍为 true，走进去就会把内存里的 `config` 回滚成
             // 提交前的快照，保存成功后页面反而显示旧配置，直到刷新才恢复。
             const saving = this.configSaving;
+            // 模板草稿是另一套存储，不能跟着 config.json 的「放弃修改」一起静默丢弃。
+            // 它只在内存里，关掉面板就没了，所以单独问一句。
+            if (!force && this.templateDirty()) {
+                if (!await this.confirmAction('站点默认首页有未保存的草稿改动，关闭面板会丢失。确定关闭吗？', '关闭面板')) return false;
+                this.template.draft = structuredClone(this.template.base);
+                this.template.mode = 'readonly';
+                // 已丢弃就要立刻重画：下面那条「放弃修改」若被取消，面板还开着，
+                // 而画布与状态行仍显示着刚被丢掉的草稿——状态与 DOM 分叉。
+                this.renderTemplateEditor();
+            }
             if (!saving && this.configDirty) {
                 if (!force && !await this.confirmAction('有未保存的修改，确定放弃吗？', '放弃修改')) return false;
                 this.config = JSON.parse(this.configSnapshot);
@@ -4668,7 +4937,7 @@
                 <div class="admin-panels">
                 <div class="admin-panel" role="tabpanel" id="adminPanelSite" aria-labelledby="adminTabSite" hidden>
                 <div class="section">
-                    <div class="section-title">个人首页设置</div><p class="fav-hint">保存仅更新管理员个人导航。</p><button type="button" class="btn" id="defaultHomepageBtn">编辑站点默认首页</button>
+                    <div class="section-title">个人首页设置</div><p class="fav-hint">保存仅更新管理员个人导航。</p>
                     <div class="setting-row">
                         <label>
                             <span>主题模式</span>
@@ -4697,6 +4966,30 @@
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
+                    </div>
+                </div>
+                <div class="section template-section">
+                    <div class="section-title">站点默认首页<span class="template-badge" id="templateBadge"></span></div>
+                    <p class="fav-hint">草稿与个人导航独立保存。发布后供首次访问和主动重置使用。</p>
+                    <div class="template-editor" id="templateEditor" data-mode="readonly">
+                        <div class="template-editor-bar">
+                            <span class="template-editor-note" id="templateNote">正在读取默认首页草稿…</span>
+                            <button type="button" class="btn btn-sm" id="templateEditBtn" hidden>编辑</button>
+                        </div>
+                        <div class="template-canvas" id="templateCanvas" hidden>
+                            <div class="backboard">
+                                <header class="header" id="templateHeader"></header>
+                                <main class="grid" id="templateGrid"></main>
+                            </div>
+                        </div>
+                        <div class="template-editor-actions" id="templateActions">
+                            <span class="template-state" id="templateState"></span>
+                            <div>
+                                <button type="button" class="btn btn-sm" id="templateCancelBtn" hidden>取消</button>
+                                <button type="button" class="btn btn-sm" id="templateSaveBtn" hidden>保存草稿</button>
+                                <button type="button" class="btn btn-sm btn-primary" id="templatePublishBtn" disabled>发布默认首页</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="section section-collapsible">
@@ -4790,7 +5083,14 @@
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
             this.selectAdminTab(this.adminTab || 'site');
 
-            $('#defaultHomepageBtn').onclick = () => this.openDefaultHomepage();
+            // 站点默认首页：面板每次重渲染都会换掉画布节点，所以要重新挂一次；
+            // 只有第一次进入才发请求（否则每开一次面板就多一个往返，还会撞匿名读限流）。
+            if (!this.template) this.loadTemplateEditor();
+            else this.mountTemplateEditor();
+            $('#templateEditBtn').onclick = () => this.templateSetMode('edit');
+            $('#templateCancelBtn').onclick = () => this.templateCancel();
+            $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
+            $('#templatePublishBtn').onclick = () => this.templateSubmit(true);
             $('#themeModeSelect').onchange = (e) => {
                 this.config.theme = e.target.value;
                 this.applyTheme();

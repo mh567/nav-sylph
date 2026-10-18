@@ -34,6 +34,8 @@ async function category(page, name) {
 }
 async function check(page) { await page.evaluate(() => window.dispatchEvent(new Event('online'))); }
 const heading = (page, name) => page.getByRole('heading', { name, exact: true });
+/** 保存并退出编辑。底栏里「编辑」与编辑态的「保存编辑」互斥显示，保存要取另一个元素。 */
+const saveEdit = page => page.locator('#localDoneBtn').click();
 async function logout(page) {
     await page.locator('#adminBtn').click();
     await page.getByRole('tab', { name: '账户与备份' }).click();
@@ -42,11 +44,11 @@ async function logout(page) {
 
 test('browser: two clean devices share administrator navigation, retain independent ordinary data and independent sessions', async t => {
     const { a, b } = await setup(t);
-    await category(a, 'Ordinary A'); await a.locator('#layoutBtn').click();
-    await category(b, 'Ordinary B'); await b.locator('#layoutBtn').click();
+    await category(a, 'Ordinary A'); await saveEdit(a);
+    await category(b, 'Ordinary B'); await saveEdit(b);
     await login(a); await login(b);
     assert.equal(await heading(a, 'Ordinary A').count(), 0);
-    await category(a, 'Shared administrator'); await a.locator('#layoutBtn').click();
+    await category(a, 'Shared administrator'); await saveEdit(a);
     await a.getByText('编辑已保存', { exact: true }).waitFor();
     const start = Date.now(); await check(b);
     await heading(b, 'Shared administrator').waitFor();
@@ -63,14 +65,15 @@ test('browser: remote updates preserve drafts, conflict saves retain drafts, can
     const { a, b } = await setup(t);
     await login(a); await login(b);
     await category(b, 'Local draft');
-    await category(a, 'Remote saved'); await a.locator('#layoutBtn').click();
+    await category(a, 'Remote saved'); await saveEdit(a);
     await a.getByText('编辑已保存', { exact: true }).waitFor();
     await check(b);
     await b.getByText(/服务器配置已更新，当前草稿已保留/).waitFor();
     await heading(b, 'Local draft').waitFor();
-    await b.locator('#layoutBtn').click();
+    await saveEdit(b);
     await b.getByText(/草稿已保留；可取消编辑/).waitFor();
-    assert.equal(await b.locator('#layoutBtn').textContent(), '保存编辑');
+    // 管理员的保存入口在底栏，编辑态下由「编辑」换成「保存编辑」
+    assert.equal(await b.locator('#localDoneBtn').textContent(), '保存编辑');
     await heading(b, 'Local draft').waitFor();
     await b.keyboard.press('Escape');
     await b.locator('.ui-dialog button[type="submit"]').click();
@@ -99,7 +102,7 @@ test('browser: network errors preserve identity, expiration hides private draft 
     await a.locator('#modal').waitFor({ state: 'visible' });
     await a.locator('#cancelBtn').click();
     await heading(a, 'Retained private draft').waitFor();
-    await a.locator('#layoutBtn').click();
+    await saveEdit(a);
     await a.getByText('编辑已保存', { exact: true }).waitFor();
     await a.reload(); await heading(a, 'Retained private draft').waitFor();
 });
@@ -137,7 +140,7 @@ test('browser: visible administrator device receives a saved update within the 3
     await login(a); await login(b);
     // Save immediately after a natural polling response to exercise the longest wait.
     await b.waitForResponse(response => response.url().endsWith('/api/session'), { timeout: 32000 });
-    await category(a, 'Periodic update'); await a.locator('#layoutBtn').click();
+    await category(a, 'Periodic update'); await saveEdit(a);
     await a.getByText('编辑已保存', { exact: true }).waitFor();
     const start = Date.now();
     await heading(b, 'Periodic update').waitFor({ timeout: 32500 });
@@ -175,7 +178,7 @@ test('browser: shared-cookie tabs handle ordinary drafts before login and retain
     await login(a);
     await tab.getByText(/管理员会话已确认，请完成当前编辑/).waitFor();
     await heading(tab, 'Ordinary tab data').waitFor();
-    await tab.locator('#layoutBtn').click();
+    await saveEdit(tab);
     await tab.locator('#modeBtn').waitFor({ state: 'visible' });
     assert.equal(await heading(tab, 'Ordinary tab data').count(), 0);
     await category(tab, 'Unsubmitted admin data');
@@ -190,7 +193,7 @@ test('browser: shared-cookie tabs handle ordinary drafts before login and retain
 
 test('browser: personal engine definitions propagate and a late administrator response cannot replace the ordinary context after logout', async t => {
     const { a, b } = await setup(t);
-    await category(a, 'Ordinary late-response baseline'); await a.locator('#layoutBtn').click();
+    await category(a, 'Ordinary late-response baseline'); await saveEdit(a);
     await login(a); await login(b);
     await a.locator('#adminBtn').click();
     await a.locator('[aria-controls="enginesSection"]').click(); await a.locator('#addEngine').click();
@@ -239,7 +242,7 @@ test('browser: enabled private module and saved widget side synchronize from ser
     await a.mouse.down();
     await a.mouse.move(1700, box.y + 100, { steps: 15 });
     await a.mouse.up();
-    await a.locator('#layoutBtn').click();
+    await saveEdit(a);
     await a.getByText('编辑已保存', { exact: true }).waitFor();
     await check(b);
     await b.waitForFunction(() => document.querySelector('.module-widget[data-module-id="memo"]')?.dataset.side === 'right');

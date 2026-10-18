@@ -274,11 +274,11 @@ body {
     box-shadow: var(--shadow);
 }
 
-.bookmark:active, .btn:active, .fab:active, .search-btn:active {
+.bookmark:active, .btn:active, .search-btn:active {
     transform: translateY(1px);
 }
 
-.bookmark:focus-visible, .btn:focus-visible, .fab:focus-visible,
+.bookmark:focus-visible, .btn:focus-visible,
 .search-btn:focus-visible, .search-engine:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
@@ -301,29 +301,6 @@ body {
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
-
-.fab { right: 24px; bottom: 24px; }
-.fab-help { left: 24px; bottom: 24px; right: auto; }
-
-.fab, .fab-help {
-    position: fixed;
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: var(--shadow-lg);
-    transition: all var(--transition);
-    z-index: 100;
-}
-
-.fab svg { width: 20px; height: 20px; }
-.fab:hover { background: var(--accent); color: white; border-color: var(--accent); }
 
 .modal {
     position: fixed;
@@ -497,7 +474,6 @@ body {
     .grid { gap: 32px; }
     .bookmarks { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
     .bookmark { padding: 16px 8px; }
-    .fab { right: 16px; bottom: 16px; width: 44px; height: 44px; }
     .modal-content { width: 95%; max-height: 90vh; border-radius: 8px; }
     .modal-header { padding: 12px 16px; }
     .modal-header h2 { font-size: 14px; }
@@ -904,10 +880,6 @@ body {
         width: 100%;
         padding: 10px;
     }
-
-    .fab, .fab-help { width: 44px; height: 44px; }
-    .fab { right: 16px; bottom: 16px; }
-    .fab-help { left: 16px; bottom: 16px; }
 
     .help-content {
         padding: 20px;
@@ -1967,17 +1939,19 @@ body {
 
 /* ========== 版本更新提示 (continued) ========== */
 
-/* 帮助按钮更新徽章 */
-.fab-help.has-update::after {
+/* 帮助按钮更新徽章：「说明」有新版本时的提示点。
+   原先挂在右下角圆形按钮的右上角（绝对定位），底栏改成纯文字后那个角落
+   不再存在，改为文本行内的小红点：它跟着字号与行盒走，窄屏把链接撑到
+   44px 高也不会跑偏。 */
+.site-footer-link.has-update::after {
     content: '';
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 10px;
-    height: 10px;
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 4px;
+    vertical-align: 2px;
     background: #ef4444;
     border-radius: 50%;
-    border: 2px solid var(--bg-card);
     animation: badgePulse 2s ease-in-out infinite;
 }
 
@@ -2459,13 +2433,6 @@ body {
 
 /* 移动端适配 */
 @media (max-width: 768px) {
-    .fab-help.has-update::after {
-        top: 6px;
-        right: 6px;
-        width: 8px;
-        height: 8px;
-    }
-
     .help-new-features {
         padding: 10px 12px;
         margin-bottom: 14px;
@@ -2659,7 +2626,7 @@ body {
 body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
 /* 1040 → 1440：给背板外侧的两侧模块留位置（936 背板 + 2×220 模块 + 间隙）。
    背板本身仍是 936px 居中，宽度未变。 */
-.app { max-width: 1440px; padding: 35px 22px 100px; }
+.app { max-width: 1440px; padding: 35px 22px 56px; }
 .header { margin-bottom: 0; }
 .search-wrapper { max-width: 560px; }
 .search {
@@ -2792,17 +2759,18 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .bookmark:active,.bookmark-text-only:active,.bookmark.is-pressed { transform: translateY(var(--bookmark-press-depth)) scale(var(--bookmark-press-scale)); border-color: var(--bookmark-pressed-border); background: var(--bookmark-pressed-face); box-shadow: var(--bookmark-press-shadow); transition-duration: var(--bookmark-press-motion); }
 .bookmark:active::before,.bookmark.is-pressed::before { opacity: 0; transition-duration: 20ms; }
 .bookmark-title,.bookmark-text-only .bookmark-title { position: relative; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; letter-spacing: .015em; }
-.utility-dock { position: fixed; right: 21px; bottom: 19px; z-index: 100; display: flex; gap: 3px; padding: 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--glass); box-shadow: inset 0 1px rgba(255,255,255,.68),var(--shadow-lg); backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%); }
-.utility-dock .fab,.utility-dock .fab-help { position: relative; inset: auto; width: auto; min-width: 52px; min-height: 44px; padding: 0 15px; border: 0; border-radius: 999px; background: transparent; color: var(--text); box-shadow: none; font-size: 12px; font-weight: 500; transition: transform 90ms,background 110ms,box-shadow 110ms,color 110ms; }
-.utility-dock .fab:hover { background: rgba(148,94,74,.12); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.25); }
-.utility-dock .fab:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
-/* 外观三态按钮：与旁边 .fab 同高（44px），只把宽度收窄成图标按钮 ——
-   dock 高度不变，触摸目标也仍然达标。刻意不做成 32–36px 的圆：
-   那个尺寸低于触摸目标底线，手机上容易误触紧邻的「管理」。 */
-.utility-dock .appearance-btn { position: relative; inset: auto; display: flex; align-items: center; justify-content: center; width: 40px; min-height: 44px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--text); box-shadow: none; cursor: pointer; transition: transform 90ms,background 110ms,box-shadow 110ms,color 110ms; }
-.utility-dock .appearance-btn:hover { background: rgba(148,94,74,.12); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.25); }
-.utility-dock .appearance-btn:active { transform: translateY(1px); background: var(--control-pressed-top); box-shadow: var(--press-shadow); }
-.utility-dock .appearance-btn svg { width: 18px; height: 18px; display: block; }
+/* 页面级操作栏：背板底部的纯文字一行，取代原先右下角固定的 .utility-dock 药丸。
+   药丸跟着视口走，窄屏会压住内容，且「编辑」在两种状态里换文案时宽度会跳。
+   这里改为页面流内的一行居中弱化文字，悬停才提到正文色。
+   编辑态的「取消 / 保存配置」是同一行里的两条入口，由 JS 控制显隐。 */
+.site-footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--border); }
+.site-footer-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 10px; }
+.site-footer-link { appearance: none; -webkit-appearance: none; position: relative; border: 0; background: none; padding: 6px 4px; color: var(--text-muted); font: inherit; font-size: 12px; line-height: 1.4; border-radius: 4px; cursor: pointer; transition: color 110ms; }
+.site-footer-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.site-footer-link:disabled { cursor: default; color: var(--text-muted); text-decoration: none; opacity: .6; }
+/* 保存是这一行里的主操作，其余入口都是弱化文字。 */
+.site-footer-link.is-save { color: var(--accent); font-weight: 600; }
+.site-footer-sep { color: var(--text-muted); font-size: 12px; opacity: .55; user-select: none; }
 .modal-backdrop,.help-overlay { background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
 .modal-content,.help-content,.fav-dialog { border: 1px solid var(--border); background: var(--glass-strong); box-shadow: inset 0 1px rgba(255,255,255,.57),0 20px 48px rgba(35,27,21,.21); backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%); }
 .btn { border-color: var(--border); border-radius: 8px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.48),0 1px 3px rgba(67,51,39,.06); transition: transform 110ms,border-color 140ms,box-shadow 140ms,background 140ms,color 140ms; }
@@ -2816,11 +2784,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .btn-danger:hover:not(:disabled) { border-color: #a44c46; background: rgba(164,76,70,.11); color: #8a3833; }
 :root[data-theme="dark"] .btn-danger,:root[data-theme="dark"] .config-save-status[data-state="error"] { color: #e9a69d; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn-danger,:root:not([data-theme="light"]) .config-save-status[data-state="error"] { color: #e9a69d; } }
-.bookmark:focus-visible,.btn:focus-visible,.fab:focus-visible,.appearance-btn:focus-visible,.search-mode:focus-visible,.search-btn:focus-visible,.search-engine:focus-visible,.fav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.bookmark:focus-visible,.btn:focus-visible,.site-footer-link:focus-visible,.search-mode:focus-visible,.search-btn:focus-visible,.search-engine:focus-visible,.fav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .item-row input:focus,.setting-row select:focus,.fav-form input:focus,.fav-form select:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px rgba(148,94,74,.09); }
 .toast { border: 1px solid var(--border); background: var(--glass-strong); color: var(--text); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast,.backboard { background: var(--bg-card); } }
-@media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.utility-dock,.modal-content,.help-content,.fav-dialog,.toast,.backboard { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .search,.engine-dropdown,.fav-dropdown,.modal-content,.help-content,.fav-dialog,.toast,.backboard { background: var(--bg-card); } }
+@media (prefers-reduced-transparency: reduce) { .search,.engine-dropdown,.fav-dropdown,.modal-content,.help-content,.fav-dialog,.toast,.backboard { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } .bookmark:hover,.btn:hover,.search-engine:hover,.search-btn:hover { transform: none; } }
 @media (hover: none) { .search:hover::after,.bookmark:hover::before,.search-mode:hover::before,.search-engine:hover::before,.search-btn:hover::before { opacity: 0; } .bookmark:hover,.bookmark-text-only:hover,.btn:hover:not(:disabled),.search-engine:hover,.search-btn:hover { transform: none; } }
 /* 触屏点按时关掉 UA 默认高亮。
@@ -2828,7 +2796,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    rgba(51,181,229,.4)，那抹蓝会盖在按钮的拟物材质上，与整套暖灰调冲突。
    键盘可达性不受影响：:focus-visible 的轮廓（2853 行）仍照常出现，
    它只在键盘导航时出现，正是该给提示的时候。 */
-@media (hover: none) and (pointer: coarse) { .search-mode,.search-engine,.search-btn,.bookmark,.bookmark-text-only,.engine-option,.fab,.fab-help,.appearance-btn { -webkit-tap-highlight-color: transparent; } }
+@media (hover: none) and (pointer: coarse) { .search-mode,.search-engine,.search-btn,.bookmark,.bookmark-text-only,.engine-option,.site-footer-link { -webkit-tap-highlight-color: transparent; } }
 /* 快捷键说明行：只桌面显示。
    移动端的 display:none 唯一写在下面那条 ≤600px 块里。
    说明行贴着搜索框、与下方书签区拉开：间距由它自己给，
@@ -2836,7 +2804,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
    两个 span 的间距 20px——只有两项且都很短，14px 显得挤。 */
 .search-caption { display: flex; justify-content: center; gap: 20px; margin: 10px 0 26px; color: var(--text-muted); font-size: 11px; }
 .search-caption kbd { padding: 1px 4px; margin: 0 1px; border: 1px solid var(--border); border-radius: 4px; background: var(--glass); font: inherit; }
-@media (max-width: 600px) { .app { padding: 25px 12px 90px; } .header { margin-bottom: 30px; } .search-caption { display: none; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } .utility-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
+@media (max-width: 600px) { .app { padding: 25px 12px 48px; } .header { margin-bottom: 30px; } .search-caption { display: none; } .bookmarks { grid-template-columns: repeat(auto-fill,96px); gap: 8px; } .bookmark,.bookmark-text-only { min-height: 44px; padding: 6px 8px; } /* 底栏在窄屏就是手指在点：相邻两条入口必须各自撑到 44px 触控下限。 */ .site-footer-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; } .toast { bottom: calc(28px + env(safe-area-inset-bottom)); max-width: calc(100% - 24px); } .paste-result { padding: 15px 14px 13px; margin-top: 12px; } .paste-qr img { width: 132px; height: 132px; } }
 /* 三列铺满可用宽度：原先的 max-width:304px 在 390px 宽的机型上右侧留出大片空白，
    且使上一条 ≤600px 规则里的 auto-fill 96px 变成死代码（同为 ≤480px 且同特异性，后者在后）。 */
 @media (max-width: 480px) { .bookmarks { max-width: 100%; grid-template-columns: repeat(3,minmax(0,1fr)); } }
@@ -3303,7 +3271,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 }
 
 /* 降级：prefers-reduced-transparency 下模块面板退回不透明底色，
-   与 .backboard / .utility-dock 的同一处理。 */
+   与 .backboard 的同一处理。 */
 @media (prefers-reduced-transparency: reduce) {
     .module-widget, .module-panel, .module-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--bg-card); }
 }
@@ -3973,15 +3941,92 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
 
-.local-navigation-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 12px; }
-.local-navigation-tools [role="status"] { flex-basis: 100%; }
-.local-navigation-tools[data-state="error"] [role="status"] { color: #b54a3d; }
+/* ========== 首页「导航设置」面板 ==========
+   布局是一个统一网格 `.local-settings-grid`：两个常显分组各占一列，宽内容
+   （引擎表、数据管理）跨整行；≤560px 收成单列。
+   每个设置行都是「标签左、控件右」，控件贴本列尾部对齐。控件本身仍按内容定宽
+   （给的是上限，不是固定宽度），省下的宽度交回列——这是「下拉别那么宽」与
+   「右侧别留一大片白」能同时成立的前提：行是满的，控件是小的，列是它的对齐基准。
+   密度：组内 4px 负空间、网格 gap 22/40px，横线只留给面板顶部与两个折叠区。
+   窄屏：输入控件 16px 字号（iOS 小于 16px 聚焦会放大整页）、40px 高，按钮 44px。 */
+.local-navigation-tools { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; }
+.local-settings-heading h2 { font-size: 14px; font-weight: 600; }
+.local-settings-heading p { margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.local-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 40px; margin-top: 22px; }
+.local-settings-group { min-width: 0; }
+.local-settings-group > h3 { margin: 0 0 2px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
+.local-settings-span { grid-column: 1 / -1; }
+.local-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 3px 0; }
+.local-settings-row > label { color: var(--text-secondary); font-size: 12px; }
+/* 外观组是「控件 + 勾选项」一行：用户明确要求勾选项不单独占一行。
+   控件列是 auto，这一行就贴在列尾。 */
+.local-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
+.local-settings-inline { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.local-settings-hint { margin: 4px 0 10px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.local-navigation-tools select,
+.local-navigation-tools input:not([type="checkbox"]) { width: auto; min-width: 84px; min-height: 32px; padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); color: var(--text); font: inherit; transition: border-color 140ms; }
+/* 上限只给「标签 + 控件」那种设置行；引擎表里的输入框要吃掉整列余量。 */
+.local-settings-row select,
+.local-settings-row input:not([type="checkbox"]) { max-width: 176px; }
+/* 控件也要有悬停态：静态样式表里 select 与输入框都是默认态，鼠标划过没有任何回应 */
+.local-navigation-tools select:hover:not(:disabled),
+.local-navigation-tools input:not([type="checkbox"]):hover { border-color: var(--focus); }
+.local-navigation-tools input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.local-navigation-tools :is(input, select, button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.local-settings-disclosure { border-top: 1px solid var(--border); padding-top: 10px; }
+.local-settings-disclosure summary { display: flex; align-items: baseline; gap: 6px; width: fit-content; padding: 2px 0; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.local-settings-disclosure[open] summary { color: var(--text); }
+.local-settings-count { color: var(--text-muted); font-weight: 400; }
 
-.local-engine-list { margin-bottom: 10px; }
-.local-engine-list fieldset { border: 1px solid currentColor; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-.local-engine-editor select { width: 100%; padding: 8px; }
-
-.local-settings-dialog { display: flex; flex-direction: column; }
-.local-settings-dialog .ui-dialog-form { display: flex; flex-direction: column; min-height: 0; }
-.local-settings-dialog .local-engine-editor { overflow-y: auto; min-height: 0; padding: 2px; margin-bottom: 12px; }
-.local-settings-dialog .ui-dialog-options, .local-settings-dialog .ui-dialog-actions, .local-settings-dialog .ui-dialog-error { flex-shrink: 0; }
+/* 引擎列表：一行一项（序号 / 名称 / 搜索地址 / 操作）。名称列给上限而不是比例，
+   把余量让给搜索地址——地址比引擎名长得多。 */
+.local-engine-head,
+.local-engine-item { display: grid; grid-template-columns: 20px minmax(0, 176px) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.local-engine-head { padding: 0 0 4px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.local-engine-item { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.local-engine-item:last-child { border-bottom: 0; }
+.local-engine-item input { width: 100%; min-height: 30px; }
+.local-engine-index { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.local-engine-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.local-engine-name input { flex: 1 1 auto; min-width: 0; }
+.local-engine-badge { flex: none; padding: 0 5px; border-radius: 4px; background: var(--bg-hover); color: var(--text-muted); font-size: 11px; line-height: 1.6; }
+/* 非默认行留的是空槽（切默认时只改文本，不重绘整表）；空槽不该占宽度。 */
+.local-engine-badge:empty { display: none; }
+.local-engine-actions { display: flex; gap: 4px; }
+/* 图标按钮撑成方形：26×30 的窄条点起来没有形状感，也难和相邻按钮分开 */
+.local-engine-actions .btn { min-width: 30px; min-height: 30px; padding: 0 6px; }
+/* 数据操作是同一档的并列动作，等宽排满整行——按内容定宽会在右侧留下和刚才同一种死白 */
+.local-data-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; }
+#localAddEngineBtn { margin-top: 10px; }
+.local-settings-error, .local-navigation-feedback [data-state="error"] { color: #b54a3d; font-size: 12px; margin-top: 10px; overflow-wrap: anywhere; }
+.local-navigation-feedback { font-size: 12px; }
+.local-navigation-feedback [role="status"]:not([hidden]) { margin-top: 10px; }
+#localAdoptBtn { margin-top: 8px; }
+/* 单列只是网格收窄：设置行仍然是「标签左、控件右」。
+   折点由内容算出来，不是套模板：两列各需「标签 72 + 间隙 12 + 16px 字号控件 136
+   + 至少 20px 的标签到控件间隔 = 240px」，加 40px 列间隙与 24px 内边距 ≈ 544px。
+   取 560px 留一点余量。收得太早（例如 600px）反而更差——单列下标签与控件会被
+   拉开 413px，读数跳得太远。 */
+@media (max-width: 560px) {
+    .local-settings-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; margin-top: 18px; }
+    .local-settings-row { padding: 6px 0; }
+    /* 320px 视口下「下拉 + 勾选项」并排会超出列宽，让它们在本列内竖排并贴右。 */
+    .local-settings-controls { flex-direction: column; align-items: flex-end; }
+}
+@media (max-width: 600px) {
+    .local-navigation-tools { margin-top: 20px; padding-top: 16px; }
+    /* iOS 在 font-size 小于 16px 的输入控件上聚焦会自动放大整个页面，弹层会被顶出视口。
+       本项目其它表单遵守同一条（见 .special-line-form textarea 的注释），这里补上。 */
+    .local-navigation-tools select,
+    .local-navigation-tools input:not([type="checkbox"]) { min-height: 40px; font-size: 16px; }
+    .local-navigation-tools button, .local-settings-disclosure summary { min-height: 44px; }
+    /* 上面那两条把操作压到 30px 的规则权重更高，窄屏必须显式还原到触控下限。 */
+    .local-engine-actions .btn { min-height: 44px; }
+    .local-engine-head { display: none; }
+    .local-engine-item { grid-template-columns: 20px minmax(0, 1fr); row-gap: 6px; padding: 8px 0; }
+    .local-engine-item input { min-height: 40px; }
+    .local-engine-index { grid-area: 1 / 1; }
+    .local-engine-name { grid-area: 1 / 2; }
+    .local-engine-item input[data-field="url"] { grid-area: 2 / 2; }
+    .local-engine-item .local-engine-actions { grid-area: 3 / 2; }
+}

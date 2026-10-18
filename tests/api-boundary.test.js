@@ -634,7 +634,7 @@ test('drop 落在分类之外时必须先守卫再解引用', () => {
     // 断言的是**相对顺序**：守卫语句必须排在解引用之前。
     const body = methodBody(appSource, 'bindGridEdit');
     const guardAt = body.indexOf('if (toCat < 0)');
-    const derefAt = body.indexOf('this.config.categories[toCat].bookmarks.length');
+    const derefAt = body.indexOf('surface.getConfig().categories[toCat].bookmarks.length');
     assert.ok(guardAt >= 0, '有 toCat < 0 的守卫');
     assert.ok(derefAt > guardAt,
         '守卫必须排在 categories[toCat] 解引用之前——否则 closest 返回 null 时抛');
@@ -702,7 +702,8 @@ test('toggleEditLayout 不接受 force 参数', () => {
 
 test('放弃编辑只在真有改动时确认，无改动直接退出', () => {
     // 未登录或未改动时不该弹「放弃编辑」——那会让 Esc 变成一个总是要确认的键。
-    const body = methodBody(appSource, 'cancelEditSession');
+    const fullBody = methodBody(appSource, 'cancelEditSession');
+    const body = fullBody.slice(fullBody.indexOf('const changed'));
     const changedAt = body.indexOf('JSON.stringify(this.config)');
     const confirmAt = body.indexOf('confirmAction(');
     assert.ok(changedAt >= 0, '要先比对快照判断有无改动');

@@ -74,32 +74,80 @@
             <span id="favSearchHint" hidden><kbd>/</kbd> 查书签</span>
             <span><kbd>&gt;</kbd> 分享文本</span>
         </div>
-        <section id="localNavigationTools" class="local-navigation-tools" aria-label="个人导航设置">
-            <span id="localNavigationStatus" role="status" aria-live="polite">正在读取本地导航</span>
-            <button type="button" class="btn btn-sm" id="localSettingsBtn">导航设置</button>
-            <button type="button" class="btn btn-sm" id="localUndoBtn">撤销上一操作</button>
-            <button type="button" class="btn btn-sm" id="localExportBtn">导出导航</button>
-            <button type="button" class="btn btn-sm" id="localImportBtn">导入导航</button>
-            <input type="file" id="localImportFile" accept="application/json,.json" hidden>
-            <button type="button" class="btn btn-sm" id="localResetBtn">重置为当前默认</button>
-            <button type="button" class="btn btn-sm" id="localAdoptBtn" hidden>采用其他标签页版本</button>
-        </section>
         <main class="grid" id="grid"></main>
+        <section id="localNavigationTools" class="local-navigation-tools" aria-labelledby="localSettingsTitle" hidden>
+            <div class="local-settings-heading">
+                <h2 id="localSettingsTitle">导航设置</h2>
+                <p>自定义当前浏览器的首页。分类与链接的调整会自动保存。</p>
+            </div>
+            <form id="localSettingsForm" novalidate>
+                <!-- 配置区是一个统一网格：两个常显分组各占一列，宽内容（引擎表、数据管理）
+                     跨整行。每个设置行都是「标签左、控件右」，控件贴本列尾部对齐——
+                     控件本身仍是按内容定宽，空出来的宽度交回列，不再留一片死白。 -->
+                <div class="local-settings-grid">
+                    <div class="local-settings-group">
+                        <h3>搜索</h3>
+                        <div class="local-settings-row">
+                            <label for="localCurrentEngine">默认搜索引擎</label>
+                            <select id="localCurrentEngine"></select>
+                        </div>
+                    </div>
+                    <div class="local-settings-group">
+                        <h3>外观</h3>
+                        <div class="local-settings-row">
+                            <label for="localThemeSelect">主题</label>
+                            <div class="local-settings-controls">
+                                <select id="localThemeSelect"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
+                                <label class="local-settings-inline"><input type="checkbox" id="localIconsToggle">显示导航图标</label>
+                            </div>
+                        </div>
+                    </div>
+                    <details class="local-settings-disclosure local-settings-span" id="localEnginesDetails">
+                        <summary>管理搜索引擎<span class="local-settings-count" id="localEngineCount"></span></summary>
+                        <p class="local-settings-hint" id="localEngineHint">搜索地址填写关键词前缀，例如 https://example.com/?q=。</p>
+                        <div class="local-engine-head" aria-hidden="true"><span></span><span>名称</span><span>搜索地址</span><span></span></div>
+                        <div id="localEngineEditor" class="local-engine-list"></div>
+                        <button type="button" class="btn btn-sm" id="localAddEngineBtn">添加搜索引擎</button>
+                    </details>
+                    <details class="local-settings-disclosure local-settings-span" id="localDataDetails">
+                        <summary>数据管理</summary>
+                        <p class="local-settings-hint">导入、重置和撤销会替换当前设置。清除浏览器数据可能删除本机导航，请定期导出备份。</p>
+                        <div class="local-data-actions">
+                            <button type="button" class="btn btn-sm" id="localUndoBtn">撤销上一操作</button>
+                            <button type="button" class="btn btn-sm" id="localExportBtn">导出导航</button>
+                            <button type="button" class="btn btn-sm" id="localImportBtn">导入导航</button>
+                            <input type="file" id="localImportFile" accept="application/json,.json" hidden>
+                            <button type="button" class="btn btn-sm" id="localResetBtn">重置为当前默认</button>
+                        </div>
+                    </details>
+                </div>
+                <p id="localSettingsError" class="local-settings-error" role="alert" tabindex="-1" hidden></p>
+            </form>
+        </section>
+        <div class="local-navigation-feedback">
+            <p id="localNavigationStatus" role="status" aria-live="polite" hidden></p>
+            <button type="button" class="btn btn-sm" id="localAdoptBtn" hidden>采用其他标签页版本</button>
+        </div>
+        <!-- 页面级操作栏：背板底部的纯文字一行，随编辑态换词。
+             说明 / 外观（仅管理员）/ 编辑（编辑态换成 取消 + 保存配置）/ 管理。 -->
+        <footer class="site-footer" aria-label="页面操作">
+            <nav class="site-footer-links">
+                <button type="button" class="site-footer-link" id="helpBtn" title="帮助">说明</button>
+                <span class="site-footer-sep" id="appearanceSep" aria-hidden="true" hidden>·</span>
+                <button type="button" class="site-footer-link" id="appearanceBtn" hidden title="外观" aria-label="外观">外观</button>
+                <span class="site-footer-sep" aria-hidden="true">·</span>
+                <button type="button" class="site-footer-link" id="layoutBtn" title="编辑首页导航" aria-pressed="false">编辑</button>
+                <button type="button" class="site-footer-link" id="localCancelBtn" hidden>取消</button>
+                <button type="submit" form="localSettingsForm" class="site-footer-link is-save" id="localDoneBtn" hidden>保存配置</button>
+                <span class="site-footer-sep" aria-hidden="true">·</span>
+                <button type="button" class="site-footer-link" id="adminBtn" title="管理 (Alt+A)">管理</button>
+            </nav>
+        </footer>
         </div>
         <!-- 登录后模块区：在 .backboard **之外**、作为 .app 的子节点。
              宽屏（≥1024px）时它绝对定位到背板左右外侧；窄屏由 CSS 拉回文档流，
              落在分类网格下方横滑。未登录时保持 hidden。 -->
         <section class="module-zone" id="moduleZone" aria-label="模块" hidden></section>
-        <nav class="utility-dock" aria-label="页面操作">
-            <button class="fab fab-help" id="helpBtn" title="帮助">说明</button>
-            <button class="fab" id="layoutBtn" title="编辑首页导航" aria-pressed="false" hidden>编辑</button>
-            <!-- 外观三态按钮：未登录也可见（主题要写服务端才需要管理员，
-                 本机切换不需要）。图标与 title 由 applyTheme 按当前态渲染。 -->
-            <button class="appearance-btn" id="appearanceBtn" type="button" title="外观" aria-label="外观">
-                <span class="appearance-icon" id="appearanceIcon" aria-hidden="true"></span>
-            </button>
-            <button class="fab" id="adminBtn" title="管理 (Alt+A)">管理</button>
-        </nav>
     </div>
     <div class="modal" id="modal" hidden>
         <div class="modal-backdrop" id="modalBackdrop"></div>

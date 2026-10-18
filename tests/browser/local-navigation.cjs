@@ -40,37 +40,53 @@ async function setup(t, options = {}) {
 }
 const saved = page => page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent === '仅保存在本机');
 const submit = page => page.locator('.ui-dialog button[type="submit"]').click();
+async function settings(page, { engines = false, data = false } = {}) {
+    // 编辑态的「编辑」入口会收起，换成「取消 / 保存配置」，所以按可见性判断而不是按文案。
+    if (await page.locator('#layoutBtn').isVisible()) await page.locator('#layoutBtn').click();
+    await page.locator('#localNavigationTools').waitFor({ state: 'visible' });
+    if (engines && await page.locator('#localEnginesDetails').getAttribute('open') === null) await page.locator('#localEnginesDetails > summary').click();
+    if (data && await page.locator('#localDataDetails').getAttribute('open') === null) await page.locator('#localDataDetails > summary').click();
+}
+async function changeTheme(page) {
+    await settings(page);
+    const current = await page.locator('#localThemeSelect').inputValue();
+    await page.locator('#localThemeSelect').selectOption(current === 'dark' ? 'light' : 'dark');
+    await page.locator('#localDoneBtn').click();
+}
+
 async function engines(page, entries, current) {
-    while (await page.locator('.local-engine-list fieldset').count() > 1) await page.locator('.local-engine-list fieldset').last().getByRole('button', { name: '删除', exact: true }).click();
+    // 引擎列表本轮改成一行一项（.local-engine-item），操作按钮是图标，
+    // 可访问名带序号（「引擎 2 删除」），所以按后缀匹配。
+    while (await page.locator('.local-engine-item').count() > 1) await page.locator('.local-engine-item').last().getByRole('button', { name: /删除$/ }).click();
     for (let i = 0; i < entries.length; i++) {
-        if (i) await page.getByRole('button', { name: '添加引擎', exact: true }).click();
-        const row = page.locator('.local-engine-list fieldset').nth(i);
-        for (const [field, value] of Object.entries(entries[i])) await row.locator(`[data-field="${field}"]`).fill(value);
+        if (i) await page.getByRole('button', { name: '添加搜索引擎', exact: true }).click();
+        const row = page.locator('.local-engine-item').nth(i);
+        for (const [field, value] of Object.entries(entries[i])) if (field !== 'id') await row.locator(`[data-field="${field}"]`).fill(value);
     }
-    if (current) await page.locator('#localCurrentEngine').selectOption(current);
+    if (current) await page.locator('#localCurrentEngine').selectOption({ index: entries.findIndex(entry => entry.id === current) });
 }
 
 
 test('browser: engine drafts validate, reorder and fall back after deleting current; undo and reload retain definitions', async t => {
     const { page } = await setup(t);
-    await page.locator('#localSettingsBtn').click();
+    await settings(page, { engines: true });
     await engines(page, [{ id: 'first', name: 'First', url: 'https://first.example/?q=' }, { id: 'second', name: 'Second', url: 'https://second.example/?q=' }], 'second');
-    await page.locator('.local-engine-list fieldset').last().getByRole('button', { name: '上移', exact: true }).click();
-    await submit(page); await saved(page);
+    await page.locator('.local-engine-item').last().getByRole('button', { name: /上移$/ }).click();
+    await page.locator('#localDoneBtn').click(); await saved(page);
     assert.equal(await page.locator('#engineName').textContent(), 'Second');
-    await page.locator('#localSettingsBtn').click();
-    await page.locator('.local-engine-list fieldset').first().locator('[data-field="url"]').fill('javascript:alert(1)');
-    await submit(page);
-    assert.match(await page.locator('.ui-dialog-error').textContent(), /HTTP\/HTTPS/);
+    await settings(page, { engines: true });
+    await page.locator('.local-engine-item').first().locator('[data-field="url"]').fill('javascript:alert(1)');
+    await page.locator('#localDoneBtn').click();
+    assert.match(await page.locator('#localSettingsError').textContent(), /HTTP\/HTTPS/);
     await page.reload();
     // Unconfirmed input never reaches IndexedDB.
     assert.equal(await page.locator('#engineName').textContent(), 'Second');
-    await page.locator('#localSettingsBtn').click();
-    await page.locator('.local-engine-list fieldset').first().getByRole('button', { name: '删除', exact: true }).click();
-    assert.equal(await page.locator('.local-engine-list fieldset').first().getByRole('button', { name: '删除', exact: true }).isDisabled(), true);
-    await submit(page); await saved(page);
+    await settings(page, { engines: true });
+    await page.locator('.local-engine-item').first().getByRole('button', { name: /删除$/ }).click();
+    assert.equal(await page.locator('.local-engine-item').first().getByRole('button', { name: /删除$/ }).isDisabled(), true);
+    await page.locator('#localDoneBtn').click(); await saved(page);
     assert.equal(await page.locator('#engineName').textContent(), 'First');
-    await page.locator('#localUndoBtn').click(); await saved(page);
+    await settings(page, { data: true }); await page.locator('#localUndoBtn').click(); await saved(page);
     assert.equal(await page.locator('#engineName').textContent(), 'Second');
 });
 
@@ -80,12 +96,12 @@ test('browser: competing tabs retain unfinished input and reject a stale write',
     other.setDefaultTimeout(6000);
     await other.goto(app.base);
     await other.locator('#app').waitFor({ state: 'visible' });
-    await page.locator('#localSettingsBtn').click();
+    await settings(page, { engines: true });
     await engines(page, [{ id: 'mine', name: 'My unsaved engine', url: 'https://mine.example/?q=' }], 'mine');
-    await other.locator('#appearanceBtn').click(); await saved(other);
+    await changeTheme(other); await saved(other);
     await page.locator('#localAdoptBtn').waitFor({ state: 'visible' });
     assert.match(await page.getByLabel('引擎 1 名称', { exact: true }).inputValue(), /My unsaved engine/);
-    await submit(page);
+    await page.locator('#localDoneBtn').click();
     await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('其他标签页已修改'));
     await other.reload();
     assert.notEqual(await other.locator('#engineName').textContent(), 'My unsaved engine');
@@ -107,20 +123,20 @@ test('browser: import rejects unsafe/empty configurations, falls back engine, ex
     await upload(config); await submit(page); await saved(page);
     await page.getByRole('heading', { name: 'Imported navigation', exact: true }).waitFor();
     const downloading = page.waitForEvent('download');
-    await page.locator('#localExportBtn').click();
+    await settings(page, { data: true }); await page.locator('#localExportBtn').click();
     const download = await downloading;
     const data = JSON.parse(require('node:fs').readFileSync(await download.path(), 'utf8'));
     assert.equal(data.schemaVersion, 1); assert.equal(data.config.categories[0].name, 'Imported navigation');
     assert.equal(data.config.searchEngine, original.searchEngines[0].id);
     assert.equal(data.config.privacyMode, undefined);
     await context.setOffline(true);
-    await page.locator('#localResetBtn').click();
+    await settings(page, { data: true }); await page.locator('#localResetBtn').click();
     await page.waitForFunction(() => document.querySelector('#toast').textContent.startsWith('重置失败'));
     assert.equal(await page.getByRole('heading', { name: 'Imported navigation', exact: true }).count(), 1);
     await context.setOffline(false);
-    await page.locator('#localResetBtn').click(); await submit(page); await saved(page);
+    await settings(page, { data: true }); await page.locator('#localResetBtn').click(); await submit(page); await saved(page);
     assert.equal(await page.getByRole('heading', { name: 'Imported navigation', exact: true }).count(), 0);
-    await page.locator('#localUndoBtn').click(); await saved(page);
+    await settings(page, { data: true }); await page.locator('#localUndoBtn').click(); await saved(page);
     assert.equal(await page.getByRole('heading', { name: 'Imported navigation', exact: true }).count(), 1);
 });
 
@@ -148,9 +164,9 @@ test('browser: browser restart, offline revisit and service worker upgrade retai
     assert.equal(await page.locator('#moduleZone').isVisible(), false);
     await context.setOffline(false);
     const sw = path.join(app.dir, 'public/sw.js');
-    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace("const CACHE = 'nav-v110'", "const CACHE = 'nav-v110-browser-upgrade'"));
+    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace("const CACHE = 'nav-v116'", "const CACHE = 'nav-v116-browser-upgrade'"));
     await page.evaluate(async () => { const registration = await navigator.serviceWorker.ready; await registration.update(); });
-    await page.waitForFunction(async () => (await caches.keys()).includes('nav-v110-browser-upgrade'));
+    await page.waitForFunction(async () => (await caches.keys()).includes('nav-v116-browser-upgrade'));
     await page.reload();
     await page.getByRole('heading', { name: 'Restart survives', exact: true }).waitFor();
 });
@@ -159,9 +175,11 @@ test('browser: storage failure reports unsaved state and keeps the previous comm
     const { page } = await setup(t);
     const theme = await page.locator('html').getAttribute('data-theme');
     await page.evaluate(() => { IDBObjectStore.prototype.put = function () { throw new DOMException('test quota exhausted', 'QuotaExceededError'); }; });
-    await page.locator('#appearanceBtn').click();
+    await changeTheme(page);
     await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('未能保存到本机'));
     assert.match(await page.locator('#toast').textContent(), /未能保存到本机/);
+    assert.equal(await page.locator('#localNavigationTools').isVisible(), true);
+    assert.equal(await page.locator('#engineBtn').isDisabled(), true);
     await page.reload(); await page.locator('#app').waitFor({ state: 'visible' });
     assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
 });
@@ -177,7 +195,7 @@ test('browser: delayed administrator confirmation preserves ordinary drafts and 
     await page.locator('#layoutBtn').click();
     await page.getByRole('button', { name: '＋ 添加分类', exact: true }).click();
     await page.locator('.ui-dialog input').fill('Ordinary kept'); await submit(page); await saved(page);
-    await page.locator('#layoutBtn').click();
+    await page.locator('#localDoneBtn').click();
     // Establish the real cookie from the browser so its device fingerprint matches.
     await page.evaluate(async () => {
         const response = await fetch('/api/verify-password', { method: 'POST', headers: { 'X-Admin-Password': 'StrongPass123!', 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
@@ -193,18 +211,18 @@ test('browser: delayed administrator confirmation preserves ordinary drafts and 
     await page.reload();
     await page.locator('#app').waitFor({ state: 'visible' });
     assert.equal(await page.getByRole('heading', { name: 'PRIVATE ADMIN NAVIGATION', exact: true }).count(), 0);
-    await page.locator('#localSettingsBtn').click();
+    await settings(page, { engines: true });
     await engines(page, [{ id: 'ordinary', name: 'Ordinary engine', url: 'https://ordinary.example/?q=' }], 'ordinary');
     release();
     await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('完成当前编辑'));
     assert.match(await page.getByLabel('引擎 1 名称', { exact: true }).inputValue(), /Ordinary engine/);
-    await submit(page);
+    await page.locator('#localDoneBtn').click();
     await page.getByRole('heading', { name: 'PRIVATE ADMIN NAVIGATION', exact: true }).waitFor();
     assert.equal(await page.locator('#localNavigationTools').isVisible(), false);
     await page.route('**/api/admin/navigation', route => route.abort());
     await page.reload();
     await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('无法确认管理员登录'));
-    await page.locator('#appearanceBtn').click(); await saved(page);
+    await changeTheme(page); await saved(page);
     await page.unroute('**/api/admin/navigation');
     await page.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: '{}' }); });
     await page.unroute('**/api/session');
@@ -239,32 +257,34 @@ test('browser and HTTP: publishing a new default leaves existing local data unch
     await fresh.goto(app.base);
     await fresh.getByRole('heading', { name: 'New published default', exact: true }).waitFor();
     await freshContext.close();
-    await page.locator('#localResetBtn').click();
+    await settings(page, { data: true }); await page.locator('#localResetBtn').click();
     await page.locator('.ui-dialog [data-action="cancel"]').click();
     assert.equal(await page.locator('#grid h2').first().textContent(), originalHeading);
-    await page.locator('#localResetBtn').click(); await submit(page); await saved(page);
+    await settings(page, { data: true }); await page.locator('#localResetBtn').click(); await submit(page); await saved(page);
     assert.equal(await page.locator('#grid h2').first().textContent(), 'New published default');
     assert.equal(requests.some(url => /^\/api\/(favorites|modules)/.test(url)), false);
     assert.equal((await app.request('/api/favorites')).status, 401);
     assert.equal((await app.request('/api/modules/config')).status, 401);
     await page.screenshot({ path: '/private/tmp/sylph-issue4-home.png', fullPage: true });
-    await page.locator('#localSettingsBtn').click();
+    await settings(page, { engines: true });
     await page.screenshot({ path: '/private/tmp/sylph-issue4-settings.png', fullPage: true });
 });
 
-test('browser: local settings keep actions visible and keyboard focus inside on narrow viewports', async t => {
+test('browser: inline settings remain keyboard-accessible and fit narrow and landscape viewports', async t => {
     const { page } = await setup(t, { viewport: { width: 390, height: 844 } });
     for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
         await page.setViewportSize(viewport);
-        await page.locator('#localSettingsBtn').click();
-        const button = page.locator('.ui-dialog button[type="submit"]');
-        const rect = await button.boundingBox();
-        assert.ok(rect.y >= 0 && rect.y + rect.height <= viewport.height, 'confirmation must be in the visible viewport');
-        await button.focus(); await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#localCurrentEngine').evaluate(el => el === document.activeElement), true);
-        await page.keyboard.press('Shift+Tab');
-        assert.equal(await button.evaluate(el => el === document.activeElement), true);
-        await page.keyboard.press('Escape');
+        await settings(page);
+        assert.equal(await page.locator('.ui-dialog').count(), 0);
+        await page.locator('#localCurrentEngine').focus(); await page.keyboard.press('Tab');
+        assert.equal(await page.locator('#localThemeSelect').evaluate(el => el === document.activeElement), true);
+        await page.locator('#localEnginesDetails > summary').click();
+        await page.locator('#localDoneBtn').scrollIntoViewIfNeeded();
+        const rect = await page.locator('#localDoneBtn').boundingBox();
+        assert.ok(rect.y >= 0 && rect.y + rect.height <= viewport.height);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        await page.locator('#localDoneBtn').click();
+        await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
     }
 });
 
@@ -274,10 +294,10 @@ test('browser: stale writes are rejected even without BroadcastChannel', async t
     await page.reload(); await page.locator('#app').waitFor({ state: 'visible' });
     const other = await context.newPage(); other.setDefaultTimeout(8000);
     await other.goto(app.base); await other.locator('#app').waitFor({ state: 'visible' });
-    await page.locator('#localSettingsBtn').click();
-    await other.locator('#appearanceBtn').click(); await saved(other);
+    await settings(page, { engines: true });
+    await changeTheme(other); await saved(other);
     await page.getByLabel('引擎 1 名称', { exact: true }).fill('Stale candidate');
-    await submit(page);
+    await page.locator('#localDoneBtn').click();
     await page.locator('#localAdoptBtn').waitFor({ state: 'visible' });
     assert.match(await page.locator('#localNavigationStatus').textContent(), /其他标签页已修改/);
     await page.locator('#localAdoptBtn').click(); await submit(page); await saved(page);
@@ -294,9 +314,42 @@ test('browser: failure to create the first local copy is explicit and does not c
     await page.locator('#app').waitFor({ state: 'visible' });
     assert.match(await page.locator('#localNavigationStatus').textContent(), /未能保存到本机/);
     assert.notEqual(await page.locator('#localNavigationStatus').textContent(), '仅保存在本机');
-    const download = page.waitForEvent('download'); await page.locator('#localExportBtn').click();
+    const download = page.waitForEvent('download'); await settings(page, { data: true }); await page.locator('#localExportBtn').click();
     const file = await download;
     assert.equal(file.suggestedFilename(), 'sylph-navigation.json');
     const exported = JSON.parse(require('node:fs').readFileSync(await file.path(), 'utf8'));
     assert.deepEqual(exported.config, await (await app.request('/api/config')).json());
+});
+
+
+test('browser: ordinary settings appear below navigation only while editing; save persists engine, appearance and icons then hides them', async t => {
+    const { page } = await setup(t);
+    assert.equal(await page.locator('#localNavigationTools').isVisible(), false);
+    assert.equal(await page.locator('#localNavigationStatus').isVisible(), false);
+    assert.equal(await page.locator('#appearanceBtn').isVisible(), false);
+    for (const id of ['localUndoBtn', 'localExportBtn', 'localImportBtn', 'localResetBtn']) assert.equal(await page.locator('#' + id).isVisible(), false);
+    await settings(page);
+    assert.equal(await page.locator('#localEnginesDetails').getAttribute('open'), null);
+    assert.equal(await page.locator('#localDataDetails').getAttribute('open'), null);
+    assert.equal(await page.locator('#localNavigationTools').evaluate(el => el.previousElementSibling.id), 'grid');
+    assert.equal(await page.locator('#engineBtn').isDisabled(), true);
+    const engine = await page.locator('#localCurrentEngine option').nth(1).getAttribute('value');
+    await page.locator('#localCurrentEngine').selectOption(engine);
+    await page.locator('#localThemeSelect').selectOption('light');
+    await page.locator('#localIconsToggle').uncheck();
+    await page.locator('#localDoneBtn').click();
+    await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#layoutBtn').evaluate(el => el === document.activeElement), true);
+    assert.equal(await page.locator('#engineBtn').isDisabled(), false);
+    await page.reload(); await page.locator('#app').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('html').getAttribute('data-theme'), 'light');
+    assert.equal(await page.locator('#localNavigationTools').isVisible(), false);
+    await settings(page);
+    assert.equal(await page.locator('#localCurrentEngine').inputValue(), engine);
+    assert.equal(await page.locator('#localIconsToggle').isChecked(), false);
+    await page.locator('#localThemeSelect').selectOption('dark');
+    await page.locator('#localCancelBtn').click(); await submit(page);
+    await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
+    await settings(page);
+    assert.equal(await page.locator('#localThemeSelect').inputValue(), 'light');
 });

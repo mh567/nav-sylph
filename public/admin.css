@@ -880,7 +880,9 @@
        modalBody 里的同级块，各占满整行，于是每个标签 827px 宽、一片空白。
        要并排就得让 modalBody 本身成为横向 flex 容器。 */
     #modalBody { display: flex; gap: 20px; align-items: flex-start; }
-    .admin-tabs { flex: 0 0 200px; flex-direction: column; align-items: stretch; margin-bottom: 0; position: sticky; top: 0; }
+    /* 190 不是随手取的：面板内容列 = 1200 − 48(modal-body 内边距) − 190 − 20(间隙)
+       ≈ 940，再减掉画布左右内边距后正好放下 936px 的背板（1:1 的前提）。 */
+    .admin-tabs { flex: 0 0 190px; flex-direction: column; align-items: stretch; margin-bottom: 0; position: sticky; top: 0; }
     .admin-tab { flex: 0 0 auto; text-align: left; padding: 0 14px; }
     .admin-panels { flex: 1 1 auto; min-width: 0; }
 }
@@ -996,11 +998,33 @@
     .special-line-source-actions .btn { min-height: 44px; }
 }
 
-.default-homepage-dialog { width: min(760px, 94vw); max-width: 760px; max-height: 88vh; overflow-y: auto; }
-.default-homepage-dialog fieldset { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
-.default-editor-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
-.default-homepage-dialog .ui-dialog-actions { flex-wrap: wrap; }
-.default-homepage-preview { padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
-.default-homepage-preview a { display: inline-block; padding: 8px; }
-.default-homepage-preview[data-theme="dark"] { color: #eee; background: #211f1c; }
-.default-homepage-preview[data-theme="light"] { color: #211f1c; background: #efede8; }
+/* ========== 站点默认首页：面板内可视化编辑 ==========
+   画布渲染的是真实的 .backboard / .search / .grid / .bookmark —— 样式来自 styles.css，
+   这里只负责「它被装在一个编辑器外壳里」这件事。不做任何缩放：宽度自适应面板可用列，
+   1440 视口下正好 936px（与独立首页逐像素一致）。 */
+.template-badge { margin-inline-start: 10px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-size: 11px; font-weight: 400; }
+.template-editor { margin-top: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); overflow: hidden; }
+.template-editor-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--admin-row, var(--bg-hover)); }
+.template-editor[data-mode="edit"] .template-editor-bar { background: var(--bg-card); }
+.template-editor-note { flex: 1; min-width: 0; color: var(--text-muted); font-size: 12px; }
+/* 左右不留内边距：这是 936px 背板能在 940px 内容列里原尺寸落下的前提。
+   margin-inline: auto 同时盖掉 .backboard 那条 ⚠️ 数值居中量——视口 ≥1024 而容器
+   窄于 936 时，calc((100% - 936px) / 2) 会算出负数把背板推出左边界。 */
+.template-canvas { padding: 16px 0; }
+.template-canvas .backboard { margin-inline: auto; }
+/* 画布内部不参与页面导航与检索：头部是静态外观，网格里的链接在只读态照常可点，
+   编辑态由 bindGridEdit 的 click 分支拦下改成打开编辑框。 */
+.template-canvas .header { pointer-events: none; }
+.template-editor-actions { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--admin-row, var(--bg-hover)); }
+.template-editor-actions > div { margin-inline-start: auto; display: flex; gap: 6px; }
+.template-state { color: var(--text-muted); font-size: 12px; }
+/* 有未保存改动用强调色：发布被禁用时，这个颜色是「为什么不能发布」的答案。 */
+.template-state[data-dirty="true"] { color: var(--accent); }
+@media (max-width: 899px) {
+    /* 标签栏退化成顶部横条后，画布可用宽度变小，936 自然放不下——按真实首页
+       在同宽度下的重排结果渲染即可（不自适应缩放、不横向滚动的既定取舍）。 */
+    .template-canvas { padding: 12px 0; }
+    .template-editor-actions { flex-wrap: wrap; }
+    .template-editor-actions > div { margin-inline-start: 0; width: 100%; }
+    .template-editor-actions > div .btn { flex: 1 1 auto; }
+}

@@ -124,9 +124,9 @@ function createComposerDom() {
         '#helpBtn': el('button'),
         // 模块平台（app.js bind() 会挂布局按钮的 onclick 与 Esc 监听）
         '#layoutBtn': el('button'),
-        ...Object.fromEntries(['localNavigationStatus', 'localNavigationTools', 'localSettingsBtn', 'localUndoBtn', 'localExportBtn', 'localImportBtn', 'localImportFile', 'localResetBtn', 'localAdoptBtn'].map(id => ['#' + id, el('button')])),
+        ...Object.fromEntries(['localNavigationStatus', 'localNavigationTools', 'localSettingsForm', 'localCancelBtn', 'localUndoBtn', 'localExportBtn', 'localImportBtn', 'localImportFile', 'localResetBtn', 'localAdoptBtn'].map(id => ['#' + id, el('button')])),
         '#appearanceBtn': el('button'),
-        '#appearanceIcon': el('span'),
+        '#appearanceSep': el('span'),
         '#moduleZone': el('section'),
         '#modal .modal-content': modalContent,
         '.ui-dialog-overlay, .fav-dialog-overlay': uiOverlay,

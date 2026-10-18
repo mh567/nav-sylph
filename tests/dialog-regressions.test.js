@@ -418,10 +418,11 @@ test('the search input font size never drops below the iOS zoom threshold', () =
     });
 });
 
-test('the utility dock and toast clear the home indicator', () => {
-    // viewport-fit=cover 之后，固定在底部的元素必须自己让位
+test('the toast clears the home indicator', () => {
+    // viewport-fit=cover 之后，固定在底部的元素必须自己让位。
+    // 底栏（.site-footer）本轮改成文档流内的普通一行，不再是固定元素，
+    // 所以只剩提示条这一条需要断言。
     const narrow = mediaBlock(stylesCss, '@media (max-width: 600px)');
-    assert.match(narrow, /\.utility-dock\s*\{[^}]*bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/, '底部工具条避让 Home 指示条');
     assert.match(narrow, /\.toast\s*\{[^}]*bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/, '提示条避让 Home 指示条');
 });
 
