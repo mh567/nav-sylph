@@ -209,12 +209,12 @@ test('匿名搜索框仅提示网页搜索', () => {
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v116，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v116';/);
-    assert.match(swJs, /nav-v116：站点默认首页改为后台面板内的 1:1 可视化编辑/);
+test('sw.js：CACHE 升到 nav-v117，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v117';/);
+    assert.match(swJs, /nav-v117：模块分类边界/);
     // 注释块记录的最新版本必须就是 CACHE——两者漂移意味着有人改了其一
     const latest = [...swJs.matchAll(/\/\/ nav-(v\d+)：/g)].map(m => m[1]);
-    assert.equal(latest[0], 'v116', '注释块第一条即最新版本');
+    assert.equal(latest[0], 'v117', '注释块第一条即最新版本');
     assert.ok(latest.every((v, i) => i === 0 || Number(v.slice(1)) <= Number(latest[i - 1].slice(1))),
         '注释块版本号递减');
 });

@@ -1527,8 +1527,15 @@
         clearPendingProbe();
     }
 
+    /** 平台在模块离开启用集合时调用：停表并清掉手头的数据。 */
+    function unmount() {
+        stopPolling();
+    }
+
     window.app.registerModule({
         id: 'server-monitor',
+        // 私人模块：分类在开发时固定，运行时无法改成 public。
+        category: 'admin',
         title: '服务器监控',
         // 说明文字由后台列表渲染在名称下方，必须写清「读的是哪台机器」：
         // 本机直接读 os，远端读目标机上部署的 agent。
@@ -1538,6 +1545,8 @@
         // 后台「监控目标」区块：开关与配置在同一个模块块里，平台不认这个模块
         adminSectionTitle: '监控目标',
         renderAdminSection,
-        onAdminSectionClose
+        onAdminSectionClose,
+        // 平台在模块离开启用集合时调用（用户停用、或管理员撤回开放）
+        unmount
     });
 })();

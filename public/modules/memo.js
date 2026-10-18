@@ -218,6 +218,19 @@
         document.addEventListener('visibilitychange', visibilityHandler);
     }
 
+    /**
+     * 平台在模块离开启用集合时调用（用户停用、或管理员撤回开放）。
+     * 必须收掉定时器与监听：否则停用的模块会继续按周期请求接口。
+     */
+    function unmount() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        if (visibilityHandler) {
+            document.removeEventListener('visibilitychange', visibilityHandler);
+            visibilityHandler = null;
+        }
+        inFlight = false;
+    }
+
     // ================= 写操作 =================
 
     /** 保存（新建或编辑）。返回 true 表示已落库；false 为服务端拒绝或已暂存。 */
@@ -731,10 +744,13 @@
 
     window.app.registerModule({
         id: 'memo',
+        // 私人模块：分类在开发时固定，运行时无法改成 public。
+        category: 'admin',
         title: '备忘录',
         // 说明文字由后台模块列表渲染在名称下方
         summary: '登录后可用 · 多端自动同步',
         mountWidget,
-        openPanel
+        openPanel,
+        unmount
     });
 })();

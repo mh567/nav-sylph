@@ -164,9 +164,22 @@ test('browser: browser restart, offline revisit and service worker upgrade retai
     assert.equal(await page.locator('#moduleZone').isVisible(), false);
     await context.setOffline(false);
     const sw = path.join(app.dir, 'public/sw.js');
-    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace("const CACHE = 'nav-v116'", "const CACHE = 'nav-v116-browser-upgrade'"));
+    // ⚠️ 当前缓存名从**文件里**取，不写死：写死的话下一次升 CACHE 时 replace
+    // 匹配不到、这个场景就变成空转，而断言仍然是绿的（本轮 v116 → v117 就踩到了）。
+    const current = /const CACHE = '([^']+)'/.exec(fs.readFileSync(sw, 'utf8'))[1];
+    const upgraded = `${current}-browser-upgrade`;
+    fs.writeFileSync(sw, fs.readFileSync(sw, 'utf8').replace(`const CACHE = '${current}'`, `const CACHE = '${upgraded}'`));
+    assert.notEqual(fs.readFileSync(sw, 'utf8').includes(`'${current}'`), true, '替换必须真的改掉了缓存名');
     await page.evaluate(async () => { const registration = await navigator.serviceWorker.ready; await registration.update(); });
-    await page.waitForFunction(async () => (await caches.keys()).includes('nav-v116-browser-upgrade'));
+    // ⚠️ 不能用 `waitForFunction(async () => …)`：Playwright 收到一个 Promise 对象
+    // 就当它真值、立即通过，断言永远不红（实测：async 谓词返回 false 也是 11ms 通过）。
+    // 所以在 Node 侧轮询——拿到的才是真正求过值的结果。
+    let swapped = false;
+    for (let i = 0; i < 40 && !swapped; i++) {
+        swapped = await page.evaluate(name => caches.keys().then(keys => keys.includes(name)), upgraded);
+        if (!swapped) await page.waitForTimeout(150);
+    }
+    assert.equal(swapped, true, `新版 Service Worker 应建起缓存 ${upgraded}`);
     await page.reload();
     await page.getByRole('heading', { name: 'Restart survives', exact: true }).waitFor();
 });
@@ -262,7 +275,15 @@ test('browser and HTTP: publishing a new default leaves existing local data unch
     assert.equal(await page.locator('#grid h2').first().textContent(), originalHeading);
     await settings(page, { data: true }); await page.locator('#localResetBtn').click(); await submit(page); await saved(page);
     assert.equal(await page.locator('#grid h2').first().textContent(), 'New published default');
-    assert.equal(requests.some(url => /^\/api\/(favorites|modules)/.test(url)), false);
+    // 匿名界面不得触碰收藏库或**特权**模块接口。唯一例外是公开模块的**策略**
+    // 读接口 `/api/modules/public`：它只回公开模块的 id（不含配置、不含凭据），
+    // 且必须匿名可达，否则公开模块无法加载（issue #6）。
+    // 例外是逐条具名的，不是把整个 /api/modules 前缀一起放行——否则将来
+    // 新增的特权接口会从这个洞里溜过去。
+    const leaked = requests.filter(url => /^\/api\/(favorites|modules)/.test(url) && url !== '/api/modules/public');
+    assert.deepEqual(leaked, [], `匿名界面不得请求私人接口（例外只有公开策略）：${leaked.join(', ')}`);
+    assert.ok(requests.includes('/api/modules/public'),
+        '例外确实被用到——否则上面那条等于白放行');
     assert.equal((await app.request('/api/favorites')).status, 401);
     assert.equal((await app.request('/api/modules/config')).status, 401);
     await page.screenshot({ path: '/private/tmp/sylph-issue4-home.png', fullPage: true });

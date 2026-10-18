@@ -124,24 +124,40 @@ test('标题走常规字重：15 行列表不与书签卡的 600 字重同档', 
 
 // ========== 服务端代理路由 ==========
 
-test('/api/weibo-hot 路由：轮询桶 + requireAdmin，且不在 /api/modules 前缀下', () => {
+test('/api/weibo-hot 路由：轮询桶 + publicModuleAccess，且不在 /api/modules 前缀下', () => {
     const code = stripComments(server);
     const at = code.indexOf("app.get('/api/weibo-hot'");
     assert.ok(at > 0, '路由存在');
-    const route = code.slice(at, at + 120);
+    const route = code.slice(at, at + 140);
     assert.ok(route.length > 100, `切出路由（${route.length}）`);
-    assert.match(route, /app\.get\('\/api\/weibo-hot', modulePollLimit, requireAdmin/,
+    // 鉴权不是 requireAdmin 而是 publicModuleAccess：管理员照旧，匿名访客在
+    // 该模块**对外开放**时可读；撤回开放立刻 403。客户端卸载只是体验，
+    // 授权判定必须落在服务端（见 server.js 里该守卫的注释）。
+    assert.match(route, /app\.get\('\/api\/weibo-hot', modulePollLimit, publicModuleAccess\('weibo-hot'\)/,
         '读接口走轮询专用桶（按标签页数线性增长，算进管理桶会自己打满）');
-    // /api/modules 前缀有「恰好 10 条」的计数守卫，这条不该混进去
+    // /api/modules 前缀有「恰好 11 条」的计数守卫，这条不该混进去
     assert.doesNotMatch(code, /app\.get\('\/api\/modules\/weibo-hot'/);
 });
 
 test('代理路由：上游取数带超时与大小上限，形状校验后才落缓存', () => {
+    // ⚠️ 两端锚点都在**原始源码**上找，再对切出来的那一段剥注释：
+    // 末端锚点是一句 `// ====` 注释，剥完就不存在了，`indexOf` 返回 -1，
+    // 于是 `slice(at, -1)` 静默切成「从 at 到文件倒数第二个字符」——末尾少了
+    // 一个字符，长度断言照样通过。（这是既有测试里的隐患，加了「末端存在」
+    // 断言后暴露出来。）
+    // 起点是**取数函数**而不是路由：并发合并把上游调用抽成了
+    // `fetchWeiboHotList()`，从 `app.get` 切会漏掉全部上游调用。
+    const at = server.indexOf('async function fetchWeiboHotList(');
+    assert.ok(at > 0, '取数函数存在');
+    const end = server.indexOf('// ========== Special Line', at);
+    assert.ok(end > at, '切片末端存在');
+    const route = stripComments(server.slice(at, end));
     const code = stripComments(server);
-    const at = code.indexOf("app.get('/api/weibo-hot'");
-    const end = code.indexOf('// ========== Special Line', at);
-    const route = code.slice(at, end);
-    assert.ok(route.length > 800, `切出整个路由体（${route.length}）`);
+    assert.ok(route.length > 800, `切出取数函数与整条路由（${route.length}）`);
+    // 并发合并：冷缓存下同一时刻只允许一趟上游请求在飞
+    assert.match(route, /weiboHotInFlight/, '并发请求合并到同一趟取数');
+    assert.match(route, /\.finally\(\(\) => \{ weiboHotInFlight = null; \}\)/,
+        '无论成功失败都要放掉在飞标记，否则后续请求永远等到旧结果');
     assert.match(route, /fetchJson\(WEIBO_HOT_URL/, '复用时间线的取数工具');
     assert.match(route, /timeoutMs: WEIBO_HOT_TIMEOUT/, '上游必须有超时——fetch 没有内建超时');
     assert.match(route, /maxBytes: WEIBO_HOT_MAX_BYTES/, '响应体要有大小上限');

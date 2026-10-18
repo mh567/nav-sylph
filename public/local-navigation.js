@@ -1,11 +1,39 @@
 ((window) => {
     'use strict';
     const SCHEMA_VERSION = 1;
+    // 模块记录与导航记录**同一个库、同一个对象存储**，只是键不同（'ordinary' / 'modules'）。
+    // 刻意不新开存储、也不升库版本：升版本会触发 onupgradeneeded，而对象存储本来就
+    // 支持任意键——多一个键是最小的改动，也不会碰到 #4 已经写下的导航数据。
+    const MODULES_KEY = 'modules';
+    const MODULES_SCHEMA_VERSION = 1;
     function check(record) {
         if (record && (record.schemaVersion !== SCHEMA_VERSION || !Number.isSafeInteger(record.revision) || record.revision < 1)) {
             throw new Error('本地配置版本无法读取，请升级应用并保留站点数据');
         }
         if (record) window.NavigationSchema.validate(record.config);
+        return record;
+    }
+    /**
+     * 只在**结构**上把关：顶层是对象、两个数组在、id 是非空字符串。
+     * 逐项取值（条数范围之类）由 app.js 按各模块声明的白名单校验——那份声明
+     * 住在模块文件里，存储层看不到，也不该假装看得到。
+     */
+    function validateModulesShape(modules) {
+        if (!modules || typeof modules !== 'object' || Array.isArray(modules)) throw new Error('本地模块配置形状无效');
+        if (!Array.isArray(modules.enabled) || modules.enabled.some(id => typeof id !== 'string' || !id)) {
+            throw new Error('本地模块配置形状无效');
+        }
+        if (!Array.isArray(modules.widgets)) throw new Error('本地模块配置形状无效');
+        if (modules.settings !== undefined && (!modules.settings || typeof modules.settings !== 'object' || Array.isArray(modules.settings))) {
+            throw new Error('本地模块配置形状无效');
+        }
+        return modules;
+    }
+    function checkModules(record) {
+        if (record && (record.schemaVersion !== MODULES_SCHEMA_VERSION || !Number.isSafeInteger(record.revision) || record.revision < 1)) {
+            throw new Error('本地模块配置版本无法读取，请升级应用并保留站点数据');
+        }
+        if (record) validateModulesShape(record.modules);
         return record;
     }
     class LocalNavigation {
@@ -47,6 +75,41 @@
                         window.NavigationSchema.validate(next);
                         result = { schemaVersion: SCHEMA_VERSION, revision: revision + 1, config: next, previous: current?.config || null };
                         store.put(result, 'ordinary');
+                    } catch (e) { failure = e; tx.abort(); }
+                };
+                tx.oncomplete = () => resolve(result);
+                tx.onabort = () => reject(failure || tx.error || new Error('未能保存到本机'));
+            });
+        }
+        /** 读本机的模块开关、布局与偏好。从未写过时返回 undefined（不是空对象）。 */
+        async readModules() {
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('navigation');
+                const request = tx.objectStore('navigation').get(MODULES_KEY);
+                tx.oncomplete = () => { try { resolve(checkModules(request.result)); } catch (e) { reject(e); } };
+                tx.onabort = () => reject(tx.error || new Error('无法读取本地模块设置'));
+            });
+        }
+        /**
+         * 写模块记录。与导航同款乐观并发：事务内比较 revision，别的标签页改过就拒绝，
+         * 而不是把对方刚写的开关覆盖掉。
+         */
+        async writeModules(modules, revision) {
+            validateModulesShape(modules);
+            const db = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('navigation', 'readwrite');
+                const store = tx.objectStore('navigation');
+                let result, failure;
+                store.get(MODULES_KEY).onsuccess = event => {
+                    try {
+                        const current = checkModules(event.target.result);
+                        if ((current?.revision || 0) !== revision) {
+                            throw Object.assign(new Error('其他标签页已修改模块设置，请刷新后重试'), { code: 'conflict' });
+                        }
+                        result = { schemaVersion: MODULES_SCHEMA_VERSION, revision: revision + 1, modules };
+                        store.put(result, MODULES_KEY);
                     } catch (e) { failure = e; tx.abort(); }
                 };
                 tx.oncomplete = () => resolve(result);

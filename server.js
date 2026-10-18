@@ -780,6 +780,11 @@ const defaultFavorites = {
 const defaultModulesConfig = {
     version: 1,
     enabledModules: [],
+    // 管理员**对外开放**的公开模块。与 enabledModules 是两件事：
+    //   enabledModules  = 管理员自己在个人首页启用了哪些（含未开放的公开模块）
+    //   publicModules   = 允许普通访客自行启用的公开模块
+    // 默认空：新公开模块一律默认关闭，要管理员显式开放才对匿名可见。
+    publicModules: [],
     widgets: [],
     servers: [],
     socialAccounts: [],
@@ -1581,6 +1586,25 @@ function mergeConfig(existing, incoming) {
 const WIDGET_SIDES = new Set(['left', 'right']);
 const MODULES_CONFIG_MAX = 64 * 1024;
 
+/**
+ * 分类为 public 的模块 id 白名单。
+ *
+ * 分类是**开发时固定的源码事实**（客户端 `registerModule` 里声明的 `category`），
+ * 服务端看不到那份声明，所以这里再持有一份。两层的意义不同：
+ *   · 服务端这份是**授权边界**——`publicModules` 只收这里的 id，信前端传来的
+ *     「我要把 server-monitor 对外开放」直接被丢弃；
+ *   · 客户端那份是**渲染判据**——即使服务端配置被改坏，声明为 admin 的模块
+ *     也不会因为出现在开放名单里就渲染给访客。
+ * 任一层单独失效都不会把私人模块放出去，所以两层都要有，而不是「有一层就够」。
+ *
+ * ⚠️ 新增公开模块要在**两个地方**同时登记：这里，以及模块文件里的 `category: 'public'`。
+ * tests/public-modules.test.js 里有一条断言枚举这两处。
+ */
+const PUBLIC_MODULE_IDS = new Set(['weibo-hot']);
+// 开放名单不需要单独的数量上限：逐项过上面的白名单之后，长度天然不超过它，
+// 而输入本身已被 normalizeStringList 截到 200。多写一个「上限」既到不了，
+// 又会让后来者以为它在承重。
+
 function asTrimmedString(value, max = 200) {
     if (typeof value !== 'string') return '';
     return value.trim().slice(0, max);
@@ -1670,6 +1694,12 @@ function normalizeModulesConfig(body) {
             .filter(Boolean)
             .slice(0, 20);
     }
+    // 开放名单只收服务端白名单里的 id。「公开」是开发时固定的分类，
+    // 不能靠一次配置写入把私人模块转成公开——这条过滤就是那个保证。
+    if (body.publicModules !== undefined) {
+        out.publicModules = [...new Set(normalizeStringList(body.publicModules)
+            .filter(id => PUBLIC_MODULE_IDS.has(id)))];
+    }
     if (body.socialAccounts !== undefined) out.socialAccounts = normalizeStringList(body.socialAccounts);
     if (body.symbols !== undefined) out.symbols = normalizeStringList(body.symbols);
     if (body.pollInterval !== undefined) out.pollInterval = resolvePollInterval(body.pollInterval);
@@ -1747,6 +1777,9 @@ function mergeModulesConfig(existing, incoming) {
     return {
         version: 1,
         enabledModules: pick('enabledModules') || [],
+        // 与其它数组同款保留：拖拽排序、改周期都不提交这个键，
+        // 无条件重置成空会让「管理员撤回一次布局修改就顺手关掉对外授权」。
+        publicModules: pick('publicModules') || [],
         widgets: pick('widgets') || [],
         servers,
         socialAccounts: pick('socialAccounts') || [],
@@ -2344,6 +2377,81 @@ function moduleMutation(req, res, next) {
         next();
     } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 }
+
+/** 某个公开模块当前是否对外开放。每次读配置，撤回即刻生效（不缓存判定）。 */
+async function isPublicModuleOpen(id) {
+    // 非公开分类的模块永远不开放——这条与服务端白名单重复也无妨：
+    // 授权判定宁可多问一次，也不要依赖上游调用方记得过滤。
+    if (!PUBLIC_MODULE_IDS.has(id)) return false;
+    try {
+        const config = await readJSON(MODULES_FILE);
+        return Array.isArray(config?.publicModules) && config.publicModules.includes(id);
+    } catch {
+        // 配置读不出来按「未开放」处理：授权判定不能因为文件损坏而放行。
+        return false;
+    }
+}
+
+/**
+ * 公开模块的数据入口守卫。
+ *
+ * 管理员会话可直接用（管理员能用自己**未**对外开放的公开模块——开放与否
+ * 只决定普通访客能不能用）；匿名请求则必须该模块当前对外开放。
+ *
+ * 撤回开放后这里立刻 403。客户端那份「卸下卡片、停掉轮询」是体验，
+ * 服务端这份才是授权——两者都要有，且不能只留前者。
+ */
+function publicModuleAccess(id) {
+    return async (req, res, next) => {
+        setSessionHeaders(res);
+        if (fsSync.existsSync(CREDENTIAL_ROTATION_FILE)) {
+            return res.status(503).json({ error: '凭据恢复未完成，请重启服务后重试' });
+        }
+        const reason = {};
+        const found = sessionStore.getSession(req, reason);
+        if (found && found.session.purpose !== 'password-change') {
+            req.adminSession = found;
+            sessionStore.refreshSessionCookie(res, found, req);
+            return next();
+        }
+        if (!await isPublicModuleOpen(id)) {
+            return res.status(403).json({ error: '该模块未对外开放' });
+        }
+        // 软门：匿名也要能收到「环境变化已登出」的信号，否则用户带着失效
+        // 会话看公开模块，界面不会告诉他需要重新登录。
+        noteEnvChanged(res, reason);
+        next();
+    };
+}
+
+/**
+ * 公开模块策略：匿名可读，只回「哪些公开模块当前对外开放」。
+ * 客户端据此决定是否加载公开模块脚本——未知策略时它一个都不加载。
+ *
+ * 走 publicReadLimit（匿名桶）而不是管理桶：混进 rateLimit 会让普通访问
+ * 把登录的防爆破预算耗掉（同 /api/config）。
+ * ⚠️ 这条是**周期请求**，不是一次性的：匿名访客每 30 秒（前台可见时）会通过
+ * checkAdministratorSync → checkPublicModules 确认一次策略，切回前台与联网时
+ * 各再确认一次。所以匿名桶的账要按这个周期算，不是按页面加载次数：
+ * 每个标签页每分钟约 2 次策略 + 2 次 /api/session，120 次/分钟的桶
+ * 因此够 ~30 个同 IP 标签页——本工具是单管理员自建，这个余量足够。
+ */
+app.get('/api/modules/public', publicReadLimit, async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        const config = await readJSON(MODULES_FILE);
+        // 响应只带客户端真正消费的字段（modules）：版本号没有任何读取方，
+        // 与 /api/weibo-hot 同一条纪律——不出现在界面上的数据不必发出去。
+        res.json({
+            // 这里再过滤一次：配置被改坏（或旧版本写入了别的 id）时，
+            // 也不把私人模块的 id 发到匿名响应里。
+            modules: (Array.isArray(config?.publicModules) ? config.publicModules : [])
+                .filter(id => PUBLIC_MODULE_IDS.has(id))
+        });
+    } catch {
+        res.status(500).json({ error: '模块策略读取失败' });
+    }
+});
 
 app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
     try {
@@ -3498,48 +3606,67 @@ app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
 // 上游一旦换榜最坏 60 秒内可见。
 //
 // 路由走轮询专用桶（与 /api/memos 同理：按标签页数线性增长，算进管理桶会自己打满）。
-// ⚠️ 路径**不**用 /api/modules 前缀——api-boundary.test.js 对该前缀有恰好 10 条的计数守卫。
-const WEIBO_HOT_URL = 'https://api.xunjinlu.fun/api/rebang/weibo.php';
+// 鉴权用 publicModuleAccess：管理员照旧，匿名访客在该模块对外开放时可读。
+// ⚠️ 路径**不**用 /api/modules 前缀——api-boundary.test.js 对该前缀有恰好 11 条的计数守卫。
+// 上游地址可用环境变量覆盖：测试要打本地桩（否则用例会真的连外网、且无法
+// 断言「并发只打一趟」），自建部署也可能想换成自己的镜像。
+const WEIBO_HOT_URL = process.env.NAV_WEIBO_HOT_URL || 'https://api.xunjinlu.fun/api/rebang/weibo.php';
 const WEIBO_HOT_TTL = 60000;
 const WEIBO_HOT_PAGE = 15;
 const WEIBO_HOT_TIMEOUT = 8000;
 const WEIBO_HOT_MAX_BYTES = 512 * 1024;
 let weiboHotCache = { data: null, at: 0 };
+// 冷缓存下的并发合并：同一时刻只有一趟上游请求在飞，其余请求等它的结果。
+// 没有这一层时，多个访客/标签页同时命中冷缓存会各自打一次上游——
+// 上游是第三方、无密钥，「共享缓存」的意义就没了。
+// 与 TTL 缓存是两件事：TTL 管「多久重取一次」，这个管「同时只取一趟」。
+let weiboHotInFlight = null;
 
-app.get('/api/weibo-hot', modulePollLimit, requireAdmin, async (req, res) => {
+/** 取一趟上游并按形状收口。抛错表示这一趟失败（不做兜底，兜底在路由里）。 */
+async function fetchWeiboHotList() {
+    const json = await fetchJson(WEIBO_HOT_URL, {
+        timeoutMs: WEIBO_HOT_TIMEOUT,
+        maxBytes: WEIBO_HOT_MAX_BYTES
+    });
+    // 形状校验在服务端做：上游是第三方，字段说变就变，
+    // 宁可在这里失败也不把畸形数据放行到浏览器的渲染路径上。
+    if (!json || json.code !== 200 || !json.data || !Array.isArray(json.data.list)) {
+        throw new Error('上游返回形状异常');
+    }
+    const list = json.data.list
+        .filter(x => x && typeof x.title === 'string' && x.title)
+        .slice(0, WEIBO_HOT_PAGE)
+        // 长度上限在服务端收口：上游是第三方，异常长的标题/标签会把卡片
+        // 撑出预期排版（textContent 渲染没有注入面，只有排版稳定性问题）。
+        .map((x, i) => ({
+            // rank 缺失回退到**列表序号**而不是 0：回 0 会让畸形条目
+            // 显示成与榜首重复的「1」，编号从此不可信。
+            rank: Number.isFinite(x.rank) ? x.rank : i,
+            title: x.title.slice(0, 120),
+            hot_value: Number.isFinite(x.hot_value) ? x.hot_value : 0,
+            label: typeof x.label === 'string' ? x.label.slice(0, 8) : '',
+            // href 白名单的**第一道**在服务端：模块里还有一道（客户端不信任任何数据源）
+            url: /^https?:\/\//.test(x.url || '') ? x.url : ''
+        }));
+    // 响应只带模块真正消费的字段（list）。早先的 updateTime / stale 标记
+    // 没有任何读取方——陈旧兜底的语义是「静默给上一版榜单」，本就不需要标记。
+    return { list };
+}
+
+// 守卫由 requireAdmin 换成 publicModuleAccess：管理员照旧，匿名访客在该模块
+// 对外开放时可读。撤回开放后立刻 403（见该守卫的注释）。
+app.get('/api/weibo-hot', modulePollLimit, publicModuleAccess('weibo-hot'), async (req, res) => {
     const now = Date.now();
     if (weiboHotCache.data && now - weiboHotCache.at < WEIBO_HOT_TTL) {
         return res.json(weiboHotCache.data);
     }
     try {
-        const json = await fetchJson(WEIBO_HOT_URL, {
-            timeoutMs: WEIBO_HOT_TIMEOUT,
-            maxBytes: WEIBO_HOT_MAX_BYTES
-        });
-        // 形状校验在服务端做：上游是第三方，字段说变就变，
-        // 宁可在这里失败也不把畸形数据放行到浏览器的渲染路径上。
-        if (!json || json.code !== 200 || !json.data || !Array.isArray(json.data.list)) {
-            throw new Error('上游返回形状异常');
+        if (!weiboHotInFlight) {
+            weiboHotInFlight = fetchWeiboHotList()
+                .then(data => { weiboHotCache = { data, at: Date.now() }; return data; })
+                .finally(() => { weiboHotInFlight = null; });
         }
-        const list = json.data.list
-            .filter(x => x && typeof x.title === 'string' && x.title)
-            .slice(0, WEIBO_HOT_PAGE)
-            // 长度上限在服务端收口：上游是第三方，异常长的标题/标签会把卡片
-            // 撑出预期排版（textContent 渲染没有注入面，只有排版稳定性问题）。
-            .map((x, i) => ({
-                // rank 缺失回退到**列表序号**而不是 0：回 0 会让畸形条目
-                // 显示成与榜首重复的「1」，编号从此不可信。
-                rank: Number.isFinite(x.rank) ? x.rank : i,
-                title: x.title.slice(0, 120),
-                hot_value: Number.isFinite(x.hot_value) ? x.hot_value : 0,
-                label: typeof x.label === 'string' ? x.label.slice(0, 8) : '',
-                // href 白名单的**第一道**在服务端：模块里还有一道（客户端不信任任何数据源）
-                url: /^https?:\/\//.test(x.url || '') ? x.url : ''
-            }));
-        // 响应只带模块真正消费的字段（list）。早先的 updateTime / stale 标记
-        // 没有任何读取方——陈旧兜底的语义是「静默给上一版榜单」，本就不需要标记。
-        weiboHotCache = { data: { list }, at: Date.now() };
-        res.json(weiboHotCache.data);
+        res.json(await weiboHotInFlight);
     } catch (err) {
         // 上游抖动用陈旧缓存兜底——宁可给上一版榜单，也不要卡片上一个失败态。
         if (weiboHotCache.data) {

@@ -79,7 +79,13 @@ function extractFunction(src, header) {
  * 锚点也应当只有一处。调用前先 stripComments。
  */
 function loginPathThrough(src, endAnchor, afterAnchor) {
-    const from = src.indexOf('if (!this.modulesConfig) await this.loadModulesConfig();');
+    // ⚠️ 起点是「已启用哪些模块」那一行。原先写的是
+    // `if (!this.modulesConfig) await this.loadModulesConfig();`，而模块平台改造后
+    // 这一句变成了匿名分支之外的 `} else if (!this.modulesConfig) { await …; }`——
+    // 旧锚点找不到（indexOf 返回 -1），`slice` 于是从错误的位置开始，
+    // 断言在一个不相干的窗口里做判断。用 `const ids = …` 更稳：它只有一处，
+    // 且就在 preload / syncRail / sideDock 这三件事之前。
+    const from = src.indexOf('const ids = this.enabledModuleIds();');
     const searchFrom = afterAnchor ? src.indexOf(afterAnchor, from) : from;
     const to = src.indexOf(endAnchor, searchFrom);
     assert.ok(from > 0 && to > from,
@@ -2004,6 +2010,9 @@ test('首屏宽栏判定：模块定义必须在 syncRail 之前注册（真跑 
         // 本条用例的主题是「判定的时机与顺序」，让位过渡的收尾另有专条执行真实实现
         watchRailShift() {},
         mountModule: async () => fakeZone(),
+        // 模块卸载是另一条独立用例的主题（tests/public-modules.test.js 真跑过
+        // teardownUnusedModules）。本条只关心顺序，这里给一个空壳协作者。
+        teardownUnusedModules() {},
         waitFirstRound: async () => { seen.push({ at: 'firstRound' }); },
         applyWidgetLayout() {},
         playModuleEntrance() {}
@@ -2073,7 +2082,12 @@ test('平台宽栏机制：三列宽度由 JS 算出写进 #app 的变量，且�
         'syncRail 必须排在 sideDockAvailable 之前');
     // 未登录不该让背板一直窄着。复位走 syncRail 这一条路径（它自己判未登录、
     // 并清掉宽度变量），而不是在登出分支里手写第二份 'narrow'。
-    assert.match(app, /if \(!this\.authenticated\) \{[\s\S]{0,260}?this\.syncRail\(\);/, '登出时走 syncRail 复位');
+    // ⚠️ 限定在 renderModuleZone 自己的方法体里，不靠「整文件里第一个匹配」：
+    // 文件里还有好几处 `if (!this.authenticated) {`（syncModuleVisibility 的登出
+    // 分支就在后面），按文件顺序比等于把断言押在「谁排在前面」上。窗口同时放宽到
+    // 900：匿名分支现在要先判一次公开模块策略，到 `this.syncRail();` 的字符数变长了。
+    const zone = extractFunction(app, 'async renderModuleZone() {');
+    assert.match(zone, /if \(!this\.authenticated\) \{[\s\S]{0,900}?this\.syncRail\(\);/, '登出时走 syncRail 复位');
     assert.match(app, /const layout = \(this\.authenticated && this\.wantsWideRail\(\)\)/, '未登录一律不进宽栏');
     assert.match(app, /else app\.style\.removeProperty\(key\);/, '不进宽栏时清掉宽度变量，不留残留状态');
 

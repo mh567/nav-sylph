@@ -721,6 +721,19 @@
         document.addEventListener('visibilitychange', visibilityHandler);
     }
 
+    /**
+     * 平台在模块离开启用集合时调用（用户停用、或管理员撤回开放）。
+     * 必须收掉定时器与监听：否则停用的模块会继续按周期请求接口。
+     */
+    function unmount() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        if (visibilityHandler) {
+            document.removeEventListener('visibilitychange', visibilityHandler);
+            visibilityHandler = null;
+        }
+        inFlight = false;
+    }
+
     // ================= 写操作 =================
 
     /**
@@ -1415,9 +1428,12 @@
         // 内容不是一张摘要卡而是一条时间线：需要一条**宽**列才用得上仿真那套版式
         // （左侧日期轨道 + 事件卡）。平台据此让背板让位，见 app.js 的 railLayoutFor / syncRail。
         wideRail: true,
+        // 私人模块：分类在开发时固定，运行时无法改成 public。
+        category: 'admin',
         // 模块名已经是块标题（「Special Line」），这里只写配置区自己的名字
         adminSectionTitle: '订阅来源',
         mountWidget,
-        renderAdminSection
+        renderAdminSection,
+        unmount
     });
 })();

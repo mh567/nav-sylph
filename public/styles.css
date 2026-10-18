@@ -4001,6 +4001,17 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .local-settings-error, .local-navigation-feedback [data-state="error"] { color: #b54a3d; font-size: 12px; margin-top: 10px; overflow-wrap: anywhere; }
 .local-navigation-feedback { font-size: 12px; }
 .local-navigation-feedback [role="status"]:not([hidden]) { margin-top: 10px; }
+/* 普通访客的「模块」分组：一行一个公开模块（开关 + 它声明的偏好）。
+   开关与偏好贴着排——一个是「用不用」，另一个是「怎么用」。 */
+.local-module-list { display: flex; flex-direction: column; gap: 2px; }
+.local-module-row { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.local-module-row:last-child { border-bottom: 0; }
+.local-module-toggle { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.local-module-title { color: var(--text); font-weight: 600; }
+.local-module-settings { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; }
+.local-module-setting { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+/* 上面那条 84px 的 min-width 是给下拉框的；条数是个两位数，收窄一点。 */
+.local-module-setting input { min-width: 64px; max-width: 88px; }
 #localAdoptBtn { margin-top: 8px; }
 /* 单列只是网格收窄：设置行仍然是「标签左、控件右」。
    折点由内容算出来，不是套模板：两列各需「标签 72 + 间隙 12 + 16px 字号控件 136

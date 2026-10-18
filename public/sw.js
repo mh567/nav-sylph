@@ -1,3 +1,10 @@
+// nav-v117：模块分类边界——模块在开发时声明 admin/public，管理员可把公开模块
+// 「对普通访客开放」（weibo-hot 默认关闭）。普通访客在本机（同一 IndexedDB 的
+// 'modules' 键）保存开关、布局与偏好，策略撤回后立刻卸载并停表。新增
+// GET /api/modules/public（匿名读策略），/api/weibo-hot 的守卫由 requireAdmin
+// 换成 publicModuleAccess（管理员照旧，匿名在对外开放时可读），并合并并发取数。
+// 改了 app.js、local-navigation.js、index.html、styles.css、admin.css、
+// modules/*.js（新增 category/unmount，weibo-hot 新增 settings 白名单）、server.js。
 // nav-v116：站点默认首页改为后台面板内的 1:1 可视化编辑（复用首页网格编辑表面）。
 // nav-v115：配置区改为统一网格（分组各占一列、宽内容跨行），设置行控件右对齐。
 // nav-v114：导航设置面板按产品稿的密度重排：控件按内容定宽、分组间距收紧。
@@ -277,7 +284,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v116';
+const CACHE = 'nav-v117';
 const ASSETS = [
     '/',
     '/index.html',

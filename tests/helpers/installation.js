@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const bcrypt = require('bcrypt');
 const ROOT = path.join(__dirname, '../..');
 
-async function installation(t) {
+async function installation(t, options = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-auth-'));
     for (const name of ['server.js', 'lib', 'server-config', 'public', 'version.json', 'CHANGELOG.json']) {
         fs.cpSync(path.join(ROOT, name), path.join(dir, name), { recursive: true });
@@ -25,7 +25,7 @@ async function installation(t) {
     const base = `http://127.0.0.1:${port}`;
     let child, logs = '';
     async function start() {
-        child = spawn(process.execPath, ['server.js'], { cwd: dir, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GEO_ENABLED: 'false', COOKIE_SECURE: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] });
+        child = spawn(process.execPath, ['server.js'], { cwd: dir, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GEO_ENABLED: 'false', COOKIE_SECURE: 'false', ...options.env }, stdio: ['ignore', 'pipe', 'pipe'] });
         child.stdout.on('data', d => { logs += d; }); child.stderr.on('data', d => { logs += d; });
         for (let i = 0; i < 100; i++) {
             try { if ((await fetch(`${base}/api/health`)).ok) return; } catch {}

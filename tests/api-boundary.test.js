@@ -191,12 +191,13 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         server.indexOf('// ========== Paste API =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
-    // 10 条 = 8 条既有 + trust-cert（已删）+ enroll（agent 注册）。
+    // 11 条 = 8 条带 requireAdmin（config 读/写、metrics、servers 增/删、
+    // 推送凭据、探测、部署令牌）+ 3 条不带（agent-push、enroll、public）。
     // 数量必须逐条跟上：少一条是漏枚举，多一条可能是有人新加了路由却
     // 没走到下面的守卫循环——那正是本条断言存在的意义。
-    assert.equal(moduleRoutes.length, 10, `模块端点应恰好 10 条，实际 ${moduleRoutes.length}`);
+    assert.equal(moduleRoutes.length, 11, `模块端点应恰好 11 条，实际 ${moduleRoutes.length}`);
 
-    // 有**两个**端点是故意不带 requireAdmin 的，理由不同但都必须具名写出，
+    // 有**三个**端点是故意不带 requireAdmin 的，理由不同但都必须具名写出，
     // 否则「给它们加上 requireAdmin」会显得像是在收紧守卫：
     //
     //  · agent-push：agent 主动上报，鉴权是推送凭据
@@ -214,6 +215,11 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         "app.post('/api/modules/enroll'": {
             middleware: 'enrollLimit',
             why: 'agent 注册时尚无任何凭据，鉴权是一次性部署令牌'
+        },
+        "app.get('/api/modules/public'": {
+            middleware: 'publicReadLimit',
+            why: '匿名访客要能读到「哪些公开模块被开放了」，否则公开模块无法加载；'
+                + '它只回公开模块的 id，不含配置、不含凭据'
         }
     };
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -438,6 +444,32 @@ test('模块配置的归一化丢弃非法条目，而不是把它们写进配�
     assert.equal(out.servers[0].name, 'NAS', '字符串两端空白被裁掉');
     assert.equal(out.servers[0].url, 'http://10.0.0.1');
     assert.equal('token' in out.servers[1], false, '白名单外的字段不进配置');
+});
+
+test('公开模块开放名单只收服务端白名单里的 id——私人模块不能运行时转公开', () => {
+    // 「公开」是开发时固定的分类（客户端 registerModule 的 category）。
+    // 服务端看不到那份声明，所以自己持有一份 PUBLIC_MODULE_IDS。
+    // 若这里不过滤，一次配置写入就能把 server-monitor 之类暴露给匿名访客——
+    // 而配置是可以被任何持有管理员会话的人（或一段脚本）直接 POST 的。
+    const out = normalizeModulesConfig({
+        publicModules: ['weibo-hot', 'server-monitor', 'memo', 'special-line', 'weibo-hot', '../../x', '']
+    });
+    assert.deepEqual([...out.publicModules], ['weibo-hot'], '只留下白名单内的公开模块，并去重');
+
+    // 缺席的键不补默认值（与其它数组同一条纪律：「显式清空」与「没提交」要能区分）
+    assert.equal('publicModules' in normalizeModulesConfig({ widgets: [] }), false);
+
+    // 合并时缺席即保留：拖拽排序只提交 widgets，不该顺手关掉对外授权
+    const merged = mergeModulesConfig(
+        { publicModules: ['weibo-hot'], widgets: [] },
+        normalizeModulesConfig({ widgets: [{ id: 'weibo-hot', side: 'left', order: 0 }] }));
+    assert.deepEqual([...merged.publicModules], ['weibo-hot'], '缺席时保留');
+
+    // 显式提交空数组 = 真的撤回全部开放
+    const cleared = mergeModulesConfig(
+        { publicModules: ['weibo-hot'] },
+        normalizeModulesConfig({ publicModules: [] }));
+    assert.deepEqual([...cleared.publicModules], [], '显式空数组是撤回，不是保留');
 });
 
 test('模块配置的归一化拒绝根本不是对象的请求体', () => {

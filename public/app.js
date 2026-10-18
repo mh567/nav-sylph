@@ -60,6 +60,12 @@
         }
     };
 
+    // 匿名可达的模块接口白名单：公开模块的**策略**读接口本身要匿名可读。
+    // 公开模块的数据接口（如 /api/weibo-hot）不在下面那条特权限定里，
+    // 本来就不拦——它们的授权在服务端（publicModuleAccess），客户端这层只防
+    // 「未登录还去请求管理员接口」这种明显的错误。
+    const ANONYMOUS_MODULE_ROUTES = /^\/api\/modules\/public$/;
+
     // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
     // 服务端把「因环境变化被自动登出」用两种方式表达：401 响应体里的
     // code:'env_changed'，以及两处软门（200 响应）上的 X-Session-Env-Changed 头。
@@ -85,7 +91,9 @@
         // 否则一律在此解析：body stream 只能读一次，调用方再 res.json()
         // 会抛 "body stream already read"。
         async request(url, options, binary = false) {
-            if (/^\/api\/(?:admin\/|modules\/|timeline(?:\/|$)|memos(?:\/|$)|favorites(?:\/|$))/.test(url) && !window.app?.authenticated) throw new Error('需要管理员登录');
+            if (/^\/api\/(?:admin\/|modules\/|timeline(?:\/|$)|memos(?:\/|$)|favorites(?:\/|$))/.test(url)
+                && !ANONYMOUS_MODULE_ROUTES.test(url)
+                && !window.app?.authenticated) throw new Error('需要管理员登录');
             const epoch = window.app?.privateEpoch || 0;
             const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Sylph-Request': '1' } });
             if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
@@ -178,6 +186,22 @@
             this.modulesLoading = false;
             this.modulesError = null;
             this.modulesEditorRendered = false;
+            // 模块配置的来源：'server'（管理员，存服务端）或 'local'（普通访客，存本机）。
+            // 只有两个 I/O 边界（loadModulesConfig / saveModulesConfig）按它分叉，
+            // 布局与拖拽那一段完全不关心来源。
+            this.modulesSource = null;
+            // 本机模块记录（普通访客的开关 / 布局 / 偏好）与它的乐观并发基线。
+            this.localModules = null;
+            this.localModulesRevision = 0;
+            this.localModulesError = null;
+            // 公开模块策略：管理员把哪些公开模块对外开放了。null = 未知。
+            // 未知时一个公开模块都不加载——「未知授权不加载」。
+            this.publicModulePolicy = null;
+            // 身份或策略代次。在飞的模块区渲染发现它变了就作废
+            // （管理员那侧另有 privateEpoch 管登录态变化）。
+            this.moduleGeneration = 0;
+            // 已挂载的模块 id。某模块离开启用集合时要通知它收掉自己的定时器。
+            this.mountedModuleIds = new Set();
             // 未启用模块被用户点开「展开配置」的那些 id。面板重建时清空，
             // 同一面板内的重渲染（探测/编辑/删除触发）保留——否则用户刚
             // 展开、卡片一刷新又收起来了。
@@ -245,6 +269,40 @@
         static KNOWN_MODULES = ['server-monitor', 'memo', 'special-line', 'weibo-hot'];
 
         /**
+         * 模块分类白名单。分类是**开发时固定**的源码事实，只能在注册时声明：
+         * 运行时只有「管理员开放」与「用户启用」两个开关，它们只能缩小可用
+         * 集合，不能把声明为 admin 的模块变成 public。
+         */
+        static MODULE_CATEGORIES = ['admin', 'public'];
+
+        /**
+         * 校验模块声明，返回拒绝注册的理由（字符串）或 null（通过）。
+         *
+         * 缺分类一律拒绝：没有分类的模块渲染出来就等于绕过分类边界。
+         * 公开模块还必须显式声明用户侧配置的白名单与逐项校验规则——那份配置
+         * 要跟着用户走（本机保存，后续同步到云空间），没有白名单就无从判断
+         * 哪些键能落盘、什么值算合法。宁可拒绝注册，也不放行一个「什么都能存」
+         * 的模块。
+         */
+        static validateModuleDef(def) {
+            if (!def || typeof def.id !== 'string' || !def.id) return '缺少 id';
+            if (!App.MODULE_CATEGORIES.includes(def.category)) {
+                return '缺少 admin/public 分类声明（开发时固定，不可运行时指定）';
+            }
+            if (def.category === 'public') {
+                if (!def.settings || typeof def.settings !== 'object' || Array.isArray(def.settings)) {
+                    return '公开模块必须声明可同步配置白名单（settings）';
+                }
+                for (const [key, rule] of Object.entries(def.settings)) {
+                    if (!rule || typeof rule.validate !== 'function' || !('default' in rule)) {
+                        return `配置 ${key} 缺少默认值或校验规则`;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /**
          * 等模块首轮数据的上限。
          * 超时后照常布局——某个模块卡住不该让整个模块区一直不出来；
          * 此时退化成改动之前的行为（数据落地时让位一次）。
@@ -273,21 +331,35 @@
 
         static moduleDefs = new Map();
 
+        /**
+         * 注册模块。声明不合法则**拒绝注册**（返回 null），不是只记一条日志：
+         * 注册进表就意味着平台会去加载并渲染它。
+         */
         registerModule(def) {
-            if (!def || !def.id) throw new Error('模块必须带 id');
+            const problem = App.validateModuleDef(def);
+            if (problem) {
+                console.error(`模块 ${def && def.id ? def.id : '(无 id)'} 注册被拒绝：${problem}`);
+                return null;
+            }
             App.moduleDefs.set(def.id, def);
+            return def;
         }
 
         getModule(id) {
             return App.moduleDefs.get(id);
         }
 
-        /** 拉取模块平台配置。只在登录后调用。 */
+        /**
+         * 拉取模块配置。管理员走服务端（个人配置），普通访客走本机
+         * （本机记录 + 服务端策略）。两条路径汇入同一个 `this.modulesConfig` 形状，
+         * 下游的布局、拖拽、挂载代码完全不必知道来源。
+         */
         async loadModulesConfig() {
             if (this.modulesLoading) return this.modulesConfig;
             this.modulesLoading = true;
             this.modulesError = null;
             try {
+                if (!this.authenticated) return await this.loadLocalModulesConfig();
                 const epoch = this.privateEpoch || 0;
                 const data = await API.get('/api/modules/config');
                 if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return null;
@@ -301,8 +373,12 @@
                     // 存的是什么，重开面板永远显示「每 15 秒」。值其实一直
                     // 落盘了、首页轮询也真按新周期在跑（那条路径走
                     // /api/modules/metrics 回的 pollInterval），唯独回显是假的。
-                    pollInterval: Number(data?.pollInterval) || 15
+                    pollInterval: Number(data?.pollInterval) || 15,
+                    // 管理员对外开放了哪些公开模块。少了这一项，后台那个开关
+                    // 每次打开面板都显示「未开放」——而服务端其实存着。
+                    publicModules: Array.isArray(data?.publicModules) ? data.publicModules : []
                 };
+                this.modulesSource = 'server';
                 this.modulesLoaded = true;
                 return this.modulesConfig;
             } catch (e) {
@@ -319,11 +395,226 @@
             }
         }
 
-        /** 已启用的模块 id，按 widgets 里的 order 排序；未配置 layout 的按注册顺序。 */
+        /** 普通访客：本机记录 + 服务端策略，汇成与管理端同形状的模块配置。 */
+        async loadLocalModulesConfig() {
+            await this.readLocalModules();
+            if (this.authenticated) return null;
+            this.modulesSource = 'local';
+            this.applyLocalModules();
+            this.modulesLoaded = true;
+            return this.modulesConfig;
+        }
+
+        /** 读本机模块记录。只读一次，之后以内存那份为准（写回时整体替换）。 */
+        async readLocalModules() {
+            if (this.localModules) return this.localModules;
+            try {
+                const record = await this.localStore.readModules();
+                this.localModulesRevision = record?.revision || 0;
+                // 清洗在**读**这一侧也做一遍：本机存储可以被用户、别的标签页或
+                // 浏览器扩展改动过，不能假定落盘的就是合法的。
+                this.localModules = record?.modules
+                    ? { ...record.modules, settings: this.sanitizeModuleSettings(record.modules.settings) }
+                    : { enabled: [], widgets: [], settings: {} };
+            } catch (e) {
+                this.localModulesError = '未能读取本机模块设置：' + e.message;
+                console.error('Load local modules failed:', e);
+                this.localModules = { enabled: [], widgets: [], settings: {} };
+            }
+            return this.localModules;
+        }
+
+        /**
+         * 把本机记录写成生效的模块配置（**原地**更新 `this.modulesConfig`，
+         * 与管理员路径 Object.assign(this.modulesConfig, merged) 同一条纪律：
+         * 模块挂载时拿的是这个对象的引用，换对象会让它们读到上一版）。
+         *
+         * `enabledModules` 是「本机偏好 ∩ 当前开放名单」：管理员撤回开放后，
+         * 本机里那条启用记录仍然留着（**偏好保留**），只是不进 enabledModules，
+         * 于是它不会被加载、也不会被轮询；重新开放时它自动回来。
+         */
+        applyLocalModules() {
+            const raw = this.localModules || { enabled: [], widgets: [], settings: {} };
+            const open = new Set(Array.isArray(this.publicModulePolicy) ? this.publicModulePolicy : []);
+            this.modulesConfig = this.modulesConfig || {};
+            Object.assign(this.modulesConfig, {
+                enabledModules: raw.enabled.filter(id => open.has(id)),
+                widgets: Array.isArray(raw.widgets) ? raw.widgets : [],
+                // 这里再过一遍白名单：读本机记录时模块脚本可能还没注册
+                // （声明读不到 → 原样保留），走到这一步时已经预加载好了。
+                settings: this.sanitizeModuleSettings(raw.settings),
+                servers: [],
+                pollInterval: 15
+            });
+        }
+
+        /**
+         * 按各模块**声明的白名单**清洗用户侧配置：白名单外的键丢掉，值过一遍
+         * 声明的校验规则，不合法或缺失时回落到声明的默认值。
+         *
+         * 尚未加载的模块（脚本还没执行、声明因此读不到）原样保留——丢掉就等于
+         * 「用户改一次设置，把别的模块的偏好一并抹掉」。它会在下次保存时
+         * 被清洗（那时脚本已加载）。
+         */
+        sanitizeModuleSettings(settings) {
+            const source = (settings && typeof settings === 'object' && !Array.isArray(settings)) ? settings : {};
+            const out = {};
+            for (const id of App.KNOWN_MODULES) {
+                const def = this.getModule(id);
+                const current = source[id];
+                if (!def) {
+                    if (current && typeof current === 'object' && !Array.isArray(current)) out[id] = { ...current };
+                    continue;
+                }
+                if (def.category !== 'public' || !def.settings) continue;
+                const values = (current && typeof current === 'object' && !Array.isArray(current)) ? current : {};
+                const clean = {};
+                for (const [key, rule] of Object.entries(def.settings)) {
+                    const validated = rule.validate(values[key]);
+                    clean[key] = (validated === undefined || validated === null) ? rule.default : validated;
+                }
+                out[id] = clean;
+            }
+            return out;
+        }
+
+        /**
+         * 写本机模块设置。与导航保存共用同一条本地队列，两个写入不会互相插队。
+         *
+         * 失败时内存不变（先在副本上算，落盘成功才替换）——这样界面上的开关
+         * 就能像管理员那侧一样「失败拨回去」，而不是显示一个没落盘的状态。
+         */
+        async saveLocalModules(patch) {
+            const raw = this.localModules || { enabled: [], widgets: [], settings: {} };
+            const next = {
+                enabled: patch.enabledModules !== undefined
+                    ? [...new Set(patch.enabledModules.filter(id => typeof id === 'string' && id))]
+                    : raw.enabled.slice(),
+                widgets: patch.widgets !== undefined ? patch.widgets : raw.widgets,
+                settings: this.sanitizeModuleSettings(patch.settings !== undefined
+                    ? Object.assign({}, raw.settings, patch.settings)
+                    : raw.settings)
+            };
+            this.localPending++;
+            this.setLocalStatus('正在保存模块设置');
+            const task = this.localQueue.then(async () => {
+                try {
+                    if (this.localUnavailable) throw new Error('本地存储不可用，无法保存模块设置');
+                    const record = await this.localStore.writeModules(next, this.localModulesRevision);
+                    this.localModulesRevision = record.revision;
+                    this.localModules = record.modules;
+                    this.localModulesError = null;
+                    this.applyLocalModules();
+                    if (!this.authenticated) this.setLocalStatus('仅保存在本机');
+                    return true;
+                } catch (error) {
+                    this.localModulesError = '未能保存模块设置：' + error.message;
+                    this.setLocalStatus(this.localModulesError, true);
+                    this.showToast(this.localModulesError, 'error', 8000);
+                    return false;
+                } finally { this.localPending--; }
+            });
+            this.localQueue = task;
+            return task;
+        }
+
+        /** 拉取公开模块策略。管理员不需要——他的模块来自服务端个人配置。 */
+        async loadPublicModulePolicy() {
+            if (this.authenticated) return;
+            try {
+                const data = await API.get('/api/modules/public');
+                await this.applyPublicModulePolicy(Array.isArray(data?.modules) ? data.modules : []);
+            } catch (e) {
+                // ⚠️ 取不到时**沿用上一次已知的策略**，而不是置成 null。
+                // 置 null 会让下一次渲染（窗口尺寸变化、换停靠等都会触发
+                // renderModuleZone）判定「未知授权」把已经显示的卡片拆掉——
+                // 而服务端此刻仍在正常放行，用户看到的是「卡片莫名消失」。
+                // 语义上这也对：离线时用最近一次已知结果，联网后重新确认。
+                // 从未确认过时 publicModulePolicy 本来就是 null，才会不加载——
+                // 「未知授权不加载」指的是那一种，不是「一次刷新失败就清零」。
+                console.warn('读取公开模块策略失败，沿用上一次已知策略:', e);
+            }
+        }
+
+        /** 策略真的变了才重渲染：每次确认都重挂一遍会让公开模块反复闪。 */
+        async applyPublicModulePolicy(modules) {
+            const next = modules.filter(id => typeof id === 'string' && id);
+            const previous = this.publicModulePolicy;
+            const changed = !previous
+                || next.length !== previous.length
+                || next.some(id => !previous.includes(id));
+            this.publicModulePolicy = next;
+            if (this.authenticated || !changed) return;
+            this.moduleGeneration++;
+            await this.renderModuleZone();
+        }
+
+        /**
+         * 联网、回到前台时各确认一次策略——撤回开放要尽快落地，而不是等到下次
+         * 刷新。服务端的 403 才是授权；这里只是让界面不必等一轮刷新。
+         */
+        async checkPublicModules() {
+            if (this.authenticated) return;
+            await this.loadPublicModulePolicy();
+        }
+
+        /**
+         * 匿名渲染前的准备。返回 false 表示模块区不该出现（策略未知，或没有
+         * 任何启用项）。
+         */
+        async preparePublicModules() {
+            const policy = this.publicModulePolicy;
+            // 未知授权不加载：策略还没拿到（或上次取失败）时一个模块都不加载。
+            if (!Array.isArray(policy) || !policy.length) return false;
+            const raw = await this.readLocalModules();
+            const open = policy.filter(id => App.KNOWN_MODULES.includes(id));
+            const wanted = raw.enabled.filter(id => open.includes(id));
+            // 一个都没启用就不预加载脚本——首屏不为「可能用得上」付下载成本。
+            if (!wanted.length) return false;
+            // 脚本要先注册好：清洗用户配置要读模块声明的白名单与校验规则。
+            await this.preloadModuleDefs(wanted);
+            if (this.authenticated) return false;
+            if (this.modulesConfig) return true;
+            return !!(await this.loadModulesConfig());
+        }
+
+        /**
+         * 卸载离开启用集合的模块。
+         *
+         * 模块停用后它的定时器仍在跑是既有隐患，撤回开放时更明显：服务端已经
+         * 开始 403，客户端还在按周期打。所以平台通知一次，由模块收掉自己的
+         * 定时器与前后台监听。
+         */
+        teardownUnusedModules(ids) {
+            const keep = new Set(ids);
+            for (const id of [...this.mountedModuleIds]) {
+                if (keep.has(id)) continue;
+                this.mountedModuleIds.delete(id);
+                const def = this.getModule(id);
+                try {
+                    if (def && typeof def.unmount === 'function') def.unmount();
+                } catch (e) {
+                    console.error(`卸载模块 ${id} 失败:`, e);
+                }
+            }
+        }
+
+        /**
+         * 已启用的模块 id，按 widgets 里的 order 排序；未配置 layout 的按注册顺序。
+         *
+         * 普通访客额外按**模块自己声明的分类**过滤：即使开放名单里混进了声明为
+         * admin 的 id（服务端归一化挡不住有人手改配置文件），也不会渲染给访客。
+         * 管理员不过滤——他可以用自己尚未对外开放的公开模块。
+         */
         enabledModuleIds() {
             const enabled = new Set(this.modulesConfig?.enabledModules || []);
             const layout = this.modulesConfig?.widgets || [];
-            const ids = App.KNOWN_MODULES.filter(id => enabled.has(id));
+            const ids = App.KNOWN_MODULES.filter(id => {
+                if (!enabled.has(id)) return false;
+                if (this.authenticated) return true;
+                const def = this.getModule(id);
+                return !!(def && def.category === 'public');
+            });
             const orderOf = id => {
                 const item = layout.find(w => w.id === id);
                 return item && Number.isFinite(item.order) ? item.order : 0;
@@ -466,23 +757,35 @@
          * 单个模块加载失败不影响其它模块——失败的那个渲染出错误与重试按钮。
          */
         async renderModuleZone() {
-            const epoch = this.privateEpoch || 0;
             const zone = $('#moduleZone');
             if (!zone) return;
             // 是否**由隐藏变可见**：只有这一次才播出现动画。主题切换、视口
             // 变化、模块开关等都会重渲染，那些不该再播一遍。
             const wasHidden = zone.hidden;
+            const epoch = this.privateEpoch || 0;
+            const generation = this.moduleGeneration;
+            // 身份或策略变了就作废这次渲染。管理员看 privateEpoch（登录态），
+            // 普通访客看 moduleGeneration（策略或身份切换）。
+            const stillValid = () => (this.authenticated
+                ? epoch === (this.privateEpoch || 0)
+                : !this.authenticated && generation === this.moduleGeneration);
 
             if (!this.authenticated) {
-                zone.hidden = true;
-                zone.replaceChildren();
-                // 未登录不该让背板继续收窄——让位是给登录后那条时间线的。
-                // 走 syncRail（它自己判未登录 + 清宽度变量），别再手写一份 'narrow'。
-                this.syncRail();
-                return;
+                // 普通访客：本机偏好 ∩ 服务端开放名单。策略未知、或一个都没启用
+                // 时收起模块区——「未知授权不加载」。
+                if (!await this.preparePublicModules()) {
+                    zone.hidden = true;
+                    zone.replaceChildren();
+                    this.teardownUnusedModules([]);
+                    // 未登录不该让背板继续收窄——让位是给登录后那条时间线的。
+                    // 走 syncRail（它自己判未登录 + 清宽度变量），别再手写一份 'narrow'。
+                    this.syncRail();
+                    return;
+                }
+            } else if (!this.modulesConfig) {
+                await this.loadModulesConfig();
             }
-            if (!this.modulesConfig) await this.loadModulesConfig();
-            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
+            if (!stillValid()) return;
 
             // ⚠️ 定义必须在 `syncRail()` **之前**注册好：宽栏判定读的是模块定义里的
             // `wideRail`，而定义是模块脚本执行时才注册的。首屏第一次渲染时脚本还没
@@ -501,8 +804,11 @@
             // 就是数据就绪时间（最坏 FIRST_ROUND_TIMEOUT_MS 1500ms）。这是刻意的取舍：
             // 让位要快，卡片落点仍等终态。
             const ids = this.enabledModuleIds();
+            // 离开启用集合的模块要先收掉自己的定时器（用户停用、或管理员撤回
+            // 开放）——不然它会继续按周期请求一个已经开始 403 的接口。
+            this.teardownUnusedModules(ids);
             await this.preloadModuleDefs(ids);
-            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
+            if (!stillValid()) return;
 
             const app = $('#app');
             if (wasHidden && app) app.classList.add('is-railing');
@@ -549,7 +855,7 @@
             // 前一个的脚本下载**加**挂载都完成；真实网络下这一段是成倍的等待。
             const firstRound = [];
             const parts = await Promise.all(ids.map(id => this.mountModule(id, firstRound)));
-            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
+            if (!stillValid()) return;
             for (const part of parts) inner.appendChild(part);
 
             // 等首轮数据再首次布局。卡片高度依赖首轮数据：服务器卡片没有数据
@@ -558,7 +864,7 @@
             // margin-top 过渡（给 metrics 注入 600ms 延迟模拟远端网络）。
             // 等过之后卡片出现时就是终态。
             await this.waitFirstRound(firstRound);
-            if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return;
+            if (!stillValid()) return;
 
             // ===== 入场排期 =====
             // 让位早在 preload 之后就已经开始（见上面那段注释），这里只排卡片：
@@ -738,10 +1044,15 @@
                 shell.appendChild(this.renderWidgetError(id, '模块未注册'));
                 return shell;
             }
+            // 记下来：它离开启用集合时平台要调 unmount 收掉它的定时器。
+            this.mountedModuleIds.add(id);
 
             try {
                 const mounted = def.mountWidget(shell, {
                     config: this.modulesConfig,
+                    // 该模块自己的用户侧偏好（公开模块用）。管理员那侧没有这份
+                    // 配置，取到的是空对象——模块必须自己兜底默认值。
+                    settings: (this.modulesConfig?.settings || {})[id] || {},
                     editLayout: this.editLayout,
                     api: API,
                     // 轮询路径的纵向重排放到这里注入，而不是让每个模块各自去摸
@@ -1062,6 +1373,12 @@
                     if (JSON.stringify(candidate) !== JSON.stringify(this.localSaved) || this.localError) {
                         if (!await this.saveLocalNavigation(candidate) || this.authenticated) return;
                     }
+                    // 模块布局也是本机存储。与管理端同款：布局是**草稿**，由
+                    // 「保存配置」统一提交；模块开关与偏好则是即时保存。
+                    if (this.editSession && this.modulesConfig
+                        && JSON.stringify(this.modulesConfig.widgets || []) !== JSON.stringify(this.editSession.widgets || [])) {
+                        if (!await this.saveLocalModules({ widgets: this.modulesConfig.widgets }) || this.authenticated) return;
+                    }
                     this.setLocalStatus('仅保存在本机');
                     this.config = candidate;
                     this.applyTheme();
@@ -1112,11 +1429,15 @@
                 if (this.localSettingsSaving) return;
                 if (this.localSettingsChanged() && !await this.confirmAction('放弃尚未保存的导航设置？已保存的分类与链接调整会保留。', '取消设置')) return;
                 this.localSettingsDraft = null;
+                // 模块布局与导航结构一样是草稿：取消就整体回滚，
+                // 否则「拖了一下又按取消」会留下一个没提交过的位置。
+                if (this.editSession && this.modulesConfig) this.modulesConfig.widgets = this.editSession.widgets;
                 this.editSession = null;
                 this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
                 this.exitEditLayout();
                 $('#layoutBtn').focus();
                 this.refreshLocalNavigation();
+                this.renderModuleZone();
                 return;
             }
             if (!this.editSession) { this.exitEditLayout(); return; }
@@ -1175,17 +1496,26 @@
 
         /** 登录态变化时统一走这里：显示或彻底收起模块区与布局按钮。 */
         async syncModuleVisibility() {
+            // 身份或策略一变就作废在飞的模块区渲染
+            this.moduleGeneration++;
             const btn = $('#layoutBtn');
             if (!this.authenticated) {
                 // 会话已失效，无可保存，也不该弹确认框：直接丢弃草稿。
                 if (this.personalNavigationLoaded) this.rollbackEditSession();
                 this.exitEditLayout();
                 const zone = $('#moduleZone');
+                // 先卸掉管理员那几个模块的定时器再清 DOM：模块停用后仍在按
+                // 周期请求是这段代码一直有的隐患，登出时最不该留着（请求会 401）。
+                this.teardownUnusedModules([]);
                 if (zone) { zone.hidden = true; zone.replaceChildren(); }
                 if (btn) btn.hidden = this.editLayout;
+                // 模块配置**不再整块作废**：普通访客自己启用的公开模块还要显示。
+                // 配置源切回本机（loadModulesConfig 按 this.authenticated 分叉），
+                // 由 renderModuleZone 按当前策略过滤后重渲染。
                 this.modulesConfig = null;
                 this.modulesLoaded = false;
                 this.modulesError = null;
+                await this.renderModuleZone();
                 return;
             }
             if (btn) btn.hidden = this.editLayout;
@@ -1408,6 +1738,120 @@
                 editor.querySelector('.local-engine-item:last-child input').focus();
             };
             render();
+            // 公开模块分组只填自己的那块容器（#localModulesList），
+            // 所以它异步完成后不会碰到上面的引擎草稿。
+            this.renderLocalModulesGroup();
+        }
+
+        /**
+         * 普通访客的「模块」分组：列出管理员**已开放**的公开模块，
+         * 逐个开关 + 由模块声明的偏好白名单生成的控件。
+         *
+         * 三个条件同时满足才有这一行：公开分类（注册时声明）、管理员开放
+         * （服务端策略）、本机未撤回。这里是前两个的界面入口，第三个就是开关本身。
+         */
+        async renderLocalModulesGroup() {
+            const group = $('#localModulesGroup');
+            const list = $('#localModulesList');
+            if (!group || !list) return;
+            const policy = this.publicModulePolicy;
+            if (this.authenticated || !Array.isArray(policy) || !policy.length) {
+                group.hidden = true;
+                list.replaceChildren();
+                return;
+            }
+            const ids = policy.filter(id => App.KNOWN_MODULES.includes(id));
+            if (!ids.length) {
+                group.hidden = true;
+                list.replaceChildren();
+                return;
+            }
+            group.hidden = false;
+            list.innerHTML = '<p class="local-settings-hint">正在加载模块…</p>';
+            // 只有真的要配置时才下载模块脚本：标题与偏好白名单都住在声明里。
+            // 平时不预载，所以从未打开设置的访客不会为公开模块付下载成本。
+            await this.preloadModuleDefs(ids);
+            // 等待期间登录了、或用户已退出编辑态（草稿被清掉）：都不该再渲染这一组
+            if (this.authenticated || !this.localSettingsDraft) { group.hidden = true; return; }
+            // 策略可能在等待期间被撤回，这里按最新那份过滤
+            const open = this.publicModulePolicy || [];
+            const enabled = new Set(this.localModules?.enabled || []);
+            const rows = ids
+                .filter(id => open.includes(id) && this.getModule(id))
+                .map(id => this.renderLocalModuleRow(this.getModule(id), enabled.has(id)));
+            list.innerHTML = rows.join('') || '<p class="local-settings-hint">当前没有可用的公开模块。</p>';
+            this.bindLocalModuleRows(list);
+        }
+
+        /** 一个公开模块一行：开关 + 它自己声明的偏好。 */
+        renderLocalModuleRow(def, on) {
+            const stored = (this.localModules?.settings?.[def.id]) || {};
+            // 偏好控件由白名单生成，所以新增一个公开模块不必再改这里；
+            // 目前只支持「整数区间」这一种形状（weibo-hot 的显示条数），
+            // 需要别的形状时在这里加类型，而不是让模块自己拼 DOM。
+            const settings = Object.entries(def.settings || {}).map(([key, rule]) => {
+                const value = stored[key] === undefined ? rule.default : stored[key];
+                return `<label class="local-module-setting">
+                    <span>${this.esc(rule.label || key)}</span>
+                    <input type="number" data-module-setting-input="${this.esc(def.id)}"
+                           data-setting-key="${this.esc(key)}" value="${this.esc(String(value))}"
+                           min="${this.esc(String(rule.min ?? ''))}" max="${this.esc(String(rule.max ?? ''))}">
+                </label>`;
+            }).join('');
+            return `
+                <div class="local-module-row" data-module-row="${this.esc(def.id)}">
+                    <label class="local-module-toggle">
+                        <input type="checkbox" data-module-local-toggle="${this.esc(def.id)}" ${on ? 'checked' : ''}>
+                        <span class="local-module-title">${this.esc(def.title)}</span>
+                    </label>
+                    ${def.summary ? `<p class="local-settings-hint">${this.esc(def.summary)}</p>` : ''}
+                    ${on && settings ? `<div class="local-module-settings">${settings}</div>` : ''}
+                </div>`;
+        }
+
+        bindLocalModuleRows(list) {
+            for (const box of list.querySelectorAll('[data-module-local-toggle]')) {
+                box.addEventListener('change', async () => {
+                    const id = box.dataset.moduleLocalToggle;
+                    const on = box.checked;
+                    // 以**本机偏好**为基准增删，而不是以已被策略过滤的
+                    // enabledModules 为基准——后者会把「撤回期间保留的偏好」丢掉，
+                    // 于是管理员关一次再开，用户的启用状态就没了。
+                    const before = (this.localModules?.enabled || []).slice();
+                    const next = on ? [...new Set([...before, id])] : before.filter(x => x !== id);
+                    if (!await this.saveLocalModules({ enabledModules: next })) {
+                        box.checked = !on;
+                        return;
+                    }
+                    const title = this.getModule(id)?.title || id;
+                    this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
+                    // 偏好区随开关显隐，所以整组重画
+                    await this.renderLocalModulesGroup();
+                    await this.renderModuleZone();
+                });
+            }
+            for (const input of list.querySelectorAll('[data-module-setting-input]')) {
+                input.addEventListener('change', async () => {
+                    const id = input.dataset.moduleSettingInput;
+                    const key = input.dataset.settingKey;
+                    const def = this.getModule(id);
+                    const rule = def?.settings?.[key];
+                    const parsed = rule ? rule.validate(Number(input.value)) : null;
+                    if (parsed === null || parsed === undefined) {
+                        // 非法值不静默接受：说清楚范围并回到默认值
+                        this.showToast(
+                            `${def?.title || id}的「${rule?.label || key}」只接受 ${rule?.min}–${rule?.max}`,
+                            'error');
+                        input.value = String(rule ? rule.default : '');
+                        return;
+                    }
+                    const settings = { [id]: { ...((this.localModules?.settings?.[id]) || {}), [key]: parsed } };
+                    if (!await this.saveLocalModules({ settings })) return;
+                    input.value = String(parsed);
+                    // 显示条数会直接改变卡片高度，重排一次
+                    await this.renderModuleZone();
+                });
+            }
         }
 
         bindLocalNavigation() {
@@ -2535,6 +2979,9 @@
                 if (epoch !== (this.privateEpoch || 0)) return;
                 if (!session.authenticated) {
                     if (this.authenticated) this.expirePrivateState();
+                    // 匿名时顺带确认一次公开模块策略：管理员撤回开放后，
+                    // 30 秒内（或切回前台、联网时）界面就会卸下那个模块。
+                    await this.checkPublicModules();
                     return;
                 }
                 if (!this.authenticated) { await this.restoreSession(); return; }
@@ -2998,6 +3445,10 @@
                         // 模块区同样不占首屏：会话确认后才拉配置、才加载模块文件。
                         // 失败不影响首屏，也不影响上面的私密检索。
                         this.syncModuleVisibility();
+                    } else {
+                        // 匿名访客：确认公开模块策略，再渲染本机启用的公开模块。
+                        // 与管理员模块区同一时机（会话探测之后），同样不占首屏。
+                        await this.checkPublicModules();
                     }
                     return session.authenticated;
                 })
@@ -4644,6 +5095,14 @@
 
         /** 模块设置和目标增删共享版本及待确认操作，成功后原地更新配置引用。 */
         async saveModulesConfig(patch, route = '/api/modules/config', method = 'POST') {
+            // 普通访客的模块设置存在本机：不走服务端，也没有 revision/operationId
+            // 那套跨设备同步协议。后台那几处调用方照旧调这里，来源分叉收在
+            // 这一个函数里——布局与拖拽那一段因此完全不必知道来源。
+            if (this.modulesSource === 'local') {
+                const ok = await this.saveLocalModules(patch);
+                if (!ok) throw new Error(this.localModulesError || '未能保存模块设置');
+                return this.modulesConfig;
+            }
             const current = this.modulesConfig || {};
             const merged = { ...current, ...patch };
             if (this.modulesSaving) throw new Error('模块配置正在保存，请稍后重试');
@@ -4705,6 +5164,11 @@
                     <button type="button" data-expand-module="${this.esc(def.id)}">展开配置</button>
                 </div>`;
 
+            // 公开模块多一个「对外开放」开关。它**不随启用态收起**：开放与否
+            // 决定访客能不能用，与管理员自己用不用它是两件事，所以渲染在
+            // 折叠区之外（禁用态的模块也要能开放）。
+            const openRow = def.category === 'public' ? this.renderModuleOpenRow(def, config) : '';
+
             return `
                 <div class="module-block" data-module="${this.esc(def.id)}" data-enabled="${on ? 1 : 0}">
                     <div class="module-block-head">
@@ -4724,7 +5188,32 @@
                             <span class="module-setting-state">${on ? '已启用' : '未启用'}</span>
                         </label>
                     </div>
+                    ${openRow}
                     ${body}
+                </div>`;
+        }
+
+        /**
+         * 公开模块的第二个开关：**对普通访客开放**。
+         *
+         * 「启用」与「开放」是两件事：
+         *   · 启用 = 管理员自己首页上用它，配置存在服务端个人配置里；
+         *   · 开放 = 允许普通访客自行启用它，其数据接口从此对匿名请求放行。
+         * 管理员可以用一个尚未开放的公开模块——「开放」不是「启用」的前置条件。
+         */
+        renderModuleOpenRow(def, config) {
+            const open = (config.publicModules || []).includes(def.id);
+            return `
+                <div class="module-open-row">
+                    <label class="module-open-label">
+                        <span class="module-open-name">对普通访客开放</span>
+                        <span class="module-open-toggle">
+                            <input type="checkbox" data-module-open="${this.esc(def.id)}" ${open ? 'checked' : ''}>
+                            <span class="module-open-state">${open ? '已开放' : '未开放'}</span>
+                        </span>
+                    </label>
+                    <p class="module-open-hint">开放后访客可在自己的首页设置里启用它，数据接口对匿名请求放行；
+                        撤回开放立即拒绝匿名请求。</p>
                 </div>`;
         }
 
@@ -4878,6 +5367,33 @@
                         // 没落盘的状态（本轮修的就是这个形状的谎）
                         box.checked = !on;
                         if (state) state.textContent = !on ? '已启用' : '未启用';
+                        this.showToast('保存失败，请重试', 'error');
+                    }
+                });
+            }
+
+            // 公开模块的「对外开放」开关。与「启用」共用同一个写路径
+            // （saveModulesConfig），服务端再按 PUBLIC_MODULE_IDS 过滤一次——
+            // 就算前端提交了私人模块的 id，也进不了 publicModules。
+            for (const box of host.querySelectorAll('[data-module-open]')) {
+                box.addEventListener('change', async () => {
+                    const id = box.dataset.moduleOpen;
+                    const open = box.checked;
+                    const before = (config.publicModules || []).slice();
+                    const next = open
+                        ? [...new Set([...before, id])]
+                        : before.filter(x => x !== id);
+                    const state = box.closest('.module-open-label')
+                        ?.querySelector('.module-open-state');
+                    try {
+                        await this.saveModulesConfig({ publicModules: next });
+                        const title = this.getModule(id)?.title || id;
+                        this.showToast(open ? `已对访客开放「${title}」` : `已撤回「${title}」的开放`);
+                    } catch (err) {
+                        console.error('Save module open failed:', err);
+                        // 与启用开关同理：失败要把开关和文字一起拨回去
+                        box.checked = !open;
+                        if (state) state.textContent = !open ? '已开放' : '未开放';
                         this.showToast('保存失败，请重试', 'error');
                     }
                 });

@@ -108,7 +108,11 @@ function loadMemoRoutes(db) {
     // 备忘录之后、Paste 之前，用 Paste 当端点会把整节时间线路由拖进这个 vm，
     // 于是注册期就要求桩出 app.put / ServiceError / timeline——与本用例无关的
     // 一串失败。切片到这里，恰好只剩备忘录那一节。
-    const end = server.indexOf('// ========== Special Line 时间线 API ==========', begin);
+    // ⚠️ 端锚点用**紧挨着的下一节标题**。原先写的是 Special Line 那一节，而
+    // 「微博热搜代理」小节排在备忘录与 Special Line 之间——于是整个代理路由
+    // （含 `process.env.NAV_WEIBO_HOT_URL`）也被拖进这个 vm，注册期就报
+    // `process is not defined`，表现为一串与备忘录无关的失败。
+    const end = server.indexOf('// ========== 微博热搜代理 ==========', begin);
     assert.ok(begin >= 0 && end > begin, '备忘录 API 小节存在');
 
     const routes = new Map();
