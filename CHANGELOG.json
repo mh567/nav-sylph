@@ -1,6 +1,34 @@
 {
   "versions": [
     {
+      "version": "2.0.2",
+      "date": "2026-10-18",
+      "summary": "新增口令云端空间：管理员发放一次性邀请码，普通访客自设口令创建云端空间，其他设备用同一口令连接并选择配置方向。",
+      "highlights": [
+        "管理员可在后台生成一次性邀请码，48 小时内有效、可随时撤销",
+        "普通访客在页面底部的「同步」里自设口令创建云端空间，无需注册账号",
+        "连接既有空间时可选择使用云端配置或以本机配置替换云端，两个方向都会在本机保留被替换的副本",
+        "连接凭据按设备单独签发、服务端只保存哈希，刷新后自动复用，设备数量没有上限"
+      ],
+      "changes": {
+        "add": [
+          "新增 lib/sync-store.js：口令空间的全部服务端逻辑。口令从不上行——浏览器用 Web Crypto 派生出 64 位十六进制的连接证明（标签 sylph-space-connect-v1 同时承载用途与版本），服务端再哈希一次作为定位键 proof_id，两级都是快速哈希，不抗离线弱口令猜测（设计文档已声明的边界，不宣称端到端加密）。",
+          "lib/db.js 尾部追加迁移台阶 v9，新增四张表：sync_spaces（proof_id 唯一、generation 设备授权代次、revision 配置版本、只含公开 schema 五字段的 config_json）、sync_devices（只存 token_hash，绑定签发时的代次，last_seen_at 支持 90 天滑动失效）、sync_invites（只存哈希与前 4 位提示）、sync_receipts（签发回执）。已发布的 0–7 未改动。四张表随 nav-sylph.db 走 sylph.sh 的升级备份，不进 WebDAV 备份集。",
+          "竞争安全落在断言而不是「先查后写」：创建与连接都在单个 better-sqlite3 事务里，竞争创建靠 UNIQUE(proof_id)，邀请码消耗靠 UPDATE ... WHERE used_at IS NULL 的 changes === 1。HTTP 层有真并发用例（同一口令 5 路、同一邀请码 2 路）。",
+          "新增 8 条路由，分两组且互不升级：访客侧 POST /api/sync/space/{check,create,connect} 与 GET/POST /api/sync/config（设备令牌走 Authorization: Bearer，不在 URL；口令与证明也不进 URL）、管理员侧 GET/POST /api/admin/sync-invites 与 POST /api/admin/sync-invites/:id/revoke，三条都走 rateLimit + requireAdmin 且不读 Authorization 头——普通凭据无法用于管理员接口（有真实 HTTP 越权用例）。",
+          "四只限流桶：连接类按 IP 30 次/分钟（防猜口令）、读取按空间 240 次/分钟、写入按空间 120 次/分钟、签发新设备令牌按空间 30 次/分钟（父规格 §7 的默认值；单 IP 下同值的连接桶会先触发，这一只只在多 IP 下成为真正的那道闸）。四只都登记进 60 秒清理定时器，429 一律带 Retry-After。",
+          "lib/credentials.js 追加 sync-receipt 用途：签发回执里的设备令牌是 AES-GCM 密文且绑定空间代次，库里不留明文令牌，重放不签发新设备。改密码时清空整张回执表（密钥随密码哈希），但已连接的设备令牌不受影响——它存的是哈希，与密码无关。",
+          "客户端在 public/app.js：口令按 Unicode 码点校验（6–128、不裁空格、不做归一化、全空白拒绝）、Web Crypto 派生、单个对话框承载全部状态（未连接/口令无空间/空间已存在/已连接/出错）、两个替换方向都写 recovery、连接记录存同一 IndexedDB 的第三个键 sync（不升库版本）。对话框临开临建、关掉就删。",
+          "同步范围只含导航 schema 的五个字段与公开模块偏好：未知顶层键（privacyMode/favorites/servers/pollInterval 等）一律 400，模块 id 限定在服务端公开模块白名单内，私人模块的 id 不会落库；条数、长度与总大小都有上限。",
+          "静态缓存 nav-v117 → nav-v118。"
+        ],
+        "improve": [
+          "刷新时读回连接记录并向服务端探活一次，令牌被撤销、过期或空间停用才清连接，网络抖动不清；探活必须带设备令牌（漏传会恒 401，被当成连接失效把凭据清掉）。",
+          "凭据先落盘成功再置「已连接」：IndexedDB 会因配额或隐私模式静默失败，反过来的顺序会让用户以为已连接，下次打开却是未连接。"
+        ]
+      }
+    },
+    {
       "version": "2.0.1",
       "date": "2026-10-18",
       "summary": "新增模块分类与开放授权：管理员可指定对外开放的公开模块，普通访客可自行启用，私人模块仍仅管理员可用。",
