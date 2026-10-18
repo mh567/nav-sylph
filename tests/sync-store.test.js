@@ -264,7 +264,12 @@ test('口令空间：读写走 revision 版本协议，冲突 409，回执幂等
     const next = { ...CONFIG, theme: 'dark', categories: [{ id: 'c1', name: '工作', bookmarks: [{ id: 'b1', title: 'A', url: 'https://a.example/' }, { id: 'b2', title: 'B', url: 'https://b.example/' }] }] };
     const writeBody = { revision: 1, operationId: 'write-one', config: next, modules: { enabled: ['weibo-hot'] } };
     const saved = f.store.writeConfig(device, writeBody);
-    assert.deepEqual(saved, { success: true, revision: 2 });
+    // 写入响应带 revision + generation + updatedAt（客户端要落进连接记录与状态行，
+    // 省掉一次「写完再问一遍」的往返），所以按字段断言而不是整对象 deepEqual。
+    assert.equal(saved.success, true);
+    assert.equal(saved.revision, 2);
+    assert.equal(saved.generation, 1);
+    assert.ok(Number.isSafeInteger(saved.updatedAt));
     assert.equal(f.store.readConfig(device).revision, 2);
     assert.equal(f.store.readConfig(device).config.theme, 'dark');
     assert.equal((await f.check('版本口令')).entryCount, 2, '检查接口的条目数跟着走');

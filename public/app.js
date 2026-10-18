@@ -75,6 +75,39 @@
     const SYNC_PASSPHRASE_MIN = 6;
     const SYNC_PASSPHRASE_MAX = 128;
 
+    // ========== 口令空间的自动同步参数 ==========
+    //
+    // 这些数是设计文档 §5 的默认值，别在方法体里散落魔法数字——它们同时被
+    // 用例从源码解析出来（改这里，用例跟着算，不是手写死数）。
+    const SYNC_DEBOUNCE_MS = 500;      // 本地改动合并窗口
+    const SYNC_MAX_WAIT_MS = 2000;     // 连续改动时，首次上传的最长等待
+    const SYNC_POLL_MS = 30000;        // 可见页面的检查周期
+    const SYNC_BACKOFF_START_MS = 1000;    // 失败后退避起点
+    const SYNC_BACKOFF_MAX_MS = 300000;    // 退避上限（5 分钟）
+    const SYNC_CLAIM_TTL_MS = 15000;   // 上传认领的有效期（多标签页单飞；崩溃兜底）
+    const SYNC_CLAIM_PING_MS = 300;    // 认领「问一声」的等待上限
+    const SYNC_RECEIPT_WINDOW_MS = 86400000; // 服务端成功回执的保留窗口（24 小时）
+
+    // 状态的**完整**文案（对话框里用，设计文档 §5 那六个词）。
+    const SYNC_STATUS_TEXT = {
+        local: '仅保存在本机',
+        syncing: '同步中',
+        synced: '已同步',
+        pending: '离线，待同步',
+        failed: '同步失败',
+        conflict: '存在配置冲突'
+    };
+    // 页脚那一行只有两个字的位置：`local` 仍然叫「同步」，因为那里是**入口**
+    // （点进去连接），不是状态显示——写「仅保存在本机」会让人以为点不动。
+    const SYNC_STATUS_LABEL = {
+        local: '同步',
+        syncing: '同步中',
+        synced: '已同步',
+        pending: '待同步',
+        failed: '同步失败',
+        conflict: '同步冲突'
+    };
+
     // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
     // 服务端把「因环境变化被自动登出」用两种方式表达：401 响应体里的
     // code:'env_changed'，以及两处软门（200 响应）上的 X-Session-Env-Changed 头。
@@ -238,6 +271,34 @@
             // 对话框节点：临开临建、关掉就删。不能常驻——`.ui-dialog-overlay`
             // 在本文件里是「有没有对话框开着」的判据（见 openSyncDialog 的注释）。
             this.syncDialogEl = null;
+            // ---- 自动同步（与上面那个「连接流程」状态机是**两个轴**）----
+            // syncStatus 是数据面的状态（设计文档 §5 的六个词）；syncState 是
+            // 对话框流程走到哪一步。别把它们合并成一个字段。
+            this.syncStatus = 'local';
+            this.syncLastSuccessAt = null;
+            this.syncCloud = null;        // 已知的云端状态（revision/generation/updatedAt）
+            this.syncPending = null;      // 盘上那份待上传内容的镜像
+            this.syncClaim = null;
+            this.syncConflict = null;     // { local, cloud, baseRevision }
+            // 本机的**连接代次**：连接、清除连接时 +1。在飞的读/写响应发现自己
+            // 发起时的代次已经变了就作废——「停止/切换后旧响应不许写回」靠它，
+            // 与管理员侧的 privateEpoch 是同一个形状。
+            this.syncConnEpoch = 0;
+            this.syncUploadInFlight = false;
+            this.syncUploadAgain = false; // 在途期间又有改动 → 完成后排下一轮
+            this.syncUploadSettled = false; // 本次上传已确认 → 放下在途闩后再读一次
+            // 最近一次确认上传成功时**内容**的指纹（见 syncPayloadKey）。「已同步」只在
+            // 它等于当前内容指纹时成立——否则「本地刚改过」也会显示已同步（验收 6 禁止）。
+            this.syncUploadedPayloadKey = null;
+            this.syncDebounceTimer = null;
+            this.syncMaxWaitTimer = null;
+            this.syncRetryTimer = null;
+            this.syncBackoffMs = 0;
+            this.syncPollTimer = null;
+            this.syncChecking = false;
+            this.syncAdopting = false;    // 正在采用云端配置（这次保存不算「本地新改动」）
+            this.syncChannel = null;
+            this.syncTabId = null;
             // 管理员「站点」分区里的邀请码列表：缓存 + 「已渲染」闩锁。
             this.syncInvites = null;
             this.syncInvitesRendered = false;
@@ -550,6 +611,7 @@
                     this.localModulesError = null;
                     this.applyLocalModules();
                     if (!this.authenticated) this.setLocalStatus('仅保存在本机');
+                    this.markSyncDirty();
                     return true;
                 } catch (error) {
                     this.localModulesError = '未能保存模块设置：' + error.message;
@@ -1629,6 +1691,9 @@
                     if (undo && !this.authenticated) { this.config = structuredClone(record.config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
                     this.localChannel?.postMessage(record.revision);
                     if (!this.authenticated) this.setLocalStatus('仅保存在本机');
+                    // 同步的唯一触发点：**本地真的落盘之后**才排上传。
+                    // 挂在编辑动作里会散成很多处，且会在没保存成功时就发出去。
+                    this.markSyncDirty();
                     return true;
                 } catch (error) {
                     this.localError = '未能保存到本机：' + error.message;
@@ -1819,34 +1884,35 @@
             }
         }
 
-        /** 读本机连接记录；有连接就向服务端确认一次（刷新后复用，不重新签发）。 */
+        /** 读本机连接记录；有连接就立刻检查一次，并把盘上的待上传内容重放出去。 */
         async loadSyncState() {
             if (!this.localStore) return;
+            this.bindSyncChannel();
             let record;
             try { record = await this.localStore.readSync(); }
             catch (error) { this.setSyncState('error', '未能读取本机同步状态：' + error.message); return; }
             this.syncRecordRevision = record?.revision || 0;
             this.syncConnection = record?.connection || null;
             this.syncRecovery = record?.recovery || null;
+            this.syncPending = record?.pending || null;
+            this.syncClaim = record?.claim || null;
+            this.syncLastSuccessAt = record?.lastSuccessAt || null;
+            this.syncUploadedPayloadKey = record?.uploadedPayloadKey ?? null;
             this.markSyncEntry();
-            if (!this.syncConnection) { this.setSyncState('disconnected'); return; }
-            try {
-                // ⚠️ 必须带令牌：漏掉它这条读取恒 401，而 401 会被下面当成
-                // 「连接已失效」把凭据清掉——「刷新后复用设备连接」就变成了
-                // 「每次刷新都掉线」。测试里对**每一处**读取都断言带令牌，
-                // 因为只断言「有一处带」会被另一处正确的调用点满足。
-                const cloud = await API.get('/api/sync/config', { token: this.syncConnection.deviceToken });
-                this.syncCloud = cloud;
-                this.setSyncState('connected');
-            } catch (error) {
-                // 令牌被撤销 / 过期 / 空间停用：清掉本机连接，要求用户重新输入口令。
-                // 这是**唯一**该清连接的时机之一——不能因为一次网络抖动就丢凭据。
-                if (error.status === 401 || error.status === 403) {
-                    await this.clearSyncConnection('连接已失效，请重新输入口令');
-                } else {
-                    this.setSyncState('error', '暂时无法确认同步状态：' + error.message);
-                }
-            }
+            if (!this.syncConnection) { this.setSyncStatus('local'); this.setSyncState('disconnected'); return; }
+            this.setSyncState('connected');
+            this.setSyncStatus(this.syncPending ? 'pending' : 'synced');
+            // 打开即检查一次（设计 §5 的四个触发点之一），并起 30 秒轮询。
+            await this.syncPullCheck();
+            this.startSyncPolling();
+            // 两种情况都要在这里接着同步（设计 §5「页面关闭前已保存本地的修改，
+            // 下次打开继续同步」）：
+            //   · 盘上有待上传内容 → 立刻重放（同一个 operationId，不重复写入）；
+            //   · 本地修订还没有被确认上传过 → 上一次是在防抖窗口里关掉的页面、
+            //     或者当时离线，那次改动只落在本机。**漏掉这一条，那次改动就
+            //     永远传不上去**：重启后没有任何东西会再排一次上传。
+            if (this.syncPending) this.startSyncUpload();
+            else if (this.syncUploadedPayloadKey !== this.syncPayloadKey()) this.scheduleSyncUpload();
         }
 
         setSyncState(state, message = '') {
@@ -1861,18 +1927,32 @@
         markSyncEntry() {
             const button = $('#syncBtn');
             if (!button) return;
-            button.textContent = this.syncState === 'connected' ? '已同步' : '同步';
-            button.dataset.state = this.syncState;
-            button.title = this.syncState === 'connected' ? '已连接云端空间' : '用口令连接云端空间';
+            const status = this.syncConnection ? this.syncStatus : 'local';
+            button.textContent = SYNC_STATUS_LABEL[status] || '同步';
+            button.dataset.state = status;
+            button.title = status === 'local' ? '用口令连接云端空间' : `云端空间：${SYNC_STATUS_TEXT[status] || ''}`;
         }
 
         clearSyncConnection(message) {
             this.syncConnection = null;
             this.syncProof = null;
             this.syncSpaceInfo = null;
+            this.syncCloud = null;
+            this.syncPending = null;
+            this.syncClaim = null;
+            this.syncConflict = null;
+            this.syncBackoffMs = 0;
+            this.syncUploadInFlight = false;
+            this.syncUploadedPayloadKey = null;
+            this.setSyncStatus('local');
+            this.syncUploadAgain = false;
+            // 递增连接代次：在飞的读/写回来时发现代次变了就整份作废，
+            // 不会把上一个连接的响应写回新状态（#9 的「停止/切换」也走这条）。
+            this.syncConnEpoch = (this.syncConnEpoch || 0) + 1;
+            this.stopSyncTimers();
             this.setSyncState(message ? 'error' : 'disconnected', message);
-            return this.localStore.writeSync({ connection: null, recovery: this.syncRecovery }, this.syncRecordRevision)
-                .then(record => { this.syncRecordRevision = record.revision; })
+            return this.localStore.writeSync({ connection: null, pending: null, claim: null }, this.syncRecordRevision)
+                .then(record => { this.syncRecordRevision = record.revision; this.syncLastSuccessAt = record.lastSuccessAt; })
                 .catch(error => { this.setSyncState('error', '未能保存到本机：' + error.message); });
         }
 
@@ -1882,10 +1962,7 @@
          * 「凭据保存失败不显示连接成功」那一条的落点。
          */
         async persistSyncConnection(snapshot) {
-            if (!this.localStore) throw new Error('本地存储不可用');
-            const record = await this.localStore.writeSync(snapshot, this.syncRecordRevision);
-            this.syncRecordRevision = record.revision;
-            this.syncRecovery = record.recovery;
+            const record = await this.persistSyncRecord(snapshot);
             return record;
         }
 
@@ -1927,6 +2004,11 @@
                 if (id === 'syncPull') return this.connectSyncSpace('cloud');
                 if (id === 'syncPush') return this.connectSyncSpace('local');
                 if (id === 'syncRecoveryExport') return this.exportSyncRecovery();
+                // 立即同步：先看云端有没有新内容，再把本地待上传的排出去。
+                if (id === 'syncNow') return this.syncPullCheck().then(() => { if (this.syncPending) this.scheduleSyncUpload(); });
+                if (id === 'syncConflictExport') return this.exportSyncConflict();
+                if (id === 'syncConflictCloud') return this.resolveSyncConflict('cloud');
+                if (id === 'syncConflictLocal') return this.resolveSyncConflict('local');
             });
             overlay.addEventListener('keydown', event => {
                 if (event.key === 'Escape') { event.preventDefault(); return this.closeSyncDialog(); }
@@ -1952,16 +2034,34 @@
             const recovery = this.syncRecovery
                 ? `<p class="sync-note">已保留替换前的副本（${this.esc(this.syncRecovery.direction === 'cloud' ? '云端' : '本机')}，${this.esc(this.syncRelTime(this.syncRecovery.savedAt))}） <button type="button" class="sync-link" id="syncRecoveryExport">导出</button></p>`
                 : '';
+            if (this.syncState === 'connected' && this.syncStatus === 'conflict' && this.syncConflict) {
+                // 冲突态：两个候选都还在，选之前可以先导出。
+                const conflict = this.syncConflict;
+                body.innerHTML = `
+                    <p class="sync-state">${this.esc(SYNC_STATUS_TEXT.conflict)}</p>
+                    <p class="sync-note">本机与云端不一致 · 云端版本 ${this.esc(String(conflict.baseRevision ?? '—'))} · 最近更新 ${this.esc(conflict.updatedAt ? this.syncRelTime(conflict.updatedAt) : '—')} · 本机有一份未上传的修改</p>
+                    <p class="sync-hint">两份都完整保留，选择其中一份覆盖另一份；不会逐字段合并。选之前可以先导出。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncConflictExport">导出两边</button>
+                        <button type="button" class="btn" id="syncConflictCloud">采用云端（覆盖本机）</button>
+                        <button type="button" class="btn btn-primary" id="syncConflictLocal">保留本机（覆盖云端）</button>
+                    </div>`;
+                return;
+            }
             if (this.syncState === 'connected') {
                 const space = this.syncConnection || {};
                 const cloud = this.syncCloud || {};
                 body.innerHTML = `
-                    <p class="sync-state">已连接云端空间 <code>${this.esc(String(space.spaceId || '').slice(0, 8))}</code></p>
-                    <p class="sync-note">云端版本 ${this.esc(String(cloud.revision ?? space.revision ?? '—'))} · 最近更新 ${this.esc(cloud.updatedAt ? this.syncRelTime(cloud.updatedAt) : '—')}</p>
+                    <p class="sync-state">${this.esc(SYNC_STATUS_TEXT[this.syncConnection ? this.syncStatus : 'local'] || '已连接')}</p>
+                    <p class="sync-note">云端空间 <code>${this.esc(String(space.spaceId || '').slice(0, 8))}</code> · 版本 ${this.esc(String(cloud.revision ?? space.revision ?? '—'))} · 最近更新 ${this.esc(cloud.updatedAt ? this.syncRelTime(cloud.updatedAt) : '—')}${this.syncLastSuccessAt ? ` · 最近成功同步 ${this.esc(this.syncRelTime(this.syncLastSuccessAt))}` : ''}</p>
                     ${recovery}
                     ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
-                    <p class="sync-hint">其他设备用同一口令连接即可看到这份配置。停止同步与删除云端空间在后续版本提供。</p>
-                    <div class="ui-dialog-actions sync-actions"><button type="button" class="btn" id="syncClose">关闭</button></div>`;
+                    <p class="sync-hint">其他设备用同一口令连接即可看到这份配置；本机的修改会自动同步过去。停止同步与删除云端空间在后续版本提供。</p>
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncNow">立即同步</button>
+                        <button type="button" class="btn" id="syncClose">关闭</button>
+                    </div>`;
                 return;
             }
             if (this.syncState === 'not_found') {
@@ -2149,6 +2249,18 @@
             this.syncProof = null;
             this.syncCloud = cloud;
             this.setSyncState('connected');
+            // 新连接：连接代次 +1，让上一个连接的在飞响应全部作废；状态按
+            // 「盘上还有没有待上传」给——连接那一刻内容已经对齐，通常是已同步。
+            this.syncConnEpoch = (this.syncConnEpoch || 0) + 1;
+            this.syncBackoffMs = 0;
+            // ⚠️ 指纹要在**内容定下来之后**才落盘（采用方向会替换本机内容）：
+            // 只在内存里设的话，连接后一刷新，loadSyncState 会读到「没上传过的
+            // 指纹」而把同一份内容再传一次（云端 revision 白 +1）。
+            this.syncUploadedPayloadKey = this.syncPayloadKey();
+            await this.persistSyncConnection({ uploadedPayloadKey: this.syncUploadedPayloadKey });
+            this.setSyncStatus('synced');
+            this.notifySyncPeers('changed');
+            this.startSyncPolling();
             this.showToast(direction === 'cloud' ? '已连接，已采用云端配置' : '已连接，已上传本机配置');
         }
 
@@ -2204,6 +2316,591 @@
         bindSyncDialog() {
             const button = $('#syncBtn');
             if (button) button.onclick = () => this.openSyncDialog();
+        }
+
+        // ==================== 口令空间：自动同步与冲突 ====================
+        //
+        // 与上面「连接流程」那个状态机是两个轴：`syncState` 是对话框走到哪一步，
+        // `syncStatus` 是**数据**的状态（设计文档 §5 的六个词）。别合并。
+        //
+        // 四条不能改坏的约定（都有用例钉着）：
+        //   1. **先落盘再发**：待上传内容与 operationId 在 POST 之前写进 IndexedDB，
+        //      响应丢了/页面关了，重启还能用同一个 ID 重放（服务端同 ID 同内容
+        //      返回原结果，不重复写）。
+        //   2. **单飞**：本标签页一次只有一个上传在途，跨标签页靠记录里的 claim。
+        //      在途期间的新改动只置一个「还有下一轮」，绝不开第二条连接。
+        //   3. **迟到不覆盖**：每个在飞的读/写都记下发起时的「连接代次 + 本地修订」，
+        //      回来时任何一个变了就整份丢弃——不采用、不清 pending、不改状态。
+        //   4. **只有真成功才显示已同步**：服务端确认 **且** 此后没有新的本地修改。
+
+        /**
+         * 本机是否有「还没来得及同步的输入」。形状与管理员侧的 hasAdministratorDraft 相同。
+         * ⚠️ 不含同步对话框自己（`#syncDialog`）：开着它只是看着状态，不是草稿——
+         * 算进去的话，用户在对话框里站着不动，云端的新内容就永远采用不进来。
+         */
+        hasLocalDraft() {
+            return !!this.editLayout || this.localSettingsChanged() || this.localPending > 0
+                || !!document.querySelector('.ui-dialog-overlay:not(#syncDialog)');
+        }
+
+        /**
+         * 没有待上传内容时的状态词：本机内容真的都上去了才是「已同步」。
+         * 六词表里没有「在线但有未上传改动」这一项，那种情况用「同步中」
+         * （它确实在等防抖/在途），离线才是「离线，待同步」。
+         */
+        syncSettledStatus() {
+            if (this.syncUploadedPayloadKey === this.syncPayloadKey()) return 'synced';
+            return navigator.onLine === false ? 'pending' : 'syncing';
+        }
+
+        setSyncStatus(status) {
+            // ⚠️ 所有的状态变更都走这里（别处直接赋值 this.syncStatus 会绕过
+            // markSyncEntry，症状是页脚停在「同步中」而对话框已经显示「已同步」）。
+            if (this.syncStatus === status) { this.markSyncEntry(); return; }
+            this.syncStatus = status;
+            this.markSyncEntry();
+            this.renderSyncDialog();
+        }
+
+        /** 本地持久化成功后**唯一**的同步触发点。 */
+        markSyncDirty() {
+            // 采用云端配置时也会走 saveLocalNavigation，那不是「本地新改动」——
+            // 不挡掉就会「刚采用云端 → 立刻把同一份内容再传回去」，白跑一趟
+            // 还可能跟别的设备抢 revision。判据是这次保存的**来源**。
+            if (this.syncAdopting) return;
+            if (!this.syncConnection || this.authenticated || this.localUnavailable) return;
+            if (this.syncStatus === 'conflict') return;   // 冲突未决时不动，等用户选
+            this.setSyncStatus(navigator.onLine === false ? 'pending' : 'syncing');
+            this.scheduleSyncUpload();
+        }
+
+        /**
+         * 排一次上传：500ms 防抖 + 2s 上限。
+         *
+         * 两个定时器是**一起**用的：防抖保证「连续敲键盘只传一次」，上限保证
+         * 「一直敲就一直不传」。只有防抖的话，用户连续编辑 10 秒，云端 10 秒
+         * 都拿不到东西；只有上限的话，每 2 秒都会发一次。
+         */
+        scheduleSyncUpload() {
+            if (!this.syncConnection || this.authenticated || this.syncStatus === 'conflict') return;
+            clearTimeout(this.syncDebounceTimer);
+            this.syncDebounceTimer = setTimeout(() => this.startSyncUpload(), SYNC_DEBOUNCE_MS);
+            // ⚠️ 上限只在**本批第一次脏**时起算：已经排着就不再重置，
+            // 否则连续改动会一直把它往后推，等于没有上限。
+            if (!this.syncMaxWaitTimer) {
+                this.syncMaxWaitTimer = setTimeout(() => this.startSyncUpload(), SYNC_MAX_WAIT_MS);
+            }
+        }
+
+        startSyncUpload() {
+            clearTimeout(this.syncDebounceTimer); this.syncDebounceTimer = null;
+            clearTimeout(this.syncMaxWaitTimer); this.syncMaxWaitTimer = null;
+            clearTimeout(this.syncRetryTimer); this.syncRetryTimer = null;
+            return this.uploadOnce();
+        }
+
+        /** 退避：1s 起翻倍，封顶 5 分钟；成功后归零。 */
+        syncBackoffNext() {
+            this.syncBackoffMs = this.syncBackoffMs ? Math.min(this.syncBackoffMs * 2, SYNC_BACKOFF_MAX_MS) : SYNC_BACKOFF_START_MS;
+            return this.syncBackoffMs;
+        }
+
+        scheduleSyncRetry() {
+            if (!this.syncConnection || this.authenticated) return;
+            const wait = this.syncBackoffNext();
+            clearTimeout(this.syncRetryTimer);
+            this.syncRetryTimer = setTimeout(() => this.startSyncUpload(), wait);
+            return wait;
+        }
+
+        syncPayload() {
+            return {
+                config: window.NavigationSchema.publicConfig(structuredClone(this.config)),
+                modules: this.localModulePayload()
+            };
+        }
+
+        /**
+         * 待同步内容的**指纹**。「已同步」与「上传确认的是哪一版」都按它比对。
+         *
+         * ⚠️ 为什么不用 `this.localRevision`：那只是**导航**那条记录的修订号，
+         * 模块开关/布局改了它不动——于是「模块改完还没传上去」会被判成已同步，
+         * 上传在途期间的模块改动也检测不到（浏览器审查抓到的正是这条）。
+         * 指纹是纯函数、跨重启稳定，也不需要在多个计数器之间同步。
+         * 用 FNV-1a（32 位）够用：它只决定**状态显示**，服务端的 revision 才是真相；
+         * 真撞了也只是显示成「已同步」而实际还没传，而下一轮仍会传。
+         */
+        syncPayloadKey() {
+            const text = JSON.stringify(this.syncPayload());
+            let hash = 0x811c9dc5;
+            for (let i = 0; i < text.length; i++) {
+                hash ^= text.charCodeAt(i);
+                hash = Math.imul(hash, 0x01000193) >>> 0;
+            }
+            return `${text.length}:${hash.toString(16)}`;
+        }
+
+        /** 内容相等：整份比较，不做逐字段合并（设计明确要求整份选择）。 */
+        syncContentEqual(a, b) {
+            return !!a && !!b
+                && JSON.stringify(window.NavigationSchema.publicConfig(structuredClone(a))) === JSON.stringify(window.NavigationSchema.publicConfig(structuredClone(b)));
+        }
+
+        async persistSyncRecord(patch) {
+            if (!this.localStore) throw new Error('本地存储不可用');
+            const record = await this.localStore.writeSync(patch, this.syncRecordRevision);
+            this.syncRecordRevision = record.revision;
+            this.syncConnection = record.connection;
+            this.syncRecovery = record.recovery;
+            this.syncPending = record.pending;
+            this.syncClaim = record.claim;
+            this.syncLastSuccessAt = record.lastSuccessAt;
+            return record;
+        }
+
+        /** 盘上先有 pending 再发出去——这是「响应丢了也能重放」的全部含义。 */
+        async ensureSyncPending() {
+            if (this.syncPending) return this.syncPending;
+            const pending = {
+                operationId: crypto.randomUUID(),
+                content: this.syncPayload(),
+                payloadKey: this.syncPayloadKey(),
+                baseRevision: this.syncCloud?.revision ?? this.syncConnection.revision,
+                createdAt: Date.now()
+            };
+            const record = await this.persistSyncRecord({ pending });
+            return record.pending;
+        }
+
+        /**
+         * 多标签页单飞：在**同一个事务**里写 pending + claim。
+         *
+         * 不用 `navigator.locks`：本仓库已经有一套「乐观 revision + BroadcastChannel」，
+         * 再加一把只有部分浏览器支持的锁，就会有两套协调机制，而两套必然漂移。
+         * `writeSync` 本身就是比较并设置（revision 不匹配就 conflict），所以
+         * 这里重读一次再决定就够了——读到别人的新鲜 claim 就不动手。
+         */
+        async acquireSyncClaim() {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                let record;
+                try { record = await this.localStore.readSync(); }
+                catch (error) { throw new Error('未能读取本机同步状态：' + error.message); }
+                this.syncRecordRevision = record?.revision || 0;
+                const claim = record?.claim;
+                // 别人的认领还没过期 → 先**问一声**它是不是还活着，别只看时间戳。
+                // 只看时间戳的话，关掉页面再重开（新标签页、新 id）会读到上一条
+                // 残留的认领，于是白等最多 15 秒才动手（浏览器实测：重开后
+                // 十几秒内那次改动一直没上传）。真正活着的标签页会在 300ms 内
+                // 回一声；没人回就接手——索引的 CAS 与服务端的 revision 校验
+                // 仍然是最终兜底。
+                if (claim && claim.id !== this.syncTabId && Date.now() - claim.at < SYNC_CLAIM_TTL_MS) {
+                    if (await this.syncClaimHeldElsewhere(claim.id)) return false;
+                }
+                try {
+                    const written = await this.persistSyncRecord({ pending: this.syncPending, claim: { id: this.syncTabId, at: Date.now() } });
+                    return !!written.claim;
+                } catch (error) {
+                    if (error.code !== 'conflict') throw error;   // 别的标签页刚改过 → 重读一次再判
+                }
+            }
+            return false;
+        }
+
+        /** 向其他标签页问一声「这个认领还是你的吗」。没人回答 = 那个标签页已经不在了。 */
+        syncClaimHeldElsewhere(claimId) {
+            if (!this.syncChannel) return Promise.resolve(false);
+            return new Promise(resolve => {
+                let answered = false;
+                const onMessage = event => {
+                    if (event.data && event.data.type === 'claim-held' && event.data.id === claimId) answered = true;
+                };
+                this.syncChannel.addEventListener('message', onMessage);
+                setTimeout(() => {
+                    this.syncChannel.removeEventListener('message', onMessage);
+                    resolve(answered);
+                }, SYNC_CLAIM_PING_MS);
+                this.syncChannel.postMessage({ type: 'claim-check', id: claimId });
+            });
+        }
+
+        async releaseSyncClaim() {
+            if (!this.syncClaim || this.syncClaim.id !== this.syncTabId) return;
+            try { await this.persistSyncRecord({ claim: null }); }
+            catch (error) { console.warn('释放上传认领失败:', error.message); }
+        }
+
+        /**
+         * 一次上传。所有分支都在这里，别在别处再发 `/api/sync/config`。
+         */
+        async uploadOnce() {
+            if (!this.syncConnection || this.authenticated || this.syncStatus === 'conflict') return;
+            // 单飞：本标签页已经有一个在途 → 只记「还有下一轮」，绝不并行第二条。
+            if (this.syncUploadInFlight) { this.syncUploadAgain = true; return; }
+            this.syncUploadInFlight = true;
+            this.syncUploadAgain = false;
+            const epoch = this.syncConnEpoch;
+            try {
+                if (!await this.acquireSyncClaim()) { this.setSyncStatus('syncing'); return; }
+                const pending = await this.ensureSyncPending();
+                if (Date.now() - pending.createdAt > SYNC_RECEIPT_WINDOW_MS) {
+                    // 回执过期：同 ID 再发会被当成**新**操作（可能把旧内容写回去），
+                    // 所以先读一次核对，不盲目重提（设计 §5）。
+                    if (await this.reconcileAgedPending(pending)) return;
+                }
+                this.setSyncStatus('syncing');
+                const result = await API.post('/api/sync/config', {
+                    revision: pending.baseRevision,
+                    // 带上本机的连接代次：服务端在写事务里再比一次，不一致给
+                    // 明确的 409 generation_mismatch，而不是笼统的 401。
+                    generation: this.syncConnection.generation,
+                    operationId: pending.operationId,
+                    config: pending.content.config,
+                    modules: pending.content.modules
+                }, { token: this.syncConnection.deviceToken });
+                if (epoch !== this.syncConnEpoch) return;   // 连接换过：这份结果作废
+                await this.confirmSyncUpload(pending, result);
+            } catch (error) {
+                if (epoch !== this.syncConnEpoch) return;
+                await this.handleSyncUploadFailure(error);
+            } finally {
+                this.syncUploadInFlight = false;
+                // 连接已经换过（被清掉/重新连接）就**不要**再碰记录了：此刻那条
+                // 记录可能已经属于新的连接，写进去会把旧连接的凭据或状态带回来。
+                if (epoch === this.syncConnEpoch) {
+                    await this.releaseSyncClaim();
+                    if (this.syncUploadSettled) {
+                        this.syncUploadSettled = false;
+                        await this.syncPullCheck();
+                    }
+                }
+                if (this.syncUploadAgain && this.syncStatus !== 'conflict') {
+                    this.syncUploadAgain = false;
+                    this.scheduleSyncUpload();
+                }
+            }
+        }
+
+        /**
+         * 成功收尾。
+         *
+         * ⚠️ 两件事分清楚：**确认的是「实际发出的那一版」**，不是「现在的本机」。
+         * 上传在途时用户可能又改了——那时 pending 不能清（清了新改动就永远不上传），
+         * 只把它的基线换成刚拿到的 revision，并在下一轮再传。
+         */
+        async confirmSyncUpload(pending, result) {
+            const settled = pending.payloadKey === this.syncPayloadKey();
+            const connection = {
+                ...this.syncConnection,
+                revision: result.revision,
+                generation: result.generation ?? this.syncConnection.generation
+            };
+            // ⚠️ **无论是否 settled 都清掉 pending**。这一条踩过：
+            //   · 留着它并只改 baseRevision，下轮就是「同一个 operationId + 不同内容」
+            //     ——服务端摘要里带着基线版本，于是直接 409 operation_conflict；
+            //   · 若连基线也不改，服务端会把这次当**重放**返回原结果，于是上传在途
+            //     期间产生的那些新改动**永远传不上去**（每轮都在重放旧内容）。
+            // 正确语义：这份内容已经落上去了，之后的新内容由下一轮**重新打包**
+            // （新的 operationId、新的基线）——「同 ID 只能用在同一份内容上」。
+            await this.persistSyncRecord({
+                connection,
+                pending: null,
+                uploadedPayloadKey: pending.payloadKey,
+                lastSuccessAt: Date.now()
+            });
+            // 这一次确认的是 pending.payloadKey 那一版；后来的改动还没上去。
+            this.syncUploadedPayloadKey = pending.payloadKey;
+            this.syncBackoffMs = 0;
+            if (settled) {
+                this.setSyncStatus('synced');
+            } else {
+                this.setSyncStatus(navigator.onLine === false ? 'pending' : 'syncing');
+                this.scheduleSyncUpload();
+            }
+            this.notifySyncPeers('changed');
+            // ⚠️ 回执返回的是**那次提交**的结果，不是现状（可能是重放，revision 比
+            // 现在低）。所以成功之后必须再读一次，别把回执当成最新全量配置。
+            // 但这次读取要等**在途闩放下之后**再发（见 uploadOnce 的 finally）：
+            // 在闩还立着时读，pull 会看到「有上传在途」而把状态降级成待同步——
+            // 症状是每次成功上传后界面都显示「待同步」，正是验收要挡的那一条。
+            this.syncUploadSettled = true;
+        }
+
+        async handleSyncUploadFailure(error) {
+            if (error.status === 401 || error.status === 403) {
+                await this.clearSyncConnection('连接已失效，请重新输入口令');
+                return;
+            }
+            if (error.status === 409 && error.code === 'operation_conflict') {
+                // 同一个 operationId 配了不同内容：这是客户端 bug（不该发生）。
+                // 丢弃 pending 并**说出来**，不静默重试——静默重试会一直 409。
+                await this.persistSyncRecord({ pending: null });
+                this.setSyncStatus('failed');
+                this.showToast('同步失败：本地待上传记录与已提交内容不一致，请重新编辑一次', 'error', 8000);
+                return;
+            }
+            if (error.status === 409 && error.code === 'generation_mismatch') {
+                await this.clearSyncConnection('设备授权已变化，请重新输入口令');
+                return;
+            }
+            if (error.status === 409) return this.handleSyncConflict();
+            // 网络类失败：保留 pending，退避重试。离线时状态是「离线，待同步」。
+            this.setSyncStatus(navigator.onLine === false ? 'pending' : 'failed');
+            this.scheduleSyncRetry();
+        }
+
+        /**
+         * 409 之后先**核对**再报冲突。
+         *
+         * 直接弹「存在配置冲突」会把很多「其实已经落上去了」的情况也报成冲突
+         * （比如自己的上一次写成功了但响应丢了，这次带着旧基线重发）。所以先读
+         * 一次：内容一致就说明目标状态已经达到，清掉 pending 收工。
+         */
+        async handleSyncConflict() {
+            let cloud;
+            try { cloud = await this.fetchSyncCloud(); }
+            catch (error) { this.setSyncStatus('failed'); return; }
+            const pending = this.syncPending;
+            if (pending && this.syncContentEqual(pending.content.config, cloud.config)
+                && JSON.stringify(pending.content.modules || {}) === JSON.stringify(cloud.modules || {})) {
+                await this.persistSyncRecord({ connection: { ...this.syncConnection, revision: cloud.revision, generation: cloud.generation }, pending: null, lastSuccessAt: Date.now() });
+                this.setSyncStatus('synced');
+                return;
+            }
+            this.syncCloud = cloud;
+            this.syncConflict = {
+                local: pending ? pending.content : this.syncPayload(),
+                cloud: { config: cloud.config, modules: cloud.modules },
+                baseRevision: cloud.revision,
+                updatedAt: cloud.updatedAt
+            };
+            this.setSyncStatus('conflict');
+            if (!this.syncDialogEl) this.showToast('云端已有别的设备的修改，请打开「同步」选择保留哪一份', 'error', 8000);
+        }
+
+        async fetchSyncCloud() {
+            const cloud = await API.get('/api/sync/config', { token: this.syncConnection.deviceToken });
+            this.syncCloud = cloud;
+            return cloud;
+        }
+
+        /** 回执窗口之外的 pending：先核对内容，一致就当作已生效，不同才进冲突。 */
+        async reconcileAgedPending(pending) {
+            let cloud;
+            try { cloud = await this.fetchSyncCloud(); }
+            catch (error) { this.setSyncStatus('pending'); this.scheduleSyncRetry(); return true; }
+            if (this.syncContentEqual(pending.content.config, cloud.config)
+                && JSON.stringify(pending.content.modules || {}) === JSON.stringify(cloud.modules || {})) {
+                await this.persistSyncRecord({ connection: { ...this.syncConnection, revision: cloud.revision, generation: cloud.generation }, pending: null, lastSuccessAt: Date.now() });
+                this.setSyncStatus('synced');
+                return true;
+            }
+            await this.handleSyncConflict();
+            return true;
+        }
+
+        /**
+         * 一次检查（读）。四个触发点共用：打开、恢复可见、网络恢复、30 秒轮询。
+         */
+        async syncPullCheck() {
+            if (!this.syncConnection || this.authenticated) return;
+            if (this.syncChecking) return;
+            this.syncChecking = true;
+            const epoch = this.syncConnEpoch;
+            // ⚠️ 判据是**内容指纹**而不是 `localRevision`：后者只是导航那条记录的
+            // 修订号，模块开关/布局改了它不动，于是「飞行期间的模块改动」检测不到、
+            // 会被云端内容覆盖（审查抓到的）。指纹对两者都敏感。
+            const payloadKey = this.syncPayloadKey();
+            try {
+                const cloud = await API.get('/api/sync/config', { token: this.syncConnection.deviceToken });
+                // 迟到的响应一律丢弃：连接换过、或者本机在飞行期间又改了。
+                if (epoch !== this.syncConnEpoch) return;
+                this.syncCloud = cloud;
+                if (this.syncPending || this.syncUploadInFlight) { this.setSyncStatus('syncing'); return; }
+                if (payloadKey !== this.syncPayloadKey()) return;
+                if (cloud.revision === this.syncConnection.revision) { this.setSyncStatus(this.syncSettledStatus()); return; }
+                // 服务端的 revision 是单调的：读到更小的只可能是过期响应（或者
+                // 我们刚写完的那一版回执），采用它等于把本机内容回退。直接忽略。
+                if (cloud.revision < this.syncConnection.revision) { this.setSyncStatus(this.syncSettledStatus()); return; }
+                if (this.hasLocalDraft()) {
+                    // 草稿保护：云端更新了，但本机正在编辑/有未确认的对话框——
+                    // 保留输入，只提示，不覆盖。
+                    this.setSyncStatus(this.syncSettledStatus());
+                    if (!this.syncDialogEl) this.showToast('云端配置已更新，当前编辑已保留', 'error', 8000);
+                    return;
+                }
+                await this.applyCloudConfig(cloud);
+                await this.persistSyncRecord({
+                    connection: { ...this.syncConnection, revision: cloud.revision, generation: cloud.generation },
+                    // 采用之后本机 == 云端，所以「已上传的本地修订号」取**采用后**的值
+                    uploadedPayloadKey: this.syncPayloadKey(),
+                    lastSuccessAt: Date.now()
+                });
+                this.setSyncStatus('synced');
+            } catch (error) {
+                if (epoch !== this.syncConnEpoch) return;
+                if (error.status === 401 || error.status === 403) { await this.clearSyncConnection('连接已失效，请重新输入口令'); return; }
+                this.setSyncStatus(navigator.onLine === false ? 'pending' : 'failed');
+            } finally {
+                this.syncChecking = false;
+            }
+        }
+
+        /** 采用云端内容：先留被替换的那一份，再覆盖本机。 */
+        async applyCloudConfig(cloud) {
+            this.syncAdopting = true;
+            try {
+                await this.persistSyncRecord({
+                    recovery: { direction: 'local', savedAt: Date.now(), config: window.NavigationSchema.publicConfig(structuredClone(this.config)), modules: this.localModulePayload() }
+                });
+                await this.adoptCloudConfig(cloud);
+            } finally {
+                this.syncAdopting = false;
+            }
+            // 采用之后本机内容 == 云端内容，所以「已上传的指纹」就是当前值。
+            this.syncUploadedPayloadKey = this.syncPayloadKey();
+        }
+
+        startSyncPolling() {
+            this.stopSyncPolling();
+            if (!this.syncConnection || this.authenticated) return;
+            this.syncPollTimer = setInterval(() => { if (!document.hidden) this.syncPullCheck(); }, SYNC_POLL_MS);
+        }
+
+        stopSyncPolling() {
+            if (this.syncPollTimer) { clearInterval(this.syncPollTimer); this.syncPollTimer = null; }
+        }
+
+        stopSyncTimers() {
+            for (const key of ['syncDebounceTimer', 'syncMaxWaitTimer', 'syncRetryTimer']) {
+                if (this[key]) { clearTimeout(this[key]); this[key] = null; }
+            }
+            this.stopSyncPolling();
+        }
+
+        /**
+         * 管理员会话生效期间暂停普通同步调度（设计 §5：管理员上下文暂停普通同步）。
+         * 只停调度——凭据、本地数据一个字都不动；配置隔离与身份切换归 #11。
+         * 所有入口本身也都带 `this.authenticated` 判断，这一层是让定时器**停下来**，
+         * 否则管理员在编辑个人首页时，访客空间那边还在按 30 秒打接口。
+         */
+        pauseSyncForAdmin() { this.stopSyncTimers(); }
+
+        /** 回到普通上下文：恢复轮询并把积压的改动排出去。**不**在这里做版本协调（归 #11）。 */
+        resumeSyncAfterAdmin() {
+            if (!this.syncConnection || this.authenticated) return;
+            this.startSyncPolling();
+            if (this.syncPending) this.scheduleSyncUpload();
+        }
+
+        // ---- 三个触发点的**函数体**单独抽出来（监听器只是转发）--------------
+        // 抽出来的理由是可验证：内联箭头函数没法被用例执行，于是「恢复可见会取消
+        // 退避」「隐藏会停轮询」这些事实只能靠读源码，变异也变不红（审查抓到过）。
+
+        /** 页签可见性变化：恢复可见立即检查并起轮询；隐藏就停（设计 §5）。 */
+        onSyncVisibilityChange() {
+            if (document.hidden) { this.stopSyncPolling(); return; }
+            // 用户回到页面就是「现在想同步」：顺手解除退避。
+            this.syncBackoffMs = 0;
+            clearTimeout(this.syncRetryTimer); this.syncRetryTimer = null;
+            this.syncPullCheck();
+            this.startSyncPolling();
+            if (this.syncPending) this.scheduleSyncUpload();
+        }
+
+        /** 网络恢复：取消退避、立刻检查，再把断网期间积压的传出去。 */
+        onSyncOnline() {
+            this.syncBackoffMs = 0;
+            clearTimeout(this.syncRetryTimer); this.syncRetryTimer = null;
+            this.syncPullCheck();
+            if (this.syncPending) this.scheduleSyncUpload();
+        }
+
+        /** 断网：有没传完的就明确显示「离线，待同步」。 */
+        onSyncOffline() {
+            if (this.syncConnection && this.syncPending) this.setSyncStatus('pending');
+        }
+
+        /** 「现在去看一眼」——正确性不依赖它（正确性靠 revision 与 claim）。 */
+        notifySyncPeers(type) {
+            this.syncChannel?.postMessage({ type, revision: this.syncConnection?.revision ?? null, localRevision: this.localRevision });
+        }
+
+        bindSyncChannel() {
+            this.syncTabId = `tab-${crypto.randomUUID()}`;
+            if (!('BroadcastChannel' in window)) return;
+            this.syncChannel = new BroadcastChannel('nav-sylph-space-sync');
+            this.syncChannel.onmessage = event => {
+                if (!event.data) return;
+                // 有人问「这个认领还是你的吗」：只要我还持有就回一声。
+                if (event.data.type === 'claim-check') {
+                    if (this.syncClaim && this.syncClaim.id === event.data.id) this.syncChannel.postMessage({ type: 'claim-held', id: event.data.id });
+                    return;
+                }
+                if (event.data.type !== 'changed') return;
+                // 别的标签页刚上传过：本机若无待上传改动就去看一眼，
+                // 免得两边显示不同的内容。
+                if (!this.syncPending && !this.syncUploadInFlight) this.syncPullCheck();
+            };
+        }
+
+        /** 冲突裁决。两个方向都会先保住被覆盖的那一份。 */
+        async resolveSyncConflict(direction) {
+            const conflict = this.syncConflict;
+            if (!conflict) return;
+            if (direction === 'cloud') {
+                let cloud;
+                try { cloud = await this.fetchSyncCloud(); }
+                catch (error) { this.setSyncStatus('conflict'); this.syncError = '读取云端失败：' + error.message; this.renderSyncDialog(); return; }
+                if (cloud.revision !== conflict.baseRevision) {
+                    // 期间云端又变了：重新摆一次候选，不改任何东西。
+                    this.syncConflict = { local: conflict.local, cloud: { config: cloud.config, modules: cloud.modules }, baseRevision: cloud.revision, updatedAt: cloud.updatedAt };
+                    this.setSyncStatus('conflict');
+                    this.syncError = '云端又有了新的修改，请重新选择';
+                    this.renderSyncDialog();
+                    return;
+                }
+                this.syncConflict = null;
+                await this.persistSyncRecord({ pending: null });
+                await this.applyCloudConfig(cloud);
+                await this.persistSyncRecord({ connection: { ...this.syncConnection, revision: cloud.revision, generation: cloud.generation }, lastSuccessAt: Date.now() });
+                this.syncError = '';
+                this.setSyncStatus('synced');
+                this.showToast('已采用云端配置，本机被替换的那一份已保留');
+                return;
+            }
+            // 保留本机：以**检查时**的云端 revision 为基线重提。云端若已再变，
+            // 服务端会再给一次 409，那时重新摆候选并说明原因。
+            // 被覆盖的是云端那一份 → 与「采用云端」方向对称，先把它留在本机。
+            this.syncConflict = null;
+            await this.persistSyncRecord({
+                recovery: { direction: 'cloud', savedAt: Date.now(), config: conflict.cloud.config, modules: conflict.cloud.modules || {} },
+                pending: {
+                    operationId: crypto.randomUUID(),
+                    content: conflict.local,
+                    payloadKey: this.syncPayloadKey(),
+                    baseRevision: conflict.baseRevision,
+                    createdAt: Date.now()
+                }
+            });
+            this.syncError = '';
+            this.setSyncStatus(navigator.onLine === false ? 'pending' : 'syncing');
+            await this.startSyncUpload();
+        }
+
+        exportSyncConflict() {
+            if (!this.syncConflict) return;
+            const payload = {
+                schemaVersion: 1,
+                exportedAt: Date.now(),
+                cloud: { revision: this.syncConflict.baseRevision, config: this.syncConflict.cloud.config, modules: this.syncConflict.cloud.modules },
+                local: { revision: this.localRevision, config: this.syncConflict.local.config, modules: this.syncConflict.local.modules }
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'sylph-sync-conflict.json';
+            link.click();
+            URL.revokeObjectURL(link.href);
         }
 
         localSettingsChanged() {
@@ -2748,7 +3445,10 @@
             setInterval(() => { if (!document.hidden) this.checkAdministratorSync(); }, 30000);
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden) this.checkAdministratorSync();
+                this.onSyncVisibilityChange();
             });
+            window.addEventListener('online', () => this.onSyncOnline());
+            window.addEventListener('offline', () => this.onSyncOffline());
             $('#modeBtn').onclick = () => {
                 const input = $('#searchInput');
                 const value = input.value;
@@ -3604,6 +4304,7 @@
 
         clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
+            this.resumeSyncAfterAdmin();
             $('#localNavigationTools').hidden = true;
             $('#localNavigationStatus').hidden = !this.localError;
             this.syncAppearanceEntry(true);
@@ -3989,6 +4690,7 @@
                         await this.finishLocalDraft();
                         this.privateEpoch = (this.privateEpoch || 0) + 1;
                         this.authenticated = true;
+                        this.pauseSyncForAdmin();
                         await this.loadPersonalNavigation();
                         $('#modeBtn').hidden = false;
                 $('#favSearchHint').hidden = false;
@@ -5235,6 +5937,7 @@
                 await this.finishLocalDraft();
                 this.privateEpoch = (this.privateEpoch || 0) + 1;
                 this.authenticated = true;
+                this.pauseSyncForAdmin();
                 this.notifyIdentityChanged();
                 await this.loadPersonalNavigation();
                 $('#modeBtn').hidden = false;

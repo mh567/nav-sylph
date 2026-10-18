@@ -1,3 +1,10 @@
+// nav-v119：口令空间的自动同步与冲突处理。本地改动 500ms 合并上传（连续编辑 2s 上限，
+// 同一标签页只有一个上传在途，跨标签页靠记录里的 claim 认领）；打开、恢复可见、网络恢复
+// 立即检查，可见页 30 秒一次、隐藏即停；失败按 1s 起翻倍退避、封顶 5 分钟。待上传内容与
+// operationId 在发送**之前**写进 IndexedDB，同 ID 重放不重复写入；回执超过 24 小时先核对
+// 版本再决定。冲突时保留两份候选、由用户整份选择（可先导出），不逐字段合并。管理员会话
+// 生效期间暂停普通同步调度。改了 app.js、local-navigation.js、admin.css、
+// lib/sync-store.js。
 // nav-v118：普通访客的口令云端空间——管理员在后台「首页导航」分区生成/撤销一次性
 // 邀请码（48 小时有效），访客在页脚「同步」里自设口令创建空间、其他设备用同一口令
 // 连接并选择覆盖方向。口令在浏览器用 Web Crypto 派生成连接证明（服务端只存证明的
@@ -292,7 +299,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v118';
+const CACHE = 'nav-v119';
 const ASSETS = [
     '/',
     '/index.html',

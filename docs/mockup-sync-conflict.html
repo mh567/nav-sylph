@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>口令空间 · 同步状态与冲突 仿真样例</title>
+<!--
+  仿真样例：自动同步的六个状态词 + 冲突裁决对话框。
+  ⚠️ 直接引用 ../public/styles.css 与 ../public/admin.css：对话框外观、按钮、状态行
+  都取真实实现那一份，不会像手抄设计令牌的样例那样走形。
+  对应实现：Issue #8。打开：open docs/mockup-sync-conflict.html
+  工具栏可以强制：六个状态词 / 浅色深色 / 宽窄两档（窄档把对话框压到 390px，
+  专门看三个按钮换行后的排布）。
+-->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+    /* ===== 演示外壳（不属于产品样式） ===== */
+    body { margin: 0; padding: 18px 18px 80px; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .toolbar { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: -18px -18px 18px; padding: 12px 18px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+    .toolbar b { font-size: 12px; font-weight: 620; }
+    .toolbar .group { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .toolbar button { min-height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font-size: 11px; cursor: pointer; }
+    .toolbar button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+    .stage { max-width: 1100px; margin: 0 auto; }
+    .stage h2 { margin: 26px 0 10px; font-size: 13px; font-weight: 650; color: var(--text-secondary); }
+    .stage p.note { margin: 0 0 14px; font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+    .frame { position: relative; min-height: 420px; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); }
+    .frame .ui-dialog-overlay { position: absolute; }
+    .stage.narrow .frame { width: 390px; }
+    .statusgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .statuscell { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
+    .statuscell b { display: block; margin-bottom: 4px; font-size: 11px; color: var(--text-secondary); font-family: ui-monospace, monospace; }
+    .footerline { display: flex; gap: 14px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+    <b>口令空间 · 同步状态与冲突</b>
+    <span class="group">状态词
+        <button type="button" data-status="local" aria-pressed="false">local</button>
+        <button type="button" data-status="syncing" aria-pressed="true">syncing</button>
+        <button type="button" data-status="synced" aria-pressed="false">synced</button>
+        <button type="button" data-status="pending" aria-pressed="false">pending</button>
+        <button type="button" data-status="failed" aria-pressed="false">failed</button>
+        <button type="button" data-status="conflict" aria-pressed="false">conflict</button>
+    </span>
+    <span class="group">主题
+        <button type="button" data-theme-set="light" aria-pressed="false">浅色</button>
+        <button type="button" data-theme-set="dark" aria-pressed="true">深色</button>
+    </span>
+    <span class="group">宽度
+        <button type="button" data-width="wide" aria-pressed="true">宽 1100</button>
+        <button type="button" data-width="narrow" aria-pressed="false">窄 390</button>
+    </span>
+</div>
+
+<div class="stage" id="stage">
+    <h2>页脚那一行：六个状态词</h2>
+    <p class="note">
+        页脚空间只有两个字的位置，所以用的是**短词**（`SYNC_STATUS_LABEL`）：`local` 写「同步」
+        ——那里是**入口**（点进去连接），写「仅保存在本机」会让人以为点不动；`pending` 写「待同步」、
+        `conflict` 写「同步冲突」。**完整**的状态词（设计文档 §5 那六个）在对话框里。
+    </p>
+    <div class="frame" style="min-height:auto;padding:16px 18px">
+        <div class="footerline" id="footers"></div>
+    </div>
+
+    <h2>对话框：状态行 + 冲突裁决</h2>
+    <p class="note">
+        状态行给出**完整**的状态词与最近成功时间。冲突时并排两个方向，另加「导出两边」——
+        两份候选都保留，不会逐字段合并；按钮一行放不下就换行，换行后整行铺满
+        （第一版换行后最后一个按钮只占半行，看着像排版坏了）。
+    </p>
+    <div class="frame" id="frame">
+        <div class="ui-dialog-overlay" id="dialog">
+            <div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="syncDialogTitle">
+                <h3 id="syncDialogTitle">云端空间</h3>
+                <div class="sync-dialog-body" id="syncDialogBody"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// 镜像 App.renderSyncDialog 的模板（真实实现在 public/app.js）。
+// ⚠️ 手抄的一份，只用于看状态与文案，不参与任何断言。
+const TEXT = { local: '仅保存在本机', syncing: '同步中', synced: '已同步', pending: '离线，待同步', failed: '同步失败', conflict: '存在配置冲突' };
+const LABEL = { local: '同步', syncing: '同步中', synced: '已同步', pending: '待同步', failed: '同步失败', conflict: '同步冲突' };
+const CONFLICT = `
+    <p class="sync-state">存在配置冲突</p>
+    <p class="sync-note">本机与云端不一致 · 云端版本 27 · 最近更新 1 分钟前 · 本机有一份未上传的修改</p>
+    <p class="sync-hint">两份都完整保留，选择其中一份覆盖另一份；不会逐字段合并。选之前可以先导出。</p>
+    <div class="ui-dialog-actions sync-actions">
+        <button type="button" class="btn">导出两边</button>
+        <button type="button" class="btn">采用云端（覆盖本机）</button>
+        <button type="button" class="btn btn-primary">保留本机（覆盖云端）</button>
+    </div>`;
+const body = document.getElementById('syncDialogBody');
+const footers = document.getElementById('footers');
+function paint(status) {
+    document.querySelectorAll('.toolbar [data-status]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.status === status)));
+    footers.innerHTML = Object.keys(LABEL).map(k => `<span>${k === status ? '<b>' + LABEL[k] + '</b>' : LABEL[k]}</span>`).join('');
+    body.innerHTML = status === 'conflict' ? CONFLICT : `
+        <p class="sync-state">${TEXT[status]}</p>
+        <p class="sync-note">云端空间 <code>f0d0ea36</code> · 版本 27 · 最近更新 刚刚 · 最近成功同步 1 分钟前</p>
+        <p class="sync-note">已保留替换前的副本（本机，3 分钟前） <button type="button" class="sync-link">导出</button></p>
+        <p class="sync-hint">其他设备用同一口令连接即可看到这份配置；本机的修改会自动同步过去。停止同步与删除云端空间在后续版本提供。</p>
+        <div class="ui-dialog-actions sync-actions"><button type="button" class="btn">立即同步</button><button type="button" class="btn">关闭</button></div>`;
+}
+function pressOnly(group, button) {
+    document.querySelectorAll(`.toolbar [data-${group}]`).forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+}
+document.querySelector('.toolbar').addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.status) paint(button.dataset.status);
+    if (button.dataset.themeSet) { document.documentElement.dataset.theme = button.dataset.themeSet; pressOnly('theme-set', button); }
+    if (button.dataset.width) { document.getElementById('stage').classList.toggle('narrow', button.dataset.width === 'narrow'); pressOnly('width', button); }
+});
+document.documentElement.dataset.theme = 'dark';
+paint('syncing');
+</script>
+</body>
+</html>

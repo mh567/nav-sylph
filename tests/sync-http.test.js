@@ -96,7 +96,10 @@ test('HTTP: 检查→创建→两台设备连接→读写版本冲突→刷新�
     // 第一台设备写入，第二台读到。
     const next = { ...CONFIG, theme: 'dark' };
     const saved = await (await f.write(created.deviceToken, { revision: 1, operationId: 'first-write', config: next, modules: { enabled: ['weibo-hot'] } })).json();
-    assert.deepEqual(saved, { success: true, revision: 2 });
+    assert.equal(saved.success, true);
+    assert.equal(saved.revision, 2);
+    assert.equal(saved.generation, created.generation, '响应带上代次');
+    assert.ok(Number.isSafeInteger(saved.updatedAt), '响应带上写入时刻');
     const readBack = await (await f.read(second.deviceToken)).json();
     assert.equal(readBack.config.theme, 'dark');
     assert.equal(readBack.revision, 2);
@@ -167,6 +170,76 @@ test('HTTP: 读写桶按**空间**计数，一个空间打满不影响另一个'
     assert.ok(Number(limited.headers.get('retry-after')) >= 1, '写操作也要带 Retry-After');
     // 关键：桶按空间而不是按 IP。同一个 IP 下的另一个空间照常可用。
     assert.equal((await f.read(two.deviceToken)).status, 200, '另一个空间不该被同一个 IP 连坐');
+});
+
+test('HTTP: 写配置——同基线并发只有一个成功，重放不重复写入，内容不同拒绝', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('并发写口令');
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    const a = created.deviceToken;
+    const b = (await (await f.connect(proof, 'writer-b')).json()).deviceToken;
+
+    // ① 两台设备拿**同一个基线**同时写：事务比较 revision，只能有一个赢。
+    const [first, second] = await Promise.all([
+        f.write(a, { revision: 1, operationId: 'race-a', config: { ...CONFIG, theme: 'dark' }, modules: {} }),
+        f.write(b, { revision: 1, operationId: 'race-b', config: { ...CONFIG, theme: 'light' }, modules: {} })
+    ]);
+    assert.deepEqual([first.status, second.status].sort(), [200, 409], '同基线并发写必须只有一个成功');
+    const winner = first.status === 200 ? first : second;
+    const loser = first.status === 200 ? second : first;
+    assert.equal((await loser.json()).code, 'revision_conflict');
+    const saved = await winner.json();
+    assert.equal(saved.success, true);
+    assert.equal(saved.revision, 2);
+    assert.equal(typeof saved.generation, 'number', '响应要带代次，客户端不必再问一次');
+    assert.ok(Number.isSafeInteger(saved.updatedAt), '响应要带写入时刻');
+
+    // ② 同 ID 同内容重放：返回**原**结果，且不再写一次。
+    const replayBody = first.status === 200
+        ? { revision: 1, operationId: 'race-a', config: { ...CONFIG, theme: 'dark' }, modules: {} }
+        : { revision: 1, operationId: 'race-b', config: { ...CONFIG, theme: 'light' }, modules: {} };
+    const replay = await f.write(a, replayBody);
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), saved, '重放返回原提交结果');
+    assert.equal((await (await f.read(a)).json()).revision, 2, '重放不重复写入');
+
+    // ③ 同 ID 换内容：明确拒绝，不能悄悄按新内容办。
+    const conflict = await f.write(a, { ...replayBody, config: { ...CONFIG, theme: 'auto' } });
+    assert.equal(conflict.status, 409);
+    assert.equal((await conflict.json()).code, 'operation_conflict');
+    assert.equal((await (await f.read(a)).json()).config.theme, replayBody.config.theme, '被拒的写不能改内容');
+
+    // ④ 响应丢失后重试：模拟「服务端已提交、客户端没收到」——同 ID 同内容再发一次。
+    const beforeRetry = await (await f.read(a)).json();
+    const retried = await f.write(a, replayBody);
+    assert.equal(retried.status, 200);
+    assert.equal((await retried.json()).revision, saved.revision, '同 ID 重试拿到同一次提交的结果');
+    assert.deepEqual(await (await f.read(a)).json(), beforeRetry, '重试没有第二次写入');
+});
+
+test('HTTP: 写配置带错的空间代次 → 409 generation_mismatch；不带则照旧兼容', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('代次写口令');
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    const body = { revision: 1, operationId: 'gen-write', config: { ...CONFIG, theme: 'dark' }, modules: {} };
+
+    const mismatch = await f.write(created.deviceToken, { ...body, generation: 99 });
+    assert.equal(mismatch.status, 409);
+    assert.equal((await mismatch.json()).code, 'generation_mismatch');
+    assert.equal((await (await f.read(created.deviceToken)).json()).revision, 1, '被拒的写不能落库');
+
+    // 正确的代次照常成功。
+    const ok = await f.write(created.deviceToken, { ...body, generation: created.generation });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).revision, 2);
+
+    // **不带** generation 仍然可用：已经在跑的旧客户端（v2.0.2）不能因为这次
+    // 加字段而写不进去——它们的设备令牌在鉴权时已经比过代次。
+    const legacy = await f.write(created.deviceToken, { revision: 2, operationId: 'gen-legacy', config: { ...CONFIG, theme: 'light' }, modules: {} });
+    assert.equal(legacy.status, 200, '不带代次的旧客户端仍能写');
+    assert.equal((await legacy.json()).revision, 3);
 });
 
 test('HTTP: 429 带 Retry-After，且口令猜测受每 IP 桶约束', async (t) => {

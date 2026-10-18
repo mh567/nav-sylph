@@ -1064,8 +1064,12 @@
 .sync-note { margin: 0 0 10px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .sync-hint { margin: 0 0 12px; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
 .sync-error { margin: 0 0 10px; color: var(--admin-error); font-size: 12px; line-height: 1.6; }
-/* 三个按钮一行放不下时换行，而不是把最后那个挤出对话框 */
+/* 按钮一行放不下就换行，而不是把最后一个挤出对话框。
+   每个按钮都 `flex: 1 1 auto`：换行后**整行铺满**，不会在第二行留下一个孤零零
+   靠右的按钮（实测「导出两边 / 采用云端 / 保留本机」三个在 400px 对话框里会换行，
+   第一版换行后那个按钮只占半行，看着像排版坏了）。 */
 .sync-actions { flex-wrap: wrap; }
+.sync-actions .btn { flex: 1 1 auto; }
 .sync-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
 .sync-link:hover { color: var(--accent-hover); }
 
@@ -1088,8 +1092,6 @@
 .sync-invite-state { flex: 1 1 auto; color: var(--text-secondary); }
 
 @media (max-width: 480px) {
-    /* 窄屏下按钮整行排开，触控目标不被压扁 */
-    .sync-actions .btn { flex: 1 1 auto; }
     .sync-invite-row { flex-wrap: wrap; }
     .sync-invite-state { flex-basis: 100%; }
 }

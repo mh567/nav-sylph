@@ -43,23 +43,43 @@
         return record;
     }
     /**
-     * 连接状态与恢复副本的**形状**校验。
+     * 连接状态、恢复副本、待上传内容与多标签页认领的**形状**校验。
      *
-     * 令牌缺失时按「未连接」处理而不是抛错：记录损坏/被清空一半的结果应该是
-     * 「回到未连接、用户重新输口令」，而不是整个本地存储读不出来——后者会让
-     * 导航配置一起消失。
+     * 逐字段宽容：某一项形状不对就**只丢那一项**，不把整条记录作废——
+     * 记录里同时住着凭据（deviceToken）和用户唯一的「替换前副本」，
+     * 因为 pending 里少了一个字段就让人重新输口令、连带丢掉副本，代价远大于收益。
+     * 令牌缺失时同理按「未连接」处理。
      */
     function checkSync(record) {
         if (!record) return record;
         if (record.schemaVersion !== SYNC_SCHEMA_VERSION || !Number.isSafeInteger(record.revision) || record.revision < 1) {
             throw new Error('本地同步状态版本无法读取，请升级应用并保留站点数据');
         }
+        const out = { ...record };
         const connection = record.connection;
         if (connection && (typeof connection.spaceId !== 'string' || typeof connection.deviceToken !== 'string' || !connection.deviceToken)) {
-            return { ...record, connection: null };
+            out.connection = null;
         }
-        return record;
+        const pending = record.pending;
+        if (pending) {
+            const content = pending.content;
+            const shaped = typeof pending.operationId === 'string' && pending.operationId
+                && content && typeof content === 'object' && content.config && typeof content.config === 'object'
+                && typeof pending.payloadKey === 'string' && pending.payloadKey
+                && Number.isSafeInteger(pending.baseRevision) && Number.isSafeInteger(pending.createdAt);
+            if (!shaped) out.pending = null;
+        }
+        const claim = record.claim;
+        if (claim && (typeof claim.id !== 'string' || !claim.id || !Number.isSafeInteger(claim.at))) out.claim = null;
+        if (record.lastSuccessAt != null && !Number.isSafeInteger(record.lastSuccessAt)) out.lastSuccessAt = null;
+        if (record.uploadedPayloadKey != null && typeof record.uploadedPayloadKey !== 'string') out.uploadedPayloadKey = null;
+        return out;
     }
+    /** 记录里的可选字段：缺席（不是显式 null）表示「保持原值」。 */
+    // `uploadedPayloadKey` = 最近一次「确认上传成功」时**内容**的指纹（见 app.js 的
+    // syncPayloadKey）。「已同步」只有在它等于当前内容指纹时才成立——本机后来改过
+    // 就该显示别的词。用指纹而不是修订号：模块改动不动导航的修订号。
+    const SYNC_FIELDS = ['connection', 'recovery', 'pending', 'claim', 'lastSuccessAt', 'uploadedPayloadKey'];
     class LocalNavigation {
         async open() {
             if (!this.database) this.database = new Promise((resolve, reject) => {
@@ -153,13 +173,17 @@
         /**
          * 写同步记录。乐观并发同款：事务内比较 revision。
          *
-         * ⚠️ 这一条是「凭据保存失败不得显示连接成功」的落点：调用方必须
+         * ⚠️ 参数是**补丁**而不是整条记录：缺席的字段保持原值，显式传 `null` 才是清空。
+         * 反过来（缺席即清空）会造出一类静默 bug——连接时只想写凭据，顺手把
+         * `pending`（还没上传的修改）和 `lastSuccessAt` 抹掉，而症状是
+         * 「改完切标签页，回来发现那一次改动没了」。
+         *
+         * ⚠️ 这一条也是「凭据保存失败不得显示连接成功」的落点：调用方必须
          * **等这个 Promise 成功**之后才把内存状态置为已连接。IndexedDB 会因
          * 隐私模式、配额、其他标签页持锁而失败，而失败是完全静默的——先显示
          * 「已连接」再补写，用户会以为下一次打开还在，实际打开就是未连接。
          */
-        async writeSync(sync, revision) {
-            const shape = checkSync({ ...sync, schemaVersion: SYNC_SCHEMA_VERSION, revision: revision + 1 });
+        async writeSync(patch, revision) {
             const db = await this.open();
             return new Promise((resolve, reject) => {
                 const tx = db.transaction('navigation', 'readwrite');
@@ -171,7 +195,13 @@
                         if ((current?.revision || 0) !== revision) {
                             throw Object.assign(new Error('其他标签页已修改同步状态，请刷新后重试'), { code: 'conflict' });
                         }
-                        result = { schemaVersion: SYNC_SCHEMA_VERSION, revision: revision + 1, connection: shape.connection || null, recovery: shape.recovery || null };
+                        const next = {};
+                        for (const key of SYNC_FIELDS) {
+                            next[key] = Object.prototype.hasOwnProperty.call(patch || {}, key)
+                                ? (patch[key] ?? null)
+                                : (current?.[key] ?? null);
+                        }
+                        result = checkSync({ schemaVersion: SYNC_SCHEMA_VERSION, revision: revision + 1, ...next });
                         store.put(result, SYNC_KEY);
                     } catch (e) { failure = e; tx.abort(); }
                 };

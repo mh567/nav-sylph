@@ -6,6 +6,7 @@ const path = require('node:path');
 const nodeCrypto = require('node:crypto');
 
 const appSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const localNavSource = fs.readFileSync(path.join(__dirname, '..', 'public', 'local-navigation.js'), 'utf8');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const storeSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'sync-store.js'), 'utf8');
 
@@ -116,6 +117,7 @@ test('口令既不裁空格也不做归一化：首尾空格与大小写都是�
 test('凭据保存失败不能显示连接成功（真实 finishSyncConnection）', async () => {
     const body = methodBodyOf(cleanApp, 'finishSyncConnection');
     const states = [];
+    const statuses = [];   // setSyncStatus 的轨迹：连接成功才允许出现 synced
     const persisted = [];
     const make = (failOnFirstWrite) => {
         let writes = 0;
@@ -124,14 +126,26 @@ test('凭据保存失败不能显示连接成功（真实 finishSyncConnection�
             syncProof: 'proof',
             syncConnection: null,
             syncCloud: null,
+            syncPending: null,
+            syncStatus: 'local',
+            syncConnEpoch: 0,
+            syncBackoffMs: 0,
             config: { theme: 'auto' },
             localModulePayload: () => ({ enabled: [], widgets: [], settings: {} }),
+            syncPayloadKey: () => 'key-1',
             setSyncState: (state, message) => states.push({ state, message: message || '' }),
+            setSyncStatus: status => { app.syncStatus = status; statuses.push(status); },
             showToast: () => {},
+            markSyncEntry: () => {},
+            startSyncPolling: () => {},
+            notifySyncPeers: () => {},
+            syncPullCheck: async () => {},
             persistSyncConnection: async (snapshot) => {
                 writes++;
                 if (failOnFirstWrite && writes === 1) throw new Error('配额已满');
-                persisted.push(snapshot);
+                persisted.push(snapshot);   // 连接时会写两次：凭据 + 内容指纹
+                app.syncConnection = snapshot.connection;
+                app.syncRecovery = snapshot.recovery;
                 return { revision: writes };
             },
             writeCloudConfig: async () => ({ success: true, revision: 9 }),
@@ -150,6 +164,7 @@ test('凭据保存失败不能显示连接成功（真实 finishSyncConnection�
     states.length = 0;
     await invoke(make(true), { spaceId: 'space', deviceToken: 'tok'.repeat(20), generation: 1, revision: 1 }, 'local');
     assert.deepEqual(states.map(s => s.state), ['error'], '只允许一次 error，不能出现 connected');
+    assert.equal(statuses.includes('synced'), false, '落盘失败时绝不能显示「已同步」');
     assert.match(states[0].message, /未能保存到本机/);
 
     // ② 新建空间（方向 local 且没有云端内容）→ 先落盘再 connected，且**不留**
@@ -158,8 +173,11 @@ test('凭据保存失败不能显示连接成功（真实 finishSyncConnection�
     const created = make(false);
     await invoke(created, { spaceId: 'space', deviceToken: 'tok'.repeat(20), generation: 1, revision: 1 }, 'local');
     assert.deepEqual(states.map(s => s.state), ['connected']);
-    assert.equal(persisted.length, 2, '凭据落盘 + 版本回写，两次都落盘成功');
+    assert.equal(persisted.length >= 2, true, '凭据、版本与内容指纹都落了盘');
     assert.equal(persisted[0].connection.deviceToken, 'tok'.repeat(20));
+    // 内容指纹必须**落盘**：只在内存里设的话，连接后一刷新就会被判成
+    // 「这份内容没传过」，同一份内容再传一次（云端 revision 白 +1）。
+    assert.ok(persisted.some(p => p.uploadedPayloadKey === 'key-1'), '连接时要把内容指纹写进记录');
     assert.equal(persisted[0].recovery, null, '新建不该声称保留了一份替换前的副本');
     assert.equal(created.syncCloud.revision, 9, '上传后状态行显示的是刚写下的版本，不是上传前的');
 
@@ -169,7 +187,8 @@ test('凭据保存失败不能显示连接成功（真实 finishSyncConnection�
     const cloudBefore = { config: { theme: 'auto' }, modules: { enabled: [] } };
     await invoke(replaced, { spaceId: 'space', deviceToken: 'tok'.repeat(20), generation: 1, revision: 3, cloud: cloudBefore }, 'local');
     assert.deepEqual(states.map(s => s.state), ['connected']);
-    const replaceSnapshot = persisted[persisted.length - 1];
+    // 连接收尾会写两次（凭据 + 内容指纹），所以按**内容**找回那一份而不是取最后一条
+    const replaceSnapshot = persisted.filter(p => p.recovery).pop();
     assert.equal(replaceSnapshot.recovery.direction, 'cloud');
     assert.deepEqual(replaceSnapshot.recovery.config, cloudBefore.config, '存的是被覆盖前的云端内容');
 
@@ -178,7 +197,7 @@ test('凭据保存失败不能显示连接成功（真实 finishSyncConnection�
     const adopted = make(false);
     await invoke(adopted, { spaceId: 'space', deviceToken: 'tok'.repeat(20), generation: 1, revision: 3, cloud: { config: { theme: 'dark' }, modules: { enabled: [] } } }, 'cloud');
     assert.deepEqual(states.map(s => s.state), ['connected']);
-    const adoptSnapshot = persisted[persisted.length - 1];
+    const adoptSnapshot = persisted.filter(p => p.recovery).pop();
     assert.equal(adoptSnapshot.recovery.direction, 'local');
     assert.equal(adoptSnapshot.recovery.config.theme, 'auto', '保存的是本机改前的配置');
 });
@@ -233,6 +252,112 @@ test('每空间的签发上限接在 store 的回调上，且那只桶进清理�
     // 用例全绿——因为整段在同一个事务里，回调抛错时那次插入跟着回滚了，
     // 两种顺序在外部完全等价。钉一个没有可观察后果的位置只是把作者的想法写成断言；
     // 承重的事实是「签发会经过这只桶」（store 层的行为用例）与「桶在回收」（上面两条）。
+});
+
+test('自动同步的接线：触发点、监听器、状态词与刻意的取舍', () => {
+    const code = stripComments(appSource);
+
+    // ① 本地落盘后**唯一**的同步触发点：两处（导航、模块），且都在各自的保存路径里。
+    //    多一处少一处都要红——散着挂会在「没保存成功」时也发出去。
+    const dirty = [...code.matchAll(/this\.markSyncDirty\(\);/g)];
+    assert.equal(dirty.length, 2, `markSyncDirty 的调用点应恰好 2 处，实际 ${dirty.length}`);
+    assert.match(methodBodyOf(code, 'saveLocalNavigation'), /this\.markSyncDirty\(\)/, '导航保存后触发');
+    assert.match(methodBodyOf(code, 'saveLocalModules'), /this\.markSyncDirty\(\)/, '模块保存后触发');
+
+    // ② 三个事件监听器都在 bind() 里，而且**各自转发到各自的函数体**——
+    //    只断言「bind 里有 syncPullCheck」会被另一处满足（审查抓到的：删掉任一处照样绿）。
+    //    函数体抽成方法之后，行为由 tests/sync-engine.test.js 真的执行（假时钟推进）。
+    const bind = methodBodyOf(code, 'bind()');
+    assert.match(bind, /addEventListener\('visibilitychange'[\s\S]*?this\.onSyncVisibilityChange\(\)/, '可见性变化转发到 onSyncVisibilityChange');
+    assert.match(bind, /addEventListener\('online'[\s\S]*?this\.onSyncOnline\(\)/, '联网转发到 onSyncOnline');
+    assert.match(bind, /addEventListener\('offline'[\s\S]*?this\.onSyncOffline\(\)/, '断网转发到 onSyncOffline');
+    // 行为的归属：隐藏停轮询在可见性方法里，立即检查在联网方法里
+    const visibility = methodBodyOf(code, 'onSyncVisibilityChange()');
+    assert.match(visibility, /this\.stopSyncPolling\(\)/, '隐藏时停轮询（在 onSyncVisibilityChange 里）');
+    assert.match(visibility, /this\.syncPullCheck\(\)/, '恢复可见时立即检查');
+    assert.match(methodBodyOf(code, 'onSyncOnline()'), /this\.syncPullCheck\(\)/, '联网时立即检查');
+    assert.match(methodBodyOf(code, 'onSyncOnline()'), /this\.syncBackoffMs = 0/, '联网时取消退避');
+
+    // ③ 管理员会话生效期间暂停普通同步调度（两处 authenticated = true 都要接上）
+    const pauses = [...code.matchAll(/this\.pauseSyncForAdmin\(\);/g)];
+    assert.equal(pauses.length, 2, `pauseSyncForAdmin 的调用点应恰好 2 处，实际 ${pauses.length}`);
+
+    // ④ 状态词的**完整**文案就是设计文档 §5 的六个词——改词要连文档一起改。
+    //    页脚那张短词表也要六个键都在（少一个 → 页脚回落到「同步」，看起来像没连上）。
+    const text = /const SYNC_STATUS_TEXT = \{([^}]*)\}/.exec(code)[1];
+    for (const word of ['仅保存在本机', '同步中', '已同步', '离线，待同步', '同步失败', '存在配置冲突']) {
+        assert.ok(text.includes(word), `完整状态词表里要有「${word}」`);
+    }
+    const labels = /const SYNC_STATUS_LABEL = \{([^}]*)\}/.exec(code)[1];
+    for (const key of ['local', 'syncing', 'synced', 'pending', 'failed', 'conflict']) {
+        assert.match(labels, new RegExp(`\\b${key}:`), `页脚短词表里要有 ${key}`);
+    }
+    // 冲突态的**标题**用完整词，别用一句自造的话——界面词汇要与文档一致
+    assert.match(methodBodyOf(code, 'renderSyncDialog()'), /<p class="sync-state">\$\{this\.esc\(SYNC_STATUS_TEXT\.conflict\)\}<\/p>/, '冲突标题用完整状态词');
+
+    // ⑤ 刻意不用 navigator.locks：本仓库已有「乐观 revision + BroadcastChannel」，
+    //    再加一把只有部分浏览器支持的锁会变成两套协调机制。这条断言把取舍写死，
+    //    免得下一个人「顺手」再加一条路径。
+    assert.doesNotMatch(code, /navigator\.locks/, '不要引入第二套多标签页协调机制');
+    assert.match(code, /BroadcastChannel\('nav-sylph-space-sync'\)/, '用 BroadcastChannel 通知');
+    // 写请求要带本机的连接代次：服务端在写事务里再比一次，不一致给明确的
+    // 409 generation_mismatch（验收 3 的「代次事务校验」）。
+    const upload = methodBodyOf(code, 'uploadOnce()');
+    assert.match(upload, /generation: this\.syncConnection\.generation/, '写请求要带连接代次');
+    // 单飞声明确实与待上传内容写在**同一次**记录写入里
+    const claim = methodBodyOf(code, 'acquireSyncClaim()');
+    assert.match(claim, /persistSyncRecord\(\{ pending: this\.syncPending, claim:/, '认领与待上传内容同一次写入');
+});
+
+test('本地同步记录的形状校验：坏字段只丢那个字段，不废整条记录', () => {
+    // 真实现来自 public/local-navigation.js（4 空格缩进那份）。记录里同时住着
+    // 凭据与用户唯一的「替换前副本」，因为 pending 少一个字段就让人重新输口令
+    // 是得不偿失的——所以这条断言的重点是「坏字段只丢字段」。
+    const code = stripComments(localNavSource);
+    // ⚠️ 这里不能用 methodBodyOf：它的「下一个定义」锚点在 4 空格缩进的文件里
+    // 会一路切到文件末尾（`class LocalNavigation {` 不带括号、不算边界），拼进
+    // 对象字面量就是语法错误。按**大括号配对**切，并断言两端都在。
+    const sliceFunction = (source, name) => {
+        const re = new RegExp(`\\n( +)(?:async )?(?:function )?${name}\\([^()]*\\) \\{`);
+        const found = re.exec(source);
+        assert.ok(found, `切出 ${name}`);
+        const start = found.index + 1;
+        let depth = 0;
+        for (let i = start; i < source.length; i++) {
+            if (source[i] === '{') depth++;
+            else if (source[i] === '}') { depth--; if (depth === 0) return source.slice(start, i + 1); }
+        }
+        throw new Error(`${name} 的大括号不配对`);
+    };
+    const body = sliceFunction(code, 'checkSync');
+    assert.ok(body.length > 300, `切出 checkSync（${body.length}）`);
+    // 首行是定义签名、末字符是大括号收尾——两端都断言，避免切片跑到文件末尾
+    assert.match(body, /^\s*(?:function )?checkSync\(record\) \{/, '切到的是定义而不是调用');
+    assert.match(body, /\}\s*$/, '切片以函数的收尾大括号结束');
+    // ⚠️ 嵌进对象字面量前要把 `function ` 去掉：`{ function checkSync(…) {} }` 是语法错误
+    // （这也是上一版报 "Unexpected identifier 'checkSync'" 的原因）。
+    const member = body.replace(/^\s*function\s+/, '');
+    const { checkSync } = new Function('SYNC_SCHEMA_VERSION', `return ({ ${member} });`)(1);
+    const base = {
+        schemaVersion: 1, revision: 3,
+        connection: { spaceId: 'space', deviceToken: 'tok' }, recovery: { direction: 'local' },
+        pending: null, claim: null, lastSuccessAt: 5, uploadedPayloadKey: 'k'
+    };
+    assert.equal(checkSync(base).connection.deviceToken, 'tok', '正常记录原样返回');
+    // 坏 pending → 只丢 pending
+    const badPending = checkSync({ ...base, pending: { operationId: 'op-1' } });
+    assert.equal(badPending.pending, null);
+    assert.equal(badPending.connection.deviceToken, 'tok', '凭据要保住');
+    assert.ok(badPending.recovery, '恢复副本也要保住');
+    // 好 pending → 留着（payloadKey 是新增的必填项）
+    const goodPending = checkSync({ ...base, pending: { operationId: 'op-1', payloadKey: 'k', baseRevision: 3, createdAt: 1, content: { config: {}, modules: {} } } });
+    assert.equal(goodPending.pending.operationId, 'op-1');
+    assert.equal(checkSync({ ...base, pending: { ...goodPending.pending, payloadKey: undefined } }).pending, null, '缺 payloadKey 视为坏');
+    // 坏 claim / 非字符串指纹 → 各自丢自己
+    assert.equal(checkSync({ ...base, claim: { id: 1 } }).claim, null);
+    assert.equal(checkSync({ ...base, uploadedPayloadKey: 7 }).uploadedPayloadKey, null);
+    // 只有**版本**不对才整条报废（那时确实读不懂）
+    assert.throws(() => checkSync({ ...base, schemaVersion: 2 }), /版本/);
 });
 
 test('访客的同步接口不受限流豁免，管理员邀请码接口必须带限流与管理员会话', () => {
