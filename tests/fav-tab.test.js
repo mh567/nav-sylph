@@ -209,9 +209,13 @@ test('匿名搜索框仅提示网页搜索', () => {
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v121，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v121';/);
-    assert.match(swJs, /nav-v121：设备回收与空间资源治理/);
+test('sw.js：CACHE 升到 nav-v122，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v122';/);
+    // 注释块的第一条必须**以当前缓存号开头并带说明**。这里不写死「本轮的主题」：
+    // 主题随每次升级变化，写死就要每轮改一次断言（而真正要钉的是「注释跟着 CACHE 走」
+    // 这个关系，见下面的派生断言）。
+    const head = swJs.split('\n')[0];
+    assert.match(head, /^\/\/ nav-v122：\S/, '第一条注释要带当前版本号与说明');
     // 注释块记录的最新版本必须**就是** CACHE 里的那个——两者漂移意味着有人改了其一。
     // 这里不写死版本号：写死的话每次升缓存都要改断言，而断言该钉的是「两者一致」
     // 这个关系（升号时改 CACHE 与注释就够，不必再想起这个文件）。

@@ -292,6 +292,9 @@
             // 发起时的代次已经变了就作废——「停止/切换后旧响应不许写回」靠它，
             // 与管理员侧的 privateEpoch 是同一个形状。
             this.syncConnEpoch = 0;
+            // 身份是否还在确认中：确认为真期间**不跑普通同步**（设计 §4.1）。
+            // 探测失败时保持为真——「确认不了」不能当成「是匿名」。
+            this.identityPending = true;
             // 删除云端空间期间**挡住一切上传**（设计要求「删除期间暂停本浏览器上传」）：
             // 删除与写在同一张表上串行，让删除先落地才是有序的做法。
             this.syncDeleting = false;
@@ -2055,6 +2058,9 @@
 
         /** 读本机连接记录；有连接就立刻检查一次，并把盘上的待上传内容重放出去。 */
         async loadSyncState() {
+            // 设计 §4.1：确认身份前不启动普通同步。探测失败时 `identityPending`
+            // 保持为真（= 同步暂停），直到 checkAdministratorSync 成功确认身份。
+            await this.waitForSession();
             if (!this.localStore) return;
             this.bindSyncChannel();
             let record;
@@ -2733,7 +2739,7 @@
             // 不挡掉就会「刚采用云端 → 立刻把同一份内容再传回去」，白跑一趟
             // 还可能跟别的设备抢 revision。判据是这次保存的**来源**。
             if (this.syncAdopting) return;
-            if (!this.syncConnection || this.authenticated || this.localUnavailable) return;
+            if (!this.syncConnection || !this.canRunOrdinarySync() || this.localUnavailable) return;
             if (this.syncStatus === 'conflict') return;   // 冲突未决时不动，等用户选
             if (this.syncDeleting || this.syncHalted) return;   // 删除中 / 空间已停用
             this.setSyncStatus(navigator.onLine === false ? 'pending' : 'syncing');
@@ -2748,7 +2754,7 @@
          * 都拿不到东西；只有上限的话，每 2 秒都会发一次。
          */
         scheduleSyncUpload() {
-            if (!this.syncConnection || this.authenticated || this.syncStatus === 'conflict') return;
+            if (!this.syncConnection || !this.canRunOrdinarySync() || this.syncStatus === 'conflict') return;
             if (this.syncDeleting || this.syncHalted) return;
             clearTimeout(this.syncDebounceTimer);
             this.syncDebounceTimer = setTimeout(() => this.startSyncUpload(), SYNC_DEBOUNCE_MS);
@@ -2760,7 +2766,7 @@
         }
 
         startSyncUpload() {
-            if (this.syncDeleting) return;
+            if (this.syncDeleting || !this.canRunOrdinarySync()) return;
             clearTimeout(this.syncDebounceTimer); this.syncDebounceTimer = null;
             clearTimeout(this.syncMaxWaitTimer); this.syncMaxWaitTimer = null;
             clearTimeout(this.syncRetryTimer); this.syncRetryTimer = null;
@@ -2921,7 +2927,8 @@
             if (this.syncUploadInFlight) { this.syncUploadAgain = true; return; }
             this.syncUploadInFlight = true;
             this.syncUploadAgain = false;
-            const epoch = this.syncConnEpoch;
+            const context = this.syncContextSnapshot();
+            const epoch = context.conn;
             try {
                 if (!await this.acquireSyncClaim()) { this.setSyncStatus('syncing'); return; }
                 const pending = await this.ensureSyncPending();
@@ -2940,16 +2947,16 @@
                     config: pending.content.config,
                     modules: pending.content.modules
                 }, { token: this.syncConnection.deviceToken });
-                if (epoch !== this.syncConnEpoch) return;   // 连接换过：这份结果作废
+                if (!this.syncContextHeld(context)) return;   // 连接或身份上下文换过：这份结果作废
                 await this.confirmSyncUpload(pending, result);
             } catch (error) {
-                if (epoch !== this.syncConnEpoch) return;
+                if (!this.syncContextHeld(context)) return;
                 await this.handleSyncUploadFailure(error);
             } finally {
                 this.syncUploadInFlight = false;
-                // 连接已经换过（被清掉/重新连接）就**不要**再碰记录了：此刻那条
-                // 记录可能已经属于新的连接，写进去会把旧连接的凭据或状态带回来。
-                if (epoch === this.syncConnEpoch) {
+                // 连接或身份上下文换过（被清掉/重新连接/登录管理员）就**不要**再碰记录了：
+                // 此刻那条记录可能已经属于新的连接或另一个身份，写进去会把旧状态带回来。
+                if (this.syncContextHeld(context)) {
                     await this.releaseSyncClaim();
                     if (this.syncUploadSettled) {
                         this.syncUploadSettled = false;
@@ -3373,18 +3380,20 @@
          * 一次检查（读）。四个触发点共用：打开、恢复可见、网络恢复、30 秒轮询。
          */
         async syncPullCheck() {
-            if (!this.syncConnection || this.authenticated) return;
+            if (!this.syncConnection || !this.canRunOrdinarySync()) return;
             if (this.syncChecking) return;
             this.syncChecking = true;
-            const epoch = this.syncConnEpoch;
+            const context = this.syncContextSnapshot();
             // ⚠️ 判据是**内容指纹**而不是 `localRevision`：后者只是导航那条记录的
             // 修订号，模块开关/布局改了它不动，于是「飞行期间的模块改动」检测不到、
             // 会被云端内容覆盖（审查抓到的）。指纹对两者都敏感。
             const payloadKey = this.syncPayloadKey();
             try {
                 const cloud = await API.get('/api/sync/config', { token: this.syncConnection.deviceToken });
-                // 迟到的响应一律丢弃：连接换过、或者本机在飞行期间又改了。
-                if (epoch !== this.syncConnEpoch) return;
+                // 迟到的响应一律丢弃：连接换过、身份上下文换过（登录/退出/过期），
+                // 或者本机在飞行期间又改了。三条都要比——只比连接代次会让管理员
+                // 上下文的响应落到普通存储里。
+                if (!this.syncContextHeld(context)) return;
                 this.syncCloud = cloud;
                 if (this.syncHalted) {
                     // 读得动 = 这个连接又能用了（管理员把空间恢复了 / 总暂停结束了）：
@@ -3396,7 +3405,17 @@
                     if (this.syncPayloadKey() !== this.syncUploadedPayloadKey) this.scheduleSyncUpload();
                     if (this.syncState === 'halted') this.setSyncState('connected');
                 }
-                if (this.syncPending || this.syncUploadInFlight) { this.setSyncStatus('syncing'); return; }
+                // 有本地修改时先检查版本、再提交或进入冲突（设计 §5 原文）。
+                // 只看 `pending` 不够：登录前「已落盘但还没排上传」的那一版，
+                // `pending` 是空的，而它正是最不该被静默覆盖的东西。
+                const localDirty = this.syncPending || this.syncUploadInFlight
+                    || this.syncUploadedPayloadKey !== this.syncPayloadKey();
+                if (localDirty) {
+                    this.setSyncStatus('syncing');
+                    if (this.syncPending) this.scheduleSyncUpload();
+                    else this.scheduleSyncUpload();
+                    return;
+                }
                 if (payloadKey !== this.syncPayloadKey()) return;
                 if (cloud.revision === this.syncConnection.revision) { this.setSyncStatus(this.syncSettledStatus()); return; }
                 // 服务端的 revision 是单调的：读到更小的只可能是过期响应（或者
@@ -3418,7 +3437,7 @@
                 });
                 this.setSyncStatus('synced');
             } catch (error) {
-                if (epoch !== this.syncConnEpoch) return;
+                if (!this.syncContextHeld(context)) return;
                 if (await this.handleSyncTerminal(error)) return;
                 this.setSyncStatus(navigator.onLine === false ? 'pending' : 'failed');
             } finally {
@@ -3428,6 +3447,9 @@
 
         /** 采用云端内容：先留被替换的那一份，再覆盖本机。 */
         async applyCloudConfig(cloud) {
+            // ⚠️ 这一层是**最后一道**：`recovery` 取的是 `this.config`，而管理员上下文下
+            // 那就是管理员个人导航。若不在这里拦，那份内容会被写进普通同步记录。
+            if (!this.canRunOrdinarySync()) return;
             this.syncAdopting = true;
             try {
                 await this.persistSyncRecord({
@@ -3474,12 +3496,63 @@
          */
         pauseSyncForAdmin() { this.stopSyncTimers(); }
 
-        /** 回到普通上下文：恢复轮询并把积压的改动排出去。**不**在这里做版本协调（归 #11）。 */
-        resumeSyncAfterAdmin() {
-            if (!this.syncConnection || this.authenticated) return;
-            this.startSyncPolling();
-            if (this.syncPending) this.scheduleSyncUpload();
+        /**
+         * 普通同步能不能跑：不是管理员上下文、没有未决草稿、身份已确认。
+         *
+         * ⚠️ 这是**唯一**判据。只在入口判 `authenticated` 不够——本仓库踩过：
+         * 入口判了、**落盘点**没判，于是管理员个人导航会被写进普通同步记录的
+         * `recovery`（验收明令禁止的「管理员草稿落入普通存储」）。
+         */
+        canRunOrdinarySync() {
+            return !this.authenticated && !this.suspendedAdministrator && !this.identityPending;
         }
+
+        /**
+         * 等会话探测落定。探测**失败**时不解除 `identityPending`：确认不了身份
+         * 就等于「同步继续暂停」，等 `checkAdministratorSync` 成功确认再放开。
+         */
+        async waitForSession() {
+            const probe = this.sessionProbe;
+            if (!probe) return;
+            try { await probe; } catch (error) { console.warn('会话探测失败，普通同步保持暂停:', error.message); }
+        }
+
+        /** 在飞请求的上下文快照：连接代次（落盘、跨标签页）+ 本标签页上下文代次。 */
+        syncContextSnapshot() {
+            return { conn: this.syncConnEpoch, home: this.privateEpoch || 0 };
+        }
+
+        /** 落盘点：两个代次都没变、且上下文仍然允许跑普通同步，才许写。 */
+        syncContextHeld(snap) {
+            return snap.conn === this.syncConnEpoch
+                && snap.home === (this.privateEpoch || 0)
+                && this.canRunOrdinarySync();
+        }
+
+        /**
+         * 回到普通上下文：**先协调云端、再续传、最后起轮询**。
+         *
+         * 顺序不能换：先排上传再读云端，会对着一个已被别的设备推进过的基线白打一轮；
+         * 而「有未上传改动就不采用云端」只在读之前成立（读之后由 409 → 核对 → 冲突
+         * 三条既有分支收敛）。
+         */
+        resumeOrdinarySync() {
+            if (!this.syncConnection || !this.canRunOrdinarySync()) {
+                if (!this.syncConnection) this.setSyncStatus('local');
+                return Promise.resolve();
+            }
+            return this.syncPullCheck()
+                .then(() => {
+                    if (!this.canRunOrdinarySync()) return;
+                    if (this.syncStatus === 'conflict') return;
+                    if (this.syncPending || this.syncUploadedPayloadKey !== this.syncPayloadKey()) this.scheduleSyncUpload();
+                    this.startSyncPolling();
+                })
+                .catch(error => console.warn('恢复普通同步失败:', error.message));
+        }
+
+        /** 旧名字保留为转发：调用点不动，实现只有一份。 */
+        resumeSyncAfterAdmin() { this.resumeOrdinarySync(); }
 
         // ---- 三个触发点的**函数体**单独抽出来（监听器只是转发）--------------
         // 抽出来的理由是可验证：内联箭头函数没法被用例执行，于是「恢复可见会取消
@@ -4997,7 +5070,7 @@
 
         clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
-            this.resumeSyncAfterAdmin();
+            this.resumeOrdinarySync().catch(error => console.warn('恢复普通同步失败:', error.message));
             $('#localNavigationTools').hidden = true;
             $('#localNavigationStatus').hidden = !this.localError;
             this.syncAppearanceEntry(true);
@@ -5372,6 +5445,7 @@
         // 期间 authenticated 仍是 false。此时输入 // 会被当成普通搜索词，
                 // 私密书签「凭空消失」，且再输入也不会自愈——所以那个分支必须等结果。
         async restoreSession() {
+            this.identityPending = true;
             const epoch = this.privateEpoch || 0;
             const session = this.initialSession || this.loadSession();
             this.initialSession = null;
@@ -5402,6 +5476,7 @@
                         // 与管理员模块区同一时机（会话探测之后），同样不占首屏。
                         await this.checkPublicModules();
                     }
+                    this.identityPending = false;
                     return session.authenticated;
                 })
                 .catch(e => {

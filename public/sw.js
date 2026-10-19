@@ -1,3 +1,6 @@
+// nav-v122：身份切换与上下文代次——普通同步在所有在飞请求的**落盘点**同时比对
+// 连接代次与本标签页上下文代次（只比连接代次会让管理员个人导航被写进普通同步记录的
+// recovery）；退出/过期后先协调云端、再续传、最后起轮询；身份未确认前不发任何同步请求。
 // nav-v121：设备回收与空间资源治理（Issue #10）。访客侧「撤销全部旧设备并重新连接」（重新
 // 输口令 → service 端代次 +1、吊销全部旧设备、签发新设备，revision 与内容都不动），停用与总
 // 暂停各有自己的状态与文案（总暂停按 5 分钟轮询等恢复，与 503 的 Retry-After 同值），额度写满
@@ -309,7 +312,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v121';
+const CACHE = 'nav-v122';
 const ASSETS = [
     '/',
     '/index.html',
