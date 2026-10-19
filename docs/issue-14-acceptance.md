@@ -32,7 +32,7 @@
   - `public/sw.js` 的 `CACHE` = `nav-v124`（回访用户拿新 bundle）。
 - schema 不兼容：`tests/config-shadowing.test.js` 与 v9–v12 的迁移用例覆盖「拒绝而非静默回退」；恢复的 `halted`/`applied` 记录在 `tests/restore-recovery.test.js` 三种态各有一条。
 - **快照回退**：`lib/restore.js` 的逆序回滚由 `tests/restore-http.test.js` 的故障注入用例验证（某域写失败 → 已应用域逐字节还原、版本不变）。
-- ⚠️ **没有**走真实的 `./sylph.sh update`（GitHub Release 下载链路）：本地用归档 + 覆盖模拟，**非 GitHub 链路**，如实标注。
+- **真实升级链路已由用户在真机上走通**：v2.1.0 与 v2.1.1 都通过 `./sylph.sh update`（GitHub Release 的 `tag_name` 与附件）升级，试用正常。所以第 2 条不再只有合成模拟；本地那次「归档 + 覆盖」的模拟作为对照保留在记录里。
 
 ### 3. 匿名分享与搜索保留原有行为，收藏全部拒绝匿名，三类配置任何操作均不互相覆盖 ✅
 
