@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>后台 · 同步管理 仿真样例</title>
+<!--
+  仿真样例：把「同步空间治理 + 邀请码」从「首页导航」里拆出来，单独一个 tab。
+  ⚠️ 直接引用 ../public/styles.css 与 ../public/admin.css：面板外壳、tab、按钮、
+  开关、列表行都取真实实现那一份。
+  工具栏可以强制：八种场景 / 主题 / 宽窄两档。
+  对应设计：docs/issue-10 之后的界面调整（尚未实现，先看效果）。
+-->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+    body { margin: 0; padding: 24px 18px 64px; background: var(--bg); color: var(--text); font-family: var(--font-ui, system-ui, -apple-system, "Segoe UI", sans-serif); }
+    .mock-note { max-width: 980px; margin: 0 auto 18px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+    .mock-note code { padding: 1px 5px; border-radius: 5px; background: var(--admin-row); font-size: 12px; }
+    .mock-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 980px; margin: 0 auto 20px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--admin-row); }
+    .mock-toolbar span { margin-right: 4px; color: var(--text-secondary); font-size: 12px; }
+    .mock-toolbar button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    .mock-toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    /* 面板：真实现是 .modal > .modal-content，这里只保留宽度与内边距 */
+    .mock-stage { display: flex; justify-content: center; }
+    .mock-panel { width: min(980px, 96vw); background: var(--panel, var(--bg)); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+    .mock-body { display: flex; min-height: 520px; }
+    .mock-nav { flex: 0 0 172px; border-right: 1px solid var(--border); padding: 10px 8px; display: flex; flex-direction: column; gap: 4px; }
+    .mock-nav button { text-align: left; padding: 9px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 13px; cursor: pointer; }
+    .mock-nav button.is-active { background: var(--admin-row); color: var(--text); font-weight: 600; }
+    .mock-content { flex: 1 1 auto; min-width: 0; padding: 16px 18px 20px; overflow: auto; }
+    .mock-stage.narrow .mock-panel { width: 390px; }
+    .mock-stage.narrow .mock-body { flex-direction: column; }
+    .mock-stage.narrow .mock-nav { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; overflow-x: auto; }
+    .mock-stage.narrow .mock-nav button { white-space: nowrap; }
+
+    /* 本样例自用的排版（真实现里会写进 admin.css） */
+    .sm-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .sm-stat { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+    .sm-stat b { display: block; font-size: 18px; line-height: 1.4; }
+    .sm-stat span { color: var(--text-secondary); font-size: 11px; }
+    .sm-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+    .sm-row input[type="search"], .sm-row select, .sm-row input[type="number"] { padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+    .sm-row input[type="search"] { flex: 1 1 190px; min-width: 0; }
+    .sm-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .sm-table th, .sm-table td { padding: 7px 6px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+    .sm-table th { color: var(--text-secondary); font-weight: 500; font-size: 11px; }
+    .sm-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .sm-table tr.is-stale td { color: var(--text-secondary); }
+    .sm-table tr.is-gone td { color: var(--text-secondary); text-decoration: line-through; }
+    .sm-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-top: 10px; color: var(--text-secondary); font-size: 12px; }
+    .sm-codes { display: grid; gap: 6px; margin: 8px 0 4px; }
+    .sm-code { display: flex; gap: 10px; align-items: center; padding: 7px 10px; border: 1px dashed var(--border); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .sm-code small { color: var(--text-secondary); font-family: inherit; font-size: 11px; margin-left: auto; }
+    .sm-empty { padding: 26px 10px; text-align: center; color: var(--text-secondary); font-size: 12px; }
+    .sm-banner { margin: 0 0 12px; padding: 9px 12px; border-radius: 8px; background: var(--admin-row); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+    .sm-banner.warn { color: var(--admin-error); }
+</style>
+</head>
+<body>
+<div class="mock-note">
+    <strong>把同步相关的东西从「首页导航」里拆出来，单独一个「同步管理」tab。</strong>
+    这个样例里有三件事想请你判断：① tab 的位置与命名；② 空间多起来之后列表怎么展示（这里给的是
+    <strong>服务端分页 + 搜索 + 状态筛选</strong>，最多 1000 个空间时有意义）；③ 邀请码<strong>批量生成</strong>之后
+    怎么管（这里给的是「只显示一次 + 复制全部/下载」+「按状态筛选 + 分页 + 批量撤销」）。
+    用下面工具栏切换场景和宽度看。
+</div>
+
+<div class="mock-toolbar" role="group" aria-label="场景">
+    <span>场景</span>
+    <button data-scene="normal" aria-pressed="true">正常</button>
+    <button data-scene="empty">还没有空间</button>
+    <button data-scene="searching">搜索无结果</button>
+    <button data-scene="large">大批量（1000 个）</button>
+    <button data-scene="batch">批量生成结果</button>
+    <button data-scene="generating">生成中</button>
+    <button data-scene="paused">暂停中</button>
+    <button data-scene="degraded">含已停用/已删除</button>
+    <span style="margin-left:10px">主题</span>
+    <button data-theme="dark" aria-pressed="true">深色</button>
+    <button data-theme="light">浅色</button>
+    <span style="margin-left:10px">宽度</span>
+    <button data-width="wide" aria-pressed="true">宽档</button>
+    <button data-width="narrow">窄档 390</button>
+</div>
+
+<div class="mock-stage" id="stage">
+    <div class="mock-panel">
+        <div class="mock-body">
+            <div class="mock-nav" role="tablist" aria-label="管理分区">
+                <button role="tab">首页导航</button>
+                <button role="tab">收藏夹</button>
+                <button role="tab">模块</button>
+                <button role="tab" class="is-active" aria-selected="true">同步管理</button>
+                <button role="tab">账户与备份</button>
+            </div>
+            <div class="mock-content" id="content"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const space = (i, over = {}) => Object.assign({
+        id: `${(0x9f3c0a00 + i * 7919).toString(16)}${(i % 97).toString(16)}d4e8b1c2a3`,
+        bytes: 12_000 + (i * 977) % 400_000,
+        revision: 1 + (i % 23),
+        generation: 1 + (i % 3),
+        devices: 1 + (i % 4),
+        createdAt: 1767000000000 + i * 60000,
+        updatedAt: 1792300000000 - i * 97000,
+        state: 'active',
+        ...over
+    }, { state: over.state || 'active' });
+
+    const fmtBytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(2)} MiB`;
+    const fmtTime = ts => new Date(ts).toISOString().slice(5, 16).replace('T', ' ');
+    const stateLabel = s => s === 'disabled' ? '已停用' : s === 'deleted' ? '已删除' : '正常';
+
+    const SCENES = {
+        normal: () => ({ rows: Array.from({ length: 4 }, (_, i) => space(i)), total: 4, page: 1, query: '', state: 'all', batch: null, generating: false, paused: false }),
+        empty: () => ({ rows: [], total: 0, page: 1, query: '', state: 'all', batch: null, generating: false, paused: false }),
+        searching: () => ({ rows: [], total: 0, page: 1, query: 'ff02', state: 'all', batch: null, generating: false, paused: false }),
+        large: () => ({ rows: Array.from({ length: 20 }, (_, i) => space(20 + i)), total: 1000, page: 2, query: '', state: 'all', batch: null, generating: false, paused: false }),
+        batch: () => ({ rows: Array.from({ length: 3 }, (_, i) => space(i)), total: 3, page: 1, query: '', state: 'all', generating: false, paused: false,
+            batch: Array.from({ length: 10 }, (_, i) => ({ hint: ['3f9a', 'b71e', 'c4d2', '1a8f', 'e0b9', '77c3', '5de1', '902f', 'ab13', '6c47'][i], expires: '2026-10-21 12:00' })) }),
+        generating: () => ({ rows: Array.from({ length: 3 }, (_, i) => space(i)), total: 3, page: 1, query: '', state: 'all', batch: null, generating: true, paused: false }),
+        paused: () => ({ rows: Array.from({ length: 3 }, (_, i) => space(i)), total: 3, page: 1, query: '', state: 'all', batch: null, generating: false, paused: true }),
+        degraded: () => ({ rows: [
+            space(0),
+            space(1, { state: 'disabled', devices: 2 }),
+            space(2, { state: 'deleted', bytes: 0, devices: 0 }),
+            space(3, { devices: 4 })
+        ], total: 4, page: 1, query: '', state: 'all', batch: null, generating: false, paused: false })
+    };
+
+    function render(scene) {
+        const s = SCENES[scene]();
+        const perPage = 20;
+        const from = s.total === 0 ? 0 : (s.page - 1) * perPage + 1;
+        const to = Math.min(s.page * perPage, s.total);
+        const totalBytes = s.rows.reduce((n, r) => n + r.bytes, 0);
+        const devices = s.rows.reduce((n, r) => n + r.devices, 0);
+
+        const rowsHtml = s.rows.length ? s.rows.map(r => `
+            <tr class="${r.state === 'disabled' ? 'is-stale' : r.state === 'deleted' ? 'is-gone' : ''}">
+                <td><input type="checkbox" ${r.state === 'deleted' ? 'disabled' : ''}></td>
+                <td><code>${r.id.slice(0, 8)}</code></td>
+                <td>${stateLabel(r.state)}</td>
+                <td class="num">${r.bytes ? fmtBytes(r.bytes) : '—'}</td>
+                <td class="num">${r.revision}</td>
+                <td class="num">${r.generation}</td>
+                <td class="num">${r.devices}</td>
+                <td>${fmtTime(r.createdAt)}</td>
+                <td>${fmtTime(r.updatedAt)}</td>
+                <td>${r.state === 'deleted' ? '' : `<button class="btn btn-sm">${r.state === 'disabled' ? '重新启用' : '停用'}</button> <button class="btn btn-sm btn-danger">删除</button>`}</td>
+            </tr>`).join('') : '';
+        const emptyText = s.query ? `没有匹配「${s.query}」的空间` : '还没有任何云端空间。管理员发放邀请码后，访客创建的空间会出现在这里。';
+
+        document.getElementById('content').innerHTML = `
+            ${s.paused ? '<p class="sm-banner warn">总暂停已开启：所有空间的读写与连接都被拒绝（删除空间与撤销本机设备不受影响）。</p>' : ''}
+            <div class="sm-overview">
+                <div class="sm-stat"><b>${s.total}</b><span>空间总数（上限 1000）</span></div>
+                <div class="sm-stat"><b>${fmtBytes(totalBytes)}</b><span>本页体积合计</span></div>
+                <div class="sm-stat"><b>${devices}</b><span>本页活跃设备</span></div>
+                <div class="sm-stat"><b>${s.paused ? '已暂停' : '正常'}</b><span>同步服务</span></div>
+            </div>
+
+            <div class="sm-row">
+                <label class="toggle-switch"><input type="checkbox"><span class="toggle-slider"></span></label>
+                <span style="font-size:12px;color:var(--text-secondary)">暂停新建</span>
+                <label class="toggle-switch" style="margin-left:14px"><input type="checkbox" ${s.paused ? 'checked' : ''}><span class="toggle-slider"></span></label>
+                <span style="font-size:12px;color:var(--text-secondary)">总暂停</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-secondary)">开关勾选即保存</span>
+            </div>
+
+            <hr style="border:0;border-top:1px solid var(--border);margin:16px 0">
+
+            <p class="fav-hint" style="margin:0 0 6px"><strong>邀请码</strong>　一次可生成多张；码只显示这一次，离开就再也看不到</p>
+            <div class="sm-row">
+                <select aria-label="生成数量">
+                    <option>1 张</option><option>5 张</option><option selected>10 张</option><option>自定义…</option>
+                </select>
+                <button class="btn btn-sm btn-primary" ${s.generating ? 'disabled' : ''}>${s.generating ? '生成中…' : '批量生成'}</button>
+                <span style="font-size:11px;color:var(--text-secondary)">48 小时有效 · 每张只能建一个空间 · 单次最多 50 张</span>
+            </div>
+            ${s.batch ? `
+                <div class="sm-banner">本次生成 <strong>${s.batch.length}</strong> 张。现在复制或下载，关闭后无法再查看。</div>
+                <div class="sm-row"><button class="btn btn-sm">复制全部</button><button class="btn btn-sm">下载 .txt</button></div>
+                <div class="sm-codes">${s.batch.map(c => `<div class="sm-code">${c.hint}-····-····-····-····-····-···· 已生成<small>${c.expires} 到期</small></div>`).join('')}</div>
+            ` : ''}
+            <div class="sm-row" style="margin-top:10px">
+                <select aria-label="邀请码状态"><option>全部</option><option>未使用</option><option>已使用</option><option>已过期</option><option>已撤销</option></select>
+                <button class="btn btn-sm" disabled>撤销选中</button>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-secondary)">未使用的 1 张 · 已使用 12 张 · 过期 3 张</span>
+            </div>
+
+            <hr style="border:0;border-top:1px solid var(--border);margin:16px 0">
+
+            <div class="sm-row">
+                <input type="search" placeholder="搜索空间标识（前 8 位即可）" value="${s.query}">
+                <select aria-label="空间状态"><option>全部状态</option><option>正常</option><option>已停用</option><option>已删除</option></select>
+                <select aria-label="排序"><option>最近更新</option><option>体积</option><option>设备数</option></select>
+            </div>
+            <p class="fav-hint" style="margin:0 0 6px">这里只能看到空间的内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
+
+            <table class="sm-table">
+                <thead><tr>
+                    <th><input type="checkbox" aria-label="全选本页"></th><th>标识</th><th>状态</th><th>体积</th>
+                    <th>版本</th><th>代次</th><th>设备</th><th>创建</th><th>最近更新</th><th>操作</th>
+                </tr></thead>
+                <tbody>${rowsHtml}</tbody>
+            </table>
+            ${s.rows.length ? '' : `<div class="sm-empty">${emptyText}</div>`}
+            <div class="sm-pager">
+                <span>第 ${from}–${to} 条，共 ${s.total} 条${s.total > perPage ? `（每页 ${perPage}）` : ''}</span>
+                <span>
+                    <button class="btn btn-sm" ${s.page <= 1 ? 'disabled' : ''}>上一页</button>
+                    <span style="margin:0 8px">第 ${s.page} / ${Math.max(1, Math.ceil(s.total / perPage))} 页</span>
+                    <button class="btn btn-sm" ${to >= s.total ? 'disabled' : ''}>下一页</button>
+                </span>
+            </div>
+            <p class="fav-hint" style="margin:10px 0 0">删除空间是不可撤销的（墓碑只留痕，内容已清空）。批量停用可以，批量删除不提供。</p>
+        `;
+    }
+
+    const buttons = [...document.querySelectorAll('.mock-toolbar button')];
+    const stage = document.getElementById('stage');
+    let scene = 'normal';
+    for (const button of buttons) {
+        button.addEventListener('click', () => {
+            if (button.dataset.scene) scene = button.dataset.scene;
+            const group = button.dataset.scene ? 'scene' : button.dataset.theme ? 'theme' : 'width';
+            if (group === 'width') stage.classList.toggle('narrow', button.dataset.width === 'narrow');
+            if (group === 'theme') document.documentElement.dataset.theme = button.dataset.theme;
+            for (const other of buttons) {
+                const sameGroup = group === 'scene' ? other.dataset.scene : group === 'theme' ? other.dataset.theme : other.dataset.width;
+                if (sameGroup) other.setAttribute('aria-pressed', String(other === button));
+            }
+            render(scene);
+        });
+    }
+    document.documentElement.dataset.theme = 'dark';
+    render(scene);
+</script>
+</body>
+</html>

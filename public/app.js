@@ -6636,8 +6636,8 @@
                         <h3 id="helpTitle">Nav Sylph${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
-                            <strong>书签检索</strong>
-                            <p>点击“网页”切换到书签，或输入 <code>/</code> + 关键词</p>
+                            <strong>搜索与书签</strong>
+                            <p>直接输入关键词搜索；点「网页」切换到书签，或输入 <code>/</code> + 关键词</p>
                             <p class="help-tip">支持标题、网址、分类、描述模糊匹配</p>
                             <p class="help-tip">↑↓ 选择，Enter 打开，Esc 退出</p>
                         </div>
@@ -6649,10 +6649,21 @@
                             <p class="help-tip">点「退出」或按 <code>Esc</code> 返回搜索</p>
                         </div>
                         <div class="help-section">
-                            <strong>管理书签</strong>
-                            <p>点击右下角“管理”进入管理面板</p>
-                            <p class="help-tip">支持导入/导出浏览器书签</p>
-                            <p class="help-tip">兼容 Chrome、Edge、Firefox、Safari</p>
+                            <strong>口令云端空间（跨设备同步）</strong>
+                            <p>底部点「同步」→ 自设一条口令（6–128 个字符，区分大小写）→ 检查</p>
+                            <p class="help-tip">没有空间时填入管理员发放的一次性邀请码即可创建；已有空间时选择「使用云端配置」或「以本机配置替换云端」，两个方向都会先在本机保留被替换的那份</p>
+                            <p class="help-tip">其他设备用同一口令连一次即可，之后刷新自动复用凭据</p>
+                            <p class="help-tip">改动自动同步：停手半秒传一次、连续编辑最长两秒传一次；多台设备同时修改时两份都保留，打开「同步」整份选择</p>
+                            <p class="help-tip">「停止同步」保留本机导航；「删除云端空间」需重新输入口令且无法撤销，删后所有已连接设备立即失效；凭据可能泄露时用「撤销全部旧设备并重新连接」</p>
+                            <p class="help-tip">每个空间最多 1 MiB（导航与模块偏好之和）；写满时上传会被拒绝，未上传的修改仍在本机</p>
+                        </div>
+                        <div class="help-section">
+                            <strong>管理（管理员）</strong>
+                            <p>点右下角「管理」登录后进入五个分区：首页导航、收藏夹、模块、<strong>同步管理</strong>、账户与备份</p>
+                            <p class="help-tip">同步管理：批量生成与撤销邀请码、查看空间与用量、停用或删除空间、暂停新建或暂停全部同步</p>
+                            <p class="help-tip">账户与备份：修改密码；WebDAV 备份只含收藏、备忘录、私人模块与时间线，<strong>不含</strong>导航与任何凭据</p>
+                            <p class="help-tip">恢复是两段式：先列出「将恢复」与「将跳过」，确认后才覆盖；失败会完整回滚</p>
+                            <p class="help-tip">收藏夹支持导入/导出浏览器书签，兼容 Chrome、Edge、Firefox、Safari</p>
                         </div>
                     </div>
                 </div>
