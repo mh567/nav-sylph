@@ -785,3 +785,234 @@ test('迁移 v11 回填：物化字节数与 Buffer.byteLength 一致（含非 A
     const after = db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get('space-1');
     assert.equal(after.content_bytes, Buffer.byteLength(after.config_json, 'utf8') + Buffer.byteLength(after.modules_json, 'utf8'));
 });
+
+// ==================== 同步管理 tab 的服务端：分页/筛选/排序 + 批量邀请码 ====================
+
+/**
+ * 直接写行造数。列表的**分页边界**要有 100+ 行才有意义，而每造一行都要一张邀请码
+ * （`createSpace` 一次性消耗一张），靠真路径造 105 行等于把这条用例变成一次压测。
+ * 所以这里只借 `sync_spaces` 的列形状插行——列名与 `lib/db.js` 的 v11 一致，
+ * 迁移改了列这里会立刻红（这正是想要的：造数代码是**照真表**写的）。
+ */
+const spaceIdOf = (i) => createHash('sha256').update(`space-${i}`).digest('hex').slice(0, 24);
+
+function seedSpaces(db, count, at = 1000) {
+    const insert = db.prepare(`INSERT INTO sync_spaces (id, proof_id, generation, revision, config_json, modules_json,
+            content_bytes, created_at, updated_at, disabled, disabled_at, deleted, deleted_at)
+        VALUES (?, ?, 1, 1, '{}', '{}', ?, ?, ?, ?, ?, ?, ?)`);
+    for (let i = 0; i < count; i++) {
+        insert.run(
+            spaceIdOf(i), `proof-${i}`,
+            (i + 1) * 10,                 // 体积随 i 单调递增：体积排序的期望顺序因此是「倒着的 id」
+            at + i,                       // 创建时间随 i 递增
+            at + i * 2,                   // 更新时间也递增（默认排序按它降序）
+            i === 1 ? 1 : 0, i === 1 ? at : null,
+            i === 2 ? 1 : 0, i === 2 ? at : null
+        );
+    }
+}
+
+/** 造一台设备行（只为「按设备数排序」有东西可排）。 */
+function seedDevice(db, spaceId, n) {
+    db.prepare('INSERT INTO sync_devices (token_hash, space_id, generation, created_at, last_seen_at, revoked) VALUES (?, ?, 1, 1000, 1000, 0)')
+        .run(`${spaceId}-${n}`.padEnd(64, '0'), spaceId);
+}
+
+test('store：空间列表的分页/筛选/排序走白名单映射，非法取值回落默认', async (t) => {
+    const f = await fixture(t);
+    seedSpaces(f.db, 105);
+    seedDevice(f.db, spaceIdOf(0), 1);
+    seedDevice(f.db, spaceIdOf(3), 2);
+    seedDevice(f.db, spaceIdOf(3), 3);
+
+    // 默认：最近更新、每页 20、总数是**筛选后**的总数（不含 LIMIT）。
+    const first = f.store.listSpaces();
+    assert.deepEqual(first.page, { total: 105, offset: 0, limit: 20 });
+    assert.equal(first.spaces.length, 20);
+    assert.equal(first.spaces[0].id, spaceIdOf(104), '默认按最近更新降序');
+    assert.equal(first.spaces.at(-1).id, spaceIdOf(85));
+    // 行里只有那 11 个非敏感字段，一个不多（多一个字段就是多一条泄露面）。
+    assert.deepEqual(Object.keys(first.spaces[0]).sort(), [
+        'activeDevices', 'contentBytes', 'createdAt', 'deleted', 'deletedAt',
+        'disabled', 'disabledAt', 'generation', 'id', 'revision', 'updatedAt'
+    ].sort());
+
+    // 第二页接着上一页：两页之间没有重叠、也没有缺口。
+    const second = f.store.listSpaces({ offset: 20 });
+    assert.deepEqual(second.page, { total: 105, offset: 20, limit: 20 });
+    assert.equal(second.spaces[0].id, spaceIdOf(84));
+    assert.equal(new Set([...first.spaces, ...second.spaces].map((s) => s.id)).size, 40);
+
+    // 状态筛选：三个取值各自是一个**互斥**的子集（i=1 停用、i=2 删除）。
+    assert.equal(f.store.listSpaces({ state: 'active' }).page.total, 103);
+    assert.equal(f.store.listSpaces({ state: 'active' }).spaces.every((s) => !s.disabled && !s.deleted), true);
+    const disabled = f.store.listSpaces({ state: 'disabled' });
+    assert.deepEqual(disabled.spaces.map((s) => s.id), [spaceIdOf(1)]);
+    assert.equal(disabled.spaces[0].disabled, true);
+    assert.ok(disabled.spaces[0].disabledAt, '停用时间要带出来');
+    const deleted = f.store.listSpaces({ state: 'deleted' });
+    assert.deepEqual(deleted.spaces.map((s) => s.id), [spaceIdOf(2)]);
+    assert.equal(deleted.spaces[0].deleted, true);
+    // 非法状态回落 all（**不是**空页，也不是 400）：白名单查不到就用默认那一档。
+    assert.equal(f.store.listSpaces({ state: 'nonsense' }).page.total, 105);
+    assert.equal(f.store.listSpaces({ state: 'DROP TABLE sync_spaces' }).page.total, 105, '注入串只是查表失败');
+
+    // 排序：三种取值给三种顺序，非法值回落到「最近更新」。
+    const byBytes = f.store.listSpaces({ sort: 'bytes' });
+    assert.equal(byBytes.spaces[0].id, spaceIdOf(104), '体积最大的排第一');
+    assert.equal(byBytes.spaces[1].contentBytes <= byBytes.spaces[0].contentBytes, true);
+    const byDevices = f.store.listSpaces({ sort: 'devices' });
+    assert.equal(byDevices.spaces[0].id, spaceIdOf(3), '3 台设备的排第一');
+    assert.equal(byDevices.spaces[0].activeDevices, 2);
+    assert.deepEqual(f.store.listSpaces({ sort: 'nonsense' }).spaces.map((s) => s.id),
+        first.spaces.map((s) => s.id), '非法排序 = 默认排序');
+
+    // 前缀搜索：只认**开头**（`instr(...) = 1`），不是「包含」，更不查正文。
+    const whole = f.store.listSpaces({ q: spaceIdOf(42) });
+    assert.deepEqual(whole.spaces.map((s) => s.id), [spaceIdOf(42)]);
+    assert.equal(whole.page.total, 1);
+    const prefix = f.store.listSpaces({ q: spaceIdOf(42).slice(0, 10) });
+    assert.equal(prefix.page.total, 1, '前 10 位也定位到同一个空间');
+    assert.equal(f.store.listSpaces({ q: spaceIdOf(42).slice(-8) }).page.total, 0, '尾部片段不算前缀');
+    assert.equal(f.store.listSpaces({ q: 'zzz' }).page.total, 0);
+    assert.equal(f.store.listSpaces({ q: '  ' }).page.total, 105, '空白搜索词等于不筛');
+
+    // 分页边界：limit 上限 100、非法值回落、offset 越界返回空页但 total 不变。
+    const capped = f.store.listSpaces({ limit: 500 });
+    assert.equal(capped.page.limit, 100, '单页上限 100');
+    assert.equal(capped.spaces.length, 100);
+    assert.equal(f.store.listSpaces({ limit: 0 }).page.limit, 20);
+    assert.equal(f.store.listSpaces({ limit: -3 }).page.limit, 20);
+    assert.equal(f.store.listSpaces({ limit: 'abc' }).page.limit, 20);
+    assert.equal(f.store.listSpaces({ limit: 5 }).spaces.length, 5);
+    const beyond = f.store.listSpaces({ offset: 500 });
+    assert.deepEqual(beyond.spaces, [], '越界是空页而不是报错');
+    assert.equal(beyond.page.total, 105, 'total 与偏移无关');
+    assert.equal(beyond.page.offset, 500);
+    assert.equal(f.store.listSpaces({ offset: -10 }).page.offset, 0, '负偏移回落 0');
+
+    // 用量是**全实例**：与当前页无关，墓碑不算进去，设备只数未撤销的。
+    const page = f.store.listSpaces({ limit: 2 });
+    assert.equal(page.spaces.length, 2);
+    assert.equal(page.usage.spaces, 104, '105 行里有一个墓碑');
+    assert.equal(page.usage.bytes, 105 * 106 / 2 * 10 - 30, '墓碑那一行（i=2）的 30 字节不算');
+    assert.equal(page.usage.devices, 3);
+    assert.ok(page.usage.bytes > page.spaces.reduce((n, s) => n + s.contentBytes, 0),
+        '全实例用量必须大于本页合计——两者相等就说明它被算成了当页合计');
+});
+
+test('store：邀请码列表的状态筛选、分页与计数（四个桶互不重叠）', async (t) => {
+    const f = await fixture(t);
+    const old = f.store.createInvites(3).invites;            // 会过期
+    f.advance(48 * HOUR + 1);
+    const fresh = f.store.createInvites(3).invites;          // 未过期
+    // 用掉一张（真路径）、撤销一张（真路径），剩下 1 张未使用。
+    await f.create('邀请码状态口令', fresh[0].code);
+    const revokedTarget = f.store.listInvites({ state: 'unused' }).invites.find((i) => i.hint === fresh[2].hint);
+    assert.equal(f.store.revokeInvites([revokedTarget.id]).revoked, 1);
+
+    const all = f.store.listInvites();
+    assert.equal(all.page.total, 6);
+    assert.deepEqual(all.counts, { unused: 1, used: 1, expired: 3, revoked: 1 });
+    assert.equal(Object.values(all.counts).reduce((a, b) => a + b, 0), all.page.total, '四个桶加起来等于总数');
+
+    // 每种状态各自筛出对应条数，并且行上的 `state` 与桶一致。
+    for (const [state, expected] of Object.entries(all.counts)) {
+        const listed = f.store.listInvites({ state });
+        assert.equal(listed.page.total, expected, `${state} 的条数`);
+        assert.equal(listed.invites.length, expected);
+        assert.equal(listed.invites.every((i) => i.state === state), true, `${state} 的行要自报同一个状态`);
+    }
+    // 非法状态回落 all，而不是空页。
+    assert.equal(f.store.listInvites({ state: 'nope' }).page.total, 6);
+    assert.equal(f.store.listInvites({ state: "'; DELETE FROM sync_invites; --" }).page.total, 6);
+
+    // 分页：与空间列表同一套边界（上限 100、非法回落、越界空页）。
+    const paged = f.store.listInvites({ limit: 2, offset: 2 });
+    assert.deepEqual(paged.page, { total: 6, offset: 2, limit: 2 });
+    assert.equal(paged.invites.length, 2);
+    assert.deepEqual(f.store.listInvites({ offset: 99 }).invites, []);
+    assert.equal(f.store.listInvites({ offset: 99 }).page.total, 6);
+    assert.equal(f.store.listInvites({ limit: 500 }).page.limit, 100);
+
+    // 列表里**没有完整码**：只有 4 位 hint。明文在库里也不存在（只有哈希）。
+    const raw = JSON.stringify(f.store.listInvites());
+    for (const invite of [...old, ...fresh]) {
+        assert.equal(raw.includes(invite.code.replace(/-/g, '')), false, '列表不得回传完整码');
+        assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites WHERE code_hash = ?').get(invite.code.replace(/-/g, '')).n, 0,
+            '库里存的是哈希，不是码本身');
+    }
+    assert.equal(f.store.listInvites().invites.every((i) => /^[0-9a-f]{4}$/.test(i.hint)), true);
+});
+
+test('store：批量生成限 1–20 张、整批一个事务、响应之后库里没有明文', async (t) => {
+    const f = await fixture(t);
+    assert.equal(sync.INVITE_BATCH_MAX, 20, '上限是用户拍定的 20 张');
+
+    const batch = f.store.createInvites(20);
+    assert.equal(batch.invites.length, 20);
+    assert.equal(new Set(batch.invites.map((i) => i.code)).size, 20, '20 张码互不相同');
+    for (const invite of batch.invites) {
+        assert.deepEqual(Object.keys(invite).sort(), ['code', 'createdAt', 'expiresAt', 'hint']);
+        assert.match(invite.code, /^[0-9a-f]{4}(-[0-9a-f]{4}){5}$/, '展示形态与单张一致');
+        assert.equal(invite.hint, invite.code.slice(0, 4));
+        assert.equal(invite.expiresAt - invite.createdAt, 48 * HOUR, 'TTL 复用 createInvite 的 48 小时');
+    }
+    // 库里 20 行、只有哈希与 hint：**响应之后明文就找不回来了**。
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites').get().n, 20);
+    for (const invite of batch.invites) {
+        const hex = invite.code.replace(/-/g, '');
+        assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites WHERE code_hash = ?').get(hex).n, 0, '码本身不落库');
+        assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites WHERE hint = ?').get(invite.hint).n >= 1, true);
+    }
+    // 每张都能真的开一个空间（不是「生成了但用不了」）。
+    const space = await f.create('批量码口令', batch.invites[0].code);
+    assert.equal(space.success, true);
+    assert.equal(f.db.prepare('SELECT used_at IS NOT NULL AS used FROM sync_invites WHERE hint = ?').get(batch.invites[0].hint).used, 1);
+
+    // 边界：0 / 21 / 非整数 / 字符串 / 缺省 一律拒绝（**在 store 判**，不靠界面）。
+    for (const bad of [0, 21, 100, 2.5, -1, '5', null, undefined, {}]) {
+        expectStatus(() => f.store.createInvites(bad), (e) => e.status === 400, `count=${JSON.stringify(bad)} 必须 400`);
+    }
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites').get().n, 20, '被拒的批次一张都不落库');
+
+    // **单事务**：让第 3 条插入失败（触发器），整批必须回滚——不能留下半批。
+    f.db.exec(`CREATE TRIGGER boom BEFORE INSERT ON sync_invites
+               WHEN (SELECT COUNT(*) FROM sync_invites) >= 22
+               BEGIN SELECT RAISE(ABORT, 'boom'); END;`);
+    expectStatus(() => f.store.createInvites(10), (e) => /boom/.test(e.message) && !e.status, '中途失败要原样抛出');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites').get().n, 20,
+        '前 2 条插入被一起回滚——半批邀请码是最难解释的一类 bug');
+    f.db.exec('DROP TRIGGER boom');
+    assert.equal(f.store.createInvites(1).invites.length, 1, '库恢复后照旧可用');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_invites').get().n, 21);
+});
+
+test('store：批量撤销只撤「未使用且未过期」的，返回的计数是实际改动行数', async (t) => {
+    const f = await fixture(t);
+    const expired = f.store.createInvites(2).invites;        // 稍后过期
+    f.advance(48 * HOUR + 1);
+    const fresh = f.store.createInvites(3).invites;          // 未过期
+    await f.create('批量撤销口令', fresh[0].code);            // 用掉一张
+    const ids = () => f.store.listInvites({ limit: 100 }).invites;
+    const idOf = (hint) => ids().find((i) => i.hint === hint).id;
+
+    const result = f.store.revokeInvites([idOf(expired[0].hint), idOf(fresh[0].hint), idOf(fresh[1].hint)]);
+    assert.equal(result.revoked, 1, '只有那张「未使用且未过期」的被撤——已过期与已使用都不算');
+    const stateOf = (hint) => ids().find((i) => i.hint === hint).state;
+    assert.equal(stateOf(expired[0].hint), 'expired', '已过期的仍是已过期（撤销那一列不该被动）');
+    assert.equal(stateOf(fresh[0].hint), 'used', '已使用的不受影响');
+    assert.equal(stateOf(fresh[1].hint), 'revoked');
+    // 幂等：同一批再撤一次，改动 0 行（界面按钮点两下不会把数说大）。
+    assert.equal(f.store.revokeInvites([idOf(fresh[1].hint)]).revoked, 0);
+    // 重复 id 只算一次。
+    assert.equal(f.store.revokeInvites([idOf(fresh[2].hint), idOf(fresh[2].hint)]).revoked, 1);
+
+    // 边界：空数组 / 非数组 / 超过 100 个 / 坏 id 一律 400。
+    for (const bad of [[], 'abc', null, undefined, Array.from({ length: 101 }, (_, i) => `id-${i}`), [''], [12]]) {
+        expectStatus(() => f.store.revokeInvites(bad), (e) => e.status === 400, `ids=${String(JSON.stringify(bad)).slice(0, 40)} 必须 400`);
+    }
+    // 100 个 id 是允许的（上限本身不被拒）。
+    assert.equal(f.store.revokeInvites(Array.from({ length: 100 }, (_, i) => `missing-${i}`)).revoked, 0,
+        '不存在的 id 不算改动，也不报错');
+});

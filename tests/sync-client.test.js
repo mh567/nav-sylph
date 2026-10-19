@@ -380,8 +380,10 @@ test('访客的同步接口不受限流豁免，管理员邀请码接口必须�
         assert.match(code, new RegExp(`syncDeviceGuard\\('${kind}'\\)`), `${kind} 走设备令牌 + 按空间限流`);
     }
 
+    // 5 条：列表 / 生成 / 单张撤销 / 批量生成 / 批量撤销（#10 之后加了空间治理界面要用的两条）。
+    // 计数是让「新增一条未受保护的路由」变得可见——所以新增路由时必须同时改这里。
     const adminRoutes = [...code.matchAll(/app\.(get|post)\('(\/api\/admin\/sync-invites[^']*)'/g)].map(m => m[2]);
-    assert.equal(adminRoutes.length, 3, `管理员侧应恰好 3 条，实际 ${adminRoutes.length}`);
+    assert.equal(adminRoutes.length, 5, `管理员侧应恰好 5 条，实际 ${adminRoutes.length}`);
     for (const route of adminRoutes) {
         assert.match(code, new RegExp(`'${route.replace(/[/]/g, '\\/')}', rateLimit, requireAdmin`),
             `${route} 必须走 rateLimit + requireAdmin`);

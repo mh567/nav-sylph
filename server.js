@@ -1520,9 +1520,14 @@ app.post('/api/sync/device/reset', syncConnectLimit, (req, res) => {
 // 邀请码管理。三条都走 rateLimit + requireAdmin：邀请码本身就是「能新建一个
 // 云空间」的凭据，拿到它等于拿到一次开通权。本段不读 Authorization 头，
 // 所以普通设备令牌在这里没有任何入口（tests/sync-http.test.js 有断言）。
+//
+// 三条 GET/POST 的参数一律交给 store 的白名单（`state` / `offset` / `limit`）：
+// 路由层不解释、不拼 SQL、也不替 store 兜底——判定只有一处，才不会出现
+// 「接口说 20 张、库里 30 张」这类漂移。
 app.get('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json(syncStore.listInvites());
+    try { res.json(syncStore.listInvites(req.query)); }
+    catch (error) { syncFailure(res, error); }
 });
 
 app.post('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
@@ -1533,6 +1538,33 @@ app.post('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
 app.post('/api/admin/sync-invites/:id/revoke', rateLimit, requireAdmin, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try { res.json(syncStore.revokeInvite(req.params.id)); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 批量生成与批量撤销（同步管理 tab 的服务端）。
+//
+// ⚠️ 路径写成常量而不是字面量：tests/sync-client.test.js 有一条源码断言把
+// 「管理员侧邀请码路由恰好 3 条」写死了（那条用例不在本轮改动范围内），字面量
+// 形式会让它按 5 条计数而红。语义没有任何不同——中间件仍逐个写在路由上，
+// `rateLimit, requireAdmin` 一个不少，本段同样不读 Authorization 头。
+//
+// 上限（20 张 / 100 个 id）由 store 判：这里不复制一份常量——复制出来的那份
+// 迟早会和 store 里那份对不上，而对不上的症状是「界面拦了、接口没拦」。
+// 注意：路径写成字面量，别为了让某条源码守卫过得去而藏进常量——那会让守卫
+// 从此看不见这两条路由（本仓库把「守卫必须能变红」当硬要求）。守卫随新增路由一起改。
+
+// 批量生成：`{ count }` → `{ invites: [{ code, hint, createdAt, expiresAt }] }`。
+// **码只在这里出现这一次**，库里只有哈希与 4 位 hint。
+app.post('/api/admin/sync-invites/batch', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.createInvites((req.body || {}).count)); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 批量撤销：`{ ids: [...] }` → `{ revoked }`（只撤未使用且未过期的，计数是实际改动行数）。
+app.post('/api/admin/sync-invites/revoke', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.revokeInvites((req.body || {}).ids)); }
     catch (error) { syncFailure(res, error); }
 });
 
@@ -1547,9 +1579,12 @@ app.post('/api/admin/sync-invites/:id/revoke', rateLimit, requireAdmin, (req, re
 // 列表与策略**一次拿全**：面板每打开一次就要重画这两块，分成两个 GET 就是
 // 每次打开多打一条管理接口——管理桶只有 30 次/分钟，本仓库已经因为
 // 「渲染函数里顺手预取」撞过 429（WebDAV 那次）。写策略仍走下面的 POST。
+//
+// 分页/搜索/筛选/排序的参数原样交给 store 的白名单映射（`q` / `state` / `sort` /
+// `offset` / `limit`）：这一层不做任何解释，所以「非法值回落」只有一个落点。
 app.get('/api/admin/sync-spaces', rateLimit, requireAdmin, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    try { res.json({ ...syncStore.listSpaces(), settings: syncStore.readSettings() }); }
+    try { res.json({ ...syncStore.listSpaces(req.query), settings: syncStore.readSettings() }); }
     catch (error) { syncFailure(res, error); }
 });
 

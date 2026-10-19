@@ -46,8 +46,17 @@ async function ready(t) {
         adminDelete: (cookie, id) => app.request(`/api/admin/sync-spaces/${id}/delete`, { cookie, body: {} }),
         settings: (cookie) => app.request('/api/admin/sync-settings', { cookie }),
         setPolicy: (cookie, body) => app.request('/api/admin/sync-settings', { cookie, body }),
-        // 服务端进程跑在自己的库文件上；只读打开一份看落库结果（WAL 下只读连接没问题）
-        db: () => new (require('better-sqlite3'))(path.join(app.dir, 'nav-sylph.db'), { readonly: true })
+        // 同步管理 tab 的服务端：分页/筛选/排序 + 批量邀请码
+        spacesQuery: (cookie, query = '') => app.request(`/api/admin/sync-spaces${query}`, { cookie }),
+        inviteList: (cookie, query = '') => app.request(`/api/admin/sync-invites${query}`, { cookie }),
+        batch: (cookie, count) => app.request('/api/admin/sync-invites/batch', { cookie, body: { count } }),
+        revokeMany: (cookie, ids) => app.request('/api/admin/sync-invites/revoke', { cookie, body: { ids } }),
+        legacyRevoke: (cookie, id) => app.request(`/api/admin/sync-invites/${encodeURIComponent(id)}/revoke`, { cookie, body: {} }),
+        // 服务端进程跑在自己的库文件上；只读打开一份看落库结果（WAL 下只读连接没问题）。
+        // rwdb 是**可写**的一份：造「已过期」的邀请码、以及给批量生成装一个中途失败的
+        // 触发器（单事务那条用例），都只能直接从库里改，HTTP 接口不提供这两种操作。
+        db: () => new (require('better-sqlite3'))(path.join(app.dir, 'nav-sylph.db'), { readonly: true }),
+        rwdb: () => new (require('better-sqlite3'))(path.join(app.dir, 'nav-sylph.db'))
     };
 }
 
@@ -557,7 +566,8 @@ test('HTTP: 空间列表只回非敏感项——正文/口令哈希/令牌/回�
         'activeDevices', 'contentBytes', 'createdAt', 'deleted', 'deletedAt',
         'disabled', 'disabledAt', 'generation', 'id', 'revision', 'updatedAt'
     ].sort());
-    assert.deepEqual(Object.keys(body.usage).sort(), ['bytes', 'spaces']);
+    // `devices` 是同步管理 tab 概览要的「活跃设备数」；`spaces`/`bytes` 仍是原有的两个。
+    assert.deepEqual(Object.keys(body.usage).sort(), ['bytes', 'devices', 'spaces']);
     // ② 值也对得上：体积是物化字节数，设备数是未撤销台数。
     const db = f.db();
     const row = db.prepare('SELECT content_bytes FROM sync_spaces WHERE id = ?').get(created.spaceId);
@@ -772,4 +782,291 @@ test('HTTP: 限额由环境变量注入且真的生效（NAV_SYNC_SPACE_LIMIT / 
     const ok = await write(one.deviceToken, { revision: 1, operationId: 'under-quota', config: { ...CONFIG, theme: 'dark' }, modules: {} });
     assert.equal(ok.status, 200);
     assert.equal((await ok.json()).revision, 2);
+});
+
+// ==================== 同步管理 tab 的服务端：分页/筛选/排序 + 批量邀请码 ====================
+
+const SYNC_MANAGEMENT = [
+    ['/api/admin/sync-spaces?limit=1', 'GET', undefined],
+    ['/api/admin/sync-invites?state=unused', 'GET', undefined],
+    ['/api/admin/sync-invites/batch', 'POST', { count: 1 }],
+    ['/api/admin/sync-invites/revoke', 'POST', { ids: ['whatever'] }]
+];
+
+test('HTTP: 同步管理的四条路由只认管理员会话——匿名与设备令牌都是 401', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const invite = await f.newInvite(cookie);
+    const created = await (await f.create(await spaceProof('同步管理越权口令'), invite.code)).json();
+    assert.ok(created.deviceToken, '先拿到一枚合法设备令牌');
+
+    for (const [route, method, body] of SYNC_MANAGEMENT) {
+        const anonymous = await f.app.request(route, { method, body });
+        assert.equal(anonymous.status, 401, `匿名访问 ${route} 必须 401`);
+        const withToken = await f.app.request(route, { method, body, headers: { Authorization: `Bearer ${created.deviceToken}` } });
+        assert.equal(withToken.status, 401, `设备令牌访问 ${route} 必须 401（这条路本段根本不读 Authorization 头）`);
+    }
+    // 反过来：管理员会话能读能写（不是「一律 401」的假绿）。
+    assert.equal((await f.spacesQuery(cookie, '?limit=1')).status, 200);
+    assert.equal((await f.inviteList(cookie, '?state=unused')).status, 200);
+    assert.equal((await f.batch(cookie, 1)).status, 200);
+    assert.equal((await f.revokeMany(cookie, ['missing-id'])).status, 200);
+});
+
+test('HTTP: 空间列表服务端分页——page.total 是筛选后总数，usage 是全实例而不是当页', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const ids = [];
+    for (let i = 0; i < 5; i++) {
+        const invite = await f.newInvite(cookie);
+        const created = await (await f.create(await spaceProof(`分页口令-${i}`), invite.code, `page-${i}`)).json();
+        ids.push(created.spaceId);
+    }
+
+    const page1 = await (await f.spacesQuery(cookie, '?limit=2')).json();
+    assert.deepEqual(page1.page, { total: 5, offset: 0, limit: 2 });
+    assert.equal(page1.spaces.length, 2);
+    const page2 = await (await f.spacesQuery(cookie, '?limit=2&offset=2')).json();
+    assert.equal(page2.spaces.length, 2);
+    const page3 = await (await f.spacesQuery(cookie, '?limit=2&offset=4')).json();
+    assert.equal(page3.spaces.length, 1, '最后一页只有 1 条');
+    // 三页拼起来恰好是 5 个不同的空间，没有重复也没有缺口。
+    assert.equal(new Set([...page1.spaces, ...page2.spaces, ...page3.spaces].map((s) => s.id)).size, 5);
+
+    // 默认每页 20：不传 limit 时 page.limit 必须真的是 20（界面按它算总页数）。
+    const def = await (await f.spacesQuery(cookie)).json();
+    assert.equal(def.page.limit, 20);
+    assert.equal(def.page.total, 5);
+
+    // 越界偏移：空页，但 total 不变（界面据此把「第 9/1 页」纠正回来）。
+    const beyond = await (await f.spacesQuery(cookie, '?offset=99')).json();
+    assert.deepEqual(beyond.spaces, []);
+    assert.equal(beyond.page.total, 5);
+    assert.equal(beyond.page.offset, 99);
+
+    // limit 上限 100：超了按 100 算（page.limit 如实回报，界面照着它显示）。
+    const capped = await (await f.spacesQuery(cookie, '?limit=5000')).json();
+    assert.equal(capped.page.limit, 100);
+    // 非法值回落默认，不报错（地址栏被手改成垃圾不该把面板打红）。
+    const junk = await (await f.spacesQuery(cookie, '?limit=abc&offset=-3')).json();
+    assert.deepEqual(junk.page, { total: 5, offset: 0, limit: 20 });
+
+    // 用量是**全实例**：把其中一个删掉之后，翻页看的仍是同一组数。
+    assert.equal((await f.adminDelete(cookie, ids[0])).status, 200);
+    const afterDelete = await (await f.spacesQuery(cookie, '?limit=2')).json();
+    assert.equal(afterDelete.page.total, 5, '墓碑仍在「全部」里（治理面板要看得见）');
+    assert.equal(afterDelete.spaces.length, 2);
+    assert.equal(afterDelete.usage.spaces, 4, '用量只算活动空间');
+    assert.equal(afterDelete.usage.devices, 4, '删掉那个空间的设备已吊销，不再算活跃');
+    const db = f.db();
+    const expectedBytes = db.prepare('SELECT COALESCE(SUM(content_bytes), 0) AS n FROM sync_spaces WHERE deleted = 0').get().n;
+    db.close();
+    assert.equal(afterDelete.usage.bytes, expectedBytes);
+    assert.ok(afterDelete.usage.bytes > afterDelete.spaces.reduce((n, s) => n + s.contentBytes, 0),
+        '全实例字节数必须大于当页合计——相等就说明它被算成了当页合计');
+    // 已删除那一档能单独筛出来（界面的「已删除」状态就靠它）。
+    const graves = await (await f.spacesQuery(cookie, '?state=deleted')).json();
+    assert.deepEqual(graves.spaces.map((s) => s.id), [ids[0]]);
+    assert.equal(graves.spaces[0].deleted, true);
+});
+
+test('HTTP: 空间列表的 q / state / sort 每种取值都真的生效（q 只匹配前缀）', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const make = async (name, bookmarks) => {
+        const invite = await f.newInvite(cookie);
+        const proof = await spaceProof(`筛选口令-${name}`);
+        const created = await (await f.create(proof, invite.code, `filter-${name}`)).json();
+        const config = { ...CONFIG, categories: [{ id: 'c1', name: '工作', bookmarks: Array.from({ length: bookmarks }, (_, i) => ({ id: `b${i}`, title: `t${i}`, url: `https://e.example/${'a'.repeat(80)}${i}` })) }] };
+        await f.write(created.deviceToken, { revision: 1, operationId: `size-${name}`, config, modules: {} });
+        return created;
+    };
+    const small = await make('a', 1);
+    const large = await make('b', 6);
+    const medium = await make('c', 3);
+    const stopped = await make('d', 2);
+    // 设备数：large 三台、其余各一台（排序「设备数」要能看出差别）。
+    await f.connect(await spaceProof('筛选口令-b'), 'filter-b-2');
+    await f.connect(await spaceProof('筛选口令-b'), 'filter-b-3');
+    assert.equal((await f.disable(cookie, stopped.spaceId, true)).status, 200);
+
+    /** 一次查询只回 ids，断言读起来像行话而不是一堆 json 解包。 */
+    const query = async (qs) => {
+        const res = await f.spacesQuery(cookie, qs);
+        assert.equal(res.status, 200, `${qs} 必须 200`);
+        return res.json();
+    };
+
+    // state 四个取值：all / active / disabled / deleted。
+    assert.equal((await query('?state=active')).page.total, 3, '停用的不算正常');
+    const disabled = await query('?state=disabled');
+    assert.deepEqual(disabled.spaces.map((s) => s.id), [stopped.spaceId]);
+    assert.equal(disabled.spaces[0].disabled, true);
+    assert.equal((await query('?state=deleted')).page.total, 0);
+    assert.equal((await query('?state=bogus')).page.total, 4, '非法状态回落「全部」');
+    assert.equal((await query('')).page.total, 4);
+
+    // q 只认**前缀**：前 8 位能定位，尾部片段一条都不该匹配（含内容匹配更不该）。
+    const byPrefix = await query(`?q=${small.spaceId.slice(0, 8)}`);
+    assert.deepEqual(byPrefix.spaces.map((s) => s.id), [small.spaceId]);
+    assert.equal((await query(`?q=${large.spaceId.slice(-8)}`)).page.total, 0, '尾部片段不是前缀');
+    assert.equal((await query('?q=zzzzzzzz')).page.total, 0);
+    // 搜索**不查正文**：正文里的标记串（书签 url/标题）搜不到任何东西。
+    assert.equal((await query('?q=e.example')).page.total, 0, 'q 不碰正文');
+
+    // sort 三种取值 + 非法回落。
+    const byBytes = await query('?sort=bytes');
+    assert.equal(byBytes.spaces[0].id, large.spaceId, '体积最大的排第一');
+    for (let i = 1; i < byBytes.spaces.length; i++) {
+        assert.ok(byBytes.spaces[i - 1].contentBytes >= byBytes.spaces[i].contentBytes, '体积降序');
+    }
+    const byDevices = await query('?sort=devices');
+    assert.equal(byDevices.spaces[0].id, large.spaceId, '三台设备的排第一');
+    assert.equal(byDevices.spaces[0].activeDevices, 3);
+    const defaultOrder = await query('');
+    assert.equal(defaultOrder.spaces[0].id, stopped.spaceId, '默认「最近更新」：最后动的那个在最前');
+    assert.deepEqual((await query('?sort=bogus')).spaces.map((s) => s.id), defaultOrder.spaces.map((s) => s.id),
+        '非法排序 = 默认排序');
+    // 每种排序都把 4 个空间不多不少地排进来（筛选与排序不会互相吃掉）。
+    for (const sort of ['updated', 'bytes', 'devices']) {
+        assert.equal((await query(`?sort=${sort}`)).spaces.length, 4, `${sort} 不该丢行`);
+    }
+    assert.equal(medium.spaceId && small.spaceId !== medium.spaceId, true, '三个空间各有各的 id');
+});
+
+test('HTTP: 批量生成 20 张成功、21 张 400，码互不相同且响应之后库里查不到明文', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+
+    const ok = await f.batch(cookie, 20);
+    assert.equal(ok.status, 200);
+    const body = await ok.json();
+    assert.equal(body.invites.length, 20, '一次 20 张（服务端上限就是 20）');
+    assert.deepEqual(Object.keys(body.invites[0]).sort(), ['code', 'createdAt', 'expiresAt', 'hint']);
+    assert.equal(new Set(body.invites.map((i) => i.code)).size, 20, '20 张互不相同');
+    for (const invite of body.invites) {
+        assert.match(invite.code, /^[0-9a-f]{4}(-[0-9a-f]{4}){5}$/);
+        assert.equal(invite.hint, invite.code.slice(0, 4));
+        assert.equal(invite.expiresAt - invite.createdAt, 48 * 60 * 60 * 1000, '48 小时，与单张一致');
+    }
+
+    // **响应之后库里没有明文**：整张表的每一列都不含那串码（码本身、分隔形式都不许有）。
+    const db = f.db();
+    const rows = db.prepare('SELECT * FROM sync_invites').all();
+    db.close();
+    assert.equal(rows.length, 20);
+    const dump = JSON.stringify(rows);
+    for (const invite of body.invites) {
+        const hex = invite.code.replace(/-/g, '');
+        assert.equal(dump.includes(hex), false, '库里不得出现邀请码明文');
+        assert.equal(rows.some((row) => row.code_hash === hex), false, 'code_hash 是哈希，不是码');
+        assert.equal(rows.some((row) => row.hint === invite.hint), true, '只留 4 位 hint');
+    }
+    // 列表里也回不到码。
+    const listed = await (await f.inviteList(cookie)).json();
+    assert.equal(listed.page.total, 20);
+    assert.equal(JSON.stringify(listed).includes(body.invites[0].code.replace(/-/g, '')), false);
+
+    // 越界：21 张、0 张、非整数、字符串一律 400，且一张都不落库。
+    for (const count of [21, 0, 2.5, '20']) {
+        const rejected = await f.batch(cookie, count);
+        assert.equal(rejected.status, 400, `count=${JSON.stringify(count)} 必须 400`);
+        assert.match((await rejected.json()).error, /1–20/);
+    }
+    assert.equal((await (await f.inviteList(cookie)).json()).page.total, 20, '被拒的批次一条都不落库');
+
+    // **单事务**：让第 3 条插入失败（触发器），整批必须回滚——不能留下半批。
+    const rw = f.rwdb();
+    rw.exec(`CREATE TRIGGER boom BEFORE INSERT ON sync_invites
+             WHEN (SELECT COUNT(*) FROM sync_invites) >= 22
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;`);
+    const failed = await f.batch(cookie, 10);
+    assert.equal(failed.status, 500, '中途失败是 500（不是 200 + 少几张）');
+    assert.equal(rw.prepare('SELECT COUNT(*) n FROM sync_invites').get().n, 20, '前 2 条插入被一起回滚');
+    rw.exec('DROP TRIGGER boom');
+    rw.close();
+    assert.equal((await f.batch(cookie, 20)).status, 200, '库恢复后照旧可用');
+});
+
+test('HTTP: 批量撤销只撤「未使用且未过期」的，返回的 revoked 是实际改动数', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const codes = (await (await f.batch(cookie, 5)).json()).invites;
+    // 两张用掉（真路径），一张改成已过期（接口不提供这种操作，直接改库）。
+    await f.create(await spaceProof('撤销口令甲'), codes[0].code, 'revoke-a');
+    await f.create(await spaceProof('撤销口令乙'), codes[1].code, 'revoke-b');
+    const rw = f.rwdb();
+    rw.prepare('UPDATE sync_invites SET expires_at = ? WHERE hint = ?').run(Date.now() - 1000, codes[2].hint);
+    rw.close();
+
+    const listed = await (await f.inviteList(cookie, '?limit=100')).json();
+    const idOf = (hint) => listed.invites.find((i) => i.hint === hint).id;
+    const target = [idOf(codes[0].hint), idOf(codes[2].hint), idOf(codes[3].hint)];
+
+    const revoked = await f.revokeMany(cookie, target);
+    assert.equal(revoked.status, 200);
+    assert.equal((await revoked.json()).revoked, 1, '已使用的、已过期的都不撤，只有那张未使用的被撤');
+    const after = await (await f.inviteList(cookie, '?limit=100')).json();
+    const stateOf = (hint) => after.invites.find((i) => i.hint === hint).state;
+    assert.equal(stateOf(codes[0].hint), 'used', '已使用的仍是已使用');
+    assert.equal(stateOf(codes[2].hint), 'expired', '已过期的仍是已过期');
+    assert.equal(stateOf(codes[3].hint), 'revoked');
+    assert.deepEqual(after.counts, { unused: 1, used: 2, expired: 1, revoked: 1 });
+    // 幂等：再撤一次改动 0 行（按钮点两下不能把数说大）。
+    assert.equal((await (await f.revokeMany(cookie, target)).json()).revoked, 0);
+    // 那张被撤的码真的用不了了。
+    const rejected = await f.create(await spaceProof('撤销之后的口令'), codes[3].code, 'revoked-use');
+    assert.equal(rejected.status, 403);
+    assert.equal((await rejected.json()).code, 'invite_revoked');
+
+    // 边界：空数组 / 超过 100 个 / 坏 id 一律 400。
+    for (const ids of [[], Array.from({ length: 101 }, (_, i) => `id-${i}`), [123]]) {
+        const bad = await f.revokeMany(cookie, ids);
+        assert.equal(bad.status, 400, `ids=${JSON.stringify(ids).slice(0, 30)} 必须 400`);
+    }
+});
+
+test('HTTP: 邀请码列表按状态筛选 + 分页 + 计数量（四个桶加起来等于总数）', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const codes = (await (await f.batch(cookie, 6)).json()).invites;
+    await f.create(await spaceProof('邀请码列表口令'), codes[0].code, 'list-use');
+    let listed = await (await f.inviteList(cookie, '?limit=100')).json();
+    const idOf = (hint) => listed.invites.find((i) => i.hint === hint).id;
+    assert.equal((await f.legacyRevoke(cookie, idOf(codes[3].hint))).status, 200, '既有那条单张撤销仍然可用');
+    const rw = f.rwdb();
+    rw.prepare('UPDATE sync_invites SET expires_at = ? WHERE hint = ?').run(Date.now() - 1000, codes[4].hint);
+    rw.close();
+
+    const all = await (await f.inviteList(cookie, '?limit=100')).json();
+    assert.equal(all.page.total, 6);
+    assert.deepEqual(all.counts, { unused: 3, used: 1, expired: 1, revoked: 1 });
+    assert.equal(Object.values(all.counts).reduce((a, b) => a + b, 0), all.page.total, '四个桶互不重叠且合起来等于总数');
+    // 每行只有 hint 与状态/时间：没有完整码的字段。
+    assert.deepEqual(Object.keys(all.invites[0]).sort(), ['createdAt', 'expired', 'expiresAt', 'hint', 'id', 'revoked', 'state', 'used', 'usedAt']);
+    assert.equal(all.invites.every((i) => /^[0-9a-f]{4}$/.test(i.hint)), true);
+    assert.equal(JSON.stringify(all).includes(codes[0].code.replace(/-/g, '')), false, '列表不回完整码');
+
+    // 每种状态筛出来的条数与计数一致，且行自报同一个状态。
+    for (const [state, expected] of Object.entries(all.counts)) {
+        const listedState = await (await f.inviteList(cookie, `?state=${state}&limit=100`)).json();
+        assert.equal(listedState.page.total, expected, `state=${state} 的条数`);
+        assert.equal(listedState.invites.length, expected);
+        assert.equal(listedState.invites.every((i) => i.state === state), true);
+    }
+    // 非法状态回落「全部」。
+    assert.equal((await (await f.inviteList(cookie, '?state=bogus')).json()).page.total, 6);
+
+    // 分页：每页 2 条，三页拼起来是 6 条；越界是空页但 total 不变。
+    const pages = [];
+    for (const offset of [0, 2, 4]) pages.push(await (await f.inviteList(cookie, `?limit=2&offset=${offset}`)).json());
+    assert.deepEqual(pages.map((p) => p.invites.length), [2, 2, 2]);
+    assert.equal(new Set(pages.flatMap((p) => p.invites.map((i) => i.id))).size, 6);
+    for (const page of pages) assert.deepEqual(page.counts, all.counts, '计数与分页无关');
+    const beyond = await (await f.inviteList(cookie, '?offset=99')).json();
+    assert.deepEqual(beyond.invites, []);
+    assert.equal(beyond.page.total, 6);
+    // 上限 100 与非法值回落。
+    assert.equal((await (await f.inviteList(cookie, '?limit=999')).json()).page.limit, 100);
+    assert.equal((await (await f.inviteList(cookie, '?limit=x')).json()).page.limit, 20);
 });
