@@ -2,13 +2,54 @@
 
 - Issue：<https://github.com/mh567/nav-sylph/issues/13>（父规格 #1；语义见 `personal-navigation-sync-design.md` §8、§10、§11）
 - 基线：`c9036c2`（#12 完成）
-- 状态：**进行中——只做完第一段（服务端核心）**。本地未提交、未推送、未发版、Issue 未关闭。
+- 状态：**进行中——两段都做完（服务端核心 + 客户端界面与浏览器用例）**，剩下的是 #14 的综合验收与文档收口
+  （`architecture.md` 的 #13 一节、`current-work.md` 交接、README/DEPLOYMENT 故障手册）。本地未提交、未推送、未发版、Issue 未关闭。
 
 ---
 
-## 进行中：已完成 X / 未完成 Y / 下一步 Z / 当前全量数字
+## 本段（第二段：客户端界面与浏览器用例）完成情况
 
-**已完成（第一段：服务端核心，1–7 全做，含测试）**
+**已完成**
+
+8. `public/app.js` 的恢复改成**两段式**：`showRestoreOptionsDialog` 只决定范围 → `POST /api/webdav/restore/preview`
+   → 新的**计划对话框** `showRestorePlanDialog`（`#restorePlanDialog`）：
+   - 「将恢复」逐域列出（中文域名 + 项数 + 体积 + `版本 N → N+1`）；「将跳过」逐条给原因
+     （未知模块 / 旧备份不含导航与引擎 / 类型不符 / 派生域）；凭据行「N 台机器的凭据无法解开，
+     恢复后显示待授权；M 台需要重新部署」+ 时间线来源一条；
+   - 旧备份（服务端 `legacy: true`）醒目提示「这是旧版备份：只恢复书签；导航与搜索引擎、站点默认模板不在本版恢复范围内。」；
+   - 副题「恢复期间受影响配置会暂时拒绝写入；其他设备上的未保存草稿会被提示冲突，不会被写回。」；
+   - 底部 `取消` + **danger** 样式「恢复并覆盖这些配置」，确认时回传 `planDigest`；
+   - 错误分支分开：409 `stale_plan` →「备份内容已变化，请重新预览」（带「重新预览」按钮，主按钮置灰）、
+     503 `busy` →「正在执行另一项管理操作，请稍后再试」、503 `restore_halted` →「上一次恢复未完成，受影响配置已暂停」；
+     成功 → 关两层对话框、`privateEpoch++`、提示、`location.reload()`。
+   - 保存路径（`saveEditSession` / `save`）被锁拒掉时也用同一套文案，且明说「草稿已保留」。
+9. `public/admin.css`：`.webdav-restore-plan` 与 `.webdav-plan-*`（清单行、跳过理由、旧备份提示、凭据行、错误区）。
+10. `public/sw.js`：`nav-v123` → **`nav-v124`**（首条注释写明本次变更），`tests/fav-tab.test.js` 的测试名与两条
+    写死版本号的断言同步到 v124。
+11. `tests/browser/restore.cjs`（新增）：真实浏览器 + 真实临时安装 + 本地 WebDAV 桩，**4 条用例**
+    （清单与恢复后一致 / 旧备份只恢复书签 / 恢复持锁期间另一方 503 且草稿保留 / 三个失败码各自得文案）。
+12. `docs/mockup-webdav-restore.html`（新增）：引用真实样式表，六个状态（正常 / 含跳过项 / 旧备份 / 凭据待授权 /
+    409 / 503 bus） + 主题与宽窄工具栏。
+
+**未完成（留给 #14 或明确不做）**
+
+- `docs/architecture.md` 的 #13 一节、`docs/current-work.md` 交接、README/DEPLOYMENT 的故障手册（不在本段改动范围）；
+- `halted` 的**不可关闭横幅**：本段允许改的文件里没有对应 UI 位置（横幅要挂在首页/管理面板顶部，属于 `public/app.js` +
+  `index.html` 两块一起动），而本段不允许改 `index.html`；`/api/health` 的 `degraded` + 受影响域 503 已经能给出结论，
+  横幅留给 #14 统一做。
+- 逐条验收的勾选：#14 负责，本记录只给证据。
+
+**当前全量数字**
+
+- 单元：`node --test tests/*.test.js` = **796 / 796**（与基线相同，本段只加浏览器用例，未加单元用例）。
+- 浏览器：`node --test tests/browser/restore.cjs` = **4 / 4**，连跑三次全绿。
+- 变异证红（每条都逐字节还原，`cmp` 核对）：把 `busy`/`stale_plan` 两句文案改成笼统失败 → 用例 3、4 红；
+  去掉旧备份提示与跳过理由 → 用例 1、2 红。
+- `node --check public/app.js public/sw.js tests/browser/restore.cjs` 全过；`git diff --check` 干净。
+
+---
+
+## 第一段（服务端核心）：已完成 1–7，含测试
 
 1. `lib/admin-lock.js`（新增）：进程内单锁 `acquire(kind, domains)` / `release()` / `current()`；
    `rejectIfBusy(domains)` 中间件（503 + `code:'busy'` + `Retry-After: 5`）；`drainInFlight(domains, timeoutMs)`
@@ -64,7 +105,10 @@
   旧备份（`type:'nav-sylph-backup'`）只出 `favorites` 一个 restore 域，`admin-navigation`/`default-template` 进 skip。
 - 证据：`tests/restore-http.test.js` 用例 1（预览清单、四域将恢复、`metrics-cache` 派生域进 skip 且有原因、
   新版本号 = 当前 +1）与用例 5（旧备份只恢复书签 + skip 原因）。
-- 界面展示：**须第二段**。
+- 界面展示（第二段，已完成）：点「恢复」→ 选范围 → **预览** → `#restorePlanDialog`：
+  「将恢复」逐域（中文名 + 项数 + 体积 + `版本 N → N+1`）、「将跳过」逐条原因、凭据行、
+  旧备份醒目提示。证据：`tests/browser/restore.cjs` 用例 1（四域清单 + 体积 + `版本 N → N+1` + 跳过项有原因 +
+  凭据行文案 + danger 确认按钮）与用例 2（旧备份提示逐字命中 + 「将恢复」只剩一个域）。
 
 ### 2. 恢复与管理员配置写入共用协调锁，拒绝受影响域新写入；暂停并等待在途任务，恢复和备份互斥
 
@@ -118,19 +162,56 @@
 
 - 恢复成功后：`invalidateMetricsCache()` + `timeline.scheduler.start()`（drain 停过它，失败路径也放回去）。
 - 已覆盖：故障注入（用例 3）、中断重启（recovery 用例）、新旧备份（用例 5）、竞争保存（用例 4，503）。
-- **未覆盖**：「另一设备的新修改不被覆盖」的**真实并发时序**（两台设备在同一时刻保存同一域）与
-  真实浏览器里的第二个标签页（`tests/browser/restore.cjs`）**须第二段**。
+- 真实浏览器（第二段，已完成）：`tests/browser/restore.cjs` 三条——
+  1. 备份 → 改数据 → 恢复：清单 → 确认 → reload 后书签回到备份那一刻（界面与接口两侧都断言）；
+  2. 旧备份只恢复书签，导航/引擎一字未动；
+  3. **两个浏览器上下文**：恢复持锁期间另一方保存导航 → 503 `busy` + 界面「正在执行另一项管理操作，请稍后再试」
+     + 草稿保留（分类仍在编辑态里）+ 那次写没有落地。持锁窗口由本地 WebDAV 桩的 GET 延迟撑开，
+     **不是**用 `page.route` 伪造响应——被拒的那次请求真的到了服务端；
+  4. 失败分支：409 `stale_plan`（主按钮置灰 + 「重新预览」真的重发预览）、503 `busy`（可原样重试）、
+     503 `restore_halted`（「上一次恢复未完成，受影响配置已暂停」），且失败后仍可取消、不把人关在模态里。
+     这一条用 `page.route` 摆响应——三个码的**服务端**语义由 `tests/restore-http.test.js` /
+     `tests/restore-recovery.test.js` 用真实 HTTP 与真实库证明，这里只验界面这一层。
 
 ## 验证数字与命令
 
 ```
 node --test tests/*.test.js        # 796 / 796
 node --test tests/restore-merge.test.js tests/restore-http.test.js tests/restore-recovery.test.js  # 16 / 16
-node --check server.js lib/admin-lock.js lib/restore.js lib/db.js
+node --test tests/browser/restore.cjs   # 4 / 4（连跑三次全绿）
+node --check server.js lib/admin-lock.js lib/restore.js lib/db.js public/app.js public/sw.js tests/browser/restore.cjs
 git diff --check
 ```
 
-## 本段额外做的决定（每条一句理由）
+## 第二段额外做的决定（每条一句理由）
+
+1. **「选择恢复内容」对话框保留为范围选择，预览放在它之后**：`tests/timeline-backup.test.js` 与
+   `tests/fav-tab.test.js` 逐字钉住了那个方法（含 radio 的 `value` 与「恰好一个默认选中」），
+   而本段不允许改那些测试；于是流程是「清单 → 选范围 → 预览 → 计划对话框 → 覆盖」，
+   真正不可逆的那一下仍然在计划对话框上。
+2. **确认只带 `planDigest`，没有 `runId`**：`/api/webdav/restore/preview` 的响应里没有 runId
+   （它由 `lib/restore.js` 的 `apply()` 在应用时生成），客户端编一个假的没有意义；
+   服务端也不读 body 里的 runId。已在 `showRestorePlanDialog` 的注释里写明，将来预览下发 runId 时一起回传。
+3. **体积取自列表接口**：预览响应没有体积字段，所以列表项渲染 `data-*-size`（远端 `getcontentlength`），
+   点「恢复」时随 selection 带进计划对话框——不在前端凭空算一个体积。
+4. **凭据行的两个数字按既有状态词拆开**：`state==='pending'` → 「凭据无法解开，恢复后显示待授权」，
+   `state==='not_deployed'` → 「需要重新部署」，`kind==='timeline-source'` 单独一行；
+   不发明新的状态词（沿用 #12 定下的 `deployState` / `pending_authorization`）。
+5. **跳过项的域名映射写在 `RESTORE_DOMAIN_LABEL` 一处**，键用 `admin-navigation`（`SKIPPED_DOMAINS` 的口径），
+   不是协调锁用的 `navigation-admin`——两者写混的表现是把内部标识抛给用户。
+6. **保存被锁拒掉时的文案也改了**（`saveEditSession` / `save`）：`busy` / `restore_halted` 走
+   `restoreFailureText`，其余保持原样，所以「草稿已保留」这条既有承诺不变。
+7. **`halted` 横幅没做**（理由见上面「未完成」）。
+8. **WebDAV 桩在 `tests/browser/restore.cjs` 里再复制一份**：`tests/helpers/` 下没有公共桩模块，
+   而本段允许新增的文件只有那一个 `.cjs`。
+
+## 仍未验证
+
+- 真实第三方 WebDAV（只用合成上游）；目标机与公网时延归 #14。
+- `favorites.revision` 的跨路径一致性（见上面第 4 条的诚实边界）。
+- `halted` 的界面横幅（`/api/health` 的 `degraded` 与非 200 之外的 503 已可用）。
+
+## 第一段额外做的决定（每条一句理由）
 
 1. **`planDigest` 对旧客户端可选**：`tests/backup-scope-http.test.js` 等既有真实 HTTP 用例不带它，
    而本段的改动范围不允许改那些测试；不带 digest 时仍然走锁/快照/回滚，只是少了「请重新预览」这一步。

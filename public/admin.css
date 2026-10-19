@@ -312,6 +312,89 @@
 .restore-option:has(input:checked) { border-color: var(--focus); background: var(--admin-active); }
 .restore-option:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
 
+/* ===== 恢复计划对话框（#13）=====
+   清单要同时放下「将恢复 / 将跳过（逐条原因）」两段，440px 会把每一行都折成两行，
+   所以只加宽这一个对话框，不动 .fav-dialog 的默认宽度。 */
+.webdav-restore-plan { max-width: 560px; }
+.webdav-plan-sub {
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.55;
+}
+/* 旧备份提示必须比普通说明更显眼：这一条解释了「为什么清单里只剩书签」。
+   用错误色的边框与底纹而不是纯文本——纯文本在长清单里会被读过去。 */
+.webdav-plan-legacy {
+    margin: 0 0 12px;
+    padding: 9px 11px;
+    border: 1px solid var(--admin-error);
+    border-left-width: 3px;
+    border-radius: 9px;
+    background: rgba(164, 76, 70, .07);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.55;
+}
+.webdav-plan-section { margin-bottom: 12px; }
+.webdav-plan-title {
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+}
+.webdav-plan-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 220px;
+    overflow-y: auto;
+}
+.webdav-plan-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 2px;
+    padding: 7px 10px;
+    margin-bottom: 6px;
+    border: 1px solid var(--admin-edge);
+    border-radius: 9px;
+    background: var(--admin-row);
+}
+.webdav-plan-item:last-child { margin-bottom: 0; }
+.webdav-plan-domain { color: var(--text); font-size: 13px; font-weight: 600; }
+.webdav-plan-meta { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.webdav-plan-revision { margin-left: 8px; color: var(--accent); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 跳过项的理由是这一节的重点，所以占满整行而不是挤在右侧 */
+.webdav-plan-reason { flex: 1 0 100%; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.webdav-plan-skip .webdav-plan-item { background: transparent; border-style: dashed; }
+.webdav-plan-empty { margin: 0; color: var(--text-muted); font-size: 12px; }
+.webdav-plan-credentials {
+    margin-bottom: 12px;
+    padding: 9px 11px;
+    border: 1px solid var(--admin-edge);
+    border-radius: 9px;
+    background: var(--admin-active);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+}
+.webdav-plan-credentials p { margin: 0 0 4px; }
+.webdav-plan-credentials p:last-child { margin-bottom: 0; }
+.webdav-plan-hint { color: var(--text-muted); font-size: 11px; }
+.webdav-plan-error {
+    margin-bottom: 12px;
+    padding: 9px 11px;
+    border: 1px solid var(--admin-error);
+    border-radius: 9px;
+    background: rgba(164, 76, 70, .08);
+    color: var(--admin-error);
+    font-size: 12px;
+    line-height: 1.55;
+}
+.webdav-plan-error .btn { margin-left: 6px; vertical-align: baseline; }
+
 /* 内边距不在这里设：下面那条同时写四边的规则会完整覆盖它。
    曾经写成 `padding: 20px` 再由 `padding-bottom` 覆盖，导致 top 20px / bottom 12px
    的不对称，对话框在宽屏下恒定偏上 8px。要改内边距就改下面那条。 */

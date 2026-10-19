@@ -1,3 +1,7 @@
+// nav-v124：恢复改成两段式（Issue #13）——先 `POST /api/webdav/restore/preview` 出
+// 「将恢复 / 将跳过（含原因）/ 凭据待授权 / 新版本号」与 `planDigest`，用户在那份计划上
+// 确认后才带 digest 真正覆盖；409 stale_plan / 503 busy / 503 restore_halted 各有自己的
+// 文案与下一步，旧备份醒目提示「只恢复书签」。改了 app.js、admin.css。
 // nav-v123：管理员 WebDAV 备份按新范围生成（Issue #12）——只装收藏、备忘录、私人模块
 // 与时间线，新增版本化清单（含文件字节 sha256 与跳过项原因）；导航/引擎/模板/公开模块项/
 // 密码与会话/监控缓存与各类凭据一律排除，恢复侧按稳定模块 id 合并私人项、保留本机公开项，
@@ -316,7 +320,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v123';
+const CACHE = 'nav-v124';
 const ASSETS = [
     '/',
     '/index.html',

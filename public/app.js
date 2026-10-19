@@ -113,6 +113,27 @@
         conflict: '同步冲突'
     };
 
+    /**
+     * 恢复计划里每个**域**在界面上的说法（#13）。
+     *
+     * 键是服务端 `lib/restore.js` 的域标识，与 `POST /api/webdav/restore/preview`
+     * 返回的 `plan.domains[].domain` 一一对应。`navigation-admin` 与 `metrics-cache`
+     * 只会出现在**跳过**清单里（前者是旧备份的导航/引擎，后者是派生数据），
+     * 写在这里是为了让「跳过原因」那一行也有一句人话，而不是把内部标识抛给用户。
+     */
+    const RESTORE_DOMAIN_LABEL = {
+        favorites: '书签（含隐私标签）',
+        memos: '备忘录（正文与置顶状态）',
+        modules: '私人模块（监控目标与布局）',
+        timeline: 'Special Line 时间线（来源与事件）',
+        // 旧备份的配置域。⚠️ 键是 `admin-navigation`（`lib/webdav-backup.js` 的
+        // SKIPPED_DOMAINS 用的就是它），不是 `navigation-admin`——后者是协调锁与
+        // 版本表里的域名，写错的话跳过清单会把内部标识抛给用户。
+        'admin-navigation': '管理员导航与搜索引擎',
+        'metrics-cache': '监控缓存（派生数据）',
+        'modules.widgets#unknown': '本机没有实现的模块'
+    };
+
     // 管理端凭据由 HttpOnly Cookie 承载，JS 读不到也不需要读。
     // 服务端把「因环境变化被自动登出」用两种方式表达：401 响应体里的
     // code:'env_changed'，以及两处软门（200 响应）上的 X-Session-Env-Changed 头。
@@ -1559,7 +1580,13 @@
                 const res = await this.saveNavigation();
                 if (!res.success) throw new Error(res.error || '保存失败');
             } catch (e) {
-                this.showToast(e.message + '，草稿已保留；可取消编辑后读取服务器版本', 'error', 8000);
+                // 被协调锁拒掉（恢复/备份正在进行）与真正的保存失败，下一步完全不同：
+                // 前者等几秒再点就行、草稿一个字都不能丢；后者要看冲突。文案只说一句
+                // 「保存失败」会让用户以为自己的改动没了。
+                const text = (e && (e.code === 'busy' || e.code === 'restore_halted'))
+                    ? this.restoreFailureText(e)
+                    : e.message;
+                this.showToast(text + '，草稿已保留；可取消编辑后读取服务器版本', 'error', 8000);
                 return;
             }
             this.editSession = null;
@@ -8171,6 +8198,10 @@
                                          data-timeline="${this.esc(b.timelineFile || '')}"
                                          data-manifest="${this.esc(b.manifestFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
+                                         data-bookmarks-size="${b.bookmarksSize || ''}"
+                                         data-memos-size="${b.memosSize || ''}"
+                                         data-modules-size="${b.modulesSize || ''}"
+                                         data-timeline-size="${b.timelineSize || ''}"
                                          data-created-at="${this.esc(b.createdAt || '')}">
                                         <div class="webdav-backup-info">
                                             <div class="webdav-backup-name">${displayName}</div>
@@ -8216,7 +8247,18 @@
                             modulesFile,
                             timelineFile,
                             manifestFile,
-                            legacyFile
+                            legacyFile,
+                            createdAt: item.dataset.createdAt,
+                            // 每个域的文件字节数：计划对话框要显示「这一域有多大」。
+                            // 值来自列表接口（服务端按远端 PROPFIND 的 getcontentlength 算），
+                            // **预览响应里没有体积字段**，所以只能从这里带过去——不要在
+                            // 计划对话框里凭空算一个体积出来。
+                            sizes: {
+                                favorites: Number(item.dataset.bookmarksSize) || 0,
+                                memos: Number(item.dataset.memosSize) || 0,
+                                modules: Number(item.dataset.modulesSize) || 0,
+                                timeline: Number(item.dataset.timelineSize) || 0
+                            }
                         }, dialog);
                     };
                 });
@@ -8368,7 +8410,11 @@
             this.mountLayer(optionsDialog);
 
             $('#restoreOptionsCancelBtn').onclick = () => this.closeLayer(optionsDialog);
-            $('#restoreOptionsConfirmBtn').onclick = async () => {
+            // 「选择恢复内容」只决定**范围**。真正覆盖磁盘之前还有一步：先预览（只读）
+            // 算出「将恢复 / 将跳过（含原因）/ 凭据待授权 / 新版本号」+ `planDigest`，
+            // 由用户在那份计划上做最终确认（见 showRestorePlanDialog）。
+            // 顺序不能反：范围一变计划就变，预览必须在范围定下来之后才发。
+            $('#restoreOptionsConfirmBtn').onclick = () => {
                 const restoreType = $('input[name="restoreType"]:checked').value;
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
                 const restoreMemos = restoreType === 'all' || restoreType === 'memos';
@@ -8376,42 +8422,244 @@
                 // 时间线是「整表替换」：选了 all 就一起恢复；只想动时间线时也有单独一项。
                 // 凭据不随备份，恢复后来源显示「待授权」。
                 const restoreTimeline = restoreType === 'all' || restoreType === 'timeline';
-                if (!await this.confirmAction('恢复将覆盖当前对应的数据，确定继续吗？', '确认恢复')) return;
+                return this.showRestorePlanDialog({
+                    configFile: backup.configFile,
+                    bookmarksFile: backup.bookmarksFile,
+                    memosFile: backup.memosFile,
+                    modulesFile: backup.modulesFile,
+                    timelineFile: backup.timelineFile,
+                    manifestFile: backup.manifestFile,
+                    legacyFile: backup.legacyFile,
+                    restoreBookmarks,
+                    restoreMemos,
+                    restoreModules,
+                    restoreTimeline
+                }, backup, parentDialog, optionsDialog);
+            };
+        }
 
-                optionsDialog.querySelector('.btn-primary').disabled = true;
-                optionsDialog.querySelector('.btn-primary').textContent = '恢复中...';
+        /**
+         * 恢复的**计划对话框**（#13）。
+         *
+         * 两段式恢复的第二段：先 `POST /api/webdav/restore/preview`（只读）拿计划，
+         * 把「将恢复（域 + 项数 + 体积 + 版本）/ 将跳过（逐条原因）/ 凭据待授权 /
+         * 新版本号」全摆出来，用户确认后才带 `planDigest` 发真正的恢复。
+         *
+         * 为什么先预览：覆盖是不可逆的，而用户唯一能判断「这份备份到底会动什么」的
+         * 依据就是这份清单——旧备份少了导航与引擎、未知模块会被跳过、凭据本来就不在
+         * 备份里，这三件事都必须**在确认之前**看到。
+         *
+         * `planDigest` 必须原样回传：服务端在应用前复验它，对不上就是 409
+         * `stale_plan`（预览之后现场变了）——这时重来一遍预览，而不是硬写。
+         * ⚠️ 预览响应里**没有** `runId`（服务端在 apply 时才生成），所以确认只带
+         * `planDigest`；将来若预览下发 runId，与 digest 一起回传即可。
+         */
+        async showRestorePlanDialog(selection, backup, parentDialog, optionsDialog) {
+            const msgEl = $('#webdavMessage');
+            if (msgEl) {
+                msgEl.textContent = '正在校验备份...';
+                msgEl.className = 'webdav-message';
+            }
+            let preview = null;
+            try {
+                preview = await API.post('/api/webdav/restore/preview', selection);
+            } catch (e) {
+                if (optionsDialog) this.closeLayer(optionsDialog);
+                const text = this.restoreFailureText(e);
+                if (msgEl) {
+                    msgEl.textContent = text;
+                    msgEl.className = 'webdav-message error';
+                }
+                this.showToast(text, 'error', 6000);
+                return;
+            }
+            if (!preview || !preview.plan) {
+                if (optionsDialog) this.closeLayer(optionsDialog);
+                const text = '预览失败：服务端没有返回恢复计划';
+                if (msgEl) {
+                    msgEl.textContent = text;
+                    msgEl.className = 'webdav-message error';
+                }
+                this.showToast(text, 'error', 6000);
+                return;
+            }
 
+            if (optionsDialog) this.closeLayer(optionsDialog);
+            if (msgEl) {
+                msgEl.textContent = '';
+                msgEl.className = 'webdav-message';
+            }
+
+            const plan = preview.plan;
+            const domains = Array.isArray(plan.domains) ? plan.domains : [];
+            const toRestore = domains.filter(entry => entry.action === 'restore');
+            // 跳过项有两个来源：`domains[].action === 'skip'`（逐域，带原因）与
+            // `plan.skipped[]`（模块未知 id 这类「域内一部分被跳过」）。两处都要显示，
+            // 但同一个域只显示一次——重复列出会让用户以为有两笔失败。
+            const skipped = domains.filter(entry => entry.action === 'skip');
+            for (const item of (Array.isArray(plan.skipped) ? plan.skipped : [])) {
+                if (!skipped.some(entry => entry.domain === item.domain)) {
+                    skipped.push({ domain: item.domain, reason: item.reason });
+                }
+            }
+
+            const sizes = backup && backup.sizes ? backup.sizes : {};
+            const createdAt = backup && backup.createdAt ? this.formatBackupTime(backup.createdAt) : '';
+            const rowOf = entry => {
+                // 每一行三件事：这一域是什么、多少项、多大；有版本号的再补一句「版本 +1」。
+                const bits = [];
+                if (Number.isFinite(entry.count)) bits.push(`${entry.count} 项`);
+                if (sizes[entry.domain]) bits.push(this.formatSize(sizes[entry.domain]));
+                if (createdAt) bits.push(createdAt);
+                const revision = Number.isFinite(entry.revisionAfter)
+                    ? `<span class="webdav-plan-revision">版本 ${entry.revisionBefore} → ${entry.revisionAfter}</span>`
+                    : '';
+                return `<li class="webdav-plan-item">
+                    <span class="webdav-plan-domain">${this.esc(this.restoreDomainLabel(entry.domain))}</span>
+                    <span class="webdav-plan-meta">${this.esc(bits.join(' · '))}${revision}</span>
+                </li>`;
+            };
+
+            const pending = Array.isArray(plan.pendingAuthorization) ? plan.pendingAuthorization : [];
+            const pendingServers = pending.filter(item => item.kind === 'server');
+            const needsAuth = pendingServers.filter(item => item.state !== 'not_deployed');
+            const needsDeploy = pendingServers.filter(item => item.state === 'not_deployed');
+            const pendingSources = pending.filter(item => item.kind !== 'server');
+            const namesOf = list => {
+                const names = list.map(item => item.name).filter(Boolean);
+                if (!names.length) return '';
+                const shown = names.slice(0, 5).join('、');
+                return names.length > 5 ? `${shown} 等 ${names.length} 项` : shown;
+            };
+            const credentialLines = [];
+            if (pendingServers.length) {
+                credentialLines.push(`${needsAuth.length} 台机器的凭据无法解开，恢复后显示待授权；${needsDeploy.length} 台需要重新部署。`
+                    + (namesOf(pendingServers) ? `（${this.esc(namesOf(pendingServers))}）` : ''));
+            }
+            if (pendingSources.length) {
+                credentialLines.push(`${pendingSources.length} 个 Special Line 来源需要重新填写凭据`
+                    + (namesOf(pendingSources) ? `（${this.esc(namesOf(pendingSources))}）` : '') + '。');
+            }
+
+            // 旧备份（`type:'nav-sylph-backup'`）：服务端按 legacyFile 判定并在预览里
+            // 回 `legacy: true`。这一条必须**醒目**——它解释了为什么清单里只剩书签。
+            const legacyNotice = preview.legacy
+                ? `<div class="webdav-plan-legacy" role="note">
+                        这是旧版备份：只恢复书签；导航与搜索引擎、站点默认模板不在本版恢复范围内。
+                    </div>`
+                : '';
+
+            const planDialog = html(`
+                <div class="fav-dialog-overlay" id="restorePlanDialog">
+                    <div class="fav-dialog webdav-restore-plan">
+                        <h3>恢复这份备份</h3>
+                        <p class="webdav-plan-sub">恢复期间受影响配置会暂时拒绝写入；其他设备上的未保存草稿会被提示冲突，不会被写回。</p>
+                        ${legacyNotice}
+                        <div class="webdav-plan-section">
+                            <div class="webdav-plan-title">将恢复${toRestore.length ? `（${toRestore.length} 项）` : ''}</div>
+                            ${toRestore.length
+                                ? `<ul class="webdav-plan-list">${toRestore.map(rowOf).join('')}</ul>`
+                                : '<p class="webdav-plan-empty">这份备份没有可恢复的内容。</p>'}
+                        </div>
+                        <div class="webdav-plan-section">
+                            <div class="webdav-plan-title">将跳过（本机设置保持不变）</div>
+                            ${skipped.length
+                                ? `<ul class="webdav-plan-list webdav-plan-skip">${skipped.map(entry => `
+                                    <li class="webdav-plan-item">
+                                        <span class="webdav-plan-domain">${this.esc(this.restoreDomainLabel(entry.domain))}</span>
+                                        <span class="webdav-plan-reason">${this.esc(entry.reason || '不在本次恢复范围内')}</span>
+                                    </li>`).join('')}</ul>`
+                                : '<p class="webdav-plan-empty">没有要跳过的项。</p>'}
+                        </div>
+                        ${credentialLines.length
+                            ? `<div class="webdav-plan-credentials">
+                                ${credentialLines.map(line => `<p>${line}</p>`).join('')}
+                                <p class="webdav-plan-hint">凭据密文由本机管理密码派生，不随备份；恢复后按既有状态词提示。</p>
+                            </div>`
+                            : ''}
+                        <div class="webdav-plan-error" id="restorePlanError" role="alert" hidden></div>
+                        <div class="fav-dialog-actions">
+                            <button class="btn" id="restorePlanCancelBtn">取消</button>
+                            <button class="btn btn-danger" id="restorePlanConfirmBtn">恢复并覆盖这些配置</button>
+                        </div>
+                    </div>
+                </div>
+            `);
+
+            this.mountLayer(planDialog);
+
+            const confirmBtn = $('#restorePlanConfirmBtn', planDialog);
+            const cancelBtn = $('#restorePlanCancelBtn', planDialog);
+            const errorEl = $('#restorePlanError', planDialog);
+            const fail = text => {
+                errorEl.textContent = text;
+                errorEl.hidden = false;
+                confirmBtn.disabled = false;
+                cancelBtn.disabled = false;
+                confirmBtn.textContent = '恢复并覆盖这些配置';
+                confirmBtn.focus();
+            };
+
+            cancelBtn.onclick = () => this.closeLayer(planDialog);
+            confirmBtn.onclick = async () => {
+                confirmBtn.disabled = true;
+                cancelBtn.disabled = true;
+                confirmBtn.textContent = '恢复中...';
+                errorEl.hidden = true;
+                errorEl.textContent = '';
                 try {
-                    const restoreRes = await API.post('/api/webdav/restore', {
-                        configFile: backup.configFile,
-                        bookmarksFile: backup.bookmarksFile,
-                        memosFile: backup.memosFile,
-                        modulesFile: backup.modulesFile,
-                        timelineFile: backup.timelineFile,
-                        manifestFile: backup.manifestFile,
-                        legacyFile: backup.legacyFile,
-                        restoreBookmarks,
-                        restoreMemos,
-                        restoreModules,
-                        restoreTimeline
+                    // `planDigest` 原样回传：服务端在应用前复验，现场变了就是 409。
+                    const result = await API.post('/api/webdav/restore', {
+                        ...selection,
+                        planDigest: preview.planDigest
                     });
-
-                    if (restoreRes.success) {
-                        this.closeLayer(optionsDialog);
-                        this.closeLayer(parentDialog);
-                        await this.notice(this.restoreResultMessage(restoreRes), '恢复完成');
-                        location.reload();
-                    } else {
-                        this.showToast(restoreRes.error || '恢复失败', 'error');
-                        optionsDialog.querySelector('.btn-primary').disabled = false;
-                        optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
-                    }
+                    this.closeLayer(planDialog);
+                    if (parentDialog) this.closeLayer(parentDialog);
+                    // 上下文代次 +1：本标签页里所有在飞的读写就此作废（API.request 会抛
+                    // 「登录状态已变化」），不会有人在 reload 之前把旧内容画回来。
+                    this.privateEpoch = (this.privateEpoch || 0) + 1;
+                    await this.notice(this.restoreResultMessage(result), '恢复完成');
+                    location.reload();
                 } catch (e) {
-                    this.showToast('恢复失败: ' + e.message, 'error');
-                    optionsDialog.querySelector('.btn-primary').disabled = false;
-                    optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
+                    const code = e && e.code;
+                    const text = this.restoreFailureText(e);
+                    if (code === 'stale_plan') {
+                        // 不是用户操作错了：预览之后现场变了（别处改了模块、别人恢复了
+                        // 别的东西、远端那份备份被重新上传）——必须重新预览。
+                        errorEl.innerHTML = `${this.esc(text)} <button class="btn btn-sm" id="restorePlanRepreviewBtn">重新预览</button>`;
+                        errorEl.hidden = false;
+                        confirmBtn.disabled = true;
+                        cancelBtn.disabled = false;
+                        confirmBtn.textContent = '恢复并覆盖这些配置';
+                        $('#restorePlanRepreviewBtn', planDialog).onclick = () => {
+                            this.closeLayer(planDialog);
+                            this.showRestorePlanDialog(selection, backup, parentDialog, null);
+                        };
+                        return;
+                    }
+                    fail(text);
                 }
             };
+        }
+
+        /** 备份域 → 界面上的说法。恢复清单与跳过清单共用一处，免得两处叫法不一致。 */
+        restoreDomainLabel(domain) {
+            return RESTORE_DOMAIN_LABEL[domain] || domain;
+        }
+
+        /**
+         * 恢复失败文案的**唯一来源**（预览与确认共用）。
+         *
+         * 三个码的下一步完全不同，混成一句「恢复失败」等于让用户自己猜：
+         * `stale_plan` → 重新预览；`busy` → 等另一项管理操作结束；`restore_halted`
+         * → 受影响配置已被暂停，需要看快照/日志而不是再点一次。
+         */
+        restoreFailureText(error) {
+            const code = error && error.code;
+            if (code === 'stale_plan') return '备份内容已变化，请重新预览';
+            if (code === 'busy') return '正在执行另一项管理操作，请稍后再试';
+            if (code === 'restore_halted') return '上一次恢复未完成，受影响配置已暂停';
+            return (error && error.message) || '恢复失败';
         }
 
         /**
@@ -8540,7 +8788,11 @@
                 }
             } catch (e) {
                 const aborted = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
-                reportFailure(aborted ? '保存超时，请检查连接后重试' : '保存失败，请检查连接后重试');
+                // 同上：被协调锁拒掉时要说出「正在执行另一项管理操作」，而不是让用户
+                // 对着「保存失败，请检查连接」去怀疑自己的网络。
+                const locked = e && (e.code === 'busy' || e.code === 'restore_halted');
+                reportFailure(aborted ? '保存超时，请检查连接后重试'
+                    : (locked ? this.restoreFailureText(e) : '保存失败，请检查连接后重试'));
             } finally {
                 this.configSaving = false;
                 $('#modalBody').inert = false;

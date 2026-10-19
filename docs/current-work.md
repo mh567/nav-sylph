@@ -2,6 +2,14 @@
 
 核对日期：2026-10-18。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
+## Issue #13：可回滚且不覆盖并发修改的恢复（2026-10-18，**本地已提交，未推送、未发版**）
+
+- 目标：恢复收藏与私人模块时，公开设置和其他设备的新修改不会被静默覆盖，故障可完整恢复。
+- 完成（分两段落地）：**服务端核心**（`lib/admin-lock.js` 单锁 + `rejectIfBusy`/`drainInFlight`；迁移 **v12** 的 `restore_records`；`lib/restore.js` 的快照/写前记录/逐域应用/逆序回滚/halted；`recover()` 在 listen 之前续做或回滚；`/api/webdav/restore/preview` + 带 `planDigest` 的恢复路由，不一致 409 `stale_plan`；`mergePrivateModules` 白名单合并）与**客户端**（两段式恢复：范围 → 预览计划对话框（将恢复/将跳过/凭据待授权/旧备份提示/`stale_plan`、`busy`、`restore_halted` 各自文案）→ 确认覆盖；`sw.js` nav-v123 → **nav-v124**）。
+- 验证：单元 **796/796**（基线 780，+16：纯函数 6、真实 HTTP 5、recovery 5）；浏览器 **41/41**（新增 `tests/browser/restore.cjs` 四条，连跑三次稳定：清单与恢复后一致、旧备份只恢复书签、恢复持锁期间另一方 503 且草稿保留、三个失败码各自得文案）；变异 4 条（回滚不真还原 / digest 不复验 / 并发不拦 / halted 不拦）均变红并逐字节还原。详见 [issue-13-acceptance.md](issue-13-acceptance.md) 与仿真样例 `docs/mockup-webdav-restore.html`。
+- 有意未做：`halted` 的**不可关闭横幅**（本段不允许改 `index.html`；`/api/health` 的 degraded + 受影响域 503 已能给出结论，横幅留给 #14 统一做）。
+- 下一步：#14 综合验收（含升级、浏览器八流程、20 设备与 1 MiB 边界；**2 核 2 GB 目标机 24 小时与公网时延按验收原文标注未完成**）→ 全部做完再发版。
+
 ## Issue #12：按新范围生成管理员 WebDAV 备份（2026-10-18，**本地已提交，未推送、未发版**）
 
 - 目标：管理员得到只含收藏与私人模块的版本化备份，界面准确说明范围。

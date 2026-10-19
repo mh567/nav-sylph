@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebDAV 恢复 · 计划对话框 仿真样例</title>
+<!--
+  仿真样例：Issue #13 的**恢复计划对话框**（两段式恢复的第二段）。四种状态并排看：
+  正常（四域都恢复）/ 含跳过项（未知模块 + 旧备份的导航域）/ 旧备份只恢复书签 /
+  凭据待授权与重新部署。外加两个错误分支（409 stale_plan、503 busy）。
+  ⚠️ 直接引用 ../public/styles.css 与 ../public/admin.css：对话框、清单行、危险区、
+  凭据行都取真实实现那一份（`.webdav-plan-*` 就在 admin.css 里），不会像手抄设计
+  令牌的样例那样走形。
+  对应实现：`public/app.js` 的 `showRestorePlanDialog` / `restoreFailureText`。
+  打开：open docs/mockup-webdav-restore.html
+  工具栏可以强制：六个状态 / 浅色深色 / 宽窄两档（窄档压到 390px，看清单行怎么折）。
+-->
+<link rel="stylesheet" href="../public/styles.css">
+<link rel="stylesheet" href="../public/admin.css">
+<style>
+    body { margin: 0; padding: 28px 20px 60px; background: var(--bg); color: var(--text); font-family: var(--font-ui, system-ui, -apple-system, "Segoe UI", sans-serif); }
+    .mock-note { max-width: 720px; margin: 0 auto 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+    .mock-note code { padding: 1px 5px; border-radius: 5px; background: var(--admin-row); font-size: 12px; }
+    .mock-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; max-width: 720px; margin: 0 auto 22px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--admin-row); }
+    .mock-toolbar span { margin-right: 4px; color: var(--text-secondary); font-size: 12px; }
+    .mock-toolbar button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+    .mock-toolbar button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    /* 舞台：真对话框是覆盖全屏的 .fav-dialog-overlay，样例里只留居中效果，便于并排比较 */
+    .mock-stage { display: flex; justify-content: center; }
+    .mock-stage .fav-dialog-overlay { position: static; display: block; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; padding: 0; }
+    .mock-stage .fav-dialog { max-width: 560px; }
+    .mock-stage.narrow .fav-dialog { width: 390px; max-width: 92vw; }
+</style>
+</head>
+<body>
+<div class="mock-note">
+    <strong>恢复计划对话框（#13）</strong>：点「恢复」不再直接覆盖——先 <code>POST /api/webdav/restore/preview</code>
+    算出计划，这一份就是把计划摆出来的地方。四件事必须在<strong>确认之前</strong>看到：哪些域会被覆盖（项数、体积、
+    版本 N → N+1）、哪些会被跳过（<strong>逐条原因</strong>）、恢复后哪些凭据要重新授权/重新部署、
+    以及「这是旧版备份，只恢复书签」。底部的确认是 danger 样式，带 <code>planDigest</code> 提交。
+</div>
+
+<div class="mock-toolbar" role="group" aria-label="状态切换">
+    <span>状态</span>
+    <button data-state="normal" aria-pressed="true">正常（四域）</button>
+    <button data-state="skipped">含跳过项</button>
+    <button data-state="legacy">旧备份</button>
+    <button data-state="credentials">凭据待授权</button>
+    <button data-state="stale">409 请重新预览</button>
+    <button data-state="busy">503 另一项操作</button>
+    <span style="margin-left:12px">主题</span>
+    <button data-theme="dark" aria-pressed="true">深色</button>
+    <button data-theme="light">浅色</button>
+    <span style="margin-left:12px">宽度</span>
+    <button data-width="wide" aria-pressed="true">宽档</button>
+    <button data-width="narrow">窄档 390px</button>
+</div>
+
+<div class="mock-stage" id="stage">
+    <div class="fav-dialog-overlay" id="dialog">
+        <div class="fav-dialog webdav-restore-plan" role="dialog" aria-modal="true">
+            <h3>恢复这份备份</h3>
+            <p class="webdav-plan-sub">恢复期间受影响配置会暂时拒绝写入；其他设备上的未保存草稿会被提示冲突，不会被写回。</p>
+            <div id="body"></div>
+            <div class="fav-dialog-actions">
+                <button class="btn" id="cancelBtn">取消</button>
+                <button class="btn btn-danger" id="confirmBtn">恢复并覆盖这些配置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 这些片段与 public/app.js 的 showRestorePlanDialog 逐字对应（类名与文案），
+    // 改实现时请一起改，别让样例变成另一套设计。
+    const row = (domain, meta, revision) => `
+        <li class="webdav-plan-item">
+            <span class="webdav-plan-domain">${domain}</span>
+            <span class="webdav-plan-meta">${meta}${revision ? `<span class="webdav-plan-revision">${revision}</span>` : ''}</span>
+        </li>`;
+    const skipRow = (domain, reason) => `
+        <li class="webdav-plan-item">
+            <span class="webdav-plan-domain">${domain}</span>
+            <span class="webdav-plan-reason">${reason}</span>
+        </li>`;
+    const section = (title, items) => `
+        <div class="webdav-plan-section">
+            <div class="webdav-plan-title">${title}</div>
+            <ul class="webdav-plan-list">${items}</ul>
+        </div>`;
+
+    const FOUR = [
+        row('备忘录（正文与置顶状态）', '12 项 · 4.2 KB · 2026-10-18 21:04'),
+        row('书签（含隐私标签）', '86 项 · 18.6 KB · 2026-10-18 21:04', '版本 7 → 8'),
+        row('私人模块（监控目标与布局）', '3 项 · 2.1 KB · 2026-10-18 21:04', '版本 12 → 13'),
+        row('Special Line 时间线（来源与事件）', '214 项 · 96.3 KB · 2026-10-18 21:04', '版本 0 → 1')
+    ].join('');
+
+    const VIEWS = {
+        normal: `
+            ${section('将恢复（4 项）', FOUR)}
+            ${section('将跳过（本机设置保持不变）', skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建'))}`,
+        skipped: `
+            ${section('将恢复（3 项）', [
+                row('书签（含隐私标签）', '86 项 · 18.6 KB · 2026-10-18 21:04', '版本 7 → 8'),
+                row('私人模块（监控目标与布局）', '2 项 · 1.4 KB · 2026-10-18 21:04', '版本 12 → 13'),
+                row('Special Line 时间线（来源与事件）', '214 项 · 96.3 KB · 2026-10-18 21:04', '版本 0 → 1')
+            ].join(''))}
+            ${section('将跳过（本机设置保持不变）', [
+                skipRow('管理员导航与搜索引擎', '管理员导航、主题与搜索引擎是本机界面设置，不跨设备恢复'),
+                skipRow('本机没有实现的模块', '本机没有这些模块，已跳过：weather-pro、rss-reader'),
+                skipRow('备忘录（正文与置顶状态）', '这组备份不含备忘录'),
+                skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建')
+            ].join(''))}`,
+        legacy: `
+            <div class="webdav-plan-legacy" role="note">这是旧版备份：只恢复书签；导航与搜索引擎、站点默认模板不在本版恢复范围内。</div>
+            ${section('将恢复（1 项）', row('书签（含隐私标签）', '42 项 · 9.8 KB · 2020-01-01 08:00', '版本 7 → 8'))}
+            ${section('将跳过（本机设置保持不变）', [
+                skipRow('管理员导航与搜索引擎', '管理员导航、主题与搜索引擎是本机界面设置，不跨设备恢复'),
+                skipRow('备忘录（正文与置顶状态）', '这组备份不含备忘录'),
+                skipRow('私人模块（监控目标与布局）', '这组备份不含这一域'),
+                skipRow('Special Line 时间线（来源与事件）', '这组备份不含时间线'),
+                skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建')
+            ].join(''))}`,
+        credentials: `
+            ${section('将恢复（2 项）', [
+                row('私人模块（监控目标与布局）', '4 项 · 2.6 KB · 2026-10-18 21:04', '版本 12 → 13'),
+                row('Special Line 时间线（来源与事件）', '88 项 · 41.0 KB · 2026-10-18 21:04', '版本 0 → 1')
+            ].join(''))}
+            ${section('将跳过（本机设置保持不变）', [
+                skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建')
+            ].join(''))}
+            <div class="webdav-plan-credentials">
+                <p>2 台机器的凭据无法解开，恢复后显示待授权；1 台需要重新部署。（NAS-13、家里的小主机、车库机器）</p>
+                <p>2 个 Special Line 来源需要重新填写凭据（X · alice、Mastodon · bob）。</p>
+                <p class="webdav-plan-hint">凭据密文由本机管理密码派生，不随备份；恢复后按既有状态词提示。</p>
+            </div>`,
+        stale: `
+            ${section('将恢复（4 项）', FOUR)}
+            ${section('将跳过（本机设置保持不变）', skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建'))}
+            <div class="webdav-plan-error" role="alert">备份内容已变化，请重新预览 <button class="btn btn-sm">重新预览</button></div>`,
+        busy: `
+            ${section('将恢复（4 项）', FOUR)}
+            ${section('将跳过（本机设置保持不变）', skipRow('监控缓存（派生数据）', '派生数据，恢复成功后由采集器重建'))}
+            <div class="webdav-plan-error" role="alert">正在执行另一项管理操作，请稍后再试</div>`
+    };
+
+    const body = document.getElementById('body');
+    const stage = document.getElementById('stage');
+    const confirmBtn = document.getElementById('confirmBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const buttons = [...document.querySelectorAll('.mock-toolbar button')];
+
+    const paint = () => {
+        const state = document.querySelector('[data-state][aria-pressed="true"]').dataset.state;
+        body.innerHTML = VIEWS[state];
+        // 409 那一路要「重新预览」而不是再点一次覆盖：样例里把主按钮也照着真实行为置灰。
+        confirmBtn.disabled = state === 'stale';
+        cancelBtn.disabled = false;
+        confirmBtn.textContent = '恢复并覆盖这些配置';
+    };
+
+    for (const button of buttons) {
+        button.addEventListener('click', () => {
+            const group = button.dataset.state ? 'state' : button.dataset.theme ? 'theme' : 'width';
+            if (group === 'width') {
+                stage.classList.toggle('narrow', button.dataset.width === 'narrow');
+            } else if (group === 'theme') {
+                document.documentElement.dataset.theme = button.dataset.theme;
+            }
+            for (const other of buttons) {
+                const same = (other.dataset.state && group === 'state')
+                    || (other.dataset.theme && group === 'theme')
+                    || (other.dataset.width && group === 'width');
+                if (same) other.setAttribute('aria-pressed', String(other === button));
+            }
+            paint();
+        });
+    }
+
+    document.documentElement.dataset.theme = 'dark';
+    paint();
+</script>
+</body>
+</html>

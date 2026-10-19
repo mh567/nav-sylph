@@ -203,6 +203,18 @@ WebDAV 范围尚沿用现有行为，当前从 SQLite 读取实际管理员配�
 
 **身份未确认前不启动普通同步**：`identityPending` 在 `restoreSession` 开始时置真、成功时置假、**失败时保持真**（确认不了 ≠ 匿名）；`loadSyncState()` 首行 `await this.waitForSession()`，门关着时不发任何 `/api/sync/*` 请求。代价是首次同步检查晚一个往返，但 `loadSyncState` 本就在 `requestAnimationFrame` 之后，不阻塞首屏。
 
+### WebDAV 恢复：可回滚、不覆盖并发修改（Issue #13）
+
+恢复是**两段式**：`POST /api/webdav/restore/preview` 只读校验（清单 + 每个文件的字节 sha256 + 各域 schema），产出「将恢复 / 将跳过（含原因）/ 凭据待授权 / 新版本号」与 `planDigest`；`POST /api/webdav/restore` 带 digest 应用，应用前复验（不一致 → 409 `stale_plan`，请重新预览）。
+
+**协调锁**（`lib/admin-lock.js`，进程内单锁）：`kind + domains` 单持有者；恢复、手动备份、`/api/change-password` 互斥；恢复期间**所有管理写**都回 503 `busy` + `Retry-After`（在 `requireSession()` 一处收口）。取锁在恢复路由的**第一个 await 之前**；随后 `drainInFlight()` 排空在途（时间线 `scheduler.stop()` + 轮询 `isRunning()`，监控采集等 `metricsInFlight`），超时不抛错——不把用户锁死在失败里。
+
+**持久恢复记录 + 快照**（迁移 **v12** 的 `restore_records`）：`phase` ∈ `applying / applied / rolling_back / rolled_back / halted`、`domains_json`、`applied_json`（每域成功即在同一事务追加）、`plan_json`、`before_json`、`snapshot_dir`、`failure`、`generation`。载荷快照落 `<rootDir>/.restore-snapshot/<runId>/`（0700/0600、temp→rename，before 与 incoming 都留；**时间线凭据密文只在快照里**，绝不进 WebDAV 载荷、日志或响应），目录已进 `.gitignore` 并纳入私有文件权限收紧。
+
+**生命周期**：复验 → 快照 → **写前**记录 `applying` → 逐域应用 → 全部成功才递增受影响版本（`navigation_documents.admin.revision`、`_sync.revision`、新增的 `favorites.revision`、`generation`）→ `applied` → 删快照。失败按 `applied_json` **逆序**逐字节回滚 → `rolled_back`；**回滚也失败 → `halted`**：受影响域读写都 503 `restore_halted`，`GET /api/health` 报 `degraded`。重启时 `recover()` 在 `listen` 之前跑：`applying` **续做**（缺料转回滚）、`rolling_back` 继续、`halted` 不自动重试。
+
+**合并**：`mergePrivateModules` —— 公开模块项与其相对顺序保留、私人项取备份、按 `order` 重排为紧凑序号、未知 id **跳过并报告**；凭据**不回填**（`pending_authorization`），缺 `certPem` 落到既有 `not_deployed`。旧备份（`type: 'nav-sylph-backup'`）**只恢复书签**，导航/引擎/模板进 skip 并给原因；`published`/`draft` **永不触碰**。
+
 ### 尚未实现（归后续任务）
 
 WebDAV 备份范围收窄与可回滚恢复是 #12/#13；升级/浏览器/目标机综合验收是 #14。新建空间时若客户端落盘失败，服务端会留下一行**未被使用的设备令牌**——它在 90 天无鉴权后被清理，空间数量无固定上限，因此只是冗余而不是泄露。删除留下的**墓碑行不清理**（体积与时间字段仍在，内容已清空；读路径一律 410），清理与配额归 #10；按 `scope='create'` 存的签发回执不带空间 id，删除时不清理，24 小时自然过期且重放会因设备已吊销而 `receipt_stale`。
