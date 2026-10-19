@@ -58,6 +58,20 @@ function offlineBackup(config, client) {
     return b;
 }
 
+/** 备份载荷（#12 起是一个对象：favorites / memos / modules / timeline / 渲染函数）。 */
+function payload(overrides = {}) {
+    return {
+        favorites: [],
+        memos: [],
+        modules: null,
+        timeline: null,
+        appVersion: '1.1.0',
+        publicModuleIds: ['weibo-hot'],
+        renderBookmarks: null,
+        ...overrides
+    };
+}
+
 /** 一个带来源、事件、用户状态与凭据的时间线。 */
 async function seedService(db) {
     const repo = createRepository(db);
@@ -127,13 +141,14 @@ test('备份文件是版本化时间线类型，且**不含凭据**（明文与�
 
         const files = new Map();
         const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
-        const result = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null, { timelineData: dump });
+        const result = await backup.createBackup(payload({ timeline: dump }));
 
         assert.match(result.timelineFilename, /^nav-sylph-timeline-\d{8}-\d{6}\.json$/);
         const stored = JSON.parse(files.get('/backups/' + result.timelineFilename));
         assert.equal(stored.type, 'nav-sylph-timeline', '有独立类型，恢复时据此校验');
-        assert.equal(stored.version, 1);
+        // 信封版本 1→2（#12 起各域统一）。旧读取只校验 type 与 checksum、不看
+        // version，所以升级后的备份仍然能被旧版本的恢复流程读走。
+        assert.equal(stored.version, 2);
         assert.ok(!JSON.stringify(stored).includes('provider-secret'));
         assert.equal(stored.checksum.length, 64, '带校验和');
         assert.equal(stored.data.events.length, dump.events.length);
@@ -154,24 +169,20 @@ test('没有时间线内容时不生成该文件；有内容时独立参与「�
 
         // 1) 首次：有内容 -> 上传
         const dump = service.exportTimeline();
-        const first = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null, { timelineData: dump });
+        const first = await backup.createBackup(payload({ timeline: dump }));
         assert.ok(first.timelineFilename, '有内容就上传');
 
         // 2) 同样的内容 -> noChanges（不重复上传）
-        const repeat = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null, { timelineData: dump });
+        const repeat = await backup.createBackup(payload({ timeline: dump }));
         assert.equal(repeat.noChanges, true, '内容没变就不重复上传');
 
         // 3) 时间线变了 -> 必须重新上传（没有这一条，新事件永远不会进备份）
         const changed = { ...dump, events: dump.events.slice(0, dump.events.length - 1) };
-        const again = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null, { timelineData: changed });
+        const again = await backup.createBackup(payload({ timeline: changed }));
         assert.equal(again.noChanges, undefined, '时间线变了就不是 noChanges');
 
         // 4) 完全没有时间线内容 -> 不生成文件（不为空模块在远端留垃圾）
-        const none = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null, { timelineData: null });
+        const none = await backup.createBackup(payload({ timeline: null }));
         assert.equal(none.timelineFilename, null);
     } finally {
         db.close();
@@ -185,18 +196,21 @@ test('listBackups 把时间线文件与同组配置归在一起，自动槽位�
     const files = new Map();
     const client = recordingClient(files);
     const backup = offlineBackup({ remotePath: '/backups/' }, client);
-    await backup.createBackup({ theme: 'dark' }, { favorites: [] }, '1.1.0', null, null,
-        { timelineData: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } });
+    await backup.createBackup(payload({
+        timeline: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } }));
 
     const listed = await backup.listBackups();
     assert.equal(listed.backups.length, 1);
     assert.ok(listed.backups[0].timelineFile, '同组里带上了时间线文件');
-    assert.ok(listed.backups[0].configFile, '配置文件也在同一组');
+    // #12 起同一组不再有 config 文件（导航/引擎不在备份范围内），
+    // 取而代之的是清单：它记录这一组装了哪些文件、跳过了什么。
+    assert.ok(listed.backups[0].manifestFile, '清单也在同一组');
+    assert.equal(listed.backups[0].configFile, undefined, '不再生成 nav-sylph-config-*');
 
     // 自动槽位：固定文件名、单独一组且排最前
     const autoBackup = offlineBackup({ remotePath: '/backups/' }, client);
-    await autoBackup.createBackup({ theme: 'light' }, { favorites: [] }, '1.1.0', null, null,
-        { auto: true, timelineData: { formatVersion: 1, sources: [], events: [{ id: 'e2' }], eventState: [] } });
+    await autoBackup.createBackup(payload({
+        timeline: { formatVersion: 1, sources: [], events: [{ id: 'e2' }], eventState: [] } }), { auto: true });
     const listed2 = await autoBackup.listBackups();
     assert.equal(listed2.backups[0].isAuto, true, '自动槽位排最前');
     assert.equal(listed2.backups[0].timelineFile, 'nav-sylph-timeline-auto.json');
@@ -230,16 +244,16 @@ test('删掉自动槽位的时间线文件会同时清掉那一组校验和（�
     const files = new Map();
     const client = recordingClient(files);
     const backup = offlineBackup({ remotePath: '/backups/' }, client);
-    await backup.createBackup({ theme: 'dark' }, { favorites: [] }, '1.1.0', null, null,
-        { auto: true, timelineData: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } });
+    await backup.createBackup(payload({
+        timeline: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } }), { auto: true });
     assert.ok(backup.config.lastAutoTimelineChecksum, '自动槽位的校验和已记录');
 
     await backup.deleteBackup('nav-sylph-timeline-auto.json');
     assert.equal(backup.config.lastAutoTimelineChecksum, undefined,
         '校验和要消失（赋 undefined），下一次比较才会不相等、才会重建');
 
-    const again = await backup.createBackup({ theme: 'dark' }, { favorites: [] }, '1.1.0', null, null,
-        { auto: true, timelineData: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } });
+    const again = await backup.createBackup(payload({
+        timeline: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] } }), { auto: true });
     assert.equal(again.noChanges, undefined, '删掉之后必须能重新生成');
     assert.ok(files.has('/backups/nav-sylph-timeline-auto.json'));
 });
@@ -261,9 +275,7 @@ test('破坏性往返：备份 → 清库 → 恢复，事件与用户状态回�
 
         const files = new Map();
         const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
-        const result = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null,
-            { timelineData: service.exportTimeline() });
+        const result = await backup.createBackup(payload({ timeline: service.exportTimeline() }));
 
         // 清库（模拟换机器/数据丢失）
         service.importTimeline({ formatVersion: 1, sources: [], events: [], eventState: [] });
@@ -307,11 +319,17 @@ test('前端恢复流程把时间线文件带上：列表项 → 选项 → 请�
         '备份列表项上挂着 timelineFile');
     assert.match(src, /const timelineFile = item\.dataset\.timeline;/, '恢复对话框读得到它');
     assert.match(src, /timelineFile: backup\.timelineFile,/, '恢复请求体带上它');
+    assert.match(src, /memosFile: backup\.memosFile,/, '恢复请求体带上备忘录');
+    assert.match(src, /manifestFile: backup\.manifestFile,/, '恢复请求体带上清单');
     assert.match(src, /const restoreTimeline = restoreType === 'all' \|\| restoreType === 'timeline';/,
         '恢复选项映射（全量与单恢复时间线）');
-    assert.match(src, /\[configFile, bookmarksFile, modulesFile, timelineFile, legacyFile\]/,
-        '删除整组时时间线文件一起删——否则远端留下半新半旧的分组');
-    assert.match(src, /res\.timelineFilename\]/, '备份成功的提示里列出时间线文件');
+    assert.match(src, /const restoreMemos = restoreType === 'all' \|\| restoreType === 'memos';/,
+        '恢复选项里有「只恢复备忘录」');
+    assert.match(src, /\[configFile, bookmarksFile, memosFile, modulesFile, timelineFile, manifestFile, legacyFile\]/,
+        '删除整组时同组文件一起删——否则远端留下半新半旧的分组');
+    assert.match(src, /res\.timelineFilename/, '备份成功的提示里列出时间线文件');
+    assert.match(src, /res\.memosFilename/, '备份成功的提示里列出备忘录文件');
+    assert.match(src, /res\.manifestFilename/, '备份成功的提示里列出清单');
 });
 
 test('恢复选项对话框：恰好一个单选框默认选中（否则点「确认恢复」无声失败）', () => {
@@ -336,7 +354,11 @@ test('恢复选项对话框：恰好一个单选框默认选中（否则点「�
             mountLayer() {},
             closeLayer() {},
             confirmAction: async () => false,
-            showToast() {}
+            showToast() {},
+            // 方法体里给「恢复后需重新授权」的条目做转义，用真实实现的等价物
+            esc: value => String(value)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
         };
         const $stub = () => ({});                       // 只赋值 onclick，不读
         const htmlStub = tpl => { captured = tpl; return {}; };
@@ -354,22 +376,32 @@ test('恢复选项对话框：恰好一个单选框默认选中（否则点「�
             .map(r => (r.match(/value="([^"]+)"/) || [])[1]);
     };
 
-    // 这就是那个缺陷的形状：判据写成「四项全无」时，这两个分组里
+    // 这就是那个缺陷的形状：判据写成「四项全无」时，分组里
     // **一个 radio 都不会被选中**，`$(':checked').value` 于是抛在 handler 里。
-    assert.deepEqual(checkedValues({ timelineFile: 'nav-sylph-timeline-auto.json' }), ['timeline'],
+    assert.deepEqual(checkedValues({ timelineFile: 'nav-sylph-timeline-auto.json', manifestFile: 'm.json' }), ['timeline'],
         '只含时间线的分组默认选中「只恢复时间线」');
-    assert.deepEqual(checkedValues({ modulesFile: 'nav-sylph-modules-auto.json' }), ['modules'],
+    assert.deepEqual(checkedValues({ modulesFile: 'nav-sylph-modules-auto.json', manifestFile: 'm.json' }), ['modules'],
         '只含模块的分组默认选中「只恢复模块设置」');
-    assert.deepEqual(checkedValues({ configFile: 'c.json', modulesFile: 'm.json' }), ['config'],
-        '配置+模块时选中配置那一项');
-    assert.deepEqual(checkedValues({ configFile: 'c.json', bookmarksFile: 'b.html' }), ['all'],
-        '配置+书签时选中「同时恢复」');
+    assert.deepEqual(checkedValues({ memosFile: 'nav-sylph-memos-auto.json', manifestFile: 'm.json' }), ['memos'],
+        '只含备忘录的分组默认选中「只恢复备忘录」');
+    assert.deepEqual(checkedValues({ memosFile: 'memos.json', modulesFile: 'm.json', manifestFile: 'x.json' }), ['memos'],
+        '备忘录+模块（无书签）也有且只有一个默认选中');
     assert.deepEqual(
-        checkedValues({ configFile: 'c.json', bookmarksFile: 'b.html', modulesFile: 'm.json', timelineFile: 't.json' }),
-        ['all'], '四者俱全时仍恰好一个选中');
-    for (const backup of [{ timelineFile: 't' }, { modulesFile: 'm' }]) {
+        checkedValues({ bookmarksFile: 'b.html', memosFile: 'memos.json', modulesFile: 'm.json', timelineFile: 't.json', manifestFile: 'x.json' }),
+        ['all'], '四者俱全时默认「同时恢复」');
+    // 旧备份（带配置、没有清单）只剩书签可恢复，并且对话框里要醒目提示
+    assert.deepEqual(checkedValues({ configFile: 'c.json', bookmarksFile: 'b.html' }), ['bookmarks'],
+        '旧备份组默认选中「只恢复书签」');
+    assert.match(templateFor({ configFile: 'c.json', bookmarksFile: 'b.html' }), /只恢复书签<\/strong>/,
+        '旧备份醒目提示「只恢复书签」');
+    for (const backup of [{ timelineFile: 't', manifestFile: 'x' }, { modulesFile: 'm', manifestFile: 'x' }]) {
         assert.equal(checkedValues(backup).length, 1, '不多不少，恰好一个');
     }
+    // 恢复对话框不得再出现 token 字样（凭据不随备份，说「token」会让用户以为要填什么）
+    assert.doesNotMatch(templateFor({ modulesFile: 'm', timelineFile: 't', manifestFile: 'x' }), /token/i,
+        '恢复选项文案里不再出现 token');
+    assert.match(templateFor({ modulesFile: 'm', manifestFile: 'x' }), /需要重新授权/,
+        '列出恢复后需重新授权/重新部署的项目');
 });
 
 test('校验和不对的时间线备份拒绝恢复；没有时间线文件的旧备份仍可恢复', async () => {
@@ -379,9 +411,7 @@ test('校验和不对的时间线备份拒绝恢复；没有时间线文件的�
         const { service } = await seedService(db);
         const files = new Map();
         const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
-        const result = await backup.createBackup(
-            { theme: 'dark' }, { favorites: [] }, '1.1.0', null, null,
-            { timelineData: service.exportTimeline() });
+        const result = await backup.createBackup(payload({ timeline: service.exportTimeline() }));
 
         // 篡改一个字段 -> 校验和必须失败（否则「恢复」会静默写进坏数据）
         const stored = JSON.parse(files.get('/backups/' + result.timelineFilename));

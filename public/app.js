@@ -7869,7 +7869,8 @@
                         <label class="field-label">远程路径<input type="text" id="webdavPath" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}"></label>
                     </div>
                 </div>
-                <p class="fav-hint">开启自动同步后，首页导航、书签或模块设置发生变化时会自动备份一次；同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
+                <p class="fav-hint">备份范围：<strong>收藏</strong>（含隐私标签）、<strong>备忘录</strong>正文与置顶状态、<strong>主机监控与私人模块</strong>的开关/布局、<strong>Special Line 时间线</strong>的来源与事件（含归档/收藏状态）。管理员导航、搜索引擎、站点默认模板、公开模块项、普通口令空间与设备令牌、密码与会话、监控缓存以及各类凭据（agent 令牌、推送凭据、来源凭据）都不进备份——凭据密文由本机管理密码派生，换台机器本就解不开，恢复后需要重新授权。</p>
+                <p class="fav-hint">开启自动同步后，收藏、备忘录、模块设置或时间线发生变化时会自动备份一次，同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
                 ${cfg.lastAutoSyncError ? `<div class="webdav-message error webdav-autosync-error">上次自动同步失败${cfg.lastAutoSyncErrorAt ? `（${this.formatBackupTime(cfg.lastAutoSyncErrorAt)}）` : ''}：${this.esc(cfg.lastAutoSyncError)}</div>` : ''}
                 <div class="webdav-actions">
                     <button class="btn" id="webdavSaveBtn">保存配置</button>
@@ -8085,11 +8086,11 @@
                 const res = await API.post('/api/webdav/backup', {});
                 if (res.success) {
                     if (res.noChanges) {
-                        msgEl.textContent = res.message || '配置和书签没有变化，无需备份';
+                        msgEl.textContent = res.message || '收藏、备忘录与模块设置没有变化，无需备份';
                         msgEl.className = 'webdav-message';
                     } else {
-                        const files = [res.configFilename, res.bookmarksFilename, res.modulesFilename,
-                            res.timelineFilename].filter(Boolean);
+                        const files = [res.bookmarksFilename, res.memosFilename, res.modulesFilename,
+                            res.timelineFilename, res.manifestFilename].filter(Boolean);
                         msgEl.textContent = `备份成功: ${files.join(', ')}`;
                         msgEl.className = 'webdav-message success';
                         await this.loadWebDAVConfig();
@@ -8138,8 +8139,10 @@
                                     const isLegacy = !!b.legacyFile;
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
+                                    const hasMemos = !!b.memosFile;
                                     const hasModules = !!b.modulesFile;
                                     const hasTimeline = !!b.timelineFile;
+                                    const hasManifest = !!b.manifestFile;
                                     // 自动槽位不是历史还原点，单独标出来，免得用户
                                     // 把它当成某个时间点的手动备份。
                                     const displayName = b.isAuto
@@ -8147,16 +8150,26 @@
                                         : this.formatBackupTime(b.createdAt);
                                     const files = [];
                                     if (isLegacy) files.push('旧版备份');
-                                    if (hasConfig) files.push('配置');
+                                    if (hasConfig) files.push('配置（不再恢复）');
                                     if (hasBookmarks) files.push('书签');
+                                    if (hasMemos) files.push('备忘录');
                                     if (hasModules) files.push('模块');
                                     if (hasTimeline) files.push('时间线');
+                                    if (hasManifest) files.push('清单');
+                                    // 旧备份（带配置、没有清单）按新范围只恢复书签。
+                                    // 这句话必须出现在**列表上**：用户点进恢复选项之前
+                                    // 就该知道这一份不会恢复导航。
+                                    const legacyNote = (hasConfig && !hasManifest)
+                                        ? `<div class="webdav-backup-meta">旧备份：只恢复书签（导航与配置不在新范围内）</div>`
+                                        : '';
                                     return `
                                     <div class="webdav-backup-item${b.isAuto ? ' is-auto' : ''}"
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
+                                         data-memos="${this.esc(b.memosFile || '')}"
                                          data-modules="${this.esc(b.modulesFile || '')}"
                                          data-timeline="${this.esc(b.timelineFile || '')}"
+                                         data-manifest="${this.esc(b.manifestFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
                                          data-created-at="${this.esc(b.createdAt || '')}">
                                         <div class="webdav-backup-info">
@@ -8164,6 +8177,7 @@
                                             <div class="webdav-backup-meta">
                                                 ${files.join(' + ')}
                                             </div>
+                                            ${legacyNote}
                                         </div>
                                         <div class="webdav-backup-actions">
                                             <button class="btn btn-sm webdav-restore-btn" title="恢复">恢复</button>
@@ -8189,15 +8203,19 @@
                         const item = btn.closest('.webdav-backup-item');
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
+                        const memosFile = item.dataset.memos;
                         const modulesFile = item.dataset.modules;
                         const timelineFile = item.dataset.timeline;
+                        const manifestFile = item.dataset.manifest;
                         const legacyFile = item.dataset.legacy;
 
                         this.showRestoreOptionsDialog({
                             configFile,
                             bookmarksFile,
+                            memosFile,
                             modulesFile,
                             timelineFile,
+                            manifestFile,
                             legacyFile
                         }, dialog);
                     };
@@ -8209,8 +8227,10 @@
                         const item = btn.closest('.webdav-backup-item');
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
+                        const memosFile = item.dataset.memos;
                         const modulesFile = item.dataset.modules;
                         const timelineFile = item.dataset.timeline;
+                        const manifestFile = item.dataset.manifest;
                         const legacyFile = item.dataset.legacy;
                         // 用列表里**渲染出来的那串名字**，而不是按 createdAt 重算：
                         // 自动槽位的显示名是「自动同步 · 时间」，重算会退化成光秃秃的
@@ -8225,9 +8245,9 @@
 
                         try {
                             // 同组的每个文件都必须一起删，否则远端会留下孤儿文件
-                            //（时间线文件同样在内：删了配置却留下它，恢复时会出现
-                            // 「配置是旧的、时间线是新的」这种半新半旧的分组）。
-                            const filesToDelete = [configFile, bookmarksFile, modulesFile, timelineFile, legacyFile].filter(Boolean);
+                            //（清单与备忘录同样在内：只删一半会留下「模块是旧的、
+                            // 清单是新的」这种半新半旧的分组，恢复时无法核对）。
+                            const filesToDelete = [configFile, bookmarksFile, memosFile, modulesFile, timelineFile, manifestFile, legacyFile].filter(Boolean);
                             for (const file of filesToDelete) {
                                 await API.post('/api/webdav/delete', { filename: file });
                             }
@@ -8253,55 +8273,90 @@
             }
         }
 
+        /**
+         * 恢复选项。
+         *
+         * 范围与备份对称：书签、备忘录、私人模块、时间线。**没有「只恢复配置」**——
+         * 主导航/主题/搜索引擎从 #12 起不在备份范围内；旧备份（带 config 域、没有
+         * 清单）在这一步仍要醒目提示「只恢复书签」。
+         */
         showRestoreOptionsDialog(backup, parentDialog) {
-            const hasConfig = !!(backup.configFile || backup.legacyFile);
+            // legacy 单文件格式里也带书签（backup-legacy 的 data.favorites）。
             const hasBookmarks = !!(backup.bookmarksFile || backup.legacyFile);
+            const hasMemos = !!backup.memosFile;
             const hasModules = !!backup.modulesFile;
             const hasTimeline = !!backup.timelineFile;
-            // 「只恢复 X」那一组里只剩一项可选时（例如只含时间线的自动槽位），
-            // 把它默认选中。⚠️ 判据是**可选项恰好一个**，不是「四项全无」——
-            // 后者恒为假（能渲染出单选就说明至少有一项），于是两个 radio 都不
-            // checked，`:checked` 取到 null、`.value` 抛在 handler 里，
-            // 表现是「点『确认恢复』什么都不发生」。
-            const optionCount = [hasConfig, hasBookmarks, hasModules, hasTimeline].filter(Boolean).length;
-            const soleOptionChecked = optionCount === 1 ? 'checked' : '';
+            // 旧备份：有配置域、或者没有清单。它们按新范围只恢复书签。
+            const isLegacyGroup = !backup.manifestFile;
+            // 默认选中项：**恰好一个**。判据写成「四项全无」时（那是恒假的），
+            // 分组里一个 radio 都不会被选中，`$('input[name]:checked').value`
+            // 会抛在 handler 里，表现是「点『确认恢复』什么都不发生」。
+            // 「同时恢复」只有在 书签 + 至少一项私人数据 时才出现。
+            const hasPrivate = hasMemos || hasModules || hasTimeline;
+            const allOption = hasBookmarks && hasPrivate;
+            const defaultType = allOption ? 'all'
+                : (hasBookmarks ? 'bookmarks'
+                    : (hasMemos ? 'memos' : (hasModules ? 'modules' : 'timeline')));
+            const checkedFor = value => (value === defaultType ? 'checked' : '');
+
+            // 恢复后需要重新授权/重新部署的项目：**凭据不随备份**，
+            // 这里按这一组装了哪些域逐条列出来，而不是笼统说一句「部分项目需重新配置」。
+            const needsAuth = [];
+            if (hasModules) {
+                needsAuth.push('主机监控的 agent 令牌：恢复的机器显示「等待部署」，需要重新授权');
+            }
+            if (hasTimeline) {
+                needsAuth.push('Special Line 来源凭据：恢复后标为「待授权」，需要重新粘贴一次');
+            }
+
+            const oldBackupNotice = isLegacyGroup
+                ? `<p class="fav-hint">这是旧范围的备份：<strong>只恢复书签</strong>。管理员导航、主题与搜索引擎不再恢复（它们已不在备份范围内）。</p>`
+                : '';
 
             const optionsDialog = html(`
                 <div class="fav-dialog-overlay" id="restoreOptionsDialog">
                     <div class="fav-dialog">
                         <h3>选择恢复内容</h3>
+                        ${oldBackupNotice}
                         <div class="restore-options">
-                            ${hasConfig && hasBookmarks ? `
+                            ${allOption ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="all" checked>
-                                <span>同时恢复配置和书签${(hasModules || hasTimeline) ? `（含${[hasModules && '模块设置', hasTimeline && '时间线'].filter(Boolean).join('与')}）` : ''}</span>
-                            </label>
-                            ` : ''}
-                            ${hasConfig ? `
-                            <label class="restore-option">
-                                <input type="radio" name="restoreType" value="config" ${hasBookmarks ? '' : 'checked'}>
-                                <span>只恢复配置（主题、搜索引擎、书签分类）</span>
+                                <input type="radio" name="restoreType" value="all" ${checkedFor('all')}>
+                                <span>同时恢复书签与私人数据（含${[hasMemos && '备忘录', hasModules && '模块设置', hasTimeline && '时间线'].filter(Boolean).join('、')}）</span>
                             </label>
                             ` : ''}
                             ${hasBookmarks ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="bookmarks" ${hasConfig ? '' : 'checked'}>
-                                <span>只恢复书签</span>
+                                <input type="radio" name="restoreType" value="bookmarks" ${checkedFor('bookmarks')}>
+                                <span>只恢复书签（含隐私标签）</span>
+                            </label>
+                            ` : ''}
+                            ${hasMemos ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="memos" ${checkedFor('memos')}>
+                                <span>只恢复备忘录（正文与置顶状态）</span>
                             </label>
                             ` : ''}
                             ${hasModules ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="modules" ${soleOptionChecked}>
-                                <span>只恢复模块设置（监控目标、布局、token）</span>
+                                <input type="radio" name="restoreType" value="modules" ${checkedFor('modules')}>
+                                <span>只恢复模块设置（监控目标、私人模块布局；凭据需重新授权）</span>
                             </label>
                             ` : ''}
                             ${hasTimeline ? `
                             <label class="restore-option">
-                                <input type="radio" name="restoreType" value="timeline" ${soleOptionChecked}>
-                                <span>只恢复时间线（事件与归档 / 收藏状态；凭据需重新填写）</span>
+                                <input type="radio" name="restoreType" value="timeline" ${checkedFor('timeline')}>
+                                <span>只恢复时间线（事件与归档 / 收藏状态）</span>
                             </label>
                             ` : ''}
                         </div>
+                        ${needsAuth.length ? `
+                        <p class="fav-hint">
+                            <strong>恢复后需要重新授权 / 重新部署的项目</strong><br>
+                            ${needsAuth.map(line => this.esc(line)).join('<br>')}<br>
+                            凭据密文由本机管理密码派生，换台机器解不开，因此备份里没有它们。
+                        </p>
+                        ` : ''}
                         <div class="fav-dialog-actions">
                             <button class="btn" id="restoreOptionsCancelBtn">取消</button>
                             <button class="btn btn-primary" id="restoreOptionsConfirmBtn">确认恢复</button>
@@ -8315,8 +8370,8 @@
             $('#restoreOptionsCancelBtn').onclick = () => this.closeLayer(optionsDialog);
             $('#restoreOptionsConfirmBtn').onclick = async () => {
                 const restoreType = $('input[name="restoreType"]:checked').value;
-                const restoreConfig = restoreType === 'all' || restoreType === 'config';
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
+                const restoreMemos = restoreType === 'all' || restoreType === 'memos';
                 const restoreModules = restoreType === 'all' || restoreType === 'modules';
                 // 时间线是「整表替换」：选了 all 就一起恢复；只想动时间线时也有单独一项。
                 // 凭据不随备份，恢复后来源显示「待授权」。
@@ -8330,11 +8385,13 @@
                     const restoreRes = await API.post('/api/webdav/restore', {
                         configFile: backup.configFile,
                         bookmarksFile: backup.bookmarksFile,
+                        memosFile: backup.memosFile,
                         modulesFile: backup.modulesFile,
                         timelineFile: backup.timelineFile,
+                        manifestFile: backup.manifestFile,
                         legacyFile: backup.legacyFile,
-                        restoreConfig,
                         restoreBookmarks,
+                        restoreMemos,
                         restoreModules,
                         restoreTimeline
                     });
@@ -8342,7 +8399,7 @@
                     if (restoreRes.success) {
                         this.closeLayer(optionsDialog);
                         this.closeLayer(parentDialog);
-                        await this.notice('恢复成功，页面即将刷新。', '恢复完成');
+                        await this.notice(this.restoreResultMessage(restoreRes), '恢复完成');
                         location.reload();
                     } else {
                         this.showToast(restoreRes.error || '恢复失败', 'error');
@@ -8355,6 +8412,30 @@
                     optionsDialog.querySelector('.btn-primary').textContent = '确认恢复';
                 }
             };
+        }
+
+        /**
+         * 恢复成功的说明文字。三件事都要说：
+         *  1 真正恢复了哪几块；
+         *  2 旧备份里被跳过的域（导航/配置）；
+         *  3 恢复后需要重新授权/重新部署的机器。
+         */
+        restoreResultMessage(res) {
+            const parts = [];
+            if (res.restoredBookmarks) parts.push('书签');
+            if (res.restoredMemos) parts.push('备忘录');
+            if (res.restoredModules) parts.push('模块设置');
+            if (res.restoredTimeline) parts.push('时间线');
+            const lines = [`已恢复：${parts.length ? parts.join('、') : '（无）'}。页面即将刷新。`];
+            const skipped = Array.isArray(res.skipped) ? res.skipped : [];
+            if (skipped.length) {
+                lines.push(`按新备份范围跳过：${skipped.map(s => s.domain).join('、')}（这些项不再恢复，本机设置保持不变）。`);
+            }
+            const pending = Array.isArray(res.needsAuthorization) ? res.needsAuthorization : [];
+            if (pending.length) {
+                lines.push(`需要重新授权 / 重新部署：${pending.map(p => p.name).join('、')}。它们在模块分区里显示「等待部署」。`);
+            }
+            return lines.join('\n');
         }
 
         formatSize(bytes) {

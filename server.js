@@ -370,7 +370,7 @@ const WEBDAV_CONFIG_FILE = path.join(config.rootDir, '.webdav-config.json');
 const MODULES_FILE = path.join(config.rootDir, '.modules.json');
 
 // WebDAV Backup module
-const { WebDAVBackup } = require('./lib/webdav-backup');
+const { WebDAVBackup, mergePrivateModules } = require('./lib/webdav-backup');
 const { encrypt, decrypt, isEnvelope } = require('./lib/credentials');
 
 // 管理端会话：设备指纹 + 地理绑定
@@ -1036,6 +1036,10 @@ async function init() {
     // 置在这里而不是更早：上面几个 ensureFile 在全新安装时也会写文件，
     // 那些写入不该触发自动同步（见 scheduleAutoSync 的注释）。
     autoSyncReady = true;
+    // 备忘录写完之后排一次自动同步。备忘录在 SQLite 里，不走 writeJSON 的钩子，
+    // 所以由写路由显式调用（见 memoWriteHook 的注释）。在这里注册而不是在路由里
+    // 直接调 scheduleAutoSync：那段代码会被测试单独切出来跑，见声明处。
+    memoWriteHook = scheduleAutoSync;
 }
 
 // 这条软门在无会话时会跑一次 bcrypt 比对，而匿名访问必走这条路。
@@ -2250,9 +2254,15 @@ function scheduleAutoSync() {
     if (typeof autoSyncTimer.unref === 'function') autoSyncTimer.unref();
 }
 
-/** 数据文件的内容与路径 → 备份载荷。手动与自动两条路径共用。 */
+/**
+ * 备份载荷：**只收私人数据**（收藏、备忘录、私人模块、时间线）。
+ *
+ * 管理员导航与搜索引擎、默认模板、普通口令空间、密码与会话、监控缓存、
+ * 公开模块项与任何凭据都不在这里——范围与排除项的单一真相源是
+ * `lib/webdav-backup.js` 的 `SKIPPED_DOMAINS` 与投影函数，这里只负责取原始数据。
+ * 手动与自动两条路径共用这一份。
+ */
 async function collectBackupPayload() {
-    const configData = navigation.read('admin').config;
     // ⚠️ 只吞 ENOENT（文件不存在，旧版本升级后的正常情况）。
     // 文件**损坏**时不能吞：favorites 的兜底是空数组，上传它等于用一份空书签
     // **直接抹掉**远端那一份；而自动同步是在用户没点任何按钮的情况下发生的，
@@ -2263,8 +2273,8 @@ async function collectBackupPayload() {
     } catch (err) {
         if (err.code !== 'ENOENT') throw err;
     }
-    // 模块平台配置。丢了它，监控目标、每台的 token、顺序与显示开关全部重来，
-    // 所以它必须跟配置、书签一起进备份。文件不存在时（旧版本）跳过。
+    // 模块平台配置：交给 lib 按白名单投影（凭据、公开模块项、_sync 都挡在外面）。
+    // 文件不存在时（旧版本）跳过。
     let modulesData = null;
     try {
         modulesData = await readJSON(MODULES_FILE);
@@ -2272,6 +2282,10 @@ async function collectBackupPayload() {
         // 同上：损坏时失败要可见，别把「没有模块配置」当成一份合法备份存下去
         if (err.code !== 'ENOENT') throw err;
     }
+    // 备忘录（SQLite）。读失败要抛：它与 favorites 同理，兜底成空表上传
+    // 等于**抹掉**远端那一份，而自动同步发生时用户不在场。
+    // （MEMO_LIST_SQL / memoToClient 定义在文件后半段，函数声明与调用时机都在其之后。）
+    const memosData = db.prepare(MEMO_LIST_SQL).all().map(memoToClient);
     let appVersion = '1.0.0';
     try {
         const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
@@ -2289,7 +2303,17 @@ async function collectBackupPayload() {
             || dump.sources.some(s => s.provider_type !== 'manual');
         timelineData = hasContent ? dump : null;
     }
-    return { configData, favoritesData, modulesData, timelineData, appVersion };
+    return {
+        favorites: Array.isArray(favoritesData.favorites) ? favoritesData.favorites : [],
+        memos: memosData,
+        modules: modulesData,
+        timeline: timelineData,
+        appVersion,
+        // 公开模块 id 白名单由 server.js 持有（授权边界），投影时用它把公开项筛出去。
+        publicModuleIds: [...PUBLIC_MODULE_IDS],
+        // 书签 HTML 的渲染函数：lib 不认「收藏长什么样」，由 server 提供。
+        renderBookmarks: generateBookmarkHtml
+    };
 }
 
 /**
@@ -2297,13 +2321,8 @@ async function collectBackupPayload() {
  * 「写哪个文件名、比对哪一组校验和」。
  */
 async function performBackup(webdav, options = {}) {
-    const { configData, favoritesData, modulesData, timelineData, appVersion } = await collectBackupPayload();
-    // timelineData 放进 options 而不是再加一个位置参数：createBackup 的
-    // 位置参数已有五个，再加一个会让「谁对应谁」只能靠数数。
-    const result = await webdav.createBackup(
-        configData, favoritesData, appVersion, generateBookmarkHtml, modulesData,
-        { ...options, timelineData }
-    );
+    const payload = await collectBackupPayload();
+    const result = await webdav.createBackup(payload, options);
     // 自动清理：手动备份只留最新 5 组。自动槽位不参与这个轮换（见 cleanupOldBackups）
     if (!result.noChanges) {
         try {
@@ -2476,22 +2495,32 @@ app.get('/api/webdav/list', rateLimit, requireAdmin, async (req, res) => {
 });
 
 // Restore from backup
+//
+// 恢复范围与备份范围对称：书签、备忘录、私人模块、时间线。
+// ⚠️ 主导航/主题/搜索引擎（旧备份里的 config 域）**不再恢复**：它在 #12 之后
+// 不在备份范围内。旧备份仍然能选，但只会恢复书签，响应里带 `skipped` 说明。
 app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
     try {
         const {
             configFile,
             bookmarksFile,
+            memosFile,
+            manifestFile,
             modulesFile,
             timelineFile,
             legacyFile,
-            restoreConfig = true,
             restoreBookmarks = true,
+            restoreMemos = true,
             restoreModules = true,
             restoreTimeline = true
         } = req.body;
 
-        if (!configFile && !bookmarksFile && !modulesFile && !timelineFile && !legacyFile) {
-            return res.status(400).json({ error: '请选择要恢复的备份文件' });
+        if (!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile) {
+            return res.status(400).json({
+                error: configFile
+                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘录/模块/时间线的备份'
+                    : '请选择要恢复的备份文件'
+            });
         }
 
         const passwordHash = await getPasswordHash();
@@ -2505,11 +2534,13 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         const result = await webdav.restoreBackup({
             configFile,
             bookmarksFile,
+            memosFile,
+            manifestFile,
             modulesFile,
             timelineFile,
             legacyFile,
-            restoreConfig,
             restoreBookmarks,
+            restoreMemos,
             restoreModules,
             restoreTimeline
         });
@@ -2521,32 +2552,48 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         // 递减放在 finally 里：中间任何一步抛错都不能让抑制永久留在开状态
         //（那会让自动同步从此静默失效，而界面上开关还是「已开启」）。
         let modulesRestored = false;
+        let memosRestored = false;
         let timelineRestored = false;
+        let bookmarksRestored = false;
+        let modulesRevision = null;
+        let needsAuthorization = [];
         cancelScheduledAutoSync();
         autoSyncSuppressed++;
         try {
-            // Write restored data
-            if (result.data.config && restoreConfig) {
-                navigation.write('admin', { config: result.data.config, revision: navigation.read('admin').revision, operationId: nodeCrypto.randomUUID() });
+            if (result.data.bookmarksHtml && restoreBookmarks) {
+                const imported = parseBookmarkHtml(result.data.bookmarksHtml);
+                await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
+                bookmarksRestored = true;
             }
 
             if (result.data.favorites && restoreBookmarks) {
                 await writeJSON(FAVORITES_FILE, result.data.favorites);
+                bookmarksRestored = true;
             }
 
-            // Parse and restore bookmarks from HTML if present
-            if (result.data.bookmarksHtml && restoreBookmarks) {
-                const imported = parseBookmarkHtml(result.data.bookmarksHtml);
-                await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
+            // 备忘录：整表替换（与时间线同一形状，一个事务）。备忘录是
+            // 「回到那个时间点」的语义，与书签一致；不需要逐条合并。
+            if (result.data.memos && restoreMemos) {
+                memosRestored = restoreMemosFromBackup(result.data.memos);
             }
 
-            // 模块配置。token 保持密文原样写回——换机器时用同一个管理员密码
-            // 才能解开，所以这里不做任何转换。恢复后要重置内存里的配置与缓存，
-            // 否则页面还拿着恢复前的服务器列表。
+            // 模块配置：**按稳定模块 id 合并**，不整份覆盖。
+            // publicModules / socialAccounts / symbols 与公开模块的布局项都在本机，
+            // 备份里没有它们——整份覆盖等于把它们删掉。凭据（token / 推送哈希 /
+            // 注册令牌）从来没进备份，恢复后这些机器状态落到「等待部署」。
             if (result.data.modules && restoreModules) {
-                await writeJSON(MODULES_FILE, result.data.modules);
+                const current = await readJSON(MODULES_FILE);
+                const merged = mergePrivateModules(current, result.data.modules, {
+                    publicModuleIds: [...PUBLIC_MODULE_IDS]
+                });
+                const written = versionedModules.write(MODULES_FILE, merged.modules);
+                modulesRevision = written.revision;
+                needsAuthorization = merged.needsAuthorization;
                 modulesRestored = true;
+                // 采集缓存是派生数据：模块布局变了就要重算，否则页面还显示旧卡片。
+                invalidateMetricsCache();
             }
+
             // 时间线：整表替换（service 里是一个事务），凭据表随之清空——
             // 备份不带凭据，所以恢复后的来源是「待授权」，用户重新填 token。
             if (result.data.timeline && restoreTimeline) {
@@ -2558,15 +2605,24 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
         }
 
         const parts = [];
+        if (bookmarksRestored) parts.push('书签');
+        if (memosRestored) parts.push('备忘录');
         if (modulesRestored) parts.push('模块配置');
         if (timelineRestored) parts.push('时间线');
         res.json({
             success: true,
             message: parts.length ? `恢复成功（含${parts.join('、')}）` : '恢复成功',
-            restoredConfig: !!(result.data.config && restoreConfig),
-            restoredBookmarks: !!(result.data.favorites || result.data.bookmarksHtml) && restoreBookmarks,
+            restoredBookmarks: bookmarksRestored,
+            restoredMemos: memosRestored,
             restoredModules: modulesRestored,
             restoredTimeline: timelineRestored,
+            modulesRevision,
+            // 旧备份里被跳过的域（导航与配置）：界面据此提示「旧备份只恢复书签」。
+            skipped: result.skipped || [],
+            // 恢复后需要重新授权/重新部署的机器：凭据不随备份。
+            needsAuthorization,
+            // 清单（只有新备份才有）：界面用来显示「这一组装了什么、跳过了什么」。
+            manifest: result.manifest || null,
             createdAt: result.createdAt,
             appVersion: result.appVersion
         });
@@ -3805,10 +3861,66 @@ function memoToClient(row) {
     };
 }
 
+/**
+ * 备忘录写入后的排期入口。**默认是空操作**。
+ *
+ * 备忘录存在 SQLite 里，不走 `writeJSON` 的自动同步钩子，所以「改完备忘录排一次
+ * 备份」得由写路由自己发起。但这个入口不能直接写成 `scheduleAutoSync()`：
+ * `tests/memo.test.js` 会把从下面这段到「微博热搜代理」之间的代码**单独切出来**
+ * 在 vm 里跑，那里没有整份 server.js 的定时器、抑制计数与去抖机制，直接调它
+ * 会让四条写路由全部 500。所以排期是一个可选依赖：`init()` 里注册真实实现，
+ * 没注册时什么也不做（那份切片就是这种情形）。
+ *
+ * ⚠️ 注册点与 `autoSyncReady = true` 同一处。漏了注册的表现是「改了备忘录，
+ * 云端不更新」——`tests/backup-scope.test.js` 钉住这一行。
+ */
+let memoWriteHook = () => {};
+
 const MEMO_SELECT = 'SELECT id, title, body, pinned, created_at, updated_at FROM memos';
 // 排序在服务端做：固定组在前、组内按内容更新时间倒序——
 // 单一真相源，客户端不再各自排序。
 const MEMO_LIST_SQL = MEMO_SELECT + ' ORDER BY pinned DESC, updated_at DESC';
+
+/**
+ * WebDAV 恢复：把备份里的备忘录整表替换进来（一个事务）。
+ *
+ * 与时间线同一种语义——「回到那个时间点」，而不是逐条合并：备忘录的 id 是
+ * 随机 UUID，逐条合并只会制造一堆谁也认不出的副本。**整表替换**也意味着
+ * 备份之后新建的备忘录会消失，所以恢复对话框会明说「恢复将覆盖当前对应的数据」。
+ *
+ * 形状校验在服务端再做一遍：远端文件是外部输入，id/标题/正文缺一不可，
+ * 超长条目直接跳过（不因为一条坏数据让整次恢复失败）。
+ * @returns {boolean} 是否真的写入了（一份空备份也算写入：那是「那时候没有备忘录」）
+ */
+function restoreMemosFromBackup(data) {
+    const entries = Array.isArray(data && data.memos) ? data.memos : [];
+    const insert = db.prepare(
+        'INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
+    const now = Date.now();
+    const rows = [];
+    for (const entry of entries) {
+        if (!entry || typeof entry.id !== 'string' || !entry.id) continue;
+        const title = typeof entry.title === 'string' ? entry.title.trim() : '';
+        if (!title || title.length > MEMO_TITLE_MAX) continue;
+        const text = typeof entry.body === 'string' ? entry.body : '';
+        if (text.length > MEMO_BODY_MAX) continue;
+        rows.push([
+            entry.id,
+            title,
+            text,
+            entry.pinned === true ? 1 : 0,
+            Number(entry.createdAt) || now,
+            Number(entry.updatedAt) || now
+        ]);
+        if (rows.length >= MEMO_MAX_ENTRIES) break;
+    }
+    const replace = db.transaction(list => {
+        db.prepare('DELETE FROM memos').run();
+        for (const row of list) insert.run(...row);
+    });
+    replace(rows);
+    return true;
+}
 
 // 轮询接口：走轮询专用桶。**不带 memoLimit**——那只桶留给下面的写操作
 //（用户手动增删改），把 15 秒一次的读也算进去会让多标签页用户自己打满它。
@@ -3842,6 +3954,10 @@ app.post('/api/memos', rateLimit, requireAdmin, memoLimit, (req, res) => {
         const id = crypto.randomUUID();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
             .run(id, title, text, now, now);
+        // 备忘录在 SQLite 里，不走 writeJSON 的自动同步钩子——这里是它唯一的
+        // 排期点。少了它，改备忘录不会触发自动备份，远端那份要等到下一次
+        // 「别的文件变了」才更新。
+        memoWriteHook();
         const row = db.prepare(MEMO_SELECT + ' WHERE id = ?').get(id);
         res.json({ memo: memoToClient(row) });
     } catch (err) {
@@ -3864,6 +3980,7 @@ app.post('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
         const info = db.prepare('UPDATE memos SET title = ?, body = ?, updated_at = ? WHERE id = ?')
             .run(title, text, now, req.params.id);
         if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        memoWriteHook();
         const row = db.prepare(MEMO_SELECT + ' WHERE id = ?').get(req.params.id);
         res.json({ memo: memoToClient(row) });
     } catch (err) {
@@ -3881,6 +3998,7 @@ app.post('/api/memos/:id/pin', rateLimit, requireAdmin, memoLimit, (req, res) =>
         const info = db.prepare('UPDATE memos SET pinned = ? WHERE id = ?')
             .run(v ? 1 : 0, req.params.id);
         if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        memoWriteHook();
         res.json({ success: true });
     } catch (err) {
         console.error('固定备忘录失败:', err);
@@ -3892,6 +4010,7 @@ app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
     try {
         const info = db.prepare('DELETE FROM memos WHERE id = ?').run(req.params.id);
         if (info.changes === 0) return res.status(404).json({ error: '未找到该备忘录' });
+        memoWriteHook();
         res.json({ success: true });
     } catch (err) {
         console.error('删除备忘录失败:', err);

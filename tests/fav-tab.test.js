@@ -176,13 +176,22 @@ test('条目改称书签：收藏夹内的操作文案用「书签」', () => {
     assert.match(src, /`已更新 \$\{targets\.length\} 个书签的隐私状态`/, '批量隐私提示');
     assert.match(src, /`确定删除选中的 \$\{count\} 个书签？`/, '批量删除确认');
     assert.match(src, /'确定删除此书签？', '删除书签', true/, '单条删除确认');
-    assert.match(src, /<span>只恢复书签<\/span>/, 'WebDAV 恢复选项');
-    // 括号里的内容按「这一组里实际有哪些文件」拼：只放模块时是「（含模块设置）」，
-    // 时间线也在时是「（含模块设置与时间线）」——两者都不在时完全不显示括号。
-    assert.match(src, /同时恢复配置和书签\$\{\(hasModules \|\| hasTimeline\)/,
-        'WebDAV 恢复选项（含模块与时间线）');
-    assert.match(src, /<span>只恢复时间线（事件与归档 \/ 收藏状态；凭据需重新填写）<\/span>/,
+    assert.match(src, /<span>只恢复书签（含隐私标签）<\/span>/, 'WebDAV 恢复选项');
+    // 「同时恢复」的括号里按「这一组里实际有哪些域」拼：只放模块时是「（含模块设置）」，
+    // 时间线也在时是「（含备忘录、模块设置、时间线）」——没有任何私人数据时不显示这一项。
+    assert.match(src, /<input type="radio" name="restoreType" value="all"/,
+        'WebDAV 恢复选项：同时恢复书签与私人数据');
+    assert.match(src, /同时恢复书签与私人数据（含\$\{\[hasMemos && '备忘录'/,
+        '括号内容由这一组实际包含的域决定');
+    assert.match(src, /<span>只恢复备忘录（正文与置顶状态）<\/span>/,
+        'WebDAV 恢复选项含备忘录');
+    assert.match(src, /<span>只恢复时间线（事件与归档 \/ 收藏状态）<\/span>/,
         'WebDAV 恢复选项含时间线');
+    // 恢复对话框不得再谈 token（凭据不随备份），并要列出「恢复后需重新授权」的项目
+    assert.doesNotMatch(src, /只恢复模块设置（监控目标、布局、token）/,
+        '恢复选项里不再出现 token 字样');
+    assert.match(src, /恢复后需要重新授权 \/ 重新部署的项目/, '列出恢复后需授权/需部署的项目');
+    assert.match(src, /旧范围的备份：<strong>只恢复书签<\/strong>/, '旧备份醒目提示「只恢复书签」');
 });
 
 test('首页网格条目改称「导航」，与收藏夹的「书签」分层', () => {
@@ -209,13 +218,13 @@ test('匿名搜索框仅提示网页搜索', () => {
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v122，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v122';/);
+test('sw.js：CACHE 升到 nav-v123，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v123';/);
     // 注释块的第一条必须**以当前缓存号开头并带说明**。这里不写死「本轮的主题」：
     // 主题随每次升级变化，写死就要每轮改一次断言（而真正要钉的是「注释跟着 CACHE 走」
     // 这个关系，见下面的派生断言）。
     const head = swJs.split('\n')[0];
-    assert.match(head, /^\/\/ nav-v122：\S/, '第一条注释要带当前版本号与说明');
+    assert.match(head, /^\/\/ nav-v123：\S/, '第一条注释要带当前版本号与说明');
     // 注释块记录的最新版本必须**就是** CACHE 里的那个——两者漂移意味着有人改了其一。
     // 这里不写死版本号：写死的话每次升缓存都要改断言，而断言该钉的是「两者一致」
     // 这个关系（升号时改 CACHE 与注释就够，不必再想起这个文件）。

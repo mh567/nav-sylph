@@ -1,3 +1,7 @@
+// nav-v123：管理员 WebDAV 备份按新范围生成（Issue #12）——只装收藏、备忘录、私人模块
+// 与时间线，新增版本化清单（含文件字节 sha256 与跳过项原因）；导航/引擎/模板/公开模块项/
+// 密码与会话/监控缓存与各类凭据一律排除，恢复侧按稳定模块 id 合并私人项、保留本机公开项，
+// 凭据不回填（恢复后显示「等待部署/待授权」）。改了 app.js、server.js、lib/webdav-backup.js。
 // nav-v122：身份切换与上下文代次——普通同步在所有在飞请求的**落盘点**同时比对
 // 连接代次与本标签页上下文代次（只比连接代次会让管理员个人导航被写进普通同步记录的
 // recovery）；退出/过期后先协调云端、再续传、最后起轮询；身份未确认前不发任何同步请求。
@@ -312,7 +316,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v122';
+const CACHE = 'nav-v123';
 const ASSETS = [
     '/',
     '/index.html',

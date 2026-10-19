@@ -12,6 +12,8 @@ const backupModule = { exports: {} };
 const LIB = path.join(__dirname, '..', 'lib');
 vm.runInNewContext(backupSource, {
     module: backupModule,
+    // manifest 里的「文件字节 sha256」要按 UTF-8 字节算，源码里用了 Buffer。
+    Buffer,
     require: name => {
         if (name === 'webdav') return { createClient: () => {} };
         if (name.startsWith('.')) return require(path.join(LIB, name));
@@ -49,21 +51,20 @@ test('ordinary browser bookmark HTML stays public', () => {
 
 test('an unchanged legacy backup is refreshed with privacy metadata', async () => {
     const favorites = [{ title: '个人入口', url: 'https://example.test/private', category: '个人', private: true }];
-    const configData = { theme: 'light' };
     const legacyChecksum = crypto.createHash('sha256').update(JSON.stringify(favorites)).digest('hex');
-    const configChecksum = crypto.createHash('sha256').update(JSON.stringify(configData)).digest('hex');
     const files = new Map();
     const backup = offlineBackup(
-        { remotePath: '/backups/', lastConfigChecksum: configChecksum, lastFavoritesChecksum: legacyChecksum },
+        { remotePath: '/backups/', lastFavoritesChecksum: legacyChecksum },
         recordingClient(files)
     );
-    const result = await backup.createBackup(configData, { favorites }, '1.4.0', generateBookmarkHtml);
+    const payload = { favorites, memos: [], modules: null, timeline: null, appVersion: '1.4.0', renderBookmarks: generateBookmarkHtml };
+    const result = await backup.createBackup(payload);
     assert.equal(result.noChanges, undefined);
     const html = files.get(`/backups/${result.bookmarksFilename}`);
     assert.match(html, /DATA-SYLPH-PRIVATE="1"/);
     const restored = await backup.restoreBackup({ bookmarksFile: result.bookmarksFilename });
     assert.equal(parseBookmarkHtml(restored.data.bookmarksHtml)[0].private, true);
-    const repeat = await backup.createBackup(configData, { favorites }, '1.4.0', generateBookmarkHtml);
+    const repeat = await backup.createBackup(payload);
     assert.equal(repeat.noChanges, true);
 });
 
@@ -101,34 +102,29 @@ test('WebDAV 配置保存后同样收紧为 600', () => {
 // v1.6.0 引入了 .modules.json（监控目标、token、顺序与显示开关），
 // 但备份只覆盖 config.json 与 favorites.json。换机器或文件丢失后，
 // 监控配置全部重来——这里钉住它必须跟着一起走。
+//
+// #12 起它只带**私人投影**（凭据、公开模块项与 _sync 都被挡住），
+// 投影本身的逐字段断言在 tests/backup-scope.test.js。
 
-test('备份包含 .modules.json，且 token 仍是密文', () => {
+test('备份包含 .modules.json 的私人投影，凭据不进产物', () => {
     const code = stripComments(backupSource);
     const backupFn = code.slice(code.indexOf('async createBackup('),
         code.indexOf('async listBackups('));
 
     // 上传
     assert.match(backupFn, /auto \? AUTO_MODULES_FILE : `nav-sylph-modules-\$\{timestamp\}\.json`/,
-        '上传 nav-sylph-modules-{时间戳}.json；自动同步用文件头那三个常量，不另写一遍字面量');
-    assert.match(backupFn, /auto \? AUTO_CONFIG_FILE : `nav-sylph-config-\$\{timestamp\}\.json`/,
-        '配置文件同理——名字只定义在常量里，两处各写一遍就会漂移');
+        '上传 nav-sylph-modules-{时间戳}.json；自动同步用文件头那组常量，不另写一遍字面量');
     assert.match(backupFn, /type:\s*'nav-sylph-modules'/, '带自己的 type 标记');
-    // token 走的是 data.modules 原文，不做转换 —— 密文进、密文出
-    assert.match(backupFn, /data:\s*modulesData/, '原样带出模块配置');
+    // 上传的是**投影**后的模块域，不是读进来的原文
+    assert.match(backupFn, /projectModulesForBackup\(payload\.modules/, '模块域先过白名单投影');
+    assert.match(backupFn, /data:\s*modules\b/, '上传的是投影结果');
+    assert.doesNotMatch(backupFn, /data:\s*modulesData/, '不再原样带出 .modules.json 全文');
 
     // **要断言真的上传了**，只匹配文件名是不够的：
-    // 把 `if (modulesData)` 改成 `if (false)` 后，文件名与 type 仍在源码里，
-    // 两条断言照样全绿，而备份里永远不会出现 modules 文件。
-    // 所以要盯住从存在性判断到 putFileContents 这一段。
-    // 锚点用 `let modulesFilename` —— 存在性判断在它之后、对象字面量之前，
-    // 用 `const modulesBackup` 会把 `if (modulesData)` 切到外面去。
-    // 也不能用注释当锚点：code 已剥掉注释，indexOf 会返回 -1 而切片仍是全文。
-    const uploadBlock = backupFn.slice(backupFn.indexOf('let modulesFilename'));
-    assert.ok(uploadBlock.length > 100, '找到 modules 上传段');
-    assert.match(uploadBlock, /if \(modulesData\)/, '上传段有存在性判断');
-    assert.match(uploadBlock, /putFileContents\([\s\S]*?modulesFilePath/,
-        'modules 文件真的被 put 上传');
-    assert.match(backupFn, /modulesFilename = auto \? AUTO_MODULES_FILE : `nav-sylph-modules-/, '上传后记录文件名供界面显示');
+    // 把 `if (modules)` 改成 `if (false)` 后，文件名与 type 仍在源码里，
+    // 断言照样全绿，而备份里永远不会出现 modules 文件。
+    // 所以还要盯住 put 那一段（共用 put()，它同时算 sha256 供清单使用）。
+    assert.match(backupFn, /await put\(modulesFilename,/, 'modules 文件真的被上传');
 
     // 「有无变化」判定也要算上它：只改监控目标却判成 noChanges，
     // 远端会留一份旧布局，恢复时拿到过期数据
@@ -154,7 +150,9 @@ test('恢复时校验 modules 文件的 type 与 checksum', () => {
     const code = stripComments(backupSource);
     const restoreFn = code.slice(code.indexOf('async restoreBackup('),
         code.indexOf('async deleteBackup('));
-    assert.match(restoreFn, /backup\.type !== 'nav-sylph-modules'/, '校验 type');
+    assert.match(restoreFn, /readEnvelope\(options\.modulesFile, 'nav-sylph-modules', 'modules'\)/,
+        '按 type 读回来');
+    assert.match(restoreFn, /backup\.type !== type/, '校验 type');
     assert.match(restoreFn, /verifyChecksum\(backup\)/, '校验 checksum');
 });
 
@@ -164,14 +162,13 @@ test('备份列表把 modules 文件归到同一时间戳分组，删除时一�
         code.indexOf('async cleanupOldBackups('));
     assert.match(listFn, /\^nav-sylph-modules-\(\\d\{8\}-\\d\{6\}\)\\\.json\$/,
         '识别 modules 文件名');
-    assert.match(listFn, /backupGroups\[ts\]\.modulesFile = item\.basename/,
+    assert.match(listFn, /stampInto\(modulesMatch\[1\], 'modulesFile', 'modulesSize'\)/,
         '归入同一时间戳分组——否则它会变成孤儿文件');
 
     // 清理按分组算：孤儿文件既不被计入也不会被清走，长期堆积在 WebDAV 上
     const cleanFn = code.slice(code.indexOf('async cleanupOldBackups('),
         code.indexOf('async restoreBackup('));
-    assert.match(cleanFn, /if \(backup\.modulesFile\)[\s\S]*?deleteBackup\(backup\.modulesFile\)/,
-        '删除备份时一并删除 modules 文件');
+    assert.match(cleanFn, /'modulesFile'/, '删除备份时一并删除 modules 文件');
 });
 
 test('服务端把 .modules.json 传进备份并写回', () => {
@@ -210,21 +207,23 @@ test('服务端把 .modules.json 传进备份并写回', () => {
         code.indexOf('async function runAutoSync('));
     assert.ok(performFn.length > 200, 'performBackup 切片完整');
     // 时间线的逻辑导出同样挂在 collectBackupPayload 上（不含凭据，见
-    // lib/webdav-backup.js 的常量注释），并随 options 一起交给 createBackup——
-    // 它把 timelineData 放进 options 而不是再加一个位置参数。
+    // lib/webdav-backup.js 的常量注释），并随载荷对象一起交给 createBackup。
     assert.match(payloadFn, /timeline\.service\.exportTimeline\(\)/,
         '时间线数据由 service 导出（不含凭据）');
-    assert.match(performFn,
-        /createBackup\(\s*configData, favoritesData, appVersion, generateBookmarkHtml, modulesData,\s*\{ \.\.\.options, timelineData \}\s*\)/,
-        '传给 createBackup，且把 options（含 timelineData）透传下去');
+    assert.match(performFn, /const payload = await collectBackupPayload\(\);/,
+        '载荷是一个对象，不再是五个位置参数');
+    assert.match(performFn, /webdav\.createBackup\(payload, options\)/,
+        '把载荷与 options 一起交给 createBackup');
 
     const restoreRoute = code.slice(code.indexOf("app.post('/api/webdav/restore'"),
         code.indexOf("app.post('/api/webdav/delete'"));
-    assert.match(restoreRoute, /writeJSON\(MODULES_FILE, result\.data\.modules\)/,
-        '恢复时写回 .modules.json');
+    // 恢复侧按稳定模块 id 合并，不整份覆盖（公开模块项与本机凭据都要留着）
+    assert.match(restoreRoute, /mergePrivateModules\(current, result\.data\.modules/, '合并而不是覆盖');
+    assert.match(restoreRoute, /versionedModules\.write\(MODULES_FILE, merged\.modules\)/,
+        '写回 .modules.json');
     assert.match(restoreRoute, /restoreModules = true/, '默认恢复模块配置');
     // 缺失的 modules（或 timeline）文件不能被当成「没选」，否则整个恢复被 400 挡下
-    assert.match(restoreRoute, /!configFile && !bookmarksFile && !modulesFile && !timelineFile && !legacyFile/,
+    assert.match(restoreRoute, /!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile/,
         '只选模块文件也能恢复');
     assert.match(restoreRoute, /timeline\.service\.importTimeline\(result\.data\.timeline\)/,
         '时间线在恢复流程里整表替换（一个事务）');
@@ -415,30 +414,30 @@ test('恢复列表不再直接展示文件名时间戳，两处时间共用一�
 test('删掉自动槽位的文件会同时清掉它那一组校验和', async () => {
     // 不清的话 `noChanges` 会在下一次自动同步时直接短路，远端那份**再也不会
     // 被重新创建**，而界面上还写着「自动同步：已开启」。
-    const files = new Map([['/backups/nav-sylph-config-auto.json', '{}']]);
+    const files = new Map([['/backups/nav-sylph-memos-auto.json', '{}']]);
     const deleted = [];
     const backup = offlineBackup(
-        { remotePath: '/backups/', lastAutoConfigChecksum: 'abc' },
+        { remotePath: '/backups/', lastAutoMemosChecksum: 'abc' },
         { deleteFile: async name => { deleted.push(name); files.delete(name); } }
     );
 
-    await backup.deleteBackup('nav-sylph-config-auto.json');
+    await backup.deleteBackup('nav-sylph-memos-auto.json');
 
-    assert.deepEqual(deleted, ['/backups/nav-sylph-config-auto.json'], '真的删了远端文件');
-    assert.equal(backup.config.lastAutoConfigChecksum, undefined, '校验和必须被清掉');
+    assert.deepEqual(deleted, ['/backups/nav-sylph-memos-auto.json'], '真的删了远端文件');
+    assert.equal(backup.config.lastAutoMemosChecksum, undefined, '校验和必须被清掉');
     // 赋 undefined 而不是 null 才是关键：JSON.stringify 会丢掉值为 undefined 的键，
     // 于是这个键从配置文件里彻底消失，下一次比较必然不相等。写 null 时若当前
     // 内容也判出 null，null === null 会让 noChanges 再次把上传吞掉。
-    assert.ok(!('lastAutoConfigChecksum' in JSON.parse(JSON.stringify(backup.config))),
+    assert.ok(!('lastAutoMemosChecksum' in JSON.parse(JSON.stringify(backup.config))),
         '序列化后这个键整个消失（这才保证下次比较必然不相等）');
 
     // 删手动分组的文件不该动到自动那一组
     const other = offlineBackup(
-        { remotePath: '/backups/', lastAutoConfigChecksum: 'abc' },
+        { remotePath: '/backups/', lastAutoMemosChecksum: 'abc' },
         { deleteFile: async () => {} }
     );
-    await other.deleteBackup('nav-sylph-config-20260101-010101.json');
-    assert.equal(other.config.lastAutoConfigChecksum, 'abc', '删手动备份不得清自动槽位的校验和');
+    await other.deleteBackup('nav-sylph-memos-20260101-010101.json');
+    assert.equal(other.config.lastAutoMemosChecksum, 'abc', '删手动备份不得清自动槽位的校验和');
 });
 
 test('恢复备份前取消已排期的自动同步，runAutoSync 也要再看一眼抑制标志', () => {
@@ -502,27 +501,32 @@ function offlineBackup(config, client) {
 test('自动备份写固定槽位，且与手动备份各用一套校验和', async () => {
     const files = new Map();
     const backup = offlineBackup({ remotePath: '/backups/' }, recordingClient(files));
-    const configData = { theme: 'dark' };
     const favorites = [{ title: 'x', url: 'https://e.test/' }];
+    const payload = { favorites, memos: [], modules: null, timeline: null, appVersion: '1.0.0', renderBookmarks: generateBookmarkHtml };
 
     // 1) 自动备份 -> 固定文件名（不带时间戳，每次覆盖）
-    const auto = await backup.createBackup(configData, { favorites }, '1.0.0', generateBookmarkHtml, null, { auto: true });
-    assert.equal(auto.configFilename, 'nav-sylph-config-auto.json');
+    const auto = await backup.createBackup(payload, { auto: true });
+    // #12 起不再生成 config 文件：管理员导航与引擎不在备份范围内
+    assert.equal(auto.configFilename, undefined, '不再有 nav-sylph-config-auto.json');
     assert.equal(auto.bookmarksFilename, 'nav-sylph-bookmarks-auto.html');
-    assert.ok(files.has('/backups/nav-sylph-config-auto.json'), '真的上传了');
+    assert.equal(auto.memosFilename, 'nav-sylph-memos-auto.json');
+    assert.equal(auto.manifestFilename, 'nav-sylph-manifest-auto.json');
+    assert.ok(files.has('/backups/nav-sylph-bookmarks-auto.html'), '真的上传了');
+    assert.ok(files.has('/backups/nav-sylph-manifest-auto.json'), '清单也上传了');
 
     // 2) 同样的数据再自动跑一次 -> noChanges（不重复上传）
-    const again = await backup.createBackup(configData, { favorites }, '1.0.0', generateBookmarkHtml, null, { auto: true });
+    const again = await backup.createBackup(payload, { auto: true });
     assert.equal(again.noChanges, true);
 
     // 3) **手动备份同样的数据不得被判成 noChanges**。两套校验和若共用，
     //    用户点「立即备份」会得到一句「没有变化」、什么都不生成——
     //    一次显式请求被静默吞掉。这条是本次最容易漏的交互。
-    const manual = await backup.createBackup(configData, { favorites }, '1.0.0', generateBookmarkHtml, null);
+    const manual = await backup.createBackup(payload);
     assert.equal(manual.noChanges, undefined, '自动备份不得让「立即备份」变成空操作');
-    assert.match(manual.configFilename, /^nav-sylph-config-\d{8}-\d{6}\.json$/);
-    assert.ok(backup.config.lastConfigChecksum, '手动那一组也被更新了');
-    assert.ok(backup.config.lastAutoConfigChecksum, '自动那一组独立存在');
+    assert.match(manual.bookmarksFilename, /^nav-sylph-bookmarks-\d{8}-\d{6}\.html$/);
+    assert.match(manual.manifestFilename, /^nav-sylph-manifest-\d{8}-\d{6}\.json$/);
+    assert.ok(backup.config.lastFavoritesChecksum, '手动那一组也被更新了');
+    assert.ok(backup.config.lastAutoFavoritesChecksum, '自动那一组独立存在');
 });
 
 test('清理旧备份时自动槽位不参与轮换，也不会被删', async () => {
