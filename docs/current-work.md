@@ -1,6 +1,14 @@
 # 当前工作交接
 
-核对日期：2026-10-18。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+核对日期：2026-10-19。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
+
+## 已发布 v2.1.0（2026-10-19）
+
+- 版本提交 `c2f6bcc`（`chore: 版本 2.1.0`），tag 与 GitHub Release **v2.1.0** 已创建，`main` 已推送（远端 = `c2f6bcc`）。
+- 覆盖上一轮积压的 **#8–#13**：自动同步与多端冲突、停止同步与删除云端空间、设备回收与空间资源治理、管理员与普通同步的身份切换、备份范围收窄、可回滚的两段式恢复。
+- 发布物已下载核对：`nav-sylph-v2.1.0.tar.gz`（约 13.3 MB）含 `lib/restore.js`、`lib/admin-lock.js`、`lib/sync-store.js`、`public/sw.js`（`CACHE = nav-v124`），包内 `version.json` 与 `CHANGELOG.json[0]` 均为 2.1.0；**不含**任何私有文件（`.admin-password.json` / `config.json` / `.modules.json` / `nav-sylph.db` / `.webdav-config.json` / 交接草稿）。
+- 已安装的用户升级：`./sylph.sh update`（`sylph.sh` 读 GitHub Release 的 `tag_name` 与附件，所以 tag 与 Release 必须一起存在——`scripts/release.sh` 已一并完成）。
+- 升级前的数据会被 `sylph.sh` 备份/保留；本次迁移只追加（v9 → **v12**：墓碑、资源治理、恢复记录），已发布的 0–8 未改动。运行需要 **Node ≥ 22**（`better-sqlite3@13` 的 `engines`）。
 
 ## Issue #14：升级、浏览器与目标机器综合验收（2026-10-18，**部分完成，Issue 保持 OPEN**）
 
