@@ -221,7 +221,7 @@ test('匿名搜索框仅提示网页搜索', () => {
 });
 
 test('sw.js：CACHE 升到 nav-v125（同步管理 tab），注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v125';/);
+    assert.match(swJs, /const CACHE = 'nav-v126';/);
     // 注释块的第一条必须**以当前缓存号开头并带说明**。这里不写死「本轮的主题」：
     // 主题随每次升级变化，写死就要每轮改一次断言（而真正要钉的是「注释跟着 CACHE 走」
     // 这个关系，见下面的派生断言）。
