@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const bcrypt = require('bcrypt');
 const { createHash } = require('node:crypto');
-const { openDatabase } = require('../lib/db');
+const { openDatabase, MIGRATIONS } = require('../lib/db');
 const sync = require('../lib/sync-store');
 
 // 口令 → 连接证明的派生**按浏览器那一侧的做法算**（Web Crypto + 同一个标签），
@@ -37,11 +37,24 @@ async function fixture(t, options = {}) {
     const store = sync.createSyncStore(db, {
         now: () => clock,
         getPasswordHash: () => hash,
-        publicModuleIds: () => options.modules || ['weibo-hot']
+        publicModuleIds: () => options.modules || ['weibo-hot'],
+        // #10：额度注入。缺省（undefined）时 store 自己回到 DIFFICULTY 的三个规格值——
+        // 这正是「默认值」那条用例要验证的路径，所以这里**不能**替它写默认值。
+        limits: options.limits
     });
     t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
     return {
         store, db, file,
+        // 另外造一个 store 共用同一张库：用来表现「管理员事后把限额调小 / 调大」，
+        // 因为额度是**每个 store 实例**在构造时解析的（与 server.js 从 env 读同一处）。
+        storeWith: limits => sync.createSyncStore(db, {
+            now: () => clock,
+            getPasswordHash: () => hash,
+            publicModuleIds: () => options.modules || ['weibo-hot'],
+            limits
+        }),
+        now: () => clock,
+        hash: () => hash,
         advance: (ms) => { clock += ms; },
         setHash: (next) => { hash = next; },
         create: async (passphrase, inviteCode, extra = {}) => store.createSpace({
@@ -54,6 +67,41 @@ async function fixture(t, options = {}) {
         check: async (passphrase) => store.checkSpace({ proof: await spaceProof(passphrase) })
     };
 }
+
+/**
+ * 造一份「config_json + modules_json 的 UTF-8 字节数」**逐字节等于** `target` 的载荷。
+ *
+ * 用书签的超长 URL 撑体积：URL 每多一个 ASCII 字符就多一个字节，所以能精确命中
+ * 边界（`bytes > limit` 与 `bytes === limit` 是额度这条闸门的两个面）。一条 URL 最长
+ * 4096，所以大载荷会摊到多条书签上，最后一条补差值——不做逐字节试探（20000 字节要跑
+ * 两万轮 JSON.stringify）。
+ */
+function payloadAtExactBytes(target, modules = {}) {
+    const bookmarks = [{ id: 'b1', title: 't', url: 'https://e.example/' }];
+    const config = { ...CONFIG, categories: [{ id: 'c1', name: '工作', bookmarks }] };
+    const PREFIX = 'https://e.example/';
+    const ROOM = 4000;      // 单条 URL 的填充上限（PREFIX + 4000 = 4018 < 4096）
+    for (let guard = 0; guard < 40; guard++) {
+        const gap = target - payloadBytes({ ...config, categories: [{ ...config.categories[0], bookmarks }] }, modules);
+        if (gap === 0) return { ...config, categories: [{ ...config.categories[0], bookmarks }] };
+        assert.ok(gap > 0, `目标 ${target} 已经越过（差 ${gap}）：换更小的目标`);
+        const last = bookmarks[bookmarks.length - 1];
+        const room = ROOM - (last.url.length - PREFIX.length);
+        if (room === 0) {
+            bookmarks.push({ id: `b${bookmarks.length + 1}`, title: 't', url: PREFIX });
+            continue;
+        }
+        last.url += 'a'.repeat(Math.min(room, gap));
+    }
+    throw new Error(`撑不到 ${target} 字节`);
+}
+
+/** 与 store 的 `contentBytes()` 同口径：**归一化之后**两段 JSON 的 UTF-8 字节数之和。 */
+function payloadBytes(config, modules = {}) {
+    return Buffer.byteLength(JSON.stringify(sync.validateSyncConfig(config)), 'utf8')
+        + Buffer.byteLength(JSON.stringify(sync.normalizeSyncModules(modules, ['weibo-hot'])), 'utf8');
+}
+
 
 function expectStatus(fn, predicate) {
     try {
@@ -403,4 +451,337 @@ test('口令空间：sweep 清理过期/已撤销的邀请码记录，但不丢�
     f.store.sweep();
     assert.deepEqual(f.store.listInvites().invites.map((i) => i.id), [fresh.id], '只留下刚建的那张');
     assert.equal(f.store.listInvites().invites[0].expired, false);
+});
+
+// ==================== #10：额度、总暂停、设备回收、清理顺序 ====================
+
+test('额度：三个默认值与设计规格逐字相等，注入只覆盖传进来的那几项', async (t) => {
+    // 只测注入路径的话，「默认值被改小」这类变异照样全绿（注入的用例全在传限额），
+    // 所以这里把规格数**写死**对拍一次：1000 空间 / 1 MiB 每空间 / 1 GiB 全实例。
+    assert.deepEqual(sync.DIFFICULTY, { spaceLimit: 1000, contentBytesLimit: 1048576, totalBytesLimit: 1073741824 });
+    const f = await fixture(t);
+    assert.deepEqual(f.store.limits, sync.DIFFICULTY, '不传 limits 时用的就是规格值');
+    // 只有传进来的那一项被覆盖，其余仍回到规格值（`?? 规格` 而不是「全有或全无」）。
+    assert.deepEqual(f.storeWith({ spaceLimit: 3 }).limits,
+        { spaceLimit: 3, contentBytesLimit: 1048576, totalBytesLimit: 1073741824 });
+});
+
+test('额度：全实例空间数上限用 503 space_limit，被拒的创建既不消耗邀请码也不淘汰已有空间', async (t) => {
+    const f = await fixture(t, { limits: { spaceLimit: 2 } });
+    const invites = [f.store.createInvite().invite, f.store.createInvite().invite, f.store.createInvite().invite];
+    const one = await f.create('上限口令甲', invites[0].code);
+    const two = await f.create('上限口令乙', invites[1].code);
+    const before = f.db.prepare('SELECT id, revision, config_json FROM sync_spaces WHERE deleted = 0 ORDER BY id').all();
+
+    expectStatus(() => f.store.createSpace({
+        proof: 'c'.repeat(64), inviteCode: invites[2].code, operationId: 'over-limit', config: CONFIG, modules: {}
+    }), (e) => e.status === 503 && e.code === 'space_limit');
+
+    assert.equal(f.store.listInvites().invites.find((i) => i.id === invites[2].id).used, false,
+        '被额度拒绝的创建不能烧掉邀请码——那是用户唯一一张');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_spaces').get().n, 2, '没有偷偷多建一个');
+    // **绝不淘汰**：额度满了只是拒绝新的，已有的两个空间一个字段都不许动。
+    assert.deepEqual(f.db.prepare('SELECT id, revision, config_json FROM sync_spaces WHERE deleted = 0 ORDER BY id').all(), before);
+    assert.equal(f.store.readConfig(one.deviceToken).revision, 1);
+    assert.equal(f.store.readConfig(two.deviceToken).revision, 1);
+});
+
+test('额度：每空间上限口径是 config+modules 之和，物化字节数与 Buffer.byteLength 一致（含非 ASCII）', async (t) => {
+    const f = await fixture(t, { limits: { contentBytesLimit: 4096 } });
+    const created = await f.create('口径口令', f.store.createInvite().invite.code);
+    const token = (await f.connect('口径口令', 'quota-device')).deviceToken;
+
+    // 一份**非 ASCII**载荷：中文分类/书签 + emoji。没有它，下面「字节数 ≠ 字符数」
+    // 那条断言在纯 ASCII 上也成立，等于没测（v11 的 CAST 就是为它写的）。
+    const config = payloadAtExactBytes(3000);
+    config.searchEngines[0].name = '谷歌';
+    config.categories[0].bookmarks[0].title = '中文书签😀';
+    const size = payloadBytes(config, { enabled: ['weibo-hot'] });
+    assert.ok(size <= 4096, `这份载荷要在限额之内（${size}）`);
+    f.store.writeConfig(token, { revision: 1, operationId: 'q-1', config, modules: { enabled: ['weibo-hot'] } });
+
+    const row = f.db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    const expected = Buffer.byteLength(row.config_json, 'utf8') + Buffer.byteLength(row.modules_json, 'utf8');
+    assert.equal(row.content_bytes, expected, '物化值 = config_json 与 modules_json 的 UTF-8 字节数之和');
+    assert.match(row.config_json, /[\u4e00-\u9fff]/, '载荷里必须真的有中文');
+    assert.equal(row.content_bytes > row.config_json.length + row.modules_json.length, true,
+        `字节数必须大于字符数（${row.content_bytes} vs ${row.config_json.length + row.modules_json.length}），否则这条口径没被区分开`);
+
+    // 边界：`bytes > limit` 是判据，所以**恰好等于**上限必须放行。先缩到 4096 再写满。
+    f.store.writeConfig(token, { revision: 2, operationId: 'q-shrink', config: payloadAtExactBytes(4096, { enabled: ['weibo-hot'] }), modules: { enabled: ['weibo-hot'] } });
+    assert.equal(f.db.prepare('SELECT content_bytes FROM sync_spaces WHERE id = ?').get(created.spaceId).content_bytes, 4096);
+    // 增长一格（4097）就必须被拒，而且拒绝之后内容与版本都不动。
+    const atLimit = f.db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    const error = expectStatus(() => f.store.writeConfig(token, {
+        revision: atLimit.revision, operationId: 'q-over', config: payloadAtExactBytes(4097, { enabled: ['weibo-hot'] }), modules: { enabled: ['weibo-hot'] }
+    }), (e) => e.status === 503 && e.code === 'space_quota_exceeded');
+    assert.match(error.message, /1 MiB|上限/, '给用户的话要说清是「满了」');
+    const after = f.db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    assert.equal(after.revision, atLimit.revision, '被拒的写不推进版本');
+    assert.equal(after.config_json, atLimit.config_json, '被拒的写不改内容');
+    // 读取不受额度影响（读放行了才谈得上「先精简内容」）。
+    assert.equal(f.store.readConfig(token).revision, atLimit.revision);
+});
+
+test('额度：缩减写入无条件放行——限额被调小之后，用户还能把自己超限的内容减下来', async (t) => {
+    // 这一条是「不留这条，用户就被自己的数据锁在门外」的观测形式：先用宽限额写进 20 KB，
+    // 再模拟「管理员事后把限额调小」（同一张库上换一个 4 KiB 的 store 实例）。
+    const f = await fixture(t);
+    const created = await f.create('缩减口令', f.store.createInvite().invite.code);
+    const token = (await f.connect('缩减口令', 'shrink-device')).deviceToken;
+    f.store.writeConfig(token, { revision: 1, operationId: 'big-1', config: payloadAtExactBytes(20000), modules: {} });
+
+    const small = f.storeWith({ contentBytesLimit: 4096 });
+    // 增长：既比现在大（25000 > 20000，所以不是缩减），又超过新限额 → 503
+    expectStatus(() => small.writeConfig(token, { revision: 2, operationId: 'grow', config: payloadAtExactBytes(25000), modules: {} }),
+        (e) => e.code === 'space_quota_exceeded');
+    // 缩减：**仍然大于新限额**（4500 > 4096），但比现在小 → 必须放行
+    const saved = small.writeConfig(token, { revision: 2, operationId: 'shrink', config: payloadAtExactBytes(4500), modules: {} });
+    assert.equal(saved.success, true, '缩减写入必须无条件放行');
+    assert.equal(saved.revision, 3);
+    assert.equal(f.db.prepare('SELECT content_bytes FROM sync_spaces WHERE id = ?').get(created.spaceId).content_bytes, 4500);
+    assert.equal(f.store.readConfig(token).revision, 3);
+    // 缩减之后物化值跟着缩，于是**下一次增长又受正常额度约束**（不是一劳永逸的豁免）。
+    expectStatus(() => small.writeConfig(token, { revision: 3, operationId: 'grow-again', config: payloadAtExactBytes(4600), modules: {} }),
+        (e) => e.code === 'space_quota_exceeded');
+});
+
+test('额度：回执重放排在额度之前——额度满了也不能让「响应丢了」的重试时成时败', async (t) => {
+    const f = await fixture(t);
+    const invite = f.store.createInvite().invite;
+    const proof = await spaceProof('重放额度口令');
+    const first = f.store.createSpace({ proof, inviteCode: invite.code, operationId: 'replay-1', config: CONFIG, modules: {} });
+    // 额度满了：上限 1 个空间，而它已经被占掉了。
+    const full = f.storeWith({ spaceLimit: 1 });
+    const replay = full.createSpace({ proof, inviteCode: invite.code, operationId: 'replay-1', config: CONFIG, modules: {} });
+    assert.equal(replay.deviceToken, first.deviceToken, '同 ID 重放拿回同一份材料，即使此刻额度已满');
+    assert.equal(replay.spaceId, first.spaceId);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_devices').get().n, 1, '重放不新增设备');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_spaces').get().n, 1);
+    // 对照：换一个新 ID 的创建必须被额度拒掉——证明上面那条不是「额度根本没生效」。
+    expectStatus(() => full.createSpace({ proof: 'd'.repeat(64), inviteCode: f.store.createInvite().invite.code, operationId: 'fresh', config: CONFIG, modules: {} }),
+        (e) => e.status === 503 && e.code === 'space_limit');
+});
+
+test('总暂停：读/写/连/建/重签一律 503 sync_paused（带 Retry-After 时刻），删除与撤销照常可用', async (t) => {
+    const f = await fixture(t);
+    const spare = f.store.createInvite().invite;
+    const created = await f.create('暂停口令', f.store.createInvite().invite.code);
+    const other = (await f.connect('暂停口令', 'paused-device')).deviceToken;
+    const proof = await spaceProof('暂停口令');
+    assert.equal(f.store.updateSettings({ syncPaused: true }).settings.syncPaused, true);
+    const at = f.now();
+
+    // `retryAfter` 是**时刻**（与限流那几只桶同一种表达），server.js 的 syncFailure
+    // 再把它折成秒放进 `Retry-After`。两侧同值这件事有一条 HTTP 用例钉着。
+    const paused = (fn, label) => {
+        const error = expectStatus(fn, (e) => e.status === 503 && e.code === 'sync_paused');
+        assert.equal(error.retryAfter, at + sync.SYNC_PAUSED_RETRY_MS, `${label} 要带 Retry-After 时刻`);
+        return error;
+    };
+    paused(() => f.store.readConfig(created.deviceToken), '读');
+    paused(() => f.store.writeConfig(created.deviceToken, { revision: 1, operationId: 'paused-write', config: CONFIG, modules: {} }), '写');
+    paused(() => f.store.connectSpace({ proof, operationId: 'paused-connect' }), '连接');
+    paused(() => f.store.createSpace({ proof: 'e'.repeat(64), inviteCode: spare.code, operationId: 'paused-create', config: CONFIG, modules: {} }), '创建');
+    paused(() => f.store.resetDevices({ proof, operationId: 'paused-reset' }), '重签（撤销全部旧设备）');
+    // 连**回执重放**也拒：总暂停是「现在谁都别写」，包括重试（判定排在回执之前）。
+    paused(() => f.store.connectSpace({ proof, operationId: 'paused-connect' }), '连接（同 operationId 重试）');
+    // 数据面全挡：库里一个字段都没变，那张备用邀请码也没被烧掉。
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_spaces').get().n, 1);
+    assert.equal(f.db.prepare('SELECT revision FROM sync_spaces').get().revision, 1);
+    assert.equal(f.store.listInvites().invites.find((i) => i.id === spare.id).used, false);
+    // checkSpace 只回 exists/revision/entryCount（元数据，不含内容），不在冻结清单里。
+    assert.equal(f.store.checkSpace({ proof }).exists, true);
+
+    // 「我要离开」与「我要删掉自己的东西」照常：挡住它们等于管理员一开总暂停就把用户锁在里面。
+    assert.equal(f.store.revokeDevice(other).success, true, '暂停期间撤销本设备照常');
+    expectStatus(() => f.store.readConfig(other), (e) => e.status === 401 && e.code === 'device_revoked', '撤销真的生效了');
+    const removed = f.store.deleteSpace(created.deviceToken, { proof });
+    assert.equal(removed.success, true, '暂停期间删除空间照常');
+    assert.equal(removed.revoked, 1, '删除照常吊销该空间的设备');
+    assert.equal(f.store.checkSpace({ proof }).exists, false);
+
+    // 解除暂停后一切照旧。
+    f.store.updateSettings({ syncPaused: false });
+    assert.equal(f.store.readSettings().syncPaused, false);
+    const again = await f.store.createSpace({ proof: 'e'.repeat(64), inviteCode: spare.code, operationId: 'after-pause', config: CONFIG, modules: {} });
+    assert.equal(again.success, true);
+    assert.equal(f.store.listInvites().invites.find((i) => i.id === spare.id).used, true, '暂停解除后那张邀请码照常可用');
+    // 客户端轮询间隔与服务端 Retry-After 同值（两处常量，一条断言对拍）。
+    assert.equal(sync.SYNC_PAUSED_RETRY_MS, 5 * 60 * 1000);
+});
+
+test('撤销全部旧设备：revision 与内容都不动、不消耗邀请码、同 operationId 只撤一次、旧令牌与旧回执一律作废', async (t) => {
+    const f = await fixture(t);
+    const created = await f.create('回收口令', f.store.createInvite().invite.code);
+    const a = created.deviceToken;
+    const b = (await f.connect('回收口令', 'device-b')).deviceToken;
+    const proof = await spaceProof('回收口令');
+    // 先写一版内容：重连**不动**内容与时间戳是这条设计里的硬要求。
+    const written = f.store.writeConfig(a, { revision: 1, operationId: 'before-reset', config: { ...CONFIG, theme: 'dark' }, modules: { enabled: ['weibo-hot'] } });
+    const before = f.db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    const invitesBefore = f.store.listInvites().invites.map((i) => [i.id, i.usedAt]);
+    const devicesBefore = f.db.prepare('SELECT COUNT(*) n FROM sync_devices').get().n;
+
+    const reset = f.store.resetDevices({ proof, operationId: 'reset-1' });
+    assert.equal(reset.success, true);
+    assert.equal(reset.generation, 2, '代次 +1');
+    assert.equal(reset.revoked, 2, '两台旧设备（含发起这台）全部吊销');
+    assert.equal(reset.revision, written.revision, 'revision 不变——重连不是恢复，也不是覆盖配置');
+    assert.equal(reset.updatedAt, before.updated_at, '时间戳也不动');
+    const after = f.db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    assert.equal(after.config_json, before.config_json, '内容逐字节不变');
+    assert.equal(after.modules_json, before.modules_json);
+    assert.equal(after.content_bytes, before.content_bytes);
+    assert.equal(after.revision, before.revision);
+    assert.equal(after.generation, 2);
+    assert.deepEqual(f.store.listInvites().invites.map((i) => [i.id, i.usedAt]), invitesBefore, '不消耗邀请码');
+    // 旧令牌一律失效。⚠️ 这里是 `device_revoked` 而不是 `device_invalid`：撤销会把
+    // 设备**行**标成 revoked（保留 24 小时），所以客户端拿到的是「这台设备被踢了」；
+    // 代次不符的那种（`device_invalid`）出现在「行还在、代次变了」的路径上（见文末）。
+    for (const token of [a, b]) {
+        expectStatus(() => f.store.readConfig(token), (e) => e.status === 401 && e.code === 'device_revoked');
+    }
+    // 新令牌可用，且读到的还是写下的那一版内容（内容没丢）。
+    const read = f.store.readConfig(reset.deviceToken);
+    assert.equal(read.generation, 2);
+    assert.equal(read.revision, written.revision);
+    assert.equal(read.config.theme, 'dark');
+    assert.deepEqual(read.modules.enabled, ['weibo-hot']);
+    // 同 operationId 只撤一次：重放拿回同一份材料，不新增设备、不推进代次，也不吊销新令牌。
+    const replay = f.store.resetDevices({ proof, operationId: 'reset-1' });
+    assert.equal(replay.deviceToken, reset.deviceToken, '重放拿回同一份材料');
+    assert.equal(replay.generation, 2);
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_devices').get().n, devicesBefore + 1, '重放不再签发设备');
+    assert.equal(f.db.prepare('SELECT generation FROM sync_spaces WHERE id = ?').get(created.spaceId).generation, 2, '代次没有再 +1');
+    assert.equal(f.store.readConfig(reset.deviceToken).generation, 2, '刚签发的那枚没有被吊销');
+    // 换一个新 ID = 又撤一次（客户端刷新页面重来的代价：多一枚 90 天内清理的孤儿令牌）。
+    const second = f.store.resetDevices({ proof, operationId: 'reset-2' });
+    assert.equal(second.generation, 3);
+    expectStatus(() => f.store.readConfig(reset.deviceToken), (e) => e.code === 'device_revoked', '上一次签发的令牌随之失效');
+    assert.equal(f.store.readConfig(second.deviceToken).generation, 3);
+    // 旧回执不能把一份作废的材料要回来：代次一变就明确要求重新输入口令
+    // （把代次往前推一格来构造「材料已过期」，与 tests/sync-store.test.js 既有的那条同法）。
+    f.db.prepare('UPDATE sync_spaces SET generation = generation + 1 WHERE id = ?').run(created.spaceId);
+    expectStatus(() => f.store.resetDevices({ proof, operationId: 'reset-2' }), (e) => e.status === 409 && e.code === 'receipt_stale');
+    // 回执被清掉之后重放同一个 ID 会当作**新请求**再撤一次（拿回的材料仍是当前代次，
+    // 绝不是那一份已经作废的令牌——「不能把作废令牌当成功返回」这条不变量就在这里）。
+    const third = f.store.resetDevices({ proof, operationId: 'reset-1' });
+    assert.equal(third.generation, 5);
+    assert.notEqual(third.deviceToken, reset.deviceToken);
+    assert.equal(f.store.readConfig(third.deviceToken).generation, 5);
+});
+
+test('清理顺序：已撤销设备行保留 24 小时；墓碑**必须在设备行清掉之后**才清', async (t) => {
+    const f = await fixture(t);
+    const invite = f.store.createInvite().invite;
+    const created = await f.create('清理口令', invite.code);
+    const a = created.deviceToken;
+    const b = (await f.connect('清理口令', 'device-b')).deviceToken;
+
+    // ② 已撤销的设备行：窗口内还读得到「这台设备被踢了」，窗口外连行带信息一起没。
+    // 判据是 `revoked_at` 而不是 `last_seen_at`（撤销之后客户端不会再打这个令牌，
+    // 用 last_seen_at 会把刚撤销的行当场删掉，客户端的话术跟着变）。
+    f.store.revokeDevice(b);
+    f.advance(23 * HOUR);
+    f.store.sweep();
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_devices WHERE token_hash = ?').get(createHash('sha256').update(`sylph-device-token-v1\u0000${b}`).digest('hex')).n, 1,
+        '24 小时内那一行还要留着');
+    expectStatus(() => f.store.readConfig(b), (e) => e.status === 401 && e.code === 'device_revoked', '窗口内能区分「被踢」与「无效」');
+    f.advance(2 * HOUR);
+    f.store.sweep();
+    expectStatus(() => f.store.readConfig(b), (e) => e.status === 401 && e.code === 'device_invalid', '过了 24 小时两种都归「无效」——那一行已经没有信息量');
+
+    // ④ 墓碑的清理：**顺序**是这条用例的重点。
+    // 用户删除空间（墓碑 + 全部设备被吊销）。
+    assert.equal(f.store.deleteSpace(a, { proof: await spaceProof('清理口令') }).success, true);
+    const spaceId = created.spaceId;
+    assert.equal(f.db.prepare('SELECT deleted FROM sync_spaces WHERE id = ?').get(spaceId).deleted, 1);
+
+    // 越过墓碑的 90 天窗口：这时墓碑已经「够老」，但那个空间**还留着一行设备**
+    // （构造方式：那台设备在删除之后又被读过一次）。现实里最接近的情形是「先吊销后删除」
+    // 的次序被打乱，或将来新增一条吊销路径漏了 —— 这正是 `NOT IN (SELECT space_id ...)`
+    // 子句要防的：墓碑先没、设备行还在 → 客户端从 410「空间已删除」变成 401「令牌无效」。
+    f.advance(91 * DAY);
+    f.db.prepare('UPDATE sync_devices SET revoked = 0, revoked_at = NULL, last_seen_at = ? WHERE space_id = ?').run(f.now(), spaceId);
+    const alive = f.db.prepare('SELECT token_hash FROM sync_devices WHERE space_id = ?').get(spaceId);
+    assert.ok(alive, '场景：墓碑老了，但它名下还有设备行');
+    f.store.sweep();
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_spaces WHERE id = ?').get(spaceId).n, 1, '还有设备行指向它，墓碑就必须留着');
+    // 可观测的后果：那台设备拿到的仍然是「空间已被删除」（410）——墓碑在，这条判定才可达。
+    // 墓碑先没的话，同一台设备会变成「令牌无效」（401），客户端就会要求重新输口令，
+    // 而那个口令对应的空间其实已经被删掉了。
+    expectStatus(() => f.store.readConfig(a), (e) => e.status === 410 && e.code === 'space_deleted');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_devices WHERE space_id = ?').get(spaceId).n, 1);
+
+    // 设备行终于到期（90 天没鉴权）→ 下一次清理才轮到墓碑。
+    f.advance(91 * DAY);
+    f.store.sweep();
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_devices WHERE space_id = ?').get(spaceId).n, 0, '设备行先被清掉');
+    assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_spaces WHERE id = ?').get(spaceId).n, 0, '设备行清掉之后，墓碑才被清掉');
+    // 两行都没了 → 401「令牌无效」。此时两种回答一致（空间确实不存在、设备也不存在），
+    // 没有歧义可言——这正是「设备行先清、墓碑后清」这个顺序要保证的终态。
+    expectStatus(() => f.store.readConfig(a), (e) => e.status === 401 && e.code === 'device_invalid');
+});
+
+test('迁移 v11 回填：物化字节数与 Buffer.byteLength 一致（含非 ASCII），并从 v10 台阶真实推进', async (t) => {
+    const Database = require('better-sqlite3');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-v11-'));
+    const file = path.join(dir, 'nav-sylph.db');
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    // 建一个**真的 v10 老库**：只跑前 10 个台阶，再手写一行内容和一台已撤销设备。
+    const legacy = new Database(file);
+    for (let version = 0; version < 10; version++) MIGRATIONS[version](legacy);
+    legacy.pragma('user_version = 10');
+    const configJson = JSON.stringify({
+        theme: 'dark', showBookmarkIcons: true, searchEngine: 'g',
+        searchEngines: [{ id: 'g', name: '谷歌', url: 'https://example.com/?q=' }],
+        categories: [{ id: 'c1', name: '工作', bookmarks: [{ id: 'b1', title: '中文书签😀', url: 'https://example.com/' }] }]
+    });
+    const modulesJson = JSON.stringify({ enabled: [], widgets: [], settings: { 'weibo-hot': { limit: 10 } } });
+    legacy.prepare(`INSERT INTO sync_spaces (id, proof_id, generation, revision, config_json, modules_json, created_at, updated_at, disabled, deleted, deleted_proof_id)
+                    VALUES (?, ?, 1, 3, ?, ?, 1000, 1000, 0, 0, NULL)`).run('space-1', 'a'.repeat(64), configJson, modulesJson);
+    legacy.prepare(`INSERT INTO sync_devices (token_hash, space_id, generation, created_at, last_seen_at, revoked)
+                    VALUES (?, 'space-1', 1, 1000, 777, 1)`).run('b'.repeat(64));
+    legacy.close();
+
+    // 真迁移：openDatabase 会跑 MIGRATIONS[10]（v10 → v11）。
+    const db = openDatabase(file);
+    t.after(() => db.close());
+    assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length, '台阶推进到最新');
+
+    const row = db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get('space-1');
+    assert.equal(row.content_bytes, Buffer.byteLength(configJson, 'utf8') + Buffer.byteLength(modulesJson, 'utf8'),
+        '回填口径 = 两段 JSON 的 UTF-8 字节数之和');
+    // ⚠️ 非 ASCII 才是这条断言的意义所在：`LENGTH(TEXT)` 是**字符数**，回填不 CAST 就少算。
+    const charCount = db.prepare('SELECT LENGTH(config_json) + LENGTH(modules_json) AS n FROM sync_spaces WHERE id = ?').get('space-1').n;
+    const codePoints = [...(configJson + modulesJson)].length;   // emoji 在码点上算 1 个，在 UTF-16 里算 2 个
+    assert.equal(charCount, codePoints, 'SQLite 的 LENGTH(TEXT) 返回字符（码点）数');
+    assert.equal(row.content_bytes > charCount, true,
+        `中文 + emoji 必须让字节数（${row.content_bytes}）严格大于字符数（${charCount}）——否则 CAST 写不写都一样`);
+    assert.equal(row.content_bytes - charCount, Buffer.byteLength(configJson + modulesJson, 'utf8') - codePoints,
+        '差值必须是「多字节字符多出来的那些字节」');
+    // 反过来说：不 CAST 的写法算出来就是 charCount，与物化值不等（两者必须能区分开）。
+    assert.notEqual(row.content_bytes, charCount);
+    // 老库里已撤销的设备行补齐 `revoked_at`：清理按它算 24 小时窗口。
+    const device = db.prepare('SELECT * FROM sync_devices WHERE token_hash = ?').get('b'.repeat(64));
+    assert.equal(device.revoked_at, device.last_seen_at, '回填用 last_seen_at（老库只有这一个时间戳可用）');
+    // sync_settings 是单行表，两个开关默认关。
+    assert.deepEqual(db.prepare('SELECT id, creating_paused, sync_paused FROM sync_settings').all(), [{ id: 1, creating_paused: 0, sync_paused: 0 }]);
+    // 迁移完的库能被 store 直接用（回填值就是运行时要用的那个值）。
+    const store = sync.createSyncStore(db, { now: () => 1000, getPasswordHash: () => 'h', publicModuleIds: () => [] });
+    // `updated_at = 0` 是 v11 的插入值，`readSettings` 把它归一化成 null（「从来没改过」）。
+    assert.deepEqual(store.readSettings(), { creatingPaused: false, syncPaused: false, updatedAt: null });
+    assert.equal(store.listSpaces().spaces[0].contentBytes, row.content_bytes);
+    // 运行时的写入路径与回填口径必须一致：改写一次，物化值仍等于 Buffer.byteLength 之和。
+    const device2 = db.prepare(`INSERT INTO sync_devices (token_hash, space_id, generation, created_at, last_seen_at, revoked)
+                                VALUES (?, 'space-1', 1, 1000, 1000, 0)`).run('c'.repeat(64));
+    assert.equal(device2.changes, 1);
+    const token = 'f'.repeat(64);
+    db.prepare('UPDATE sync_devices SET token_hash = ? WHERE token_hash = ?').run(createHash('sha256').update(`sylph-device-token-v1\u0000${token}`).digest('hex'), 'c'.repeat(64));
+    const written = store.writeConfig(token, { revision: 3, operationId: 'm-1', config: JSON.parse(configJson), modules: JSON.parse(modulesJson) });
+    assert.equal(written.success, true);
+    const after = db.prepare('SELECT * FROM sync_spaces WHERE id = ?').get('space-1');
+    assert.equal(after.content_bytes, Buffer.byteLength(after.config_json, 'utf8') + Buffer.byteLength(after.modules_json, 'utf8'));
 });

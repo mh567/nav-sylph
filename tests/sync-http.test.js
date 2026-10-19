@@ -37,7 +37,15 @@ async function ready(t) {
         write: (token, body) => app.request('/api/sync/config', { method: 'POST', headers: bearer(token), body }),
         remove: (token, proof) => app.request('/api/sync/space/delete', { method: 'POST', headers: bearer(token), body: { proof } }),
         revoke: (token) => app.request('/api/sync/device/revoke', { method: 'POST', headers: bearer(token), body: {} }),
+        // #10：撤销全部旧设备并重新连接
+        reset: (proof, operationId = 'reset-1') => app.request('/api/sync/device/reset', { body: { proof, operationId } }),
         newInvite: async (cookie) => (await (await app.request('/api/admin/sync-invites', { cookie, body: {} })).json()).invite,
+        // #10：管理员的同步空间治理
+        spaces: (cookie) => app.request('/api/admin/sync-spaces', { cookie }),
+        disable: (cookie, id, disabled) => app.request(`/api/admin/sync-spaces/${id}/disable`, { cookie, body: { disabled } }),
+        adminDelete: (cookie, id) => app.request(`/api/admin/sync-spaces/${id}/delete`, { cookie, body: {} }),
+        settings: (cookie) => app.request('/api/admin/sync-settings', { cookie }),
+        setPolicy: (cookie, body) => app.request('/api/admin/sync-settings', { cookie, body }),
         // 服务端进程跑在自己的库文件上；只读打开一份看落库结果（WAL 下只读连接没问题）
         db: () => new (require('better-sqlite3'))(path.join(app.dir, 'nav-sylph.db'), { readonly: true })
     };
@@ -147,20 +155,28 @@ test('HTTP: 真并发创建——同一个口令只有一路成功，只烧掉�
     assert.deepEqual(both.map((r) => r.status).sort(), [200, 403], '一张邀请码只能开一个空间');
 });
 
-test('HTTP: 设备数量没有固定上限（连 20 台各拿一枚可用令牌）', async (t) => {
+test('HTTP: 设备数量没有固定上限（连 25 台各拿一枚可用令牌）', async (t) => {
     const f = await ready(t);
     const cookie = await f.admin();
     const proof = await spaceProof('多设备口令');
     const invite = await f.newInvite(cookie);
     const created = await (await f.create(proof, invite.code)).json();
 
-    // 每台设备一个 operationId；批量并发，但注意连接桶是 30/分钟/IP。
-    const devices = await Promise.all(Array.from({ length: 19 }, (_, i) => f.connect(proof, `device-${i}`).then((r) => r.json())));
+    // 每台设备一个 operationId；批量并发，但注意连接桶是 30/分钟/IP（24 次连接 + 1 次创建
+    // 仍在桶内，所以这条用例到头来也钉住了「25 台不会被自己的限流挡住」）。
+    const devices = await Promise.all(Array.from({ length: 24 }, (_, i) => f.connect(proof, `device-${i}`).then((r) => r.json())));
     const tokens = [created.deviceToken, ...devices.map((d) => d.deviceToken)];
-    assert.equal(new Set(tokens).size, 20, '20 枚互不相同');
+    assert.equal(new Set(tokens).size, 25, '25 枚互不相同');
+    assert.equal(tokens.every((token) => /^[0-9a-f]{64}$/.test(token)), true, '每一枚都是 32 字节随机');
     for (const token of tokens) {
         assert.equal((await f.read(token)).status, 200, '每一台都能读');
     }
+    // 25 台设备都要算进管理员列表的「活跃设备数」，否则「谁占着这个空间」看不出来。
+    const listing = await (await f.spaces(cookie)).json();
+    assert.equal(listing.spaces[0].activeDevices, 25);
+    const db = f.db();
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM sync_devices WHERE revoked = 0').get().n, 25, '库里也是 25 台未撤销');
+    db.close();
 });
 
 test('HTTP: 读写桶按**空间**计数，一个空间打满不影响另一个', async (t) => {
@@ -486,4 +502,274 @@ test('HTTP: 改密码后旧签发回执作废，重试不会抢写也不会重�
     assert.equal((await replay.json()).code, 'space_exists');
     // 已连接的设备令牌不受改密影响（它存的是哈希，与密码无关）。
     assert.equal((await f.read(first.deviceToken)).status, 200);
+});
+
+// ==================== #10：管理员治理的四条路由 + 总暂停 + 额度 ====================
+
+const ADMIN_GOVERNANCE = [
+    ['/api/admin/sync-spaces', 'GET'],
+    ['/api/admin/sync-spaces/whatever/disable', 'POST'],
+    ['/api/admin/sync-spaces/whatever/delete', 'POST'],
+    ['/api/admin/sync-settings', 'GET'],
+    ['/api/admin/sync-settings', 'POST']
+];
+
+test('HTTP: 治理路由只认管理员会话——匿名与设备令牌都是 401', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const invite = await f.newInvite(cookie);
+    const created = await (await f.create(await spaceProof('治理越权口令'), invite.code)).json();
+    assert.ok(created.deviceToken, '先拿到一枚合法设备令牌');
+
+    for (const [route, method] of ADMIN_GOVERNANCE) {
+        const anonymous = await f.app.request(route, { method, body: method === 'POST' ? {} : undefined });
+        assert.equal(anonymous.status, 401, `匿名访问 ${route} 必须 401`);
+        // 关键：普通的**设备令牌**也不能用于管理员接口（本段路由根本不读 Authorization 头）。
+        const withToken = await f.app.request(route, {
+            method, body: method === 'POST' ? {} : undefined, headers: { Authorization: `Bearer ${created.deviceToken}` }
+        });
+        assert.equal(withToken.status, 401, `设备令牌访问 ${route} 必须 401`);
+    }
+    // 反过来：管理员会话能读能写（不是「一律 401」的假绿）。
+    assert.equal((await f.spaces(cookie)).status, 200);
+    assert.equal((await f.settings(cookie)).status, 200);
+    assert.equal((await f.setPolicy(cookie, { syncPaused: false })).status, 200);
+});
+
+test('HTTP: 空间列表只回非敏感项——正文/口令哈希/令牌/回执一个字都不出现', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('列表口令-极密');
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    // 给内容放一个**独一无二**的标记：它在正文里，只要列表里出现就说明泄露了。
+    const marker = '列表泄密标记-9f3a';
+    const config = { ...CONFIG, categories: [{ id: 'c1', name: marker, bookmarks: [{ id: 'b1', title: marker, url: 'https://example.com/' }] }] };
+    await f.write(created.deviceToken, { revision: 1, operationId: 'marker', config, modules: {} });
+    const second = (await (await f.connect(proof, 'list-device-b')).json()).deviceToken;
+
+    const res = await f.spaces(cookie);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.equal(body.spaces.length, 1);
+    // ① 键集逐字断言：多一个字段就是多一条泄露面（这一条最容易在「顺手加个字段」时红）。
+    assert.deepEqual(Object.keys(body.spaces[0]).sort(), [
+        'activeDevices', 'contentBytes', 'createdAt', 'deleted', 'deletedAt',
+        'disabled', 'disabledAt', 'generation', 'id', 'revision', 'updatedAt'
+    ].sort());
+    assert.deepEqual(Object.keys(body.usage).sort(), ['bytes', 'spaces']);
+    // ② 值也对得上：体积是物化字节数，设备数是未撤销台数。
+    const db = f.db();
+    const row = db.prepare('SELECT content_bytes FROM sync_spaces WHERE id = ?').get(created.spaceId);
+    db.close();
+    assert.equal(body.spaces[0].contentBytes, row.content_bytes);
+    assert.equal(body.spaces[0].activeDevices, 2);
+    assert.equal(body.spaces[0].disabled, false);
+    assert.equal(body.spaces[0].deleted, false);
+    assert.equal(body.usage.spaces, 1);
+    assert.equal(body.usage.bytes, row.content_bytes);
+
+    // ③ 逐样核对敏感值都不在响应里：正文标记、口令证明、口令哈希、两枚设备令牌、回执材料。
+    const raw = JSON.stringify(body);
+    for (const [label, needle] of [
+        ['正文（标记）', marker],
+        ['口令证明', proof],
+        ['口令哈希（proof_id）', proofIdOf(proof)],
+        ['设备令牌 A', created.deviceToken],
+        ['设备令牌 B', second],
+        ['config_json 片段', 'searchEngines']
+    ]) {
+        assert.equal(raw.includes(needle), false, `列表不得出现${label}`);
+    }
+});
+
+test('HTTP: 停用某空间 → 设备读到 403 且**连接保留**；重新启用后同一个令牌立刻可用', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('停用口令');
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    const token = created.deviceToken;
+
+    const off = await f.disable(cookie, created.spaceId, true);
+    assert.equal(off.status, 200);
+    const offBody = await off.json();
+    assert.equal(offBody.disabled, true);
+    assert.equal(offBody.changed, true, '第一次停用是「真的变了」');
+    // 再停一次是幂等的（不改时间戳），管理界面反复刷新不该让它跳动。
+    const again = await (await f.disable(cookie, created.spaceId, true)).json();
+    assert.equal(again.changed, false);
+
+    const blocked = await f.read(token);
+    assert.equal(blocked.status, 403, '停用给 403（不是 401：凭据本身没问题）');
+    assert.equal((await blocked.json()).code, 'space_disabled');
+    assert.ok(Number(blocked.headers.get('retry-after') || 0) >= 0 || true);   // 403 不带 Retry-After，只在这里说明不要求
+
+    // **连接保留**：设备行还在、未撤销；停用不是撤销。
+    let db = f.db();
+    const device = db.prepare('SELECT * FROM sync_devices WHERE space_id = ?').get(created.spaceId);
+    assert.equal(device.revoked, 0, '停用不吊销设备');
+    assert.equal(db.prepare('SELECT disabled, disabled_at FROM sync_spaces WHERE id = ?').get(created.spaceId).disabled, 1);
+    db.close();
+    // 写也被挡住，且不落库。
+    const write = await f.write(token, { revision: 1, operationId: 'disabled-write', config: { ...CONFIG, theme: 'dark' }, modules: {} });
+    assert.equal(write.status, 403);
+    db = f.db();
+    assert.equal(db.prepare('SELECT revision FROM sync_spaces WHERE id = ?').get(created.spaceId).revision, 1, '被停用的写不能落库');
+    db.close();
+
+    // 重新启用：**同一个令牌**立刻可用（连接一直保留，所以不需要重新输口令）。
+    const on = await f.disable(cookie, created.spaceId, false);
+    assert.equal(on.status, 200);
+    assert.equal((await on.json()).disabled, false);
+    assert.equal((await f.read(token)).status, 200);
+    assert.equal((await (await f.read(token)).json()).revision, 1);
+    assert.equal((await f.write(token, { revision: 1, operationId: 'after-enable', config: { ...CONFIG, theme: 'dark' }, modules: {} })).status, 200);
+    const listing = await (await f.spaces(cookie)).json();
+    assert.equal(listing.spaces[0].disabled, false);
+    assert.equal(listing.spaces[0].disabledAt, null);
+});
+
+test('HTTP: 管理员删除 → 410，与「设备被踢」「令牌无效」三种回答可分辨', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('治理删除口令');
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    const a = created.deviceToken;
+    // 第二个空间用来造「设备被踢」这一种回答：空间还在，只是那台设备被撤销了。
+    // （同一个空间里造不出来——空间一删，它名下所有令牌都归 410，见 deviceForToken 的判定顺序。）
+    const other = await (await f.create(await spaceProof('治理删除口令-另一个'), (await f.newInvite(cookie)).code, 'other-1')).json();
+    const otherB = (await (await f.connect(await spaceProof('治理删除口令-另一个'), 'other-b')).json()).deviceToken;
+    await f.revoke(otherB);
+
+    const removed = await f.adminDelete(cookie, created.spaceId);
+    assert.equal(removed.status, 200);
+    const body = await removed.json();
+    assert.equal(body.success, true);
+    assert.equal(body.revoked, 1, '只吊销该空间下还没撤销的 1 台');
+
+    // 三种回答必须**可分辨**：删除 410 / 被踢 401 device_revoked / 根本没这枚 401 device_invalid。
+    const deleted = await f.read(a);
+    assert.equal(deleted.status, 410);
+    assert.equal((await deleted.json()).code, 'space_deleted');
+    const revoked = await f.read(otherB);
+    assert.equal(revoked.status, 401);
+    assert.equal((await revoked.json()).code, 'device_revoked');
+    const bogus = await f.read('f'.repeat(64));
+    assert.equal(bogus.status, 401);
+    assert.equal((await bogus.json()).code, 'device_invalid');
+    assert.equal((await (await f.read(other.deviceToken)).json()).revision, 1, '另一个空间完全不受影响');
+
+    // 再删一次 → 410（墓碑已经是终态）。
+    assert.equal((await f.adminDelete(cookie, created.spaceId)).status, 410);
+    // 墓碑在列表里留痕，且**不再给操作按钮**的前提是 deleted=true 能被读出来。
+    const listing = await (await f.spaces(cookie)).json();
+    const grave = listing.spaces.find((s) => s.id === created.spaceId);
+    assert.equal(grave.deleted, true);
+    assert.ok(grave.deletedAt);
+    assert.equal(grave.contentBytes, 0, '墓碑的内容已清空，体积归零');
+    assert.equal(grave.activeDevices, 0);
+    assert.equal(listing.usage.spaces, 1, '只有一个墓碑不算进用量');
+    assert.equal(listing.usage.bytes > 0, true, '另一个空间的内容仍计入');
+});
+
+test('HTTP: 总暂停——读/写/连/建/重签一律 503 且带 Retry-After；删除与撤销照常可用', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const proof = await spaceProof('总暂停口令');
+    const spare = await f.newInvite(cookie);
+    const created = await (await f.create(proof, (await f.newInvite(cookie)).code)).json();
+    const token = created.deviceToken;
+
+    assert.equal((await (await f.setPolicy(cookie, { syncPaused: true })).json()).settings.syncPaused, true);
+
+    // 传 thunk 而不是 Promise：直接把响应传进来的话 `res.status` 是 undefined，
+    // 断言会变成「undefined !== 503」这种看不出原因的红（第一次写就踩了这个）。
+    const paused = async (thunk, label) => {
+        const res = await thunk();
+        assert.equal(res.status, 503, `${label} 必须是 503`);
+        const body = await res.json();
+        assert.equal(body.code, 'sync_paused', `${label} 的 code 要能分辨`);
+        const retryAfter = Number(res.headers.get('retry-after'));
+        assert.equal(Number.isInteger(retryAfter) && retryAfter > 0, true, `${label} 要带 Retry-After`);
+        // 与服务端常量一致：5 分钟窗口（客户端的 SYNC_PAUSED_POLL_MS 与它同值）。
+        assert.equal(retryAfter, 300, `${label} 的 Retry-After 应等于 5 分钟`);
+        return body;
+    };
+    await paused(() => f.read(token), '读');
+    await paused(() => f.write(token, { revision: 1, operationId: 'paused', config: CONFIG, modules: {} }), '写');
+    await paused(() => f.connect(proof, 'paused-connect'), '连接');
+    await paused(async () => f.create(await spaceProof('暂停期间的新口令'), spare.code, 'paused-create'), '创建');
+    await paused(() => f.reset(proof, 'paused-reset'), '重签');
+
+    // 数据面全挡：库里什么都没变，备用邀请码也没被烧掉。
+    let db = f.db();
+    assert.equal(db.prepare('SELECT revision FROM sync_spaces WHERE id = ?').get(created.spaceId).revision, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM sync_invites WHERE used_at IS NOT NULL').get().n, 1, '只有建那个空间用掉的那张');
+    db.close();
+
+    // 但「我要离开」与「我要删掉自己的东西」照常：挡住它们等于把用户锁在里面。
+    assert.equal((await f.revoke('f'.repeat(64))).status, 200, '暂停期间撤销本设备照常（坏令牌也返回成功）');
+    const removal = await f.remove(token, proof);
+    assert.equal(removal.status, 200, '暂停期间删除空间照常');
+    assert.equal((await removal.json()).revoked, 1);
+    assert.equal((await f.read(token)).status, 410, '删除真的生效了（不是「假装成功」）');
+
+    // 解除暂停：一切照旧。
+    assert.equal((await (await f.setPolicy(cookie, { syncPaused: false })).json()).settings.syncPaused, false);
+    const fresh = await (await f.create(await spaceProof('暂停解除后的口令'), spare.code, 'after-pause')).json();
+    assert.equal(fresh.success, true, '那张备用邀请码在暂停解除后仍然可用');
+    assert.equal((await f.read(fresh.deviceToken)).status, 200);
+});
+
+test('HTTP: 暂停新建只挡创建（已有空间照常同步），且被拒的创建不烧掉邀请码', async (t) => {
+    const f = await ready(t);
+    const cookie = await f.admin();
+    const existing = await (await f.create(await spaceProof('已有空间口令'), (await f.newInvite(cookie)).code)).json();
+    const spare = await f.newInvite(cookie);
+    assert.equal((await (await f.setPolicy(cookie, { creatingPaused: true })).json()).settings.creatingPaused, true);
+
+    const blocked = await f.create(await spaceProof('暂停新建期间的口令'), spare.code, 'paused-create');
+    assert.equal(blocked.status, 503);
+    assert.equal((await blocked.json()).code, 'create_paused');
+    assert.equal(Number(blocked.headers.get('retry-after')), 300, '暂停新建也带 Retry-After（暂停是临时的）');
+    // 已有空间**完全不受影响**：读、写、连接都照常（这就是两个开关分开的理由）。
+    assert.equal((await f.read(existing.deviceToken)).status, 200);
+    assert.equal((await f.write(existing.deviceToken, { revision: 1, operationId: 'still-works', config: { ...CONFIG, theme: 'dark' }, modules: {} })).status, 200);
+    assert.equal((await f.connect(await spaceProof('已有空间口令'), 'paused-new-device')).status, 200);
+    // 邀请码没被烧掉：解除之后还能用。
+    assert.equal((await (await f.setPolicy(cookie, { creatingPaused: false })).json()).settings.creatingPaused, false);
+    assert.equal((await f.create(await spaceProof('暂停新建期间的口令'), spare.code, 'after-resume')).status, 200);
+});
+
+test('HTTP: 限额由环境变量注入且真的生效（NAV_SYNC_SPACE_LIMIT / NAV_SYNC_CONTENT_BYTES_LIMIT）', async (t) => {
+    const app = await installation(t, { env: { NAV_SYNC_SPACE_LIMIT: '1', NAV_SYNC_CONTENT_BYTES_LIMIT: '2048' } });
+    fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
+    await app.start();
+    const cookie = (await app.request('/api/verify-password', { password: 'StrongPass123!', body: {} })).headers.get('set-cookie').split(';')[0];
+    const newInvite = async () => (await (await app.request('/api/admin/sync-invites', { cookie, body: {} })).json()).invite;
+    const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+    const write = (token, body) => app.request('/api/sync/config', { method: 'POST', headers: bearer(token), body });
+
+    const one = await (await app.request('/api/sync/space/create', { body: { proof: await spaceProof('限额甲'), inviteCode: (await newInvite()).code, operationId: 'limit-1', config: CONFIG, modules: {} } })).json();
+    assert.equal(one.success, true, '第一个空间在限额内');
+
+    // 空间数上限 = 1：第二个必须 503 space_limit，且不消耗邀请码。
+    const spare = await newInvite();
+    const second = await app.request('/api/sync/space/create', { body: { proof: await spaceProof('限额乙'), inviteCode: spare.code, operationId: 'limit-2', config: CONFIG, modules: {} } });
+    assert.equal(second.status, 503);
+    assert.equal((await second.json()).code, 'space_limit');
+    assert.equal((await (await app.request('/api/admin/sync-invites', { cookie })).json()).invites.find((i) => i.id === spare.id).used, false, '被拒的创建不烧邀请码');
+
+    // 每空间上限 = 2048：把内容撑到 2048 之上必须 503 space_quota_exceeded，且旧内容与版本都不动。
+    const big = { ...CONFIG, categories: [{ id: 'c1', name: '工作', bookmarks: [{ id: 'b1', title: 't', url: `https://e.example/${'a'.repeat(3000)}` }] }] };
+    const over = await write(one.deviceToken, { revision: 1, operationId: 'over-quota', config: big, modules: {} });
+    assert.equal(over.status, 503);
+    assert.equal((await over.json()).code, 'space_quota_exceeded');
+    const read = await (await app.request('/api/sync/config', { headers: bearer(one.deviceToken) })).json();
+    assert.equal(read.revision, 1, '被拒的写不推进版本');
+    assert.equal(read.config.categories[0].name, '工作', '旧内容还在');
+    // 在限额内的写照常成功（不是「一律拒绝」的假绿）。
+    const ok = await write(one.deviceToken, { revision: 1, operationId: 'under-quota', config: { ...CONFIG, theme: 'dark' }, modules: {} });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).revision, 2);
 });

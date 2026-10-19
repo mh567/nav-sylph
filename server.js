@@ -998,7 +998,12 @@ async function init() {
     syncStore = createSyncStore(db, {
         getPasswordHash: getPasswordHashSync,
         publicModuleIds: () => [...PUBLIC_MODULE_IDS],
-        onIssue: syncIssueLimit
+        onIssue: syncIssueLimit,
+        limits: {
+            spaceLimit: syncLimitFromEnv('NAV_SYNC_SPACE_LIMIT'),
+            contentBytesLimit: syncLimitFromEnv('NAV_SYNC_CONTENT_BYTES_LIMIT'),
+            totalBytesLimit: syncLimitFromEnv('NAV_SYNC_TOTAL_BYTES_LIMIT')
+        }
     });
     await recoverCredentialRotation();
     sessionStore = new SessionStore({
@@ -1185,6 +1190,23 @@ const syncReadLimitMap = new Map();
 const syncUploadLimitMap = new Map();
 const syncIssueLimitMap = new Map();
 
+/**
+ * 额度常量的**测试后门**，照 `NAV_AUTO_SYNC_DELAY_MS` 的手法：只在设了正整数时
+ * 才覆盖，其余一律返回 `undefined`——`createSyncStore` 收到 `undefined` 就落到
+ * `lib/sync-store.js` 的 `DIFFICULTY` 规格值。所以**默认值只有一处实现**，
+ * 这里不重复写 1000 / 1 MiB / 1 GiB。
+ *
+ * ⚠️ 之所以要有一条断言把默认值与规格逐字对拍（在 `tests/sync-client.test.js`）：
+ * 只测注入路径的话，有人把 `DIFFICULTY` 改小也全绿——额度这东西改小一点
+ * 在测试里看不出来，在线上是「用户忽然建不了空间」。
+ */
+function syncLimitFromEnv(name) {
+    const raw = process.env[name];
+    if (raw === undefined || raw === '') return undefined;
+    const value = Number(raw);
+    return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 function syncTooMany(res, resetAt) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))));
     return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
@@ -1297,9 +1319,23 @@ app.post('/api/sync/space/delete', syncConnectLimit, (req, res) => {
 // 停止同步时撤销**本设备**令牌。调用方（浏览器）已经先做完了本地断开，这里只是
 // 尽力而为：无论令牌在不在、空间删没删，都返回成功——把失败做成用户可见的错误
 // 只会让「离线也能停止」这条要求落空。
+//
+// ⚠️ 这条与下面的删除都**不受总暂停影响**（store 层就没查 `sync_paused`）：
+// 总暂停挡的是数据面，而这两条是「我要离开/我要删掉自己的东西」。挡住它们等于
+// 管理员一开总暂停就把用户锁在里面——那是这个开关最容易写错的一处。
 app.post('/api/sync/device/revoke', syncConnectLimit, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try { res.json(syncStore.revokeDevice(readDeviceToken(req))); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 「撤销全部旧设备并重新连接」（设计 §5）。挂连接桶是因为它同样要验口令、同样
+// 会签发令牌（签发另有 store 的 per-space 桶）；**不新增桶**。
+// `operationId` 由客户端在内存里生成，同一次确认的重试复用同一个值——重放由
+// store 的 `scope='reset:' + 空间 id` 回执兜住，撤销只发生一次。
+app.post('/api/sync/device/reset', syncConnectLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.resetDevices(req.body || {})); }
     catch (error) { syncFailure(res, error); }
 });
 
@@ -1319,6 +1355,58 @@ app.post('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
 app.post('/api/admin/sync-invites/:id/revoke', rateLimit, requireAdmin, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try { res.json(syncStore.revokeInvite(req.params.id)); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 同步空间的治理（Issue #10）。四条都走 `rateLimit, requireAdmin`：它们是**站点级**
+// 的策略，不是某个访客的空间内容。本段同样不读 `Authorization` 头，所以普通设备
+// 令牌在这里没有任何入口（tests/sync-http.test.js 有一条对每一组的越权断言）。
+//
+// 列表**只回非敏感项**（见 `listSpaces`）：标识、状态、体积、版本、代次、活跃
+// 设备数、时间。正文、口令哈希、`deleted_proof_id`、令牌与哈希、回执一律不出现
+// ——管理员能看出「这个空间多大、什么时候动的」，但拿不到内容，也不能凭列表里
+// 的任何字段冒充某台设备。
+// 列表与策略**一次拿全**：面板每打开一次就要重画这两块，分成两个 GET 就是
+// 每次打开多打一条管理接口——管理桶只有 30 次/分钟，本仓库已经因为
+// 「渲染函数里顺手预取」撞过 429（WebDAV 那次）。写策略仍走下面的 POST。
+app.get('/api/admin/sync-spaces', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json({ ...syncStore.listSpaces(), settings: syncStore.readSettings() }); }
+    catch (error) { syncFailure(res, error); }
+});
+
+app.post('/api/admin/sync-spaces/:id/disable', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        // `disabled` 缺省为 true（按钮的语义是「停用」），显式传 false 才是启用。
+        // 用 `!== false` 而不是真值判断：传 `false` 必须能打开，否则「停用之后
+        // 恢复不了」——那是这一组里最要命的一种 bug。
+        const disabled = (req.body || {}).disabled !== false;
+        res.json(syncStore.setSpaceDisabled(req.params.id, disabled));
+    } catch (error) { syncFailure(res, error); }
+});
+
+// 管理员删除：**与用户删除共用 store 里那一份墓碑实现**（`deleteSpaceAsAdmin`
+// 内部调 `tombstoneSpace`）。管理员没有口令，所以这里不做双要素——鉴权是会话。
+app.post('/api/admin/sync-spaces/:id/delete', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.deleteSpaceAsAdmin(req.params.id)); }
+    catch (error) { syncFailure(res, error); }
+});
+
+// 总开关（`creatingPaused` 暂停新建 / `syncPaused` 总暂停）。写进 `sync_settings`
+// 单行表——**必须落盘**，只存内存的话进程重启会静默放开总暂停。
+// GET 与 POST 成对：管理面板要能读到「现在是什么状态」，只有 POST 的话那个面板
+// 会永远显示成默认值（勾选框与真实策略不一致，用户会以为没生效）。
+app.get('/api/admin/sync-settings', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json({ success: true, settings: syncStore.readSettings() }); }
+    catch (error) { syncFailure(res, error); }
+});
+
+app.post('/api/admin/sync-settings', rateLimit, requireAdmin, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json(syncStore.updateSettings(req.body || {})); }
     catch (error) { syncFailure(res, error); }
 });
 

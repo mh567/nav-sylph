@@ -25,6 +25,9 @@ const cleanApp = stripComments(appSource);
 // 这类变异照样全绿（本仓库踩过）。
 const CONST_NAMES = ['SYNC_DEBOUNCE_MS', 'SYNC_MAX_WAIT_MS', 'SYNC_POLL_MS', 'SYNC_BACKOFF_START_MS',
     'SYNC_BACKOFF_MAX_MS', 'SYNC_CLAIM_TTL_MS', 'SYNC_CLAIM_PING_MS', 'SYNC_RECEIPT_WINDOW_MS',
+    // #10：总暂停期间的轮询间隔。必须**从源码解析**并注入——不注入的话 applySyncHalt 在
+    // 「总暂停」那条分支上会直接 ReferenceError，而「停用」那条因为是短路求值才躲过去。
+    'SYNC_PAUSED_POLL_MS',
     'SYNC_PASSPHRASE_MIN', 'SYNC_PASSPHRASE_MAX'];
 const CONSTANTS = Object.fromEntries(CONST_NAMES.map(name => {
     const parsed = new RegExp(`const ${name} = (\\d+)`).exec(cleanApp);
@@ -154,8 +157,10 @@ function makeHarness(options = {}) {
         syncStatus: 'synced',
         syncConnEpoch: 0,
         // #9：删除挡板（删除期间暂停上传）与停用挡板（空间被管理员停用后不再自动重试）
+        // #10：停用挡板记住的是**哪一种暂停**（`'disabled' | 'paused'`），未暂停时是 null
+        // ——与 public/app.js 的初始值逐字一致，别在这里造出 `false` 这种真代码不会有的值。
         syncDeleting: false,
-        syncHalted: false,
+        syncHalted: null,
         syncUploadedPayloadKey: 'k7',   // 与当前内容指纹一致 = 内容已经传上去过
         syncUploadSettled: false,
         syncBackoffMs: 0,
@@ -818,7 +823,10 @@ test('空间被管理员停用：保留连接、停自动重试，本地编辑�
     const h = makeHarness({ get: () => { throw Object.assign(new Error('空间已停用'), { status: 403, code: 'space_disabled' }); } });
     await h.app.syncPullCheck();
     assert.equal(h.localStore.snapshot().connection !== null, true, '停用不等于断开：连接与凭据都留着');
-    assert.equal(h.app.syncHalted, true);
+    // #10：`syncHalted` 从布尔升级成**原因字符串**（`'disabled' | 'paused'`）——停用与
+    // 总暂停的对话框文案不同，必须记住是哪一种。真值语义不变（`if (this.syncHalted)`
+    // 照旧成立），所以这里钉的是具体原因，不是「随便一个真值」。
+    assert.equal(h.app.syncHalted, 'disabled');
     assert.equal(h.clock.intervals(), 0, '停自动重试');
     // 文案要点名「停用」这个**状态**（而不是笼统的「连接已失效」——那会让用户
     // 去重新输口令，而这里重新输口令根本没用）。注意断言用「停用」两字：
@@ -845,7 +853,10 @@ test('错误码映射：删除/撤销/过期/停用四种各有自己的话，�
     assert.match(h.app.syncTerminalOf({ code: 'space_deleted' }).message, /已被删除/);
     assert.match(h.app.syncTerminalOf({ code: 'device_revoked' }).message, /这台设备/);
     assert.match(h.app.syncTerminalOf({ code: 'device_expired' }).message, /重新输入口令/);
-    assert.equal(h.app.syncTerminalOf({ code: 'space_disabled' }).halt, true);
+    // #10：`halt` 是原因字符串而不是 `true`——停用与总暂停是两句不同的话。
+    assert.equal(h.app.syncTerminalOf({ code: 'space_disabled' }).halt, 'disabled');
+    assert.equal(h.app.syncTerminalOf({ code: 'sync_paused' }).halt, 'paused',
+        '总暂停要与停用区分开（两者都真值，但不是同一件事）');
     assert.equal(h.app.syncTerminalOf({ status: 500 }), null, '普通失败不是终态，交给退避');
     // 「只有一处映射」由 tests/sync-client.test.js 的那条守卫拥有：它逐句统计
     // app.js 里的出现次数。这里不再重复，更不能用「>= 1」这种恒真的形式充当唯一性。
@@ -907,7 +918,7 @@ test('删除时空间被停用：保留连接、说清状态（不把「现在�
     await h.app.confirmDeleteSpace();
     assert.equal(h.localStore.snapshot().connection !== null, true, '停用不等于断开');
     assert.match(h.app.syncError, /停用/);
-    assert.equal(h.app.syncHalted, true, '说了「已暂停」就要真的停下来（否则调度照常恢复，要等下一轮再撞 403）');
+    assert.equal(h.app.syncHalted, 'disabled', '说了「已暂停」就要真的停下来（否则调度照常恢复，要等下一轮再撞 403）；#10 起还要记住是哪一种暂停');
     assert.equal(h.clock.intervals(), 0, '轮询也要停');
 });
 
@@ -921,7 +932,7 @@ test('空间被停用后管理员恢复：点一次「立即同步」就解除�
     });
     h.app.syncUploadedPayloadKey = 'stale';   // 本机有一份还没传上去的内容
     await h.app.syncPullCheck();
-    assert.equal(h.app.syncHalted, true, '停用要先落地');
+    assert.equal(h.app.syncHalted, 'disabled', '停用要先落地，且记住是「停用」这一种');
     h.app.markSyncDirty();
     assert.equal(h.clock.pending(), 0, '停用期间本地编辑一次都不排上传');
     assert.equal(h.app.syncStatus, 'failed', '状态要说出来是停用');
@@ -930,7 +941,7 @@ test('空间被停用后管理员恢复：点一次「立即同步」就解除�
 
     mode = 'ok';
     await h.app.retrySyncAfterHalt();     // 用户点「重试同步」
-    assert.equal(h.app.syncHalted, false, '读成功 = 停用解除');
+    assert.equal(h.app.syncHalted, null, '读成功 = 停用解除（挡板回到「没暂停」）');
     assert.ok(h.clock.intervals() > 0, '轮询接回来');
     assert.ok(h.clock.pending() > 0, '停用期间没排过的改动要补排');
     await h.clock.advance(1000);
@@ -1002,4 +1013,47 @@ test('收到别的标签页的停止通知：停表、回到未连接（不刷�
     assert.equal(h.clock.pending(), 0, '排着的上传清掉');
     assert.equal(h.app.syncStatus, 'local');
     assert.equal(h.localStore.snapshot().connection, null);
+});
+
+test('总暂停：保留连接、换成 5 分钟慢轮询（不是停表），读成功即解除', async () => {
+    // 为什么单独一条：`applySyncHalt('paused')` 若忘了传慢间隔（或干脆停表），
+    // 恢复只能靠用户手动点——而设计要的是「暂停期间自己发现恢复」。
+    const h = makeHarness();
+    h.app.startSyncPolling();
+    assert.equal(h.app.syncPollMs, CONSTANTS.SYNC_POLL_MS);
+    h.app.applySyncHalt('paused', '同步服务已被管理员暂停，稍后会自动重试');
+    assert.equal(h.app.syncHalted, 'paused');
+    assert.equal(h.app.syncPollMs, CONSTANTS.SYNC_PAUSED_POLL_MS, '换成慢轮询');
+    assert.ok(h.app.syncPollTimer, '不是把轮询停掉');
+    assert.equal(h.localStore.snapshot().connection !== null, true, '总暂停不断开连接');
+
+    // 读成功即解除（走真实 pull 路径）
+    let paused = false;
+    const h2 = makeHarness({ get: () => { if (paused) throw Object.assign(new Error('暂停'), { status: 503, code: 'sync_paused' }); return h2.app.syncCloud; } });
+    paused = true;
+    await h2.app.syncPullCheck();
+    assert.equal(h2.app.syncHalted, 'paused', '503 让客户端进入暂停态');
+    paused = false;
+    await h2.app.syncPullCheck();
+    assert.ok(!h2.app.syncHalted, '读成功即解除');
+    assert.equal(h2.app.syncPollMs, CONSTANTS.SYNC_POLL_MS, '解除后回到正常轮询间隔');
+});
+
+test('额度拒绝（503 space_quota_exceeded）：不排退避、不丢 pending、不清连接', async () => {
+    // 额度不会自己变松：对同一个 503 退避重试是白敲，而丢掉 pending 等于把
+    // 用户还没传上去的修改扔了（那是最不该丢的东西）。正确做法是留住内容、
+    // 说清「写满了」，等用户精简后的下一次改动自己重试。
+    const h = makeHarness({
+        post: () => { throw Object.assign(new Error('空间内容已达上限'), { status: 503, code: 'space_quota_exceeded' }); }
+    });
+    h.app.syncUploadedPayloadKey = 'stale';
+    h.app.markSyncDirty();
+    await h.clock.advance(1000);
+    await flush();
+    assert.ok(h.app.syncPending, '待上传内容要留着');
+    assert.equal(h.app.syncRetryTimer, null, '不排退避重试');
+    assert.equal(h.localStore.snapshot().connection !== null, true, '不清连接');
+    assert.equal(h.app.syncStatus, 'failed');
+    assert.ok(h.calls.toasts.some(t => /上限/.test(t.message)), '要告诉用户「写满了，先精简」');
+    assert.ok(!h.calls.toasts.some(t => /同步失败/.test(t.message)), '不能塌成一句笼统的失败');
 });

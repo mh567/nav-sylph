@@ -209,9 +209,9 @@ test('匿名搜索框仅提示网页搜索', () => {
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v120，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v120';/);
-    assert.match(swJs, /nav-v120：停止同步与删除云端空间/);
+test('sw.js：CACHE 升到 nav-v121，注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v121';/);
+    assert.match(swJs, /nav-v121：设备回收与空间资源治理/);
     // 注释块记录的最新版本必须**就是** CACHE 里的那个——两者漂移意味着有人改了其一。
     // 这里不写死版本号：写死的话每次升缓存都要改断言，而断言该钉的是「两者一致」
     // 这个关系（升号时改 CACHE 与注释就够，不必再想起这个文件）。

@@ -87,6 +87,11 @@
     const SYNC_CLAIM_TTL_MS = 15000;   // 上传认领的有效期（多标签页单飞；崩溃兜底）
     const SYNC_CLAIM_PING_MS = 300;    // 认领「问一声」的等待上限
     const SYNC_RECEIPT_WINDOW_MS = 86400000; // 服务端成功回执的保留窗口（24 小时）
+    // 总暂停期间客户端的检查间隔。**必须与 lib/sync-store.js 的
+    // SYNC_PAUSED_RETRY_MS 同值**：服务端把它放进 503 的 `Retry-After`，
+    // 客户端按同一个数排队，两边才一致（改一边忘了另一边，症状是客户端要么
+    // 比要求来得更勤、要么恢复后迟迟不回来）。有一条测试从两份源码解析后对拍。
+    const SYNC_PAUSED_POLL_MS = 300000;
 
     // 状态的**完整**文案（对话框里用，设计文档 §5 那六个词）。
     const SYNC_STATUS_TEXT = {
@@ -290,9 +295,15 @@
             // 删除云端空间期间**挡住一切上传**（设计要求「删除期间暂停本浏览器上传」）：
             // 删除与写在同一张表上串行，让删除先落地才是有序的做法。
             this.syncDeleting = false;
-            // 服务端说这台空间被停用时置上：停自动重试，等用户主动点「立即同步」
-            // 或管理员恢复。不置的话会对着一个 403 无限退避。
-            this.syncHalted = false;
+            // 服务端说这台空间被停用 / 同步服务被总暂停时置上：停自动重试，等用户主动
+            // 点「重试同步」或管理员恢复。不置的话会对着一个 403/503 无限退避。
+            // 取值 `null`（没暂停）/ `'disabled'`（该空间被停用）/ `'paused'`（总暂停）：
+            // 两种暂停的对话框文案不同，所以要记住是哪一种（见 applySyncHalt）。
+            this.syncHalted = null;
+            this.syncPollMs = SYNC_POLL_MS;
+            // 「撤销全部旧设备」的稳定请求 ID：**只在内存里**（见 confirmResetDevices 的注释），
+            // 一次确认里的重试复用，关掉对话框/刷新就换新的。
+            this.syncResetOperationId = null;
             this.syncUploadInFlight = false;
             this.syncUploadAgain = false; // 在途期间又有改动 → 完成后排下一轮
             this.syncUploadSettled = false; // 本次上传已确认 → 放下在途闩后再读一次
@@ -311,6 +322,14 @@
             // 管理员「站点」分区里的邀请码列表：缓存 + 「已渲染」闩锁。
             this.syncInvites = null;
             this.syncInvitesRendered = false;
+            // 同步空间治理（#10）：列表/用量/策略三份缓存 + **独立的「已渲染」闩锁**。
+            // ⚠️ 闩锁与邀请码那个**分开**：两者挂在同一个分区里，但加载时机与失败路径
+            // 各自独立——共用一个闩锁会让「邀请码加载失败」顺带把空间列表钉在
+            // 「加载中…」上（反之亦然）。
+            this.syncSpaces = null;
+            this.syncUsage = null;
+            this.syncPolicy = null;
+            this.syncSpacesRendered = false;
             // 身份或策略代次。在飞的模块区渲染发现它变了就作废
             // （管理员那侧另有 privateEpoch 管登录态变化）。
             this.moduleGeneration = 0;
@@ -1893,6 +1912,147 @@
             }
         }
 
+        // ---- 管理员：同步空间治理 ----
+        //
+        // 三条纪律，与邀请码那一块同款：
+        //   ① **只显示非敏感项**（标识、状态、体积、版本、代次、活跃设备数、时间）。
+        //      服务端就不回正文与凭据（见 `listSpaces`），所以这里也没有可泄露的东西
+        //      ——界面上不显示某样东西，不构成权限边界，边界在服务端。
+        //   ② **`syncSpacesRendered` 闩锁**（照 `webdavRendered` 的写法）：面板每次
+        //      重建 DOM，#syncSpacesList 是一个新的「加载中…」节点，而配置缓存还在
+        //      内存里。拿「数据在不在内存」当判据的话，展开/重渲染时条件为假、
+        //      不发请求，占位符永远留在页面上。
+        //   ③ **重渲染只重画，不重复拉接口**：每次配置保存引起的重渲染都会再打一次
+        //      管理接口，攒进同一个限流桶（邀请码那块踩过，这里有断言钉着）。
+
+        async renderSyncSpaces() {
+            const list = $('#syncSpacesList');
+            if (!list) return;
+            try {
+                // 列表与策略在**同一个响应**里（服务端一次查全）：面板每打开一次就会
+                // 重画这两块，分两条 GET 等于每次打开多打一条管理接口，而管理桶只有
+                // 30 次/分钟——本仓库已经因为「渲染里顺手预取」撞过 429。
+                const data = await API.get('/api/admin/sync-spaces');
+                this.syncSpaces = data.spaces || [];
+                this.syncUsage = data.usage || { spaces: 0, bytes: 0 };
+                this.syncPolicy = data.settings || { creatingPaused: false, syncPaused: false };
+                this.syncSpacesRendered = true;
+                // ⚠️ 开关必须**在这之后**重画：面板渲染那一刻 `renderSyncSpaces()` 还在
+                // 飞，`syncPolicy` 还是空的，`paintSyncPolicy()` 会直接返回——只画列表
+                // 不画开关，症状是「上次开过总暂停，这次打开面板却看着是关的」。
+                this.paintSyncPolicy();
+                this.paintSyncSpaces();
+            } catch (error) {
+                list.innerHTML = `<p class="fav-hint">同步空间读取失败：${this.esc(error.message)}</p>
+                    <button type="button" class="btn btn-sm" data-action="retry-spaces">重试</button>`;
+            }
+        }
+
+        /** 只重画两块（列表 + 两个总开关），**不发请求**。 */
+        paintSyncSpaces() {
+            const list = $('#syncSpacesList');
+            if (!list) return;
+            const usage = this.syncUsage || { spaces: 0, bytes: 0 };
+            const spaces = this.syncSpaces || [];
+            // 体积按 KiB/MiB 说——管理员关心的是「谁占了大头」，不是精确到字节。
+            const size = (bytes) => {
+                const value = Number(bytes) || 0;
+                if (value < 1024) return `${value} B`;
+                if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+                return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
+            };
+            const head = `<p class="fav-hint">共 ${usage.spaces} 个空间，合计 ${size(usage.bytes)}。</p>`;
+            if (!spaces.length) {
+                list.innerHTML = `${head}<p class="fav-hint">还没有任何云端空间。</p>`;
+                return;
+            }
+            list.innerHTML = head + spaces.map(space => {
+                const state = space.deleted ? '已删除'
+                    : space.disabled ? '已停用'
+                        : '正常';
+                const mark = space.deleted ? 'is-gone' : space.disabled ? 'is-stale' : '';
+                // 已删除的墓碑只留作记录（还能看出它曾经存在），不再给操作按钮。
+                const actions = space.deleted ? ''
+                    : `<button type="button" class="btn btn-sm" data-action="toggle-space" data-id="${this.esc(space.id)}" data-disabled="${space.disabled ? '0' : '1'}">${space.disabled ? '重新启用' : '停用'}</button>
+                       <button type="button" class="btn btn-sm btn-danger" data-action="delete-space" data-id="${this.esc(space.id)}">删除</button>`;
+                return `<div class="sync-space-row ${mark}">
+                    <code>${this.esc(String(space.id).slice(0, 8))}</code>
+                    <span class="sync-space-state">${state} · ${size(space.contentBytes)} · 版本 ${space.revision} · 代次 ${space.generation} · ${space.activeDevices} 台设备</span>
+                    <span class="sync-space-time">${this.esc(this.syncRelTime(space.updatedAt))}</span>
+                    ${actions}
+                </div>`;
+            }).join('');
+        }
+
+        /** 总开关的勾选态与说明行。**两个开关各自独立**（暂停新建只挡新空间）。 */
+        paintSyncPolicy() {
+            const policy = this.syncPolicy;
+            if (!policy) return;
+            const creating = $('#syncCreatingPaused');
+            const total = $('#syncTotalPaused');
+            if (creating) creating.checked = !!policy.creatingPaused;
+            if (total) total.checked = !!policy.syncPaused;
+            const hint = $('#syncPolicyHint');
+            if (!hint) return;
+            // 三种状态的说明必须分开说：只暂停新建与总暂停看起来都是「没在新建」。
+            hint.textContent = policy.syncPaused
+                ? '总暂停已开启：所有空间的读写与连接都被拒绝（删除空间与撤销本机设备不受影响）。'
+                : policy.creatingPaused
+                    ? '已暂停新建：不能再创建新空间，已有空间照常同步。'
+                    : '';
+        }
+
+        /**
+         * 保存总开关。
+         *
+         * ⚠️ 两个勾选框的值一起提交，但 `disabled` / `paused` 的语义各是各的
+         * （服务端按 `!== undefined` 判，所以传 `false` 是真的会打开）。
+         * 失败要把勾选态**回滚成服务端的确认值**，不能留着一个「看着已勾上、
+         * 实际没生效」的界面。
+         */
+        async saveSyncPolicy() {
+            const creating = $('#syncCreatingPaused');
+            const total = $('#syncTotalPaused');
+            const body = { creatingPaused: !!(creating && creating.checked), syncPaused: !!(total && total.checked) };
+            [creating, total].forEach(box => { if (box) box.disabled = true; });
+            try {
+                const result = await API.post('/api/admin/sync-settings', body);
+                this.syncPolicy = result.settings;
+                this.paintSyncPolicy();
+                this.showToast('同步策略已保存');
+            } catch (error) {
+                this.paintSyncPolicy();   // 回滚成内存里的（服务端确认过的）值
+                this.showToast('保存失败：' + error.message, 'error');
+            } finally {
+                [creating, total].forEach(box => { if (box) box.disabled = false; });
+            }
+        }
+
+        async toggleSyncSpace(id, disabled) {
+            try {
+                await API.post(`/api/admin/sync-spaces/${encodeURIComponent(id)}/disable`, { disabled });
+                await this.renderSyncSpaces();
+                this.showToast(disabled ? '已停用该空间' : '已重新启用该空间');
+            } catch (error) {
+                this.showToast('操作失败：' + error.message, 'error');
+            }
+        }
+
+        async deleteSyncSpace(id) {
+            // 删除**不可撤销**（墓碑只是留痕，内容已经清掉），所以先确认一次。
+            // ⚠️ 用仓库自己的 `confirmAction`（危险样式、与删除收藏/引擎同一个对话框），
+            // 不要用原生 `window.confirm`：它会阻塞脚本线程、样式与本项目不一致，
+            // 而且自动化里默认被丢掉（等于这个按钮永远点不成）。
+            if (!await this.confirmAction('删除这个云端空间？它上面的所有设备会立刻失效，内容会被清空，此操作无法撤销。', '删除云端空间', true)) return;
+            try {
+                await API.post(`/api/admin/sync-spaces/${encodeURIComponent(id)}/delete`, {});
+                await this.renderSyncSpaces();
+                this.showToast('空间已删除');
+            } catch (error) {
+                this.showToast('删除失败：' + error.message, 'error');
+            }
+        }
+
         /** 读本机连接记录；有连接就立刻检查一次，并把盘上的待上传内容重放出去。 */
         async loadSyncState() {
             if (!this.localStore) return;
@@ -1965,7 +2125,7 @@
             this.syncUploadInFlight = false;
             this.syncUploadedPayloadKey = null;
             this.syncUploadAgain = false;
-            this.syncHalted = false;
+            this.syncHalted = null;
             this.setSyncStatus('local');
             this.stopSyncTimers();
             this.setSyncState(message ? 'error' : 'disconnected', message);
@@ -2105,6 +2265,11 @@
                 if (id === 'syncDelete') return this.requestDeleteSpace();
                 if (id === 'syncDeleteBack') return this.setSyncState('connected');
                 if (id === 'syncDeleteConfirm') return this.confirmDeleteSpace();
+                // 撤销全部旧设备并重新连接：也是危险操作（会踢掉其他设备），
+                // 但从**次级链接**进入，且确认态要求重新输入口令。
+                if (id === 'syncResetDevices') return this.requestResetDevices();
+                if (id === 'syncResetBack') return this.setSyncState(this.syncConnection ? 'connected' : 'exists');
+                if (id === 'syncResetConfirm') return this.confirmResetDevices();
                 if (id === 'syncCheck') return this.submitSyncPassphrase();
                 if (id === 'syncCreate') return this.createSyncSpace();
                 if (id === 'syncPull') return this.connectSyncSpace('cloud');
@@ -2122,6 +2287,7 @@
                 if (event.key === 'Enter' && event.target.tagName === 'INPUT') {
                     event.preventDefault();
                     if (event.target.id === 'syncDeletePassphrase') return this.confirmDeleteSpace();
+                    if (event.target.id === 'syncResetPassphrase') return this.confirmResetDevices();
                     this.submitSyncPassphrase();
                 }
             });
@@ -2173,14 +2339,23 @@
                         <button type="button" class="btn" id="syncNow">立即同步</button>
                         <button type="button" class="btn btn-primary" id="syncClose">关闭</button>
                     </div>
+                    <p class="sync-note sync-danger-zone"><button type="button" class="sync-link" id="syncResetDevices">撤销全部旧设备并重新连接</button><br>其他设备会立刻停止同步，需要重新输入口令才能再连；本机导航与云端内容都不动。</p>
                     <p class="sync-note sync-danger-zone"><button type="button" class="sync-link sync-danger" id="syncDelete">删除云端空间</button><br>删除后旧设备全部失效，本机导航保留，但无法撤销。</p>`;
                 return;
             }
             if (this.syncState === 'halted' && this.syncConnection) {
+                // 两种暂停共用这一屏，但**文案不同**——各自说清「为什么会停、你现在能做什么」。
+                // 总暂停是整台服务停了（等一会儿自动恢复，也可以手动重试）；
+                // 空间停用只影响这一个空间（等管理员重新启用它）。
+                const paused = this.syncHalted === 'paused';
                 body.innerHTML = `
-                    <p class="sync-state">空间已被停用</p>
-                    <p class="sync-note">云端空间 <code>${this.esc(String(this.syncConnection.spaceId || '').slice(0, 8))}</code> 被管理员停用，自动同步已暂停。</p>
-                    <p class="sync-hint">本机导航不受影响。管理员重新启用后点「重试同步」即可继续；重新输入口令没有用，连接凭据仍然有效。</p>
+                    <p class="sync-state">${paused ? '同步服务已被暂停' : '空间已被停用'}</p>
+                    <p class="sync-note">${paused
+                        ? '管理员暂停了同步服务，自动同步已暂停。已暂停的不只这一个空间，恢复后会自动继续。'
+                        : `云端空间 <code>${this.esc(String(this.syncConnection.spaceId || '').slice(0, 8))}</code> 被管理员停用，自动同步已暂停。`}</p>
+                    <p class="sync-hint">本机导航不受影响。${paused
+                        ? '每隔几分钟会自动检查一次，管理员恢复后无需操作；也可以现在就重试。'
+                        : '管理员重新启用后点「重试同步」即可继续。'}重新输入口令没有用，连接凭据仍然有效。</p>
                     ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
                     <div class="ui-dialog-actions sync-actions">
                         <button type="button" class="btn" id="syncStop">停止同步</button>
@@ -2236,6 +2411,23 @@
                         <button type="button" class="btn" id="syncBack">返回</button>
                         <button type="button" class="btn" id="syncPull" ${this.syncBusy ? 'disabled' : ''}>使用云端配置</button>
                         <button type="button" class="btn btn-primary" id="syncPush" ${this.syncBusy ? 'disabled' : ''}>以本机配置替换云端</button>
+                    </div>
+                    <p class="sync-note sync-danger-zone"><button type="button" class="sync-link" id="syncResetDevices">撤销全部旧设备并重新连接</button><br>其他设备会立刻停止同步，需要重新输入口令才能再连；云端内容不动。</p>`;
+                return;
+            }
+            if (this.syncState === 'confirm_reset') {
+                // 撤销入口的确认态。**必须有自己的文案**：这里重新输入口令是**有用的**
+                // （它定位空间、证明你是持有人），与「停止同步」「空间已停用」那两屏
+                // 的告知正好相反——所以绝不能让这一屏落到别的确认态上。
+                body.innerHTML = `
+                    <p class="sync-state">撤销全部旧设备？</p>
+                    <p class="sync-note">云端空间下所有旧的设备凭据都会被撤销，其他设备会立刻停止同步，需要重新输入口令才能再连。本机导航与云端内容都不动。</p>
+                    <label class="ui-dialog-field"><span>重新输入口令</span><input id="syncResetPassphrase" type="password" autocomplete="current-password" spellcheck="false" placeholder="用于确认这是你的空间"></label>
+                    <p class="sync-hint">这一步不会删除配置，也不会改变云端版本；只有你这一台设备会立刻拿到新凭据。其他设备上未上传的修改仍在它们本机，重新连接后可以再传。</p>
+                    ${this.syncError ? `<p class="sync-error" role="alert">${this.esc(this.syncError)}</p>` : ''}
+                    <div class="ui-dialog-actions sync-actions">
+                        <button type="button" class="btn" id="syncResetBack">返回</button>
+                        <button type="button" class="btn btn-danger" id="syncResetConfirm" ${this.syncBusy ? 'disabled' : ''}>${this.syncBusy ? '撤销中…' : '确认撤销全部旧设备'}</button>
                     </div>`;
                 return;
             }
@@ -2300,6 +2492,14 @@
                 if (error.status === 409 || (error.status === 403 && /invite_used|space_exists/.test(error.code || ''))) {
                     const refreshed = await this.syncCheckQuiet();
                     if (refreshed && refreshed.exists) { this.syncSpaceInfo = refreshed; this.setSyncState('exists', '该口令已经建好空间了，请选择方向'); return; }
+                }
+                // ⚠️ 额度/暂停类 503（`space_limit`/`storage_limit`/`create_paused`）：
+                // **不回查 `check`、不重发创建**。回查会让用户以为「空间也许建出来了」，
+                // 而重发只会再撞同一个 503；设计明确禁止「借拒绝创建触发错误重建」。
+                // 只把服务端那句话原样转述，用户知道是「等一会儿 / 找管理员」。
+                if (error.status === 503) {
+                    this.setSyncState('not_found', error.message);
+                    return;
                 }
                 this.setSyncState('not_found', '创建失败：' + error.message);
             }
@@ -2391,6 +2591,11 @@
                     // 上传成功后云端就是刚写下的这一版：把版本号与时间补上，
                     // 否则状态行会一直显示上传**前**的版本（或一个空的「—」）。
                     cloud = { revision: written.revision, updatedAt: Date.now() };
+                } else if (direction === 'reset') {
+                    // 「撤销全部旧设备并重新连接」：只换了本机凭据，**两侧内容都没动**，
+                    // 所以既不上传、也不采用——内容协调交给随后的那次拉取（不同就摆候选）。
+                    // 这里若落进下面那个 else，会拿一个不存在的云端内容去采用。
+                    cloud = { revision: connection.revision, updatedAt: Date.now() };
                 } else {
                     await this.adoptCloudConfig(material.cloud);
                 }
@@ -2419,7 +2624,9 @@
             this.setSyncStatus('synced');
             this.notifySyncPeers('changed');
             this.startSyncPolling();
-            this.showToast(direction === 'cloud' ? '已连接，已采用云端配置' : '已连接，已上传本机配置');
+            this.showToast(direction === 'cloud' ? '已连接，已采用云端配置'
+                : direction === 'reset' ? '已用新凭据继续同步'
+                    : '已连接，已上传本机配置');
         }
 
         /** 「3 分钟前」这类相对时间。不走 Intl（首屏预算），也不引库。 */
@@ -2831,6 +3038,18 @@
                 return;
             }
             if (error.status === 409) return this.handleSyncConflict();
+            // 额度用尽（503 `space_quota_exceeded`）：**不排退避、不丢 pending、不清连接**。
+            // 退避重试在这里是错的——额度不会自己变松，退避只会对同一个 503 反复敲；
+            // 而丢掉 pending 就等于把用户还没传上去的修改扔了（那是最不该丢的东西）。
+            // 正确做法：保留待上传内容与连接，**明确告诉用户「写满了，先精简内容」**，
+            // 由用户精简之后的下一次本地改动（`markSyncDirty` → 直接排一次）自己重试。
+            if (error.status === 503 && error.code === 'space_quota_exceeded') {
+                this.setSyncStatus('failed');
+                this.showToast('云端空间的内容已达上限，未上传的修改仍在本机；请先精简导航或模块设置', 'error', 10000);
+                return;
+            }
+            // 总暂停（503 `sync_paused`）走终态（halt）——由上面的 handleSyncTerminal 拦掉。
+            // 到这里的 5xx 才是真正的服务端故障：保留 pending、退避重试。
             // 网络类失败：保留 pending，退避重试。离线时状态是「离线，待同步」。
             this.setSyncStatus(navigator.onLine === false ? 'pending' : 'failed');
             this.scheduleSyncRetry();
@@ -2898,7 +3117,7 @@
             const token = this.syncConnection.deviceToken;
             let done = false;
             let dead = '';
-            let halted = false;
+            let halted = null;
             let failure = '';
             try {
                 const proof = await this.deriveSyncProof(passphrase);
@@ -2910,11 +3129,11 @@
                         if (error.code === 'space_deleted') { done = true; break; }   // 已经不存在了 = 目的达到
                         if (error.code === 'proof_mismatch') { failure = '口令不正确，未删除任何内容'; break; }
                         // 凭据已经不能用了（被撤销/过期/无效）：这条连接本身要按终态收尾，
-                        // 而不是挂着一把死令牌反复报「删除失败」。空间被停用则相反——
-                        // 连接还在，只是现在删不了，说清状态、留着连接等管理员恢复。
+                        // 而不是挂着一把死令牌反复报「删除失败」。空间被停用或同步被总暂停
+                        // 则相反——连接还在，只是现在删不了，说清状态、留着连接等管理员恢复。
                         const terminal = this.syncTerminalOf(error);
                         if (terminal) {
-                            if (terminal.halt) { failure = terminal.message; halted = true; } else dead = terminal.message;
+                            if (terminal.halt) { failure = terminal.message; halted = terminal.halt; } else dead = terminal.message;
                             break;
                         }
                         if (error.status && error.status < 500) { failure = '删除失败：' + error.message; break; }
@@ -2940,8 +3159,8 @@
                 this.showToast(dead, 'error', 8000);
             } else if (halted) {
                 // 说「已暂停」就要真的停：把 halt 落地（否则界面写着暂停、调度却照常恢复，
-                // 要等下一次轮询再撞 403 才真的停下）。
-                this.applySyncHalt(failure);
+                // 要等下一次轮询再撞 403/503 才真的停下）。
+                this.applySyncHalt(halted, failure);
             } else {
                 this.syncError = failure || '删除失败';
                 // 失败保留连接，并把调度接回去（挡板已经撤了）。
@@ -2954,7 +3173,7 @@
             this.renderSyncDialog();
         }
 
-        /** 停用后的「重试同步」：再读一次，成功就回到已连接态。 */
+        /** 停用/总暂停后的「重试同步」：再读一次，成功就回到已连接态。 */
         async retrySyncAfterHalt() {
             if (this.syncBusy) return;
             this.syncBusy = true;
@@ -2963,6 +3182,82 @@
             this.syncBusy = false;
             if (!this.syncHalted) this.setSyncState('connected');
             else this.renderSyncDialog();
+        }
+
+        /** 进入「撤销全部旧设备」确认态。**在线是硬要求**（与删除同理：这个动作要在服务端发生）。 */
+        requestResetDevices() {
+            if (navigator.onLine === false) {
+                this.syncError = '撤销旧设备需要在线：离线时无法确认结果';
+                this.renderSyncDialog();
+                return;
+            }
+            this.syncError = '';
+            this.setSyncState('confirm_reset');
+        }
+
+        /**
+         * 确认「撤销全部旧设备并重新连接」。
+         *
+         * 顺序与取舍（每一条都对应设计 §5 的一句）：
+         *   ① `operationId` **只放内存**（`this.syncResetOperationId`）：一次确认里
+         *      的重试复用同一个 ID，服务端按它保证「只撤一次」。刷新页面重来会生成
+         *      新的 ID、也就再撤一次——代价是多一枚 90 天内清理的孤儿令牌，
+         *      把 ID 落进 IndexedDB 会让它多出一份与连接代次重叠的状态（必然漂移）。
+         *   ② 拿到新材料后走 `finishSyncConnection(material, 'local')` —— 与首次连接
+         *      同一条收尾路径，所以凭据落盘、指纹落盘、代次递增这些规矩自动成立。
+         *      为什么要「重新连接」：服务端撤销了旧令牌并签发新的，本机必须换成新令牌。
+         *   ③ **成功后先协调版本再同步**：这里**不**直接上传。内容若与云端不同，
+         *      下一次拉取自然会摆出两份候选（`handleSyncConflict` 那条路），
+         *      用户选完才落地——绝不在撤销之后顺手把本机内容盖上去。
+         */
+        async confirmResetDevices() {
+            if (this.syncBusy || !this.syncConnection) return;
+            const input = document.getElementById('syncResetPassphrase');
+            const passphrase = input ? input.value : '';
+            const verdict = this.validateSyncPassphrase(passphrase);
+            if (!verdict.ok) { this.syncError = verdict.reason; return this.renderSyncDialog(); }
+            this.syncBusy = true;
+            this.renderSyncDialog();
+            // 一次确认内的重试复用同一个 ID（重试都从这一屏重发）。
+            if (!this.syncResetOperationId) this.syncResetOperationId = crypto.randomUUID();
+            let failure = '';
+            let material = null;
+            try {
+                const proof = await this.deriveSyncProof(passphrase);
+                const result = await API.post('/api/sync/device/reset', { proof, operationId: this.syncResetOperationId });
+                material = result;
+            } catch (error) {
+                const terminal = this.syncTerminalOf(error);
+                if (terminal && !terminal.disconnect) {
+                    // 停用/总暂停：连接还留着，说清状态。
+                    this.syncBusy = false;
+                    if (terminal.halt) return this.applySyncHalt(terminal.halt, terminal.message);
+                }
+                failure = terminal ? terminal.message : '撤销失败：' + error.message;
+            }
+            if (!material) {
+                this.syncBusy = false;
+                this.syncError = failure || '撤销失败';
+                return this.renderSyncDialog();
+            }
+            // 成功：换成本机新凭据。走与首次连接**同一条**收尾路径（`finishSyncConnection`），
+            // 它会先落盘再置「已连接」，并把代次递增写进同一次事务。
+            // 方向用 `local`：本机内容与云端内容都没被替换过，这里只是「同一台设备换了凭据」，
+            // 所以不写 recovery（没有哪一份被覆盖）。
+            this.syncResetOperationId = null;
+            try {
+                await this.finishSyncConnection({ spaceId: material.spaceId, deviceToken: material.deviceToken, generation: material.generation, revision: material.revision }, 'reset');
+            } catch (error) {
+                this.syncBusy = false;
+                this.syncError = '已撤销旧设备，但本机未能保存新凭据：' + error.message;
+                return this.renderSyncDialog();
+            }
+            this.syncBusy = false;
+            if (this.syncState === 'confirm_reset') this.setSyncState('connected');
+            this.showToast('已撤销全部旧设备，本机已用新凭据继续同步', 'success', 8000);
+            // 先协调版本：拉一次。内容不同就会摆出两份候选（不静默覆盖）。
+            await this.syncPullCheck();
+            this.renderSyncDialog();
         }
 
         /**
@@ -2981,7 +3276,11 @@
             if (code === 'space_deleted') return { disconnect: true, message: '云端空间已被删除，已转为仅保存在本机' };
             if (code === 'device_revoked') return { disconnect: true, message: '这台设备已断开同步，请重新输入口令' };
             if (code === 'device_expired' || code === 'device_invalid') return { disconnect: true, message: '连接已失效，请重新输入口令' };
-            if (code === 'space_disabled') return { halt: true, message: '该空间已被管理员停用，自动同步已暂停' };
+            // 两种「暂停」各自一句话、各自一个 halt 原因（`halt: 'disabled' | 'paused'`）：
+            // 用户看到的下一句话完全不同——停用要等管理员重新启用这个空间，总暂停
+            // 是整台服务器都停了（等一会儿，或者去问部署者）。合成一句就是让用户猜。
+            if (code === 'space_disabled') return { halt: 'disabled', message: '该空间已被管理员停用，自动同步已暂停' };
+            if (code === 'sync_paused') return { halt: 'paused', message: '同步服务已被管理员暂停，稍后会自动重试' };
             return null;
         }
 
@@ -2989,7 +3288,7 @@
         async handleSyncTerminal(error) {
             const terminal = this.syncTerminalOf(error);
             if (!terminal) return false;
-            if (terminal.halt) { this.applySyncHalt(terminal.message); return true; }
+            if (terminal.halt) { this.applySyncHalt(terminal.halt, terminal.message); return true; }
             if (!terminal.disconnect) return false;
             await this.clearSyncConnection(terminal.message);
             this.showToast(terminal.message, 'error', 8000);
@@ -2997,17 +3296,26 @@
         }
 
         /**
-         * 「空间被管理员停用」的落地：**停自动重试、保留连接与本地数据、把状态说出来**。
-         * 解除只有一条路：读一次成功（`syncPullCheck` 的成功分支）——计划里承诺的
-         * 「管理员恢复后点『立即同步』」就落在那里。
+         * 「空间被管理员停用」或「同步服务被总暂停」的落地：**停自动重试、保留
+         * 连接与本地数据、把状态说出来**。
+         *
+         * ⚠️ 两种暂停共用这一个函数，但**各自的对话框文案不同**（`syncHaltReason`
+         * 记下是哪一种）：停用要等管理员把这个空间重新启用；总暂停是整台服务停了，
+         * 用户能做的事不一样。落到同一屏上是 #9 修过的那个真缺陷的翻版
+         * （停用落到了「口令 + 再输一次」的表单上，而那里输口令没有用）。
+         *
+         * 解除路径都是同一条：读一次成功（`syncPullCheck` 的成功分支）。总暂停
+         * 时轮询间隔换成 `SYNC_PAUSED_POLL_MS`（5 分钟，与服务端 `Retry-After`
+         * 同值），所以**不需要用户做任何事**，恢复后自己会回来。
          */
-        applySyncHalt(message) {
-            this.syncHalted = true;
+        applySyncHalt(reason, message) {
+            this.syncHalted = reason || 'disabled';
             this.stopSyncTimers();
             this.setSyncStatus('failed');
-            // ⚠️ 必须有**自己的**对话框状态：落到 error → 渲染的是「口令 + 再输一次」表单，
-            // 而这里重新输口令根本没用（真实浏览器验收看到的就是这个）。
             this.setSyncState('halted', message);
+            // 总暂停是**临时**的，所以起一个 5 分钟的策略轮询（用轮询定时器的槽位，
+            // 但间隔不同）；空间停用则等着（管理员恢复后用户点「重试同步」）。
+            if (this.syncHalted === 'paused') this.startSyncPolling(SYNC_PAUSED_POLL_MS);
             this.showToast(message, 'error', 8000);
         }
 
@@ -3079,10 +3387,11 @@
                 if (epoch !== this.syncConnEpoch) return;
                 this.syncCloud = cloud;
                 if (this.syncHalted) {
-                    // 读得动 = 这个连接又能用了（管理员把空间恢复了）：**先解除挡板**，
-                    // 再把停掉的调度接回来，并补排停用期间一次都没排过的本地改动。
+                    // 读得动 = 这个连接又能用了（管理员把空间恢复了 / 总暂停结束了）：
+                    // **先解除挡板**，再把停掉的调度接回来（回到正常的 30 秒档），
+                    // 并补排停用期间一次都没排过的本地改动。
                     // 然后继续走正常流程——云端若更早就顺带采用，不必再等下一轮轮询。
-                    this.syncHalted = false;
+                    this.syncHalted = null;
                     this.startSyncPolling();
                     if (this.syncPayloadKey() !== this.syncUploadedPayloadKey) this.scheduleSyncUpload();
                     if (this.syncState === 'halted') this.setSyncState('connected');
@@ -3132,10 +3441,18 @@
             this.syncUploadedPayloadKey = this.syncPayloadKey();
         }
 
-        startSyncPolling() {
+        /**
+         * 起轮询。默认 30 秒（设计 §5）；总暂停期间用 5 分钟那一档
+         * （`SYNC_PAUSED_POLL_MS`，与服务端 503 的 `Retry-After` 同值）。
+         *
+         * ⚠️ 参数化而不是「两个定时器」：两个定时器会让「停轮询」只停掉其中一个，
+         * 而症状是暂停期间仍在按 30 秒打接口——正好是总暂停要避免的事。
+         */
+        startSyncPolling(intervalMs = SYNC_POLL_MS) {
             this.stopSyncPolling();
             if (!this.syncConnection || this.authenticated) return;
-            this.syncPollTimer = setInterval(() => { if (!document.hidden) this.syncPullCheck(); }, SYNC_POLL_MS);
+            this.syncPollMs = intervalMs;
+            this.syncPollTimer = setInterval(() => { if (!document.hidden) this.syncPullCheck(); }, intervalMs);
         }
 
         stopSyncPolling() {
@@ -6656,6 +6973,10 @@
             // 把它挂在 renderAdminPanel 里拉取的话，每次配置保存引起的重渲染
             // 都会再打一次接口，攒进同一个限流桶。
             if (panel === 'site' && !this.syncInvitesRendered) this.renderSyncInvites();
+            // 「同步空间治理」同理，但**闩锁是独立的一只**：两块共用一只的话，
+            // 邀请码块的失败路径会把治理块一起标成「已渲染」，那一块就永远停在
+            // 「加载中…」上（这正是 `syncSpacesRendered` 单独存在的原因）。
+            if (panel === 'site' && !this.syncSpacesRendered) this.renderSyncSpaces();
             // 「收藏夹」同理：管理器只在首次进入分区时渲染，
             // 之后切走切回保留现场（当前分类、搜索词、勾选都在）。
             if (panel === 'fav' && !this.favManagerRendered) {
@@ -7157,6 +7478,28 @@
                     </div>
                     <div class="sync-invite-list" id="syncInviteList"><p class="fav-hint">加载中…</p></div>
                 </div>
+                <div class="section" id="syncSpacesSection">
+                    <div class="section-title">同步空间治理</div>
+                    <p class="fav-hint">这里只能看到空间的内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
+                    <div class="sync-policy-row">
+                        <label class="sync-policy-item">
+                            <span>暂停新建</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="syncCreatingPaused">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                        <label class="sync-policy-item">
+                            <span>总暂停</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="syncTotalPaused">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                    </div>
+                    <p class="fav-hint" id="syncPolicyHint"></p>
+                    <div class="sync-invite-list" id="syncSpacesList"><p class="fav-hint">加载中…</p></div>
+                </div>
                 <div class="section section-collapsible">
                     <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
                         <span class="section-title">搜索引擎</span>
@@ -7246,6 +7589,8 @@
             // 邀请码块的闩锁同理：面板重建后 #syncInviteList 是新的「加载中…」节点，
             // 不复位就不会再去加载。缓存（syncInvites）保留，重画不必再打接口。
             this.syncInvitesRendered = false;
+            // 同步空间治理的闩锁同理（**独立的一只**：与邀请码块的失败路径互不牵连）。
+            this.syncSpacesRendered = false;
             // 回到上次停留的分区，而不是每次都弹回第一个。
             // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
@@ -7264,6 +7609,25 @@
                 if (action === 'revoke-invite') return this.revokeSyncInvite(event.target.dataset.id);
                 if (action === 'retry-invites') { this.syncInvites = null; this.syncInvitesRendered = false; return this.renderSyncInvites(); }
             });
+            // 同步空间治理：两个总开关是固定控件，列表里的「停用 / 重新启用 / 删除」
+            // 用事件委托——列表每次操作后整块重画，逐项挂 onclick 会在重画后全部丢掉。
+            // 总开关的 `onchange` 必须**勾了即落盘**（`saveSyncPolicy`）：只改内存里的
+            // 勾选态而不提交，界面会显示「已暂停」而服务端根本没收到——这块最像的
+            // 那种 bug 就是「管理员以为自己开了总暂停，实际谁都没被挡住」。
+            // 「重试」按 `retry-spaces` 清掉闩锁再拉一次，与邀请码块同款。
+            $('#syncSpacesList').addEventListener('click', event => {
+                const action = event.target.dataset.action;
+                if (action === 'toggle-space') return this.toggleSyncSpace(event.target.dataset.id, event.target.dataset.disabled === '1');
+                if (action === 'delete-space') return this.deleteSyncSpace(event.target.dataset.id);
+                if (action === 'retry-spaces') { this.syncSpacesRendered = false; return this.renderSyncSpaces(); }
+            });
+            for (const id of ['syncCreatingPaused', 'syncTotalPaused']) {
+                $(`#${id}`).onchange = () => this.saveSyncPolicy();
+            }
+            // 面板是新建的 DOM，勾选态要从**服务端确认过的值**（`paintSyncPolicy`
+            // 读的 `syncPolicy`）重画一次：模板里的 `checked` 是写死的，不重画的话
+            // 「上次开过总暂停、这次打开面板却看着是关的」。
+            this.paintSyncPolicy();
             $('#templateCancelBtn').onclick = () => this.templateCancel();
             $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
             $('#templatePublishBtn').onclick = () => this.templateSubmit(true);

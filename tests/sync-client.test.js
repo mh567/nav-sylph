@@ -363,14 +363,17 @@ test('本地同步记录的形状校验：坏字段只丢那个字段，不废�
 test('访客的同步接口不受限流豁免，管理员邀请码接口必须带限流与管理员会话', () => {
     const code = stripComments(serverSource);
     const guestRoutes = [...code.matchAll(/app\.(get|post)\('(\/api\/sync[^']*)'([^,]*(?:,|\)))/g)];
-    assert.equal(guestRoutes.length, 7, `访客侧应恰好 7 条，实际 ${guestRoutes.length}`);
+    // 8 = #9 的 7 条 + #10 的 `POST /api/sync/device/reset`（「撤销全部旧设备并重新连接」）。
+    // 这不是放宽：条数与路由名同时钉住，多一条少一条都红；下面还逐个点名挂桶。
+    assert.equal(guestRoutes.length, 8, `访客侧应恰好 8 条，实际 ${guestRoutes.length}`);
+    assert.ok(guestRoutes.some(([, , route]) => route === '/api/sync/device/reset'), '新那条是设备重置');
     for (const [, , route] of guestRoutes) {
         assert.doesNotMatch(code, new RegExp(`'${route.replace(/[/]/g, '\\/')}',\\s*requireAdmin`),
             `${route} 不能要求管理员会话——访客就是没有会话的那个人`);
     }
     // 会用到口令的入口都挂 IP 桶（防猜口令），包括 #9 的删除——它要求重新输口令；
     // 读写两条走设备令牌 + 按空间限流。
-    for (const route of ['/api/sync/space/check', '/api/sync/space/create', '/api/sync/space/connect', '/api/sync/space/delete', '/api/sync/device/revoke']) {
+    for (const route of ['/api/sync/space/check', '/api/sync/space/create', '/api/sync/space/connect', '/api/sync/space/delete', '/api/sync/device/revoke', '/api/sync/device/reset']) {
         assert.match(code, new RegExp(`app\\.post\\('${route.replace(/[/]/g, '\\/')}', syncConnectLimit`), `${route} 挂连接桶`);
     }
     for (const kind of ['read', 'write']) {
@@ -464,7 +467,11 @@ test('错误码 → 文案只有一处映射，四类各说各的话', () => {
     assert.match(map, /space_deleted[\s\S]{0,80}已被删除/);
     assert.match(map, /device_revoked[\s\S]{0,80}这台设备/);
     assert.match(map, /code === 'device_expired' \|\| code === 'device_invalid'[\s\S]{0,80}重新输入口令/);
-    assert.match(map, /space_disabled[\s\S]{0,60}halt: true/);
+    // ⚠️ `halt` 在 #10 从布尔升级成**原因字符串**（`'disabled' | 'paused'`）：两种暂停
+    // 用户的下一句话完全不同（等管理员重开这个空间 vs 整台服务停了），合成一个 true
+    // 就没法区分。真值语义不变（`if (terminal.halt)` 照旧成立），所以这里钉具体值。
+    assert.match(map, /code === 'space_disabled'[\s\S]{0,60}halt: 'disabled'/);
+    assert.match(map, /code === 'sync_paused'[\s\S]{0,60}halt: 'paused'/);
     // 「只有一处」：这几句用户可见的话在 app.js 里各出现一次
     for (const message of ['云端空间已被删除，已转为仅保存在本机', '这台设备已断开同步', '该空间已被管理员停用']) {
         const hits = cleanApp.split(message).length - 1;
@@ -501,4 +508,100 @@ test('落盘一律带期望代次；只有推进代次的那条路不带（它�
     assert.match(methodBodyOf(cleanApp, 'refreshSyncRecord'), /this\.syncConnEpoch = record\?\.connEpoch \|\| 0/);
     assert.match(cleanApp, /this\.syncChannel\.onmessage = event => \{[\s\S]{0,600}type === 'stopped'/, '收到停止通知要重读记录');
     assert.match(stripComments(localNavSource), /'connEpoch'\]/, 'local-navigation 的 SYNC_FIELDS 要含 connEpoch');
+});
+
+// ==================== #10：设备回收与空间资源治理的接线 ====================
+
+test('#10 的管理员治理路由：四条（含 GET/POST 成对）都走 rateLimit + requireAdmin，且不读设备令牌', () => {
+    const code = stripComments(serverSource);
+    // 逐条点名而不是「统计到 5 条」：漏掉 requireAdmin 的那一条必须自己站起来报名字。
+    const routes = [
+        ["/api/admin/sync-spaces", 'get'],
+        ["/api/admin/sync-spaces/:id/disable", 'post'],
+        ["/api/admin/sync-spaces/:id/delete", 'post'],
+        ["/api/admin/sync-settings", 'get'],
+        ["/api/admin/sync-settings", 'post']
+    ];
+    for (const [route, method] of routes) {
+        const pattern = new RegExp(`app\\.${method}\\('${route.replace(/[/:]/g, ch => '\\' + ch)}', rateLimit, requireAdmin`);
+        assert.match(code, pattern, `${route} 必须走 rateLimit + requireAdmin`);
+    }
+    // 这一段路由**不读 Authorization 头**：设备令牌在这里没有任何入口（不是「漏了鉴权」，
+    // 而是「这条通道根本不存在」）。越权行为由 tests/sync-http.test.js 真打 HTTP 验。
+    const section = code.slice(code.indexOf("app.get('/api/admin/sync-spaces'"), code.indexOf("app.post('/api/verify-password'"));
+    assert.ok(section.length > 500, '切出治理路由那一段');
+    assert.doesNotMatch(section, /authorization/i, '治理路由不得读 Authorization 头');
+    assert.doesNotMatch(section, /readDeviceToken/, '治理路由不得用设备令牌');
+});
+
+test('#10 的对话框与面板接线：新控件都有处理分支，没有孤儿按钮', () => {
+    const open = methodBodyOf(cleanApp, 'openSyncDialog');
+    // 撤销全部旧设备：入口 → 确认 → 返回 三个 id 都要有分支（少一个就是点不动的死按钮）。
+    for (const id of ['syncResetDevices', 'syncResetBack', 'syncResetConfirm']) {
+        assert.match(open, new RegExp(`id === '${id}'`), `${id} 要有处理分支`);
+    }
+    // 取消撤销要回到**来源那一屏**：已连接态回 connected，从「空间已存在」进来的回 exists
+    // （回错一屏会让用户掉进一个自己没走过的表单）。
+    assert.match(open, /id === 'syncResetBack'[\s\S]{0,120}this\.syncConnection \? 'connected' : 'exists'/);
+    // 重试同步（停用 / 总暂停那一屏）走 retrySyncAfterHalt——它才是「读一次成功即解除」的落点。
+    assert.match(open, /id === 'syncRetry'[\s\S]{0,60}retrySyncAfterHalt/);
+    // 撤销确认框里回车 = 确认撤销（与删除确认框互不相同，两处不能混）。
+    assert.match(open, /event\.target\.id === 'syncResetPassphrase'[\s\S]{0,60}confirmResetDevices/);
+    const dialog = methodBodyOf(cleanApp, 'renderSyncDialog');
+    for (const id of ['syncResetDevices', 'syncResetPassphrase', 'syncResetBack', 'syncResetConfirm', 'syncRetry']) {
+        assert.match(dialog, new RegExp(`id="${id}"`), `渲染里要有 #${id}`);
+    }
+    // 撤销入口出现在**两个**地方：已连接态与「空间已存在」态（后者是「口令对但本机没连」）。
+    const occurrences = dialog.split('id="syncResetDevices"').length - 1;
+    assert.equal(occurrences, 2, `撤销入口应恰好出现在两屏，实际 ${occurrences}`);
+});
+
+test('#10 的管理面板治理区：两个总开关勾了即落盘，列表操作走事件委托，且首次进分区才拉接口', () => {
+    const code = stripComments(appSource);
+    // ① 渲染触发：只在「进入站点分区 且 还没渲染过」时拉一次，与邀请码块各自的闩锁分开。
+    assert.match(code, /if \(panel === 'site' && !this\.syncSpacesRendered\) this\.renderSyncSpaces\(\)/,
+        '进入站点分区要按闩锁拉一次（漏了就是永远停在「加载中…」）');
+    // 面板每打开一次就会重画两块（列表 + 策略）。它们必须来自**同一条** GET：
+    // 分成两条等于每次打开多打一条管理接口，而管理桶只有 30 次/分钟——本仓库
+    // 已经因为「渲染里顺手预取」撞过 429（WebDAV 那次），浏览器回归也抓到过。
+    const renderSpaces = methodBodyOf(cleanApp, 'renderSyncSpaces');
+    assert.match(renderSpaces, /API\.get\('\/api\/admin\/sync-spaces'\)/, '要拉列表');
+    assert.match(renderSpaces, /data\.settings/, '策略与列表来自同一个响应');
+    assert.equal((renderSpaces.match(/API\.get\(/g) || []).length, 1,
+        '面板重画只允许一条 GET（两条会攒进管理桶、撞 429）');
+    // ② 两个总开关：onchange → saveSyncPolicy（勾了即落盘）。只在内存里改勾选态是最气人的那种 bug：
+    //    界面显示「已暂停」而服务端根本没收到。所以这一条同时钉住「有 onchange」与「落到哪个 POST」。
+    assert.match(code, /for \(const id of \['syncCreatingPaused', 'syncTotalPaused'\]\) \{\s*\n\s*\$\(`#\$\{id\}`\)\.onchange = \(\) => this\.saveSyncPolicy\(\)/,
+        '两个总开关都要勾了即落盘');
+    const save = methodBodyOf(cleanApp, 'saveSyncPolicy');
+    assert.match(save, /API\.post\('\/api\/admin\/sync-settings'/);
+    assert.match(save, /creatingPaused: !!\(creating && creating\.checked\)/, '暂停新建单独提交');
+    assert.match(save, /syncPaused: !!\(total && total\.checked\)/, '总暂停单独提交');
+    assert.match(save, /catch[\s\S]{0,200}this\.paintSyncPolicy\(\)/, '失败要把勾选态回滚成服务端确认过的值');
+    // ③ 列表里的三个动作走**事件委托**（列表整块重画，逐项挂 onclick 会在重画后全丢）。
+    assert.match(code, /\$\('#syncSpacesList'\)\.addEventListener\('click'/);
+    for (const action of ['toggle-space', 'delete-space', 'retry-spaces']) {
+        assert.match(code, new RegExp(`action === '${action}'`), `${action} 要有委托分支`);
+    }
+    assert.match(code, /action === 'toggle-space'[\s\S]{0,160}toggleSyncSpace\(event\.target\.dataset\.id, event\.target\.dataset\.disabled === '1'\)/,
+        '停用/启用按 data-disabled 传布尔值（传字符串 "0" 会是真值 → 永远停用）');
+    assert.match(code, /action === 'delete-space'[\s\S]{0,120}deleteSyncSpace\(/);
+    assert.match(methodBodyOf(cleanApp, 'toggleSyncSpace'), /\/api\/admin\/sync-spaces\/\$\{encodeURIComponent\(id\)\}\/disable/);
+    const deleteSpace = methodBodyOf(cleanApp, 'deleteSyncSpace');
+    // 钉意图（删除不可撤销 → 先确认），不钉确认的**实现方式**：早先这里钉的是
+    // `window.confirm(`，而原生对话框既阻塞脚本线程、样式又与项目不一致，
+    // 自动化里还会被默认丢掉（等于按钮永远点不成）。现在走仓库自己的 `confirmAction`。
+    assert.match(deleteSpace, /await this\.confirmAction\(/, '删除不可撤销，要先确认');
+    assert.match(deleteSpace, /\/api\/admin\/sync-spaces\/\$\{encodeURIComponent\(id\)\}\/delete/);
+    // ④ 面板是新建的 DOM：勾选态必须从服务端确认过的值重画一次（模板里的 checked 是写死的）。
+    assert.match(code, /\$\('#syncSpacesList'\)[\s\S]{0,900}this\.paintSyncPolicy\(\)/);
+    // ⑤ 列表里只画非敏感项：标识前 8 位 + 状态 + 体积 + 版本 + 代次 + 设备数。
+    const paint = methodBodyOf(cleanApp, 'paintSyncSpaces');
+    assert.match(paint, /String\(space\.id\)\.slice\(0, 8\)/, '标识只显示前 8 位');
+    for (const field of ['contentBytes', 'revision', 'generation', 'activeDevices']) {
+        assert.match(paint, new RegExp(`space\\.${field}`), `列表要显示 ${field}`);
+    }
+    for (const forbidden of ['space.config', 'configJson', 'modules', 'proof', 'deviceToken', 'token']) {
+        assert.doesNotMatch(paint, new RegExp(forbidden), `列表不得画 ${forbidden}（服务端也不回，但界面这一层同样不许有落脚点）`);
+    }
 });
