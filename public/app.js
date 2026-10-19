@@ -75,6 +75,13 @@
     const SYNC_PASSPHRASE_MIN = 6;
     const SYNC_PASSPHRASE_MAX = 128;
 
+    // 单次批量生成的邀请码上限。与服务端 lib/sync-store.js 的 INVITE_BATCH_MAX 同值，
+    // 但**不是判据**：界面这一份只挡手滑（超了就地拦下并说明），真正的上限在 store
+    // 里判——curl 不经过这个文件。两边同值是为了「提示里的数字」与「被拒时的数字」一致。
+    const SYNC_INVITE_BATCH_MAX = 20;
+    // 邀请码列表与空间列表的每页条数（服务端 limit 的默认值也是 20）。
+    const SYNC_PAGE_SIZE = 20;
+
     // ========== 口令空间的自动同步参数 ==========
     //
     // 这些数是设计文档 §5 的默认值，别在方法体里散落魔法数字——它们同时被
@@ -354,6 +361,18 @@
             this.syncUsage = null;
             this.syncPolicy = null;
             this.syncSpacesRendered = false;
+            // 「同步管理」tab 的筛选 / 分页 / 勾选状态。**留在内存里**：切走切回保留现场
+            // （当前筛选、页码、勾选都在），面板重建时只复位上面那两只闩锁。
+            this.syncInvitesFilter = { state: 'all', offset: 0, limit: SYNC_PAGE_SIZE };
+            this.syncInvitePage = null;       // 服务端的 page（total/offset/limit）
+            this.syncInviteCounts = null;     // 服务端的 counts（四种状态各几张）
+            this.syncInviteBatch = null;      // 本次批量生成的结果：只在这一次显示
+            this.syncInviteSelected = new Set();
+            this.syncSpacesFilter = { q: '', state: 'all', sort: 'updated', offset: 0, limit: SYNC_PAGE_SIZE };
+            this.syncSpacesPage = null;
+            this.syncSpacesSelected = new Set();
+            this.syncSpacesSearchTimer = null;   // 搜索输入的防抖定时器
+            this.syncSpacesClamping = false;     // 页码越界回退只做一次，防止来回拉
             // 身份或策略代次。在飞的模块区渲染发现它变了就作废
             // （管理员那侧另有 privateEpoch 管登录态变化）。
             this.moduleGeneration = 0;
@@ -1869,34 +1888,76 @@
             return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
         }
 
-        // ---- 管理员：同步空间邀请码 ----
+        // ---- 管理员：同步管理 · 邀请码 ----
         //
-        // 只有三个动作：生成、列出、撤销。列表**只显示提示（前 4 位）**，
-        // 因为库里存的是哈希——邀请码本身只在生成的响应里出现一次，
-        // 丢了就撤销重发一张，而不是让它在界面或数据库里长期可读。
+        // 四个动作：批量生成、列出（状态筛选 + 分页 + 计数）、单张撤销、批量撤销。
+        // 列表**只显示提示（前 4 位）**：库里存的是哈希，完整码只在生成的响应里出现
+        // 一次（`#syncInviteBatch` 那块结果区），离开这一页就再也看不到。
 
-        renderSyncInvites() {
-            const list = $('#syncInviteList');
-            if (!list) return;
-            if (this.syncInvites) { this.paintSyncInvites(); return; }
-            API.get('/api/admin/sync-invites')
-                .then(result => {
-                    this.syncInvites = result.invites || [];
-                    this.syncInvitesRendered = true;
-                    this.paintSyncInvites();
-                })
-                .catch(error => {
-                    list.innerHTML = `<p class="fav-hint">邀请码读取失败：${this.esc(error.message)}</p>
-                        <button type="button" class="btn btn-sm" data-action="retry-invites">重试</button>`;
-                });
+        /** 邀请码列表的查询串：只带非默认值，「全部 / 第 1 页」的 URL 最短。 */
+        syncInvitesQuery() {
+            const filter = this.syncInvitesFilter || { state: 'all', offset: 0, limit: SYNC_PAGE_SIZE };
+            const params = [];
+            if (filter.state && filter.state !== 'all') params.push(`state=${encodeURIComponent(filter.state)}`);
+            if (filter.offset > 0) params.push(`offset=${filter.offset}`);
+            params.push(`limit=${filter.limit || SYNC_PAGE_SIZE}`);
+            return `?${params.join('&')}`;
         }
 
+        /**
+         * 拉一页邀请码并重画。
+         *
+         * ⚠️ **一条 GET**：筛选项、页码、计数、列表全来自这一个响应。分成几条的话，
+         * 每切一次筛选都要多打几条管理接口，而管理桶只有 30 次/分钟（本仓库已经
+         * 因为「渲染里顺手预取」撞过 429）。
+         */
+        async renderSyncInvites() {
+            const list = $('#syncInviteList');
+            if (!list) return;
+            try {
+                const url = '/api/admin/sync-invites' + this.syncInvitesQuery();
+                const data = await API.get(url);
+                this.syncInvites = data.invites || [];
+                this.syncInvitePage = data.page || { total: this.syncInvites.length, offset: 0, limit: SYNC_PAGE_SIZE };
+                this.syncInviteCounts = data.counts || null;
+                this.syncInvitesRendered = true;
+                this.paintSyncInvites();
+                this.paintSyncInviteBatch();
+            } catch (error) {
+                this.syncInvitesRendered = false;
+                list.innerHTML = `<p class="fav-hint">邀请码读取失败：${this.esc(error.message)}</p>
+                    <button type="button" class="btn btn-sm" data-action="retry-invites">重试</button>`;
+            }
+        }
+
+        /** 邀请码列表 + 计数行 + 分页（**不发请求**）。 */
         paintSyncInvites() {
             const list = $('#syncInviteList');
+            const page = this.syncInvitePage || { total: 0, offset: 0, limit: SYNC_PAGE_SIZE };
+            const counts = this.syncInviteCounts;
+            const countRow = $('#syncInviteCounts');
+            if (countRow) {
+                // 计数行说的是**全实例**的四个数（服务端的 counts），不是本页——
+                // 否则「已使用 0 张」会在翻到第 2 页时凭空变出来。
+                countRow.textContent = counts
+                    ? `未使用 ${counts.unused} 张 · 已使用 ${counts.used} 张 · 已过期 ${counts.expired} 张 · 已撤销 ${counts.revoked} 张`
+                    : '';
+            }
+            const pager = $('#syncInvitePager');
+            if (pager) {
+                const perPage = page.limit || SYNC_PAGE_SIZE;
+                // 一页装得下就不画上一页/下一页：只有几张码时那行是纯噪音。
+                pager.hidden = page.total <= perPage;
+                pager.innerHTML = `<button type="button" class="btn btn-sm" data-action="invites-prev" ${page.offset <= 0 ? 'disabled' : ''}>上一页</button>
+                    <span class="sync-pager-page">第 ${Math.floor(page.offset / perPage) + 1} / ${Math.max(1, Math.ceil(page.total / perPage))} 页</span>
+                    <button type="button" class="btn btn-sm" data-action="invites-next" ${page.offset + perPage >= page.total ? 'disabled' : ''}>下一页</button>`;
+            }
             if (!list) return;
             const invites = this.syncInvites || [];
             if (!invites.length) {
-                list.innerHTML = '<p class="fav-hint">还没有邀请码。生成一张发给要创建空间的人。</p>';
+                const filtered = this.syncInvitesFilter && this.syncInvitesFilter.state !== 'all';
+                list.innerHTML = `<p class="fav-hint">${filtered ? '这个状态下没有邀请码。' : '还没有邀请码。生成一批发给要创建空间的人。'}</p>`;
+                this.updateSyncInviteBulk();
                 return;
             }
             list.innerHTML = invites.map(invite => {
@@ -1907,34 +1968,168 @@
                             : `有效至 ${this.esc(new Date(invite.expiresAt).toLocaleString())}`;
                 const action = stale ? ''
                     : `<button type="button" class="btn btn-sm" data-action="revoke-invite" data-id="${this.esc(invite.id)}">撤销</button>`;
+                // 只有**未使用且未过期**的能批量撤销（服务端的 WHERE 也是这个判据），
+                // 其余行的复选框直接禁用——点得动却撤不掉是最糟的一种界面。
+                const selectable = invite.state === 'unused';
                 return `<div class="sync-invite-row${stale ? ' is-stale' : ''}">
-                    <code>${this.esc(invite.hint)}…</code>
+                    <input type="checkbox" data-select-invite="${this.esc(invite.id)}" aria-label="选择邀请码 ${this.esc(invite.hint)}" ${selectable ? '' : 'disabled'} ${this.syncInviteSelected.has(String(invite.id)) ? 'checked' : ''}>
+                    <code>${this.esc(invite.hint)}-····-…</code>
                     <span class="sync-invite-state">${state}</span>${action}
                 </div>`;
             }).join('');
+            this.updateSyncInviteBulk();
         }
 
-        async createSyncInvite() {
+        /** 勾选一张邀请码（复选框的 change 事件，走委托）。 */
+        toggleSyncInviteSelection(id, checked) {
+            const key = String(id || '');
+            if (!key) return;
+            if (checked) this.syncInviteSelected.add(key); else this.syncInviteSelected.delete(key);
+            this.updateSyncInviteBulk();
+        }
+
+        /** 「撤销选中」按钮：选中 0 张时禁用，并说出选了几张。 */
+        updateSyncInviteBulk() {
+            const button = $('#revokeSelectedInvites');
+            if (!button) return;
+            const count = this.syncInviteSelected.size;
+            button.disabled = count === 0;
+            button.textContent = count ? `撤销选中（${count}）` : '撤销选中';
+        }
+
+        /**
+         * 本次要生成的张数：下拉的预设值，或「自定义…」输入框里的数字。
+         *
+         * 上限 (`SYNC_INVITE_BATCH_MAX` = 20) **在界面就拦**并说清为什么——让用户
+         * 按一次得到一个说明，比让接口回 400 再由 toast 转述要好（也更早知道
+         * 该分几次）。真正的判据仍在服务端：这里挡不住 curl。
+         */
+        syncInviteBatchCount() {
+            const select = $('#syncInviteCount');
+            const custom = $('#syncInviteCustomCount');
+            const preset = select ? select.value : '10';
+            const raw = preset === 'custom' ? (custom ? custom.value : '') : preset;
+            const count = Number(String(raw).trim());
+            if (!Number.isInteger(count) || count < 1) {
+                return { ok: false, reason: `请填写要生成的张数（1–${SYNC_INVITE_BATCH_MAX}）` };
+            }
+            if (count > SYNC_INVITE_BATCH_MAX) {
+                return { ok: false, reason: `单次最多生成 ${SYNC_INVITE_BATCH_MAX} 张，请分几次生成` };
+            }
+            return { ok: true, count };
+        }
+
+        /** 结果区/工具栏里的错误行（就地说明，不用 toast——用户要能边看边改）。 */
+        showSyncInviteError(message) {
+            const host = $('#syncInviteError');
+            if (!host) return;
+            host.textContent = message || '';
+            host.hidden = !message;
+        }
+
+        /** 批量生成。码只出现在响应里一次，所以结果区必须当场把它画出来。 */
+        async createSyncInvites() {
+            const target = this.syncInviteBatchCount();
+            if (!target.ok) { this.showSyncInviteError(target.reason); return; }
             const button = $('#createInviteBtn');
-            if (button) button.disabled = true;
+            this.showSyncInviteError('');
+            if (button) { button.disabled = true; button.textContent = '生成中…'; }
             try {
-                const result = await API.post('/api/admin/sync-invites', {});
-                this.syncInvites = null;
+                const result = await API.post('/api/admin/sync-invites/batch', { count: target.count });
+                this.syncInviteBatch = result.invites || [];
+                this.paintSyncInviteBatch();
+                // 新码排在最前：回到第一页重新拉一次。列表里的每一行只有 hint，
+                // 靠它核对不了「刚生成的这批」，所以结果区才是唯一的交付物。
+                this.syncInvitesFilter.offset = 0;
                 await this.renderSyncInvites();
-                const issued = $('#inviteIssued');
-                if (issued) issued.textContent = `新邀请码：${result.invite.code}（48 小时内有效，只显示这一次）`;
-                this.showToast('已生成邀请码，请复制后发给用户');
+                this.showToast(`已生成 ${this.syncInviteBatch.length} 张邀请码`);
             } catch (error) {
-                this.showToast('生成邀请码失败：' + error.message, 'error');
+                this.showSyncInviteError('生成失败：' + error.message);
             } finally {
-                if (button) button.disabled = false;
+                if (button) { button.disabled = false; button.textContent = '批量生成'; }
             }
         }
 
+        /** 本次生成的结果区：只显示这一次（面板重建即清空，见 renderAdminPanel）。 */
+        paintSyncInviteBatch() {
+            const host = $('#syncInviteBatch');
+            if (!host) return;
+            const batch = this.syncInviteBatch || [];
+            if (!batch.length) { host.hidden = true; host.innerHTML = ''; return; }
+            host.hidden = false;
+            host.innerHTML = `<p class="sync-banner">本次生成 <strong>${batch.length}</strong> 张。现在复制或下载，关闭这一页后无法再查看。</p>
+                <div class="sync-toolbar">
+                    <button type="button" class="btn btn-sm" data-action="copy-invite-batch">复制全部</button>
+                    <button type="button" class="btn btn-sm" data-action="download-invite-batch">下载 .txt</button>
+                </div>
+                <div class="sync-codes">${batch.map(invite => `<div class="sync-code"><code>${this.esc(invite.code)}</code><small>${this.esc(new Date(invite.expiresAt).toLocaleString())} 到期</small></div>`).join('')}</div>`;
+        }
+
+        /** 纯文本形状（复制与下载共用一份）：每行「码 + 到期时间」。 */
+        syncInviteBatchText() {
+            const batch = this.syncInviteBatch || [];
+            const head = `Sylph 同步空间邀请码（${batch.length} 张，48 小时内有效，每张只能创建一个空间）`;
+            return [head, ...batch.map(invite => `${invite.code}\t${new Date(invite.expiresAt).toLocaleString()} 到期`)].join('\n');
+        }
+
+        async copySyncInviteBatch() {
+            const text = this.syncInviteBatchText();
+            try {
+                if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('当前浏览器不允许写入剪贴板');
+                await navigator.clipboard.writeText(text);
+                this.showToast('已复制全部邀请码');
+            } catch (error) {
+                this.showToast('复制失败，请手动选中文本：' + error.message, 'error');
+            }
+        }
+
+        downloadSyncInviteBatch() {
+            const blob = new Blob([this.syncInviteBatchText()], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `sync-invites-${new Date().toISOString().slice(0, 10)}.txt`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            // 立刻 revoke 会让部分浏览器在下载开始前就丢掉 blob，下一拍再回收。
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+            this.showToast('已下载邀请码文件');
+        }
+
+        /**
+         * 批量撤销选中的邀请码。
+         *
+         * 只撤「未使用且未过期」的那几张——判据在服务端的 WHERE 里（先查后写会在
+         * 两个管理员同时点的时候漏判），界面这里只保证**送上去的是选中的 id**，
+         * 并把服务端回的**实际改动行数**说出来，而不是「选了几张就说撤了几张」。
+         */
+        async revokeSelectedInvites() {
+            const ids = [...this.syncInviteSelected];
+            if (!ids.length) return;
+            if (!await this.confirmAction(`撤销选中的 ${ids.length} 张邀请码？只有尚未使用、尚未过期的会被撤销。`, '撤销邀请码', true)) return;
+            const button = $('#revokeSelectedInvites');
+            if (button) button.disabled = true;
+            try {
+                const result = await API.post('/api/admin/sync-invites/revoke', { ids });
+                this.syncInviteSelected.clear();
+                await this.renderSyncInvites();
+                const revoked = Number(result && result.revoked) || 0;
+                this.showToast(revoked === ids.length
+                    ? `已撤销 ${revoked} 张邀请码`
+                    : `已撤销 ${revoked} 张（其余 ${ids.length - revoked} 张已被使用或过期）`);
+            } catch (error) {
+                this.showToast('批量撤销失败：' + error.message, 'error');
+            } finally {
+                this.updateSyncInviteBulk();
+            }
+        }
+
+        /** 单张撤销（既有能力保留）：列表每行那个「撤销」。 */
         async revokeSyncInvite(id) {
             try {
                 await API.post(`/api/admin/sync-invites/${encodeURIComponent(id)}/revoke`, {});
-                this.syncInvites = null;
+                this.syncInviteSelected.delete(String(id));
                 await this.renderSyncInvites();
                 this.showToast('邀请码已撤销');
             } catch (error) {
@@ -1942,7 +2137,7 @@
             }
         }
 
-        // ---- 管理员：同步空间治理 ----
+        // ---- 管理员：同步管理的空间治理 ----
         //
         // 三条纪律，与邀请码那一块同款：
         //   ① **只显示非敏感项**（标识、状态、体积、版本、代次、活跃设备数、时间）。
@@ -1955,63 +2150,206 @@
         //   ③ **重渲染只重画，不重复拉接口**：每次配置保存引起的重渲染都会再打一次
         //      管理接口，攒进同一个限流桶（邀请码那块踩过，这里有断言钉着）。
 
+        /** 空间列表的查询串：只带非默认值，「全部状态 / 最近更新 / 第 1 页」的 URL 最短。 */
+        syncSpacesQuery() {
+            const filter = this.syncSpacesFilter || { q: '', state: 'all', sort: 'updated', offset: 0, limit: SYNC_PAGE_SIZE };
+            const params = [];
+            if (filter.q) params.push(`q=${encodeURIComponent(filter.q)}`);
+            if (filter.state && filter.state !== 'all') params.push(`state=${encodeURIComponent(filter.state)}`);
+            if (filter.sort && filter.sort !== 'updated') params.push(`sort=${encodeURIComponent(filter.sort)}`);
+            if (filter.offset > 0) params.push(`offset=${filter.offset}`);
+            params.push(`limit=${filter.limit || SYNC_PAGE_SIZE}`);
+            return `?${params.join('&')}`;
+        }
+
         async renderSyncSpaces() {
             const list = $('#syncSpacesList');
             if (!list) return;
             try {
-                // 列表与策略在**同一个响应**里（服务端一次查全）：面板每打开一次就会
-                // 重画这两块，分两条 GET 等于每次打开多打一条管理接口，而管理桶只有
-                // 30 次/分钟——本仓库已经因为「渲染里顺手预取」撞过 429。
-                const data = await API.get('/api/admin/sync-spaces');
+                // 列表、策略、用量都在**同一个响应**里（服务端一次查全）：面板每打开一次
+                // 就会重画这三块，分成几条 GET 等于每次打开多打几条管理接口，而管理桶
+                // 只有 30 次/分钟——本仓库已经因为「渲染里顺手预取」撞过 429。
+                const url = '/api/admin/sync-spaces' + this.syncSpacesQuery();
+                const data = await API.get(url);
                 this.syncSpaces = data.spaces || [];
-                this.syncUsage = data.usage || { spaces: 0, bytes: 0 };
+                this.syncSpacesPage = data.page || { total: this.syncSpaces.length, offset: 0, limit: SYNC_PAGE_SIZE };
+                this.syncUsage = data.usage || { spaces: 0, bytes: 0, devices: 0 };
                 this.syncPolicy = data.settings || { creatingPaused: false, syncPaused: false };
                 this.syncSpacesRendered = true;
+                // 页码越界（删掉/筛掉最后一页的唯一一行之后）回退一页再拉一次。
+                // 只重试一次：再错就是服务端的事，不能在这里转圈。
+                const page = this.syncSpacesPage;
+                if (!this.syncSpacesClamping && page.total > 0 && page.offset >= page.total) {
+                    const perPage = page.limit || SYNC_PAGE_SIZE;
+                    this.syncSpacesFilter.offset = Math.max(0, (Math.ceil(page.total / perPage) - 1) * perPage);
+                    this.syncSpacesClamping = true;
+                    try { await this.renderSyncSpaces(); } finally { this.syncSpacesClamping = false; }
+                    return;
+                }
+                // 勾选集只保留本页还在的行：翻页/筛选后残留的 id 会让「批量停用」
+                // 对着看不见的行下手。
+                const visible = new Set(this.syncSpaces.map(space => String(space.id)));
+                for (const id of [...this.syncSpacesSelected]) if (!visible.has(id)) this.syncSpacesSelected.delete(id);
                 // ⚠️ 开关必须**在这之后**重画：面板渲染那一刻 `renderSyncSpaces()` 还在
                 // 飞，`syncPolicy` 还是空的，`paintSyncPolicy()` 会直接返回——只画列表
                 // 不画开关，症状是「上次开过总暂停，这次打开面板却看着是关的」。
                 this.paintSyncPolicy();
+                this.paintSyncOverview();
                 this.paintSyncSpaces();
             } catch (error) {
+                this.syncSpacesRendered = false;
                 list.innerHTML = `<p class="fav-hint">同步空间读取失败：${this.esc(error.message)}</p>
                     <button type="button" class="btn btn-sm" data-action="retry-spaces">重试</button>`;
             }
         }
 
-        /** 只重画两块（列表 + 两个总开关），**不发请求**。 */
+        /** 体积按 KiB/MiB 说——管理员关心的是「谁占了大头」，不是精确到字节。 */
+        syncBytes(bytes) {
+            const value = Number(bytes) || 0;
+            if (value < 1024) return `${value} B`;
+            if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+            return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
+        }
+
+        /** 概览四块：空间总数 / 全实例有效配置字节 / 活跃设备数 / 同步服务状态。 */
+        paintSyncOverview() {
+            const host = $('#syncOverview');
+            if (!host) return;
+            const usage = this.syncUsage || { spaces: 0, bytes: 0, devices: 0 };
+            const policy = this.syncPolicy || { creatingPaused: false, syncPaused: false };
+            // 三种状态分开说：只暂停新建与总暂停看起来都是「没在新建」。
+            const status = policy.syncPaused ? '已暂停' : policy.creatingPaused ? '暂停新建' : '正常';
+            host.innerHTML = `
+                <div class="sync-stat"><b>${Number(usage.spaces) || 0}</b><span>空间总数（上限 1000）</span></div>
+                <div class="sync-stat"><b>${this.syncBytes(usage.bytes)}</b><span>全实例有效配置字节</span></div>
+                <div class="sync-stat"><b>${Number(usage.devices) || 0}</b><span>活跃设备数</span></div>
+                <div class="sync-stat"><b>${this.esc(status)}</b><span>同步服务状态</span></div>`;
+        }
+
+        /** 只重画空间列表（表格 + 勾选 + 计数行 + 翻页），**不发请求**。 */
         paintSyncSpaces() {
             const list = $('#syncSpacesList');
             if (!list) return;
-            const usage = this.syncUsage || { spaces: 0, bytes: 0 };
             const spaces = this.syncSpaces || [];
-            // 体积按 KiB/MiB 说——管理员关心的是「谁占了大头」，不是精确到字节。
-            const size = (bytes) => {
-                const value = Number(bytes) || 0;
-                if (value < 1024) return `${value} B`;
-                if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-                return `${(value / (1024 * 1024)).toFixed(2)} MiB`;
-            };
-            const head = `<p class="fav-hint">共 ${usage.spaces} 个空间，合计 ${size(usage.bytes)}。</p>`;
+            const page = this.syncSpacesPage || { total: spaces.length, offset: 0, limit: SYNC_PAGE_SIZE };
+            const filter = this.syncSpacesFilter || {};
+            const perPage = page.limit || SYNC_PAGE_SIZE;
+            const from = page.total === 0 ? 0 : page.offset + 1;
+            const to = Math.min(page.offset + spaces.length, page.total);
+            const selected = this.syncSpacesSelected;
             if (!spaces.length) {
-                list.innerHTML = `${head}<p class="fav-hint">还没有任何云端空间。</p>`;
-                return;
+                // 空态分两种：搜出来是空的，与一个空间都还没有——后者要告诉用户下一步。
+                const empty = filter.q
+                    ? `没有匹配「${this.esc(filter.q)}」的空间`
+                    : '还没有任何云端空间。管理员发放邀请码后，访客创建的空间会出现在这里。';
+                list.innerHTML = `<div class="sync-empty">${empty}</div>`;
+            } else {
+                const label = space => String(space.id).slice(0, 8);
+                list.innerHTML = `<table class="sync-table">
+                    <thead><tr>
+                        <th><input type="checkbox" id="syncSpacesSelectAll" aria-label="全选本页"></th>
+                        <th>标识</th><th>状态</th><th>体积</th><th>版本</th><th>代次</th><th>设备</th><th>创建</th><th>最近更新</th><th>操作</th>
+                    </tr></thead>
+                    <tbody>${spaces.map(space => {
+                        const id = String(space.id);
+                        const state = space.deleted ? '已删除'
+                            : space.disabled ? '已停用'
+                                : '正常';
+                        const mark = space.deleted ? 'is-gone' : space.disabled ? 'is-stale' : '';
+                        // 已删除的墓碑只留作记录（还能看出它曾经存在），不再给操作按钮。
+                        const actions = space.deleted ? ''
+                            : `<button type="button" class="btn btn-sm" data-action="toggle-space" data-id="${this.esc(id)}" data-disabled="${space.disabled ? '0' : '1'}">${space.disabled ? '重新启用' : '停用'}</button>
+                               <button type="button" class="btn btn-sm btn-danger" data-action="delete-space" data-id="${this.esc(id)}">删除</button>`;
+                        return `<tr class="sync-space-row ${mark}">
+                            <td><input type="checkbox" data-select-space="${this.esc(id)}" aria-label="选择空间 ${this.esc(label(space))}" ${space.deleted ? 'disabled' : ''} ${selected.has(id) ? 'checked' : ''}></td>
+                            <td><code>${this.esc(label(space))}</code></td>
+                            <td><span class="sync-space-state">${state}</span></td>
+                            <td class="num">${space.contentBytes ? this.syncBytes(space.contentBytes) : '—'}</td>
+                            <td class="num">${space.revision}</td>
+                            <td class="num">${space.generation}</td>
+                            <td class="num">${space.activeDevices}</td>
+                            <td>${this.esc(this.syncRelTime(space.createdAt))}</td>
+                            <td><span class="sync-space-time">${this.esc(this.syncRelTime(space.updatedAt))}</span></td>
+                            <td>${actions}</td>
+                        </tr>`;
+                    }).join('')}</tbody>
+                </table>`;
             }
-            list.innerHTML = head + spaces.map(space => {
-                const state = space.deleted ? '已删除'
-                    : space.disabled ? '已停用'
-                        : '正常';
-                const mark = space.deleted ? 'is-gone' : space.disabled ? 'is-stale' : '';
-                // 已删除的墓碑只留作记录（还能看出它曾经存在），不再给操作按钮。
-                const actions = space.deleted ? ''
-                    : `<button type="button" class="btn btn-sm" data-action="toggle-space" data-id="${this.esc(space.id)}" data-disabled="${space.disabled ? '0' : '1'}">${space.disabled ? '重新启用' : '停用'}</button>
-                       <button type="button" class="btn btn-sm btn-danger" data-action="delete-space" data-id="${this.esc(space.id)}">删除</button>`;
-                return `<div class="sync-space-row ${mark}">
-                    <code>${this.esc(String(space.id).slice(0, 8))}</code>
-                    <span class="sync-space-state">${state} · ${size(space.contentBytes)} · 版本 ${space.revision} · 代次 ${space.generation} · ${space.activeDevices} 台设备</span>
-                    <span class="sync-space-time">${this.esc(this.syncRelTime(space.updatedAt))}</span>
-                    ${actions}
-                </div>`;
-            }).join('');
+            // 计数行一直说「第 X–Y 条，共 N 条」；上一页/下一页只在真的分页时才出现
+            // （只有几个空间时那一行是噪音）。
+            const summary = $('#syncSpacesSummary');
+            if (summary) summary.textContent = page.total ? `第 ${from}–${to} 条，共 ${page.total} 条` : '共 0 条';
+            const pager = $('#syncSpacesPager');
+            if (pager) {
+                const pages = Math.max(1, Math.ceil(page.total / perPage));
+                pager.hidden = page.total <= perPage;
+                pager.innerHTML = `<button type="button" class="btn btn-sm" data-action="spaces-prev" ${page.offset <= 0 ? 'disabled' : ''}>上一页</button>
+                    <span class="sync-pager-page">第 ${Math.floor(page.offset / perPage) + 1} / ${pages} 页</span>
+                    <button type="button" class="btn btn-sm" data-action="spaces-next" ${to >= page.total ? 'disabled' : ''}>下一页</button>`;
+            }
+            this.paintSyncSpacesBulk();
+        }
+
+        /** 批量停用的按钮态与「全选本页」的勾选态（不发请求）。 */
+        paintSyncSpacesBulk() {
+            const button = $('#disableSelectedSpaces');
+            const count = this.syncSpacesSelected.size;
+            if (button) {
+                button.disabled = count === 0;
+                button.textContent = count ? `批量停用（${count}）` : '批量停用';
+            }
+            const all = $('#syncSpacesSelectAll');
+            if (all) {
+                const selectable = (this.syncSpaces || []).filter(space => !space.deleted);
+                all.checked = selectable.length > 0 && selectable.every(space => this.syncSpacesSelected.has(String(space.id)));
+            }
+            const hint = $('#syncSpacesSelection');
+            if (hint) hint.textContent = count ? `已选 ${count} 个` : '';
+        }
+
+        toggleSyncSpaceSelection(id, checked) {
+            const key = String(id || '');
+            if (!key) return;
+            if (checked) this.syncSpacesSelected.add(key); else this.syncSpacesSelected.delete(key);
+            this.paintSyncSpacesBulk();
+        }
+
+        /** 「全选本页」：只勾得上本页里**没被删除**的那些（墓碑没有可批量做的动作）。 */
+        toggleAllSyncSpaces(checked) {
+            this.syncSpacesSelected.clear();
+            if (checked) {
+                for (const space of this.syncSpaces || []) {
+                    if (!space.deleted) this.syncSpacesSelected.add(String(space.id));
+                }
+            }
+            this.paintSyncSpaces();
+        }
+
+        /**
+         * 批量停用。
+         *
+         * 服务端只有**单条**停用接口（没有批量端点），所以这里逐个 POST。刻意逐条：
+         * 一条失败不该让其余几条静默作罢——每一条各自报错、各自计数，最后说清成功了几个。
+         * **不提供批量删除**：删除不可撤销，逐个确认是这一组的底线。
+         */
+        async disableSelectedSyncSpaces() {
+            const ids = [...this.syncSpacesSelected];
+            if (!ids.length) return;
+            if (!await this.confirmAction(`停用选中的 ${ids.length} 个空间？它们上面的设备会立刻进入停用态，随时可以重新启用。`, '批量停用')) return;
+            const button = $('#disableSelectedSpaces');
+            if (button) button.disabled = true;
+            let done = 0;
+            for (const id of ids) {
+                try {
+                    await API.post(`/api/admin/sync-spaces/${encodeURIComponent(id)}/disable`, { disabled: true });
+                    done++;
+                } catch (error) {
+                    this.showToast('停用失败：' + error.message, 'error');
+                }
+            }
+            this.syncSpacesSelected.clear();
+            await this.renderSyncSpaces();
+            if (done) this.showToast(`已停用 ${done} 个空间`);
         }
 
         /** 总开关的勾选态与说明行。**两个开关各自独立**（暂停新建只挡新空间）。 */
@@ -2030,6 +2368,9 @@
                 : policy.creatingPaused
                     ? '已暂停新建：不能再创建新空间，已有空间照常同步。'
                     : '';
+            // 总暂停是「整台服务的读写都停了」，比「暂停新建」重一档：说这句话的那一行
+            // 要显眼（照样例的红字），否则它读起来像一条普通提示。
+            hint.classList.toggle('is-warn', !!policy.syncPaused);
         }
 
         /**
@@ -2049,6 +2390,7 @@
                 const result = await API.post('/api/admin/sync-settings', body);
                 this.syncPolicy = result.settings;
                 this.paintSyncPolicy();
+                this.paintSyncOverview();   // 概览里的「同步服务状态」跟着变
                 this.showToast('同步策略已保存');
             } catch (error) {
                 this.paintSyncPolicy();   // 回滚成内存里的（服务端确认过的）值
@@ -7082,14 +7424,14 @@
             if (panel === 'modules' && !this.modulesEditorRendered) {
                 this.renderModulesEditor();
             }
-            // 「邀请码」只在首次进入站点分区时拉一次，之后重画缓存——
+            // 「邀请码」只在首次进入**同步管理**分区时拉一次，之后重画缓存——
             // 把它挂在 renderAdminPanel 里拉取的话，每次配置保存引起的重渲染
             // 都会再打一次接口，攒进同一个限流桶。
-            if (panel === 'site' && !this.syncInvitesRendered) this.renderSyncInvites();
+            if (panel === 'sync' && !this.syncInvitesRendered) this.renderSyncInvites();
             // 「同步空间治理」同理，但**闩锁是独立的一只**：两块共用一只的话，
             // 邀请码块的失败路径会把治理块一起标成「已渲染」，那一块就永远停在
             // 「加载中…」上（这正是 `syncSpacesRendered` 单独存在的原因）。
-            if (panel === 'site' && !this.syncSpacesRendered) this.renderSyncSpaces();
+            if (panel === 'sync' && !this.syncSpacesRendered) this.renderSyncSpaces();
             // 「收藏夹」同理：管理器只在首次进入分区时渲染，
             // 之后切走切回保留现场（当前分类、搜索词、勾选都在）。
             if (panel === 'fav' && !this.favManagerRendered) {
@@ -7522,6 +7864,7 @@
                     <button type="button" class="admin-tab" role="tab" id="adminTabSite" aria-controls="adminPanelSite" aria-selected="false" tabindex="-1" data-panel="site">首页导航</button>
                     <button type="button" class="admin-tab" role="tab" id="adminTabFav" aria-controls="adminPanelFav" aria-selected="false" tabindex="-1" data-panel="fav">收藏夹</button>
                     <button type="button" class="admin-tab" role="tab" id="adminTabModules" aria-controls="adminPanelModules" aria-selected="false" tabindex="-1" data-panel="modules">模块</button>
+                    <button type="button" class="admin-tab" role="tab" id="adminTabSync" aria-controls="adminPanelSync" aria-selected="false" tabindex="-1" data-panel="sync">同步管理</button>
                     <button type="button" class="admin-tab" role="tab" id="adminTabAccount" aria-controls="adminPanelAccount" aria-selected="false" tabindex="-1" data-panel="account">账户与备份</button>
                 </div>
                 <div class="admin-panels">
@@ -7582,37 +7925,6 @@
                         </div>
                     </div>
                 </div>
-                <div class="section" id="syncInvitesSection">
-                    <div class="section-title">同步空间邀请码</div>
-                    <p class="fav-hint">邀请码用于让访客创建新的云端空间：一次性、48 小时后失效、可撤销。已有空间的其他设备连接时不需要邀请码。</p>
-                    <div class="sync-invite-actions">
-                        <button type="button" class="btn btn-sm btn-primary" id="createInviteBtn">生成邀请码</button>
-                        <span class="sync-invite-issued" id="inviteIssued" role="status" aria-live="polite"></span>
-                    </div>
-                    <div class="sync-invite-list" id="syncInviteList"><p class="fav-hint">加载中…</p></div>
-                </div>
-                <div class="section" id="syncSpacesSection">
-                    <div class="section-title">同步空间治理</div>
-                    <p class="fav-hint">这里只能看到空间的内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
-                    <div class="sync-policy-row">
-                        <label class="sync-policy-item">
-                            <span>暂停新建</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="syncCreatingPaused">
-                                <span class="toggle-slider"></span>
-                            </div>
-                        </label>
-                        <label class="sync-policy-item">
-                            <span>总暂停</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="syncTotalPaused">
-                                <span class="toggle-slider"></span>
-                            </div>
-                        </label>
-                    </div>
-                    <p class="fav-hint" id="syncPolicyHint"></p>
-                    <div class="sync-invite-list" id="syncSpacesList"><p class="fav-hint">加载中…</p></div>
-                </div>
                 <div class="section section-collapsible">
                     <button type="button" class="section-header" aria-expanded="false" aria-controls="enginesSection" onclick="app.toggleSection('engines')">
                         <span class="section-title">搜索引擎</span>
@@ -7649,6 +7961,91 @@
                     <div id="modulesEditor">
                         <div class="webdav-loading">加载中...</div>
                     </div>
+                </div>
+                </div>
+                <div class="admin-panel" role="tabpanel" id="adminPanelSync" aria-labelledby="adminTabSync" hidden>
+                <div class="section">
+                    <div class="section-title">同步概览</div>
+                    <div class="sync-overview" id="syncOverview">
+                        <div class="sync-stat"><b>—</b><span>空间总数（上限 1000）</span></div>
+                        <div class="sync-stat"><b>—</b><span>全实例有效配置字节</span></div>
+                        <div class="sync-stat"><b>—</b><span>活跃设备数</span></div>
+                        <div class="sync-stat"><b>—</b><span>同步服务状态</span></div>
+                    </div>
+                    <div class="sync-policy-row">
+                        <label class="sync-policy-item">
+                            <span>暂停新建</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="syncCreatingPaused">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                        <label class="sync-policy-item">
+                            <span>总暂停</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="syncTotalPaused">
+                                <span class="toggle-slider"></span>
+                            </div>
+                        </label>
+                        <span class="sync-toolbar-note">开关勾选即保存</span>
+                    </div>
+                    <p class="fav-hint" id="syncPolicyHint"></p>
+                </div>
+                <div class="section" id="syncInvitesSection">
+                    <div class="section-title">邀请码</div>
+                    <p class="fav-hint">一次可生成多张；码只显示这一次，离开就再也看不到。已有空间的其他设备连接时不需要邀请码。</p>
+                    <div class="sync-toolbar">
+                        <select id="syncInviteCount" aria-label="生成数量">
+                            <option value="1">1 张</option>
+                            <option value="5">5 张</option>
+                            <option value="10" selected>10 张</option>
+                            <option value="custom">自定义…</option>
+                        </select>
+                        <input type="number" id="syncInviteCustomCount" min="1" max="20" step="1" value="20" hidden aria-label="自定义张数">
+                        <button type="button" class="btn btn-sm btn-primary" id="createInviteBtn">批量生成</button>
+                        <span class="sync-toolbar-note">48 小时有效 · 每张只能建一个空间 · 单次最多 20 张</span>
+                    </div>
+                    <p class="sync-error" id="syncInviteError" hidden></p>
+                    <div id="syncInviteBatch" hidden></div>
+                    <div class="sync-toolbar">
+                        <select id="syncInviteState" aria-label="邀请码状态">
+                            <option value="all">全部</option>
+                            <option value="unused">未使用</option>
+                            <option value="used">已使用</option>
+                            <option value="expired">已过期</option>
+                            <option value="revoked">已撤销</option>
+                        </select>
+                        <button type="button" class="btn btn-sm" id="revokeSelectedInvites" disabled>撤销选中</button>
+                        <span class="sync-toolbar-note" id="syncInviteCounts"></span>
+                    </div>
+                    <div class="sync-invite-list" id="syncInviteList"><p class="fav-hint">加载中…</p></div>
+                    <div class="sync-pager" id="syncInvitePager" hidden></div>
+                </div>
+                <div class="section" id="syncSpacesSection">
+                    <div class="section-title">同步空间治理</div>
+                    <p class="fav-hint">这里只能看到空间的内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
+                    <div class="sync-toolbar">
+                        <input type="search" id="syncSpaceSearch" placeholder="搜索空间标识（前 8 位即可）" aria-label="搜索空间标识">
+                        <select id="syncSpaceState" aria-label="空间状态">
+                            <option value="all">全部状态</option>
+                            <option value="active">正常</option>
+                            <option value="disabled">已停用</option>
+                            <option value="deleted">已删除</option>
+                        </select>
+                        <select id="syncSpaceSort" aria-label="排序">
+                            <option value="updated">最近更新</option>
+                            <option value="bytes">体积</option>
+                            <option value="devices">设备数</option>
+                        </select>
+                    </div>
+                    <div class="sync-toolbar">
+                        <button type="button" class="btn btn-sm" id="disableSelectedSpaces" disabled>批量停用</button>
+                        <span class="sync-toolbar-note" id="syncSpacesSelection"></span>
+                        <span class="sync-toolbar-note" id="syncSpacesSummary"></span>
+                    </div>
+                    <div class="sync-space-host" id="syncSpacesList"><p class="fav-hint">加载中…</p></div>
+                    <div class="sync-pager" id="syncSpacesPager" hidden></div>
+                    <p class="fav-hint">删除空间是不可撤销的（墓碑只留痕，内容已清空）。批量停用可以，批量删除不提供。</p>
                 </div>
                 </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelAccount" aria-labelledby="adminTabAccount" hidden>
@@ -7704,6 +8101,9 @@
             this.syncInvitesRendered = false;
             // 同步空间治理的闩锁同理（**独立的一只**：与邀请码块的失败路径互不牵连）。
             this.syncSpacesRendered = false;
+            // 批量生成的结果**只显示这一次**：面板一重建（关闭再打开）就丢掉——
+            // 「码只显示一次」的承诺不能靠一句提示，得靠它真的不在了。
+            this.syncInviteBatch = null;
             // 回到上次停留的分区，而不是每次都弹回第一个。
             // 收藏管理器渲染在「收藏夹」tab 内的 #favManagerHost，
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
@@ -7714,14 +8114,42 @@
             if (!this.template) this.loadTemplateEditor();
             else this.mountTemplateEditor();
             $('#templateEditBtn').onclick = () => this.templateSetMode('edit');
-            // 邀请码：生成按钮固定，列表里的「撤销 / 重试」用事件委托——
-            // 列表会整块重画，逐项挂 onclick 会在重画后全部丢掉。
-            $('#createInviteBtn').onclick = () => this.createSyncInvite();
+            // 邀请码：生成按钮固定，列表里的「撤销 / 重试」与结果区的「复制 / 下载」
+            // 用事件委托——两块都会整块重画，逐项挂 onclick 会在重画后全部丢掉。
+            $('#createInviteBtn').onclick = () => this.createSyncInvites();
             $('#syncInviteList').addEventListener('click', event => {
                 const action = event.target.dataset.action;
                 if (action === 'revoke-invite') return this.revokeSyncInvite(event.target.dataset.id);
                 if (action === 'retry-invites') { this.syncInvites = null; this.syncInvitesRendered = false; return this.renderSyncInvites(); }
             });
+            $('#syncInviteList').addEventListener('change', event => {
+                const id = event.target.dataset.selectInvite;
+                if (id) this.toggleSyncInviteSelection(id, event.target.checked);
+            });
+            $('#syncInviteBatch').addEventListener('click', event => {
+                const action = event.target.dataset.action;
+                if (action === 'copy-invite-batch') return this.copySyncInviteBatch();
+                if (action === 'download-invite-batch') return this.downloadSyncInviteBatch();
+            });
+            $('#syncInvitePager').addEventListener('click', event => {
+                const action = event.target.dataset.action;
+                const step = this.syncInvitesFilter.limit || SYNC_PAGE_SIZE;
+                if (action === 'invites-prev') { this.syncInvitesFilter.offset = Math.max(0, this.syncInvitesFilter.offset - step); return this.renderSyncInvites(); }
+                if (action === 'invites-next') { this.syncInvitesFilter.offset += step; return this.renderSyncInvites(); }
+            });
+            // 生成数量：选「自定义…」才露出数字框（上限由 syncInviteBatchCount 判）。
+            $('#syncInviteCount').onchange = event => {
+                const custom = $('#syncInviteCustomCount');
+                if (custom) custom.hidden = event.target.value !== 'custom';
+                this.showSyncInviteError('');
+            };
+            $('#syncInviteState').onchange = event => {
+                this.syncInvitesFilter.state = event.target.value;
+                this.syncInvitesFilter.offset = 0;
+                this.syncInviteSelected.clear();
+                this.renderSyncInvites();
+            };
+            $('#revokeSelectedInvites').onclick = () => this.revokeSelectedInvites();
             // 同步空间治理：两个总开关是固定控件，列表里的「停用 / 重新启用 / 删除」
             // 用事件委托——列表每次操作后整块重画，逐项挂 onclick 会在重画后全部丢掉。
             // 总开关的 `onchange` 必须**勾了即落盘**（`saveSyncPolicy`）：只改内存里的
@@ -7741,6 +8169,49 @@
             // 读的 `syncPolicy`）重画一次：模板里的 `checked` 是写死的，不重画的话
             // 「上次开过总暂停、这次打开面板却看着是关的」。
             this.paintSyncPolicy();
+            // 空间列表的复选框与「全选本页」走 change 委托（表格每次重画）。
+            $('#syncSpacesList').addEventListener('change', event => {
+                if (event.target.id === 'syncSpacesSelectAll') return this.toggleAllSyncSpaces(event.target.checked);
+                const id = event.target.dataset.selectSpace;
+                if (id) this.toggleSyncSpaceSelection(id, event.target.checked);
+            });
+            $('#syncSpacesPager').addEventListener('click', event => {
+                const action = event.target.dataset.action;
+                const step = this.syncSpacesFilter.limit || SYNC_PAGE_SIZE;
+                if (action === 'spaces-prev') { this.syncSpacesFilter.offset = Math.max(0, this.syncSpacesFilter.offset - step); return this.renderSyncSpaces(); }
+                if (action === 'spaces-next') { this.syncSpacesFilter.offset += step; return this.renderSyncSpaces(); }
+            });
+            // 控件初值跟随内存里的筛选状态：面板是新建的 DOM，select 与搜索框会回到
+            // 默认值，而列表可能还停在上次的筛选上——两者不一致，用户会以为筛选没生效。
+            $('#syncInviteState').value = this.syncInvitesFilter.state;
+            $('#syncSpaceState').value = this.syncSpacesFilter.state;
+            $('#syncSpaceSort').value = this.syncSpacesFilter.sort;
+            $('#syncSpaceSearch').value = this.syncSpacesFilter.q;
+            $('#disableSelectedSpaces').onclick = () => this.disableSelectedSyncSpaces();
+            // 搜索框按 300ms 防抖：每敲一个字就发一条 GET 会把管理桶（30 次/分钟）打满。
+            $('#syncSpaceSearch').oninput = event => {
+                const value = event.target.value.trim();
+                clearTimeout(this.syncSpacesSearchTimer);
+                this.syncSpacesSearchTimer = setTimeout(() => {
+                    this.syncSpacesFilter.q = value;
+                    this.syncSpacesFilter.offset = 0;
+                    this.syncSpacesSelected.clear();
+                    this.renderSyncSpaces();
+                }, 300);
+            };
+            $('#syncSpaceState').onchange = event => {
+                this.syncSpacesFilter.state = event.target.value;
+                this.syncSpacesFilter.offset = 0;
+                this.syncSpacesSelected.clear();
+                this.renderSyncSpaces();
+            };
+            $('#syncSpaceSort').onchange = event => {
+                this.syncSpacesFilter.sort = event.target.value;
+                this.syncSpacesFilter.offset = 0;
+                this.renderSyncSpaces();
+            };
+            this.paintSyncSpacesBulk();
+            this.paintSyncInviteBatch();
             $('#templateCancelBtn').onclick = () => this.templateCancel();
             $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
             $('#templatePublishBtn').onclick = () => this.templateSubmit(true);

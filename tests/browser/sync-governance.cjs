@@ -81,7 +81,13 @@ async function connect(p, inviteCode) {
     return spaceId;
 }
 
-/** 打开管理面板（如未登录先走真实登录），停在「首页导航」页签的同步空间治理区。 */
+/**
+ * 打开管理面板（如未登录先走真实登录），切到第 5 个页签「同步管理」。
+ *
+ * ⚠️ 同步相关的界面**不再在「首页导航」里**：概览（含两个总开关）、邀请码、空间治理
+ * 全在 `#adminPanelSync` 内。返回整个面板的 locator——旧版返回的是 `#syncSpacesSection`，
+ * 而两个总开关现在在概览区（治理区之前），拿那一块会点不到开关。
+ */
 async function adminPanel(p) {
     await p.locator('#adminBtn').click();
     if (await p.locator('.ui-dialog input[type="password"]').count()) {
@@ -89,8 +95,15 @@ async function adminPanel(p) {
         await p.locator('.ui-dialog button[type="submit"]').click();
     }
     await p.locator('#modal').waitFor({ state: 'visible' });
+    await p.locator('#adminTabSync').click();
     await p.locator('#syncSpacesSection').waitFor({ state: 'visible' });
-    return p.locator('#syncSpacesSection');
+    // 等这一页真的拉完：概览四块的「—」占位被真实数字换掉（列表、策略、用量来自
+    // 同一条 GET）。不等的话紧接着读勾选态会读到模板里的默认值（`checked` 是写死的）。
+    await p.waitForFunction(() => {
+        const overview = document.querySelector('#syncOverview');
+        return overview && !overview.textContent.includes('—');
+    }, null, { timeout: 15000 });
+    return p.locator('#adminPanelSync');
 }
 
 test('browser: 后台两个总开关勾了即落盘、刷新后仍生效，空间列表不泄露正文与凭据', async t => {
@@ -317,4 +330,88 @@ test('browser: 写满被拒时本机内容不丢、不排退避；精简后「�
     const recovered = await state(owner);
     assert.ok(!recovered.categories.includes('超限测试'), '精简后的内容已同步出去');
     assert.deepEqual(recovered.categories, categoriesBefore, '回到精简前的分类集合');
+});
+
+test('browser: 同步管理 tab —— 批量生成 20 张、状态筛选、搜索、批量停用、少量空间不显示分页', async t => {
+    const { app, browser, cookie } = await setup(t);
+    // 先造一个空间：治理列表里有东西可看、可勾、可停用。
+    const owner = await page(browser, app);
+    const spaceId = await connect(owner, await invite(app, cookie));
+
+    const admin = await page(browser, app);
+    const panel = await adminPanel(admin);
+
+    // ① 概览四块：空间总数 / 全实例有效配置字节 / 活跃设备数 / 同步服务状态
+    const overview = await panel.locator('#syncOverview').innerText();
+    assert.match(overview, /空间总数/, '概览有空间总数');
+    assert.match(overview, /全实例有效配置字节/, '概览有字节数');
+    assert.match(overview, /活跃设备数/, '概览有活跃设备数');
+    assert.match(overview, /同步服务状态/, '概览有服务状态');
+    // 字节按 KiB/MiB 说，不是一串原始字节
+    assert.match(overview, /\d+(\.\d+)? (B|KiB|MiB)/, '字节要格式化');
+
+    // ② 批量生成 20 张：下拉选「自定义…」→ 数字框填 20 → 生成。
+    //    ⚠️ 上限 20 是界面与服务端共同的数，这里就走边界值。
+    await panel.locator('#syncInviteCount').selectOption('custom');
+    await panel.locator('#syncInviteCustomCount').fill('20');
+    await panel.locator('#createInviteBtn').click();
+    await panel.locator('.sync-code').first().waitFor({ timeout: 15000 });
+    assert.equal(await panel.locator('.sync-code').count(), 20, '结果区出现 20 个码');
+    const firstCode = (await panel.locator('.sync-code code').first().innerText()).trim();
+    assert.match(firstCode, /^[0-9a-f]{4}(-[0-9a-f]{4}){5}$/, `完整码可读且是 6 段十六进制：${firstCode}`);
+    const batchText = await panel.locator('#syncInviteBatch').innerText();
+    assert.match(batchText, /本次生成/, '结果区说清是本次生成');
+    assert.match(batchText, /复制全部/, '有复制全部');
+    assert.match(batchText, /下载 \.txt/, '有下载 .txt');
+    assert.match(batchText, /到期/, '每张带到期时间');
+    // 结果区**只显示这一次**：关掉面板再打开就没了（走仓库自己的 closeAdmin，
+    // 与用户点「取消」/ 遮罩同一条路径）
+    await admin.evaluate(() => window.app.closeAdmin(true));
+    await admin.locator('#modal').waitFor({ state: 'hidden' });
+    const reopened = await adminPanel(admin);
+    assert.equal(await reopened.locator('.sync-code').count(), 0, '重开面板后结果区不再显示');
+
+    // ③ 状态筛选：未使用 / 已使用 各自成页，计数行来自服务端
+    await reopened.locator('#syncInviteState').selectOption('unused');
+    // 等列表**换成**筛选后的那一份（只等「有一行」会等到上一份，断言读到旧数据）
+    await admin.waitForFunction(() => /有效至/.test(document.querySelector('#syncInviteList').textContent || ''), null, { timeout: 10000 });
+    const unusedRows = await reopened.locator('.sync-invite-row').count();
+    assert.ok(unusedRows >= 20, `未使用筛选里至少有刚生成的 20 张（实际 ${unusedRows}）`);
+    assert.match(await reopened.locator('#syncInviteCounts').innerText(), /未使用 \d+ 张/, '计数行有未使用数');
+    assert.match(await reopened.locator('#syncInviteList').innerText(), /48|有效至/, '未使用的行显示有效期');
+    await reopened.locator('#syncInviteState').selectOption('used');
+    await admin.waitForFunction(() => /已使用/.test(document.querySelector('#syncInviteList').textContent || ''), null, { timeout: 10000 });
+    assert.match(await reopened.locator('#syncInviteList').innerText(), /已使用/, '已使用筛选里是已用的码');
+    await reopened.locator('#syncInviteState').selectOption('all');
+
+    // ④ 搜索：命中的那一行只剩自己；搜不到时给「没有匹配」空态
+    const prefix = spaceId.slice(0, 8);
+    await reopened.locator('#syncSpaceSearch').fill(prefix);
+    await admin.waitForFunction(id => document.querySelectorAll('#syncSpacesList tr.sync-space-row').length === 1, prefix, { timeout: 8000 });
+    assert.match(await reopened.locator('#syncSpacesList').innerText(), new RegExp(prefix), '搜到的是这个空间');
+    await reopened.locator('#syncSpaceSearch').fill('ffffffff');
+    await reopened.locator('#syncSpacesList .sync-empty').waitFor({ timeout: 8000 });
+    assert.match(await reopened.locator('#syncSpacesList').innerText(), /没有匹配「ffffffff」的空间/, '空态点名搜索词');
+    await reopened.locator('#syncSpaceSearch').fill('');
+    await admin.waitForFunction(id => [...document.querySelectorAll('#syncSpacesList tr.sync-space-row')]
+        .some(row => row.textContent.includes(id)), prefix, { timeout: 8000 });
+
+    // ⑤ 只有少量空间时**不显示**上一页/下一页（那一行是噪音）
+    assert.equal(await reopened.locator('#syncSpacesPager').isVisible(), false, '少量空间时不分页');
+    assert.match(await reopened.locator('#syncSpacesSummary').innerText(), /第 1–\d+ 条，共 \d+ 条/, '计数行仍然说清范围');
+
+    // ⑥ 批量停用：勾一行 → 批量停用 → 仓库自己的确认框 → 真的落到库里
+    await reopened.locator(`#syncSpacesList [data-select-space="${spaceId}"]`).check();
+    assert.equal(await reopened.locator('#disableSelectedSpaces').isEnabled(), true, '选中后批量停用可用');
+    await reopened.locator('#disableSelectedSpaces').click();
+    await admin.locator('.ui-dialog button[type="submit"]').click();
+    let disabledNow = false;
+    for (let i = 0; i < 20; i++) {
+        const list = await spaces(app, cookie);
+        const found = list.spaces.find(s => s.id === spaceId);
+        if (found && found.disabled) { disabledNow = true; break; }
+        await admin.waitForTimeout(150);
+    }
+    assert.equal(disabledNow, true, '批量停用要真的落到库里');
+    assert.equal(await reopened.locator('#disableSelectedSpaces').isEnabled(), false, '停用后勾选清空、按钮回到禁用');
 });

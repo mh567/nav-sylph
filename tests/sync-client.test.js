@@ -560,17 +560,25 @@ test('#10 的对话框与面板接线：新控件都有处理分支，没有孤�
 
 test('#10 的管理面板治理区：两个总开关勾了即落盘，列表操作走事件委托，且首次进分区才拉接口', () => {
     const code = stripComments(appSource);
-    // ① 渲染触发：只在「进入站点分区 且 还没渲染过」时拉一次，与邀请码块各自的闩锁分开。
-    assert.match(code, /if \(panel === 'site' && !this\.syncSpacesRendered\) this\.renderSyncSpaces\(\)/,
-        '进入站点分区要按闩锁拉一次（漏了就是永远停在「加载中…」）');
+    // ① 渲染触发：只在「进入同步管理分区 且 还没渲染过」时拉一次，与邀请码块各自的闩锁分开。
+    //    ⚠️ 判据是 `panel === 'sync'`：这两块已经从「首页导航」整块搬到「同步管理」，
+    //    还留在 'site' 就会变成「进了同步管理 tab 永远停在加载中」＋「首页导航又拉一遍」。
+    assert.match(code, /if \(panel === 'sync' && !this\.syncSpacesRendered\) this\.renderSyncSpaces\(\)/,
+        '进入同步管理分区要按闩锁拉一次（漏了就是永远停在「加载中…」）');
+    assert.match(code, /if \(panel === 'sync' && !this\.syncInvitesRendered\) this\.renderSyncInvites\(\)/,
+        '邀请码同理（两个闩锁各自独立，但都挂在同一个 tab 上）');
     // 面板每打开一次就会重画两块（列表 + 策略）。它们必须来自**同一条** GET：
     // 分成两条等于每次打开多打一条管理接口，而管理桶只有 30 次/分钟——本仓库
     // 已经因为「渲染里顺手预取」撞过 429（WebDAV 那次），浏览器回归也抓到过。
     const renderSpaces = methodBodyOf(cleanApp, 'renderSyncSpaces');
-    assert.match(renderSpaces, /API\.get\('\/api\/admin\/sync-spaces'\)/, '要拉列表');
+    assert.match(renderSpaces, /const url = '\/api\/admin\/sync-spaces' \+ this\.syncSpacesQuery\(\)/, '列表 URL 由筛选状态拼出来');
+    assert.match(renderSpaces, /API\.get\(url\)/, '要拉列表');
     assert.match(renderSpaces, /data\.settings/, '策略与列表来自同一个响应');
     assert.equal((renderSpaces.match(/API\.get\(/g) || []).length, 1,
         '面板重画只允许一条 GET（两条会攒进管理桶、撞 429）');
+    const renderInvites = methodBodyOf(cleanApp, 'renderSyncInvites');
+    assert.equal((renderInvites.match(/API\.get\(/g) || []).length, 1,
+        '邀请码列表同样只允许一条 GET（列表 + 计数 + 分页来自同一个响应）');
     // ② 两个总开关：onchange → saveSyncPolicy（勾了即落盘）。只在内存里改勾选态是最气人的那种 bug：
     //    界面显示「已暂停」而服务端根本没收到。所以这一条同时钉住「有 onchange」与「落到哪个 POST」。
     assert.match(code, /for \(const id of \['syncCreatingPaused', 'syncTotalPaused'\]\) \{\s*\n\s*\$\(`#\$\{id\}`\)\.onchange = \(\) => this\.saveSyncPolicy\(\)/,
@@ -606,4 +614,93 @@ test('#10 的管理面板治理区：两个总开关勾了即落盘，列表操�
     for (const forbidden of ['space.config', 'configJson', 'modules', 'proof', 'deviceToken', 'token']) {
         assert.doesNotMatch(paint, new RegExp(forbidden), `列表不得画 ${forbidden}（服务端也不回，但界面这一层同样不许有落脚点）`);
     }
+});
+
+// ==================== 同步管理 tab：把同步界面从「首页导航」拆出来 ====================
+
+test('同步管理是第 5 个 tab，位于模块与账户之间，首页导航里不再有任何同步控件', () => {
+    const code = stripComments(appSource);
+    const tabs = [...code.matchAll(/data-panel="(\w+)">([^<]+)<\/button>/g)].map(m => [m[1], m[2].trim()]);
+    assert.deepEqual(tabs.map(t => t[0]), ['site', 'fav', 'modules', 'sync', 'account'], 'tab 顺序');
+    assert.deepEqual(tabs.map(t => t[1]), ['首页导航', '收藏夹', '模块', '同步管理', '账户与备份'], 'tab 文案');
+
+    const order = ['adminPanelSite', 'adminPanelFav', 'adminPanelModules', 'adminPanelSync', 'adminPanelAccount']
+        .map(id => code.indexOf(`id="${id}"`));
+    for (let i = 1; i < order.length; i++) {
+        assert.ok(order[i - 1] > 0 && order[i] > order[i - 1], '面板按 tab 顺序排列');
+    }
+
+    // 「整块搬过去」：首页导航面板里**一个**同步控件都不该留下。
+    const site = code.slice(code.indexOf('id="adminPanelSite"'), code.indexOf('id="adminPanelFav"'));
+    assert.ok(site.length > 1000, '首页导航面板切出来了');
+    for (const id of ['syncSpacesSection', 'syncInvitesSection', 'syncSpacesList', 'syncInviteList', 'syncCreatingPaused', 'syncTotalPaused', 'createInviteBtn']) {
+        assert.doesNotMatch(site, new RegExp(id), `首页导航里不该再有 #${id}`);
+    }
+    // 同步管理面板里两块 + 概览都在
+    const sync = code.slice(code.indexOf('id="adminPanelSync"'), code.indexOf('id="adminPanelAccount"'));
+    assert.ok(sync.length > 2000, '同步管理面板切出来了');
+    for (const id of ['syncSpacesSection', 'syncInvitesSection', 'syncOverview', 'syncCreatingPaused', 'syncTotalPaused', 'syncSpaceSearch', 'syncInviteCount', 'revokeSelectedInvites', 'disableSelectedSpaces']) {
+        assert.match(sync, new RegExp(`id="${id}"`), `同步管理里要有 #${id}`);
+    }
+    // 概览四块的标签就是要求的四个数
+    for (const label of ['空间总数', '全实例有效配置字节', '活跃设备数', '同步服务状态']) {
+        assert.match(code, new RegExp(label), `概览要有「${label}」`);
+    }
+});
+
+test('邀请码批量生成：上限 20 在界面就拦、走 /batch、结果区可复制与下载', () => {
+    const code = stripComments(appSource);
+    const max = Number(/const SYNC_INVITE_BATCH_MAX = (\d+)/.exec(code)[1]);
+    assert.equal(max, 20, '界面这一份上限是 20（与服务端 INVITE_BATCH_MAX 同值）');
+    // 上限要真的被用来**拒绝**，不是只声明一个常量
+    const count = methodBodyOf(cleanApp, 'syncInviteBatchCount');
+    assert.match(count, /count > SYNC_INVITE_BATCH_MAX/, '超上限要拦下来');
+    assert.match(count, /count < 1/, '0 与负数也要拦');
+    assert.match(count, /preset === 'custom'/, '「自定义…」读数字框');
+    const create = methodBodyOf(cleanApp, 'createSyncInvites');
+    assert.match(create, /if \(!target\.ok\) \{ this\.showSyncInviteError\(target\.reason\); return; \}/, '拦下就不发请求');
+    assert.match(create, /API\.post\('\/api\/admin\/sync-invites\/batch', \{ count: target\.count \}\)/, '走批量接口');
+    // 结果区：复制全部 + 下载 .txt，码来自**响应的** `code`（列表里只有 hint）
+    const paint = methodBodyOf(cleanApp, 'paintSyncInviteBatch');
+    assert.match(paint, /copy-invite-batch/);
+    assert.match(paint, /download-invite-batch/);
+    assert.match(paint, /invite\.code/, '结果区画的是响应里的完整码');
+    // 结果区只显示这一次：面板重建即清空
+    assert.match(code, /this\.syncInviteBatch = null/, '面板重建要把上一次的结果丢掉');
+    const list = methodBodyOf(cleanApp, 'paintSyncInvites');
+    assert.doesNotMatch(list, /invite\.code/, '列表不得再画完整码（库里本来也只有哈希）');
+    assert.match(list, /invite\.hint/);
+});
+
+test('批量撤销只动未使用的：确认后调用批量接口，计数按服务端返回的实际行数', () => {
+    const revoke = methodBodyOf(cleanApp, 'revokeSelectedInvites');
+    assert.match(revoke, /API\.post\('\/api\/admin\/sync-invites\/revoke', \{ ids \}\)/, '走批量撤销接口');
+    assert.match(revoke, /await this\.confirmAction\(/, '批量撤销要先确认');
+    assert.match(revoke, /Number\(result && result\.revoked\)/, '按服务端返回的实际撤销数说话');
+    // 单张撤销的既有能力保留（行内那个「撤销」）
+    assert.match(methodBodyOf(cleanApp, 'revokeSyncInvite'), /\/api\/admin\/sync-invites\/\$\{encodeURIComponent\(id\)\}\/revoke/);
+    // 只有未使用的行可勾选：已用/已过期/已撤销的复选框是禁用的
+    const list = methodBodyOf(cleanApp, 'paintSyncInvites');
+    assert.match(list, /invite\.state === 'unused'/, '只有未使用的能批量撤销');
+    assert.match(list, /data-select-invite/, '每行有复选框');
+    assert.match(list, /counts\.unused/, '计数行来自服务端的 counts');
+});
+
+test('空间列表：300ms 防抖搜索、状态筛选、服务端分页、批量停用（不提供批量删除）', () => {
+    const code = stripComments(appSource);
+    assert.match(code, /\$\('#syncSpaceSearch'\)\.oninput/, '搜索框要接线');
+    assert.match(code, /setTimeout\(\(\) => \{[\s\S]{0,400}\}, 300\)/, '输入防抖 300ms（每敲一个字打一条会撞 429）');
+    assert.match(code, /\$\('#syncSpaceState'\)\.onchange/);
+    assert.match(code, /\$\('#syncSpaceSort'\)\.onchange/);
+    const query = methodBodyOf(cleanApp, 'syncSpacesQuery');
+    for (const key of ['q=', 'state=', 'sort=', 'offset=', 'limit=']) {
+        assert.match(query, new RegExp(key.replace('=', '\\=')), `查询串要带 ${key}`);
+    }
+    const batch = methodBodyOf(cleanApp, 'disableSelectedSyncSpaces');
+    assert.match(batch, /\/disable`, \{ disabled: true \}/, '批量停用走单条停用接口');
+    assert.doesNotMatch(code, /deleteSelectedSpaces/, '没有批量删除的处理分支');
+    assert.match(code, /批量删除不提供/, '界面上要说清不提供批量删除');
+    const paint = methodBodyOf(cleanApp, 'paintSyncSpaces');
+    assert.match(paint, /第 \$\{from\}–\$\{to\} 条，共 \$\{page\.total\} 条/, '计数行按服务端 page 说话');
+    assert.match(paint, /没有匹配「\$\{this\.esc\(filter\.q\)\}」的空间/, '搜索无结果要有自己的空态');
 });

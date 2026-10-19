@@ -1,3 +1,9 @@
+// nav-v125：把同步相关的界面从「首页导航」拆出来，单独一个「同步管理」tab（第 5 个，
+// 在模块与账户与备份之间）：概览四块（空间总数 / 全实例有效配置字节 / 活跃设备数 /
+// 同步服务状态）+ 两个总开关、邀请码批量生成（1/5/10/自定义，上限 20，结果区只显示
+// 这一次，可复制全部与下载 .txt）、邀请码状态筛选 + 分页 + 计数 + 批量撤销、空间列表
+// 搜索（300ms 防抖）/ 状态筛选 / 排序 / 服务端分页 / 批量停用。只改了 app.js 与
+// admin.css（服务端形状没动）。
 // nav-v124：恢复改成两段式（Issue #13）——先 `POST /api/webdav/restore/preview` 出
 // 「将恢复 / 将跳过（含原因）/ 凭据待授权 / 新版本号」与 `planDigest`，用户在那份计划上
 // 确认后才带 digest 真正覆盖；409 stale_plan / 503 busy / 503 restore_halted 各有自己的
@@ -320,7 +326,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v124';
+const CACHE = 'nav-v125';
 const ASSETS = [
     '/',
     '/index.html',

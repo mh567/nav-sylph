@@ -76,20 +76,22 @@ test('书签检索执行真实实现：中文、混合输入、拼音与英文�
     assert.deepEqual(state.results, []);
 });
 
-test('后台 tab 栏：收藏夹是第二个，顺序为 导航 · 收藏夹 · 模块 · 账户', () => {
+test('后台 tab 栏：收藏夹是第二个，「同步管理」在模块与账户之间（共五个）', () => {
     const tabs = [...appSource.matchAll(
         /<button type="button" class="admin-tab" role="tab" id="adminTab(\w+)" aria-controls="adminPanel\1" aria-selected="false" tabindex="-1" data-panel="(\w+)">([^<]+)/g
     )];
-    assert.equal(tabs.length, 4, '恰好四个 tab');
-    assert.deepEqual(tabs.map(t => t[2]), ['site', 'fav', 'modules', 'account'], 'tab 顺序');
-    assert.deepEqual(tabs.map(t => t[3]), ['首页导航', '收藏夹', '模块', '账户与备份'], 'tab 文案');
+    assert.equal(tabs.length, 5, '恰好五个 tab（同步管理从「首页导航」里拆出来自成一格）');
+    assert.deepEqual(tabs.map(t => t[2]), ['site', 'fav', 'modules', 'sync', 'account'], 'tab 顺序');
+    assert.deepEqual(tabs.map(t => t[3]), ['首页导航', '收藏夹', '模块', '同步管理', '账户与备份'], 'tab 文案');
 });
 
 test('收藏分区整区迁入收藏夹 tab，账户与备份不再持有任何收藏入口', () => {
     const favStart = appSource.indexOf('id="adminPanelFav"');
     const modulesStart = appSource.indexOf('id="adminPanelModules"');
+    const syncStart = appSource.indexOf('id="adminPanelSync"');
     const accountStart = appSource.indexOf('id="adminPanelAccount"');
-    assert.ok(favStart > 0 && modulesStart > favStart && accountStart > modulesStart, '四个面板按 tab 顺序排列');
+    assert.ok(favStart > 0 && modulesStart > favStart && syncStart > modulesStart && accountStart > syncStart,
+        '五个面板按 tab 顺序排列');
 
     // 收藏夹 tab = adminPanelFav 起、adminPanelModules 止
     const favPanel = appSource.slice(favStart, modulesStart);
@@ -218,13 +220,13 @@ test('匿名搜索框仅提示网页搜索', () => {
     assert.doesNotMatch(indexHtml, /搜索网页或收藏/);
 });
 
-test('sw.js：CACHE 升到 nav-v124，注释块记录本次变更', () => {
-    assert.match(swJs, /const CACHE = 'nav-v124';/);
+test('sw.js：CACHE 升到 nav-v125（同步管理 tab），注释块记录本次变更', () => {
+    assert.match(swJs, /const CACHE = 'nav-v125';/);
     // 注释块的第一条必须**以当前缓存号开头并带说明**。这里不写死「本轮的主题」：
     // 主题随每次升级变化，写死就要每轮改一次断言（而真正要钉的是「注释跟着 CACHE 走」
     // 这个关系，见下面的派生断言）。
     const head = swJs.split('\n')[0];
-    assert.match(head, /^\/\/ nav-v124：\S/, '第一条注释要带当前版本号与说明');
+    assert.match(head, /^\/\/ nav-v125：\S/, '第一条注释要带当前版本号与说明');
     // 注释块记录的最新版本必须**就是** CACHE 里的那个——两者漂移意味着有人改了其一。
     // 这里不写死版本号：写死的话每次升缓存都要改断言，而断言该钉的是「两者一致」
     // 这个关系（升号时改 CACHE 与注释就够，不必再想起这个文件）。

@@ -1183,3 +1183,57 @@
     .sync-invite-row { flex-wrap: wrap; }
     .sync-invite-state { flex-basis: 100%; }
 }
+
+/* ---- 「同步管理」tab：概览 / 邀请码 / 空间治理 --------------------------------
+   两三个控件一行、放不下就换行（窄屏 390 与宽屏 980 用同一套 DOM，只由
+   flex-wrap 改变排布）。表格在自己的容器里横向滚动，不把整个面板撑宽。 */
+.sync-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.sync-stat { padding: 10px 12px; border: 1px solid var(--admin-edge); border-radius: 10px; background: var(--admin-row); }
+.sync-stat b { display: block; color: var(--text); font-size: 18px; line-height: 1.4; }
+.sync-stat span { color: var(--text-secondary); font-size: 11px; }
+.sync-policy-row { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin: 4px 0 2px; }
+.sync-policy-item { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+/* 开关是 44×24 的定尺，别让 flex 把它压扁（它是 flex 项时会收缩）。 */
+.sync-policy-item .toggle-switch { flex: 0 0 auto; }
+.sync-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.sync-toolbar input[type="search"],
+.sync-toolbar input[type="number"],
+.sync-toolbar select {
+    padding: 6px 9px;
+    border: 1px solid var(--admin-edge);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+}
+.sync-toolbar input[type="search"] { flex: 1 1 190px; min-width: 0; }
+.sync-toolbar input[type="number"] { width: 84px; }
+.sync-toolbar-note { color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+/* 总暂停时说明行用错误色（同样是「说清后果」的那句，见 paintSyncPolicy）。 */
+.fav-hint.is-warn { color: var(--admin-error); }
+.sync-banner { margin: 0 0 10px; padding: 9px 12px; border-radius: 8px; background: var(--admin-row); color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+.sync-codes { display: grid; gap: 6px; margin: 8px 0 4px; }
+.sync-code { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 10px; border: 1px dashed var(--admin-edge); border-radius: 8px; font-size: 12px; }
+.sync-code code { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.sync-code small { margin-left: auto; color: var(--text-secondary); font-size: 11px; }
+.sync-space-host { overflow-x: auto; }
+.sync-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sync-table th,
+.sync-table td { padding: 7px 6px; border-bottom: 1px solid var(--admin-edge); text-align: left; white-space: nowrap; }
+.sync-table th { color: var(--text-secondary); font-size: 11px; font-weight: 500; }
+.sync-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 已停用 / 已删除的行淡出，但**不是**不可读：墓碑本身是记录，要能看清它的标识。 */
+tr.sync-space-row.is-stale td { color: var(--text-secondary); }
+tr.sync-space-row.is-gone td { color: var(--text-secondary); text-decoration: line-through; }
+.sync-empty { padding: 26px 10px; text-align: center; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+.sync-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; color: var(--text-secondary); font-size: 12px; }
+/* `hidden` 对 display:flex 的元素不生效（作者样式盖过 UA 规则），这里补一条。 */
+.sync-pager[hidden] { display: none; }
+.sync-pager-page { margin: 0 6px; }
+
+@media (max-width: 480px) {
+    .sync-code { flex-direction: column; align-items: flex-start; }
+    .sync-code small { margin-left: 0; }
+    .sync-pager { justify-content: space-between; }
+}
