@@ -269,3 +269,20 @@ vim .env  # 修改 SERVER_PORT
 curl -s http://127.0.0.1:4000/api/health
 # 返回: {"status":"ok","timestamp":"..."}
 ```
+
+## 恢复的故障手册（Issue #13 起）
+
+恢复是两段式：`POST /api/webdav/restore/preview` 只读算计划（清单 + 每个文件的字节校验和 + 各域 schema），`POST /api/webdav/restore` 带 `planDigest` 应用。应用期间**所有管理写**都被拒（503 `busy`），受影响域在恢复完成前不开放写入。
+
+出问题时按状态查库与目录：
+
+| 现象 | 看哪里 | 处理 |
+| --- | --- | --- |
+| 管理操作一直 503 `busy` | 进程重启即可释放锁（锁只在内存里） | 重启服务；先看日志里有没有未完成的恢复 |
+| 受影响域读写都 503 `restore_halted` | `GET /api/health` 应返回 `degraded`；查 `restore_records` 里 `phase='halted'` 的行 | **不要自动重试**：按 `snapshot_dir` 里的快照人工恢复（快照含 before/incoming 两套，0600 权限） |
+| 进程在恢复中途被杀 | `restore_records` 的 `phase='applying'` | **重启服务会自动续做**（所需备份文件缺失时转回滚）；`rolling_back` 继续回滚 |
+| 恢复后凭据不可用 | 恢复对话框列出的「待授权 / 需要重新部署」 | 重新粘贴 token 或重新部署；备份**不含**凭据是设计如此（密钥派生自带盐的密码哈希，跨安装解不开） |
+
+目录与权限：`.restore-snapshot/`（0700，文件 0600，已进 `.gitignore`）只在恢复期间存在，成功后自动删除；它含私人数据与时间线凭据密文，**不要**放进任何同步/分享/发布包。
+
+额度与暂停：`NAV_SYNC_SPACE_LIMIT` / `NAV_SYNC_CONTENT_BYTES_LIMIT` / `NAV_SYNC_TOTAL_BYTES_LIMIT` 只用于测试与临时调小；默认值（1000 空间 / 每空间 1 MiB / 1 GiB）由断言钉住。运行需要 **Node ≥ 22**。

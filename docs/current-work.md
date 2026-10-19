@@ -2,7 +2,14 @@
 
 核对日期：2026-10-18。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## Issue #13：可回滚且不覆盖并发修改的恢复（2026-10-18，**本地已提交，未推送、未发版**）
+## Issue #14：升级、浏览器与目标机器综合验收（2026-10-18，**部分完成，Issue 保持 OPEN**）
+
+- 已给证据：单元 **796/796**；浏览器 **41/41**（八流程逐项，见 `docs/issue-14-acceptance.md` 的表）；**合成旧安装升级**（v2.0.2 归档 → 模拟 `sylph.sh update` 覆盖程序文件 → `user_version` **9 → 12**、旧配置/旧密码/旧备忘录都在、SW `nav-v124`）；本机指标（RSS ≈70 MB、WAL 96–346 KB、`GET /api/config` P95 2.6 ms）；匿名分享/收藏边界/三类配置隔离沿用既有用例。
+- **给不了**（按验收原文第 6 条如实标注、不勾选）：2 核 2 GB 目标机连续 24 小时的容量结论、公网时延；真实 `./sylph.sh update` 的 GitHub 下载链路（本轮用归档 + 覆盖模拟，记录里注明「非 GitHub 链路」）。
+- 因此 **#14 保持 OPEN**：拿到目标机（2 vCPU/2 GB + 24 小时窗口）与公网部署后再收口。收口条件写在验收记录末尾。
+- 本轮综合验收**没有发现新缺陷**。
+
+## Issue #13：可回滚且不覆盖并发修改的恢复（2026-10-18，**已推送、已关闭**）
 
 - 目标：恢复收藏与私人模块时，公开设置和其他设备的新修改不会被静默覆盖，故障可完整恢复。
 - 完成（分两段落地）：**服务端核心**（`lib/admin-lock.js` 单锁 + `rejectIfBusy`/`drainInFlight`；迁移 **v12** 的 `restore_records`；`lib/restore.js` 的快照/写前记录/逐域应用/逆序回滚/halted；`recover()` 在 listen 之前续做或回滚；`/api/webdav/restore/preview` + 带 `planDigest` 的恢复路由，不一致 409 `stale_plan`；`mergePrivateModules` 白名单合并）与**客户端**（两段式恢复：范围 → 预览计划对话框（将恢复/将跳过/凭据待授权/旧备份提示/`stale_plan`、`busy`、`restore_halted` 各自文案）→ 确认覆盖；`sw.js` nav-v123 → **nav-v124**）。
