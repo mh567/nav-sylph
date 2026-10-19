@@ -397,6 +397,10 @@ const {
 // Special Line 时间线：repository / service / scheduler 的装配入口。
 // 凭据加解密需要密码哈希，构造放在 init() 里（那时 getPasswordHash 已可用）。
 const { createTimeline, ServiceError } = require('./lib/timeline');
+// 备份恢复的协调锁与「可回滚的恢复」（#13）。锁是进程内单例：见 lib/admin-lock.js 顶部
+// 关于「为什么只有一把、且只在进程内」的说明。
+const adminLock = require('./lib/admin-lock');
+const { createRestore, SNAPSHOT_ROOT } = require('./lib/restore');
 // 微博热搜代理复用时间线的取数工具（AbortSignal 超时 + 响应体大小上限）。
 const { getJson: fetchJson } = require('./lib/timeline/http');
 
@@ -820,6 +824,58 @@ const defaultModulesConfig = {
  */
 const PRIVATE_FILES = [CONFIG_FILE, FAVORITES_FILE, PASSWORD_FILE, WEBDAV_CONFIG_FILE, MODULES_FILE];
 
+/**
+ * 本机随包携带的模块 id（`public/modules/<id>.js` 的文件名）。
+ *
+ * 服务端没有第二份「模块注册表」——实现就在这些文件里，前端按 id 加载同名的脚本。
+ * 所以「这个 id 本机认不认识」只能以它们为准：用一个手写的白名单会与文件漂移，
+ * 而漂移的表现是「恢复时把本机明明支持的模块当成未知项跳过」。
+ */
+function bundledModuleIds() {
+    try {
+        return fsSync.readdirSync(path.join(config.rootDir, 'public', 'modules'))
+            .filter(name => name.endsWith('.js'))
+            .map(name => name.slice(0, -'.js'.length));
+    } catch {
+        // 目录读不到（打包缺文件）时不报错：列表为空只是「没有未知项可判」，
+        // 恢复仍然照常进行（宁可多恢复一项，也不要在恢复路径上抛错）。
+        return [];
+    }
+}
+
+/**
+ * 恢复快照目录里的**每一个文件**都要收紧到 0600、目录收到 0700。
+ *
+ * 快照里有时间线的凭据密文行（`timeline_credentials.envelope_json`），它是本库里
+ * 最敏感的一类数据之外唯一被复制的一份。`writeFileSafe` 已经按 0600 写，这里兜底
+ * 校正既有安装（老目录可能是 0755）——与 PRIVATE_FILES 同一套理由。
+ */
+async function restrictSnapshotModes() {
+    const root = path.join(config.rootDir, SNAPSHOT_ROOT);
+    let entries;
+    try {
+        entries = await fs.readdir(root, { withFileTypes: true });
+    } catch {
+        return; // 没有快照目录 = 从未恢复过，正常情况
+    }
+    try { await fs.chmod(root, 0o700); } catch { /* 权限收不紧不该阻断启动 */ }
+    await Promise.all(entries.map(async entry => {
+        const target = path.join(root, entry.name);
+        try {
+            if (entry.isDirectory()) {
+                await fs.chmod(target, 0o700);
+                for (const name of await fs.readdir(target)) {
+                    await fs.chmod(path.join(target, name), 0o600);
+                }
+            } else {
+                await fs.chmod(target, 0o600);
+            }
+        } catch {
+            // 快照正在被写（或已被删除）时忽略：这是兜底校正，不是权威路径
+        }
+    }));
+}
+
 /** 兜底校正既有安装：老版本写下的文件可能仍是 644，每次启动收敛一次。 */
 async function restrictPrivateFileModes() {
     await Promise.all(PRIVATE_FILES.map(async file => {
@@ -829,6 +885,7 @@ async function restrictPrivateFileModes() {
             // 尚未创建，例如未配置 WebDAV 时的 .webdav-config.json
         }
     }));
+    await restrictSnapshotModes();
 }
 
 async function ensureFile(file, defaultData) {
@@ -896,6 +953,17 @@ function isHttps(req) {
 let db;
 /** 时间线模块的装配结果（repo/service/scheduler）。init() 里创建，关停时先停调度器。 */
 let timeline = null;
+/** 恢复服务（#13）。init() 里创建；`recoverRestore()` 在 server.listen 之前跑完。 */
+let restore;
+/**
+ * 正在飞的监控采集。
+ *
+ * 采集是**请求驱动**的（前端轮询打到 /api/modules/metrics 才采），没有后台定时器，
+ * 所以「排空在途」不能靠停一个定时器——要等这些 Promise 自己结束。恢复前不排空的话，
+ * 一次在飞的采集会在 `.modules.json` 换掉之后把**旧配置**算出来的结果写进缓存，
+ * 首页于是显示一份不存在于任何配置里的监控集合。
+ */
+const metricsInFlight = new Set();
 let sessionStore;
 let passwordChanging = false;
 let authGeneration = 0;
@@ -928,6 +996,12 @@ function requireSession(req, res, next, allowPasswordChange) {
     if (!found || (found.session.purpose === 'password-change' && !allowPasswordChange)) {
         return unauthorized(res, req.sessionReason);
     }
+    // 恢复备份期间**所有**管理写都拒（拍定：不做域级豁免），一处判定覆盖全部路由。
+    // 放在 requireSession 里而不是逐条挂 app.use：管理写路由有三十多条，逐条挂必然漏；
+    // 而漏掉的那一条会在恢复写到一半时插进来，正好制造出「半套状态」。
+    if (!['GET', 'HEAD'].includes(req.method) && adminLock.isBusy()) {
+        return adminLock.rejectBusy(res);
+    }
     if (!['GET', 'HEAD'].includes(req.method) && !allowPasswordChange) {
         if (passwordChanging) return res.status(503).json({ error: '正在修改密码，请稍后重试' });
         activeAdminWrites++;
@@ -945,6 +1019,40 @@ function requireAdmin(req, res, next) {
 function requirePasswordChange(req, res, next) {
     return requireSession(req, res, next, true);
 }
+
+/**
+ * `halted` 之后受影响域的守卫：**读写都拒**（503 `restore_halted`）。
+ *
+ * 只拦写是不够的：回滚失败意味着盘上是一份自己都说不清的状态，这时候读出来的
+ * 任何东西都不该被当成事实——用户看到一份半新半旧的收藏列表，会以为「恢复成功了一半」。
+ *
+ * 挂在这个域的所有入口上（含匿名可读的收藏软门），不依赖界面隐藏：
+ * 界面不可关闭的横幅只是提示，服务端这份才是约束。
+ */
+function restoreHaltedGuard(domains) {
+    const list = Array.isArray(domains) ? domains : [domains];
+    return function haltedGuard(req, res, next) {
+        if (!restore) return next();
+        const halted = restore.haltedDomains();
+        if (!halted.some(domain => list.includes(domain))) return next();
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(503).json({
+            error: '上次恢复失败且回滚未完成，相关功能已暂停；请联系维护者按快照恢复',
+            code: 'restore_halted',
+            domains: halted
+        });
+    };
+}
+
+/**
+ * `halted` 守卫的挂载点。挂在**路径前缀**上而不是逐条路由：一个域有十几条路由
+ * （收藏有 CRUD 与导入导出），逐条挂必然漏一条，而漏掉的那条正是「读得到半套状态」。
+ */
+app.use('/api/favorites', restoreHaltedGuard('favorites'));
+app.use('/api/modules', restoreHaltedGuard('modules'));
+app.use('/api/timeline', restoreHaltedGuard('timeline'));
+app.use('/api/admin/navigation', restoreHaltedGuard('navigation-admin'));
+app.use('/api/memos', restoreHaltedGuard('memos'));
 
 /**
  * 环境变化的信号怎么传给客户端。
@@ -1031,6 +1139,72 @@ async function init() {
     });
     // 调度器在开始监听之前启动：升级/重启后已到期的来源立刻补拉一次。
     timeline.scheduler.start();
+
+    // ========== 恢复服务（#13）==========
+    //
+    // 装配点必须在 listen 之前、时间线之后：`recover()` 要能（在续做路径上）
+    // 重新调用各域的写入，而地址一旦对外可达，就可能有人在「续做」还没跑完时
+    // 读到半套状态。
+    restore = createRestore({
+        rootDir: config.rootDir,
+        db,
+        files: { favorites: FAVORITES_FILE, modules: MODULES_FILE },
+        readJSON,
+        writeJSON,
+        versionedModules,
+        navigation,
+        timeline,
+        publicModuleIds: [...PUBLIC_MODULE_IDS],
+        // 「本机有哪些模块」的唯一判据：随包携带的实现文件（`public/modules/<id>.js`）。
+        // 恢复时用它把备份里本机根本没有的模块 id 跳过并报告——写进配置的表现是
+        // 侧栏多一张永远加载不出来的卡片。
+        moduleIds: bundledModuleIds(),
+        parseBookmarks: parseBookmarkHtml,
+        // 逐域**正向**写入。与恢复路由里 `result.data.*` 那一份是同一批函数
+        //（见 restoreDomains），所以「一次正常恢复」与「重启续做」走同一份代码。
+        writers: restoreDomains
+    });
+
+    // 排空器：只有装配处知道怎么等在途任务。
+    //  - 时间线：先 `scheduler.stop()` 再轮询 `isRunning()`——只停不等，恢复期间
+    //    在飞的那一次仍会往库里写；只等不停，调度器会在等待期间再起一个新的。
+    //  - 监控采集：请求驱动，等 `metricsInFlight` 里的那些 Promise 落地。
+    adminLock.configureDrainers({
+        timeline: async timeoutMs => {
+            if (!timeline) return true;
+            timeline.scheduler.stop();
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                const running = timeline.service.listSources()
+                    .some(source => timeline.scheduler.isRunning(source.id));
+                if (!running) return true;
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            return false;
+        },
+        'metrics-cache': async () => {
+            if (!metricsInFlight.size) return true;
+            await Promise.allSettled([...metricsInFlight]);
+            return metricsInFlight.size === 0;
+        }
+    });
+
+    // 上一条没走完的恢复：续做 / 继续回滚 / 报 halted（不自动重试）。
+    // 任何一条分支都不能把启动挡下来——服务起不来等于「受影响域之外的功能也全丢了」。
+    try {
+        const recovery = await restore.recover();
+        if (recovery.action !== 'none') {
+            console.log(`恢复记录收尾：${recovery.action}（${recovery.runId}，域：${(recovery.domains || []).join('、') || '无'}）`);
+            if (recovery.action === 'halted') {
+                console.error('⚠️ 恢复失败且回滚未完成，受影响域的读写已暂停；快照保留在 .restore-snapshot/');
+            }
+            // 续做/回滚都动过模块与缓存：重建一次采集缓存，别让首页显示恢复前的集合
+            invalidateMetricsCache();
+        }
+    } catch (err) {
+        // 收尾失败本身不能变成「服务起不来」。把它记进日志，halted 判定仍在库里。
+        console.error('恢复记录收尾失败:', err.message);
+    }
 
     // 初始化完成，之后的数据文件写入才算「用户改动」。
     // 置在这里而不是更早：上面几个 ensureFile 在全新安装时也会写文件，
@@ -1696,6 +1870,17 @@ app.post('/api/change-password', rateLimit, requirePasswordChange, async (req, r
 });
 
 app.get('/api/health', (req, res) => {
+    // `halted`（恢复失败且回滚失败）之后必须报 degraded：升级脚本、反代健康检查
+    // 与界面都读这条。**仍返回 200**：服务本身活着，受影响域之外的读写照常可用，
+    // 用 503 会让「整站挂了」与「一域暂停」看起来一样。
+    const halted = restore ? restore.haltedDomains() : [];
+    if (halted.length) {
+        return res.json({
+            status: 'degraded',
+            timestamp: new Date().toISOString(),
+            haltedDomains: halted
+        });
+    }
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -2349,6 +2534,9 @@ async function runAutoSync() {
     // 上传的是一份**混合快照**，并且把它记成最新的自动槽位。
     // scheduleAutoSync 只挡住「抑制期间新排的期」，挡不住已经在飞的这一次。
     if (autoSyncSuppressed > 0) return;
+    // 与恢复互斥（#13）：`autoSyncSuppressed` 只挡「抑制期间新排的期」，挡不住
+    // 已经在飞的这一次，而恢复可能刚刚换掉 `.modules.json`。锁是最后一道闸。
+    if (adminLock.isBusy()) return;
     if (autoSyncRunning) {
         autoSyncQueued = true;
         return;
@@ -2494,12 +2682,28 @@ app.get('/api/webdav/list', rateLimit, requireAdmin, async (req, res) => {
     }
 });
 
-// Restore from backup
+// ========== WebDAV 恢复（#13）==========
+//
+// 两段式：**预览**（只读，出清单 + `planDigest`）→ **确认**（持锁、排空、快照、
+// 写前记录、逐域应用、失败逆序回滚）。语义与生命周期见 lib/restore.js 的文件头；
+// 这里只负责传输、权限与「谁在什么顺序上被调用」。
 //
 // 恢复范围与备份范围对称：书签、备忘录、私人模块、时间线。
-// ⚠️ 主导航/主题/搜索引擎（旧备份里的 config 域）**不再恢复**：它在 #12 之后
-// 不在备份范围内。旧备份仍然能选，但只会恢复书签，响应里带 `skipped` 说明。
-app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
+// ⚠️ 主导航/主题/搜索引擎（旧备份里的 config 域）**永不恢复**：它在 #12 之后
+// 不在备份范围内，`published`/`draft` 也永不触碰。旧备份仍然能选，但只会恢复书签，
+// 响应与预览里的 skip 会说明原因。
+
+/** 排空的预算。超时**不失败**（见 admin-lock 的 drainInFlight 注释）。 */
+const RESTORE_DRAIN_TIMEOUT_MS = 5000;
+
+/** 一次恢复要动的域。锁与守卫都认它，两处漂移的表现是「锁了一个、动了另一个」。 */
+const RESTORE_DOMAINS = ['favorites', 'memos', 'modules', 'timeline'];
+
+// Restore preview（只读）
+//
+// 只读是**硬要求**：用户在选备份、看清单的阶段，任何副作用都会让「取消」变成空话。
+// 所以这条路由只 GET 远端、只算计划，不写文件、不写库、不落快照。
+app.post('/api/webdav/restore/preview', rateLimit, requireAdmin, async (req, res) => {
     try {
         const {
             configFile,
@@ -2523,10 +2727,13 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             });
         }
 
+        // 恢复正在进行时连预览也拒：此刻的现场是写到一半的，预览出的计划必然作废。
+        if (adminLock.isBusy()) return adminLock.rejectBusy(res);
+        if (!restore) return res.status(503).json({ error: '恢复服务尚未就绪，请稍后重试' });
+
         const passwordHash = await getPasswordHash();
         const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
         await webdav.loadConfig();
-
         if (!webdav.config.url) {
             return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
         }
@@ -2545,92 +2752,204 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             restoreTimeline
         });
 
-        // 恢复期间抑制自动同步：这里的 writeJSON 会被钩子当成「用户改了配置」。
+        const { plan } = await restore.preview(result);
+        res.json({
+            success: true,
+            // 确认时必须带回来。对不上 = 现场在预览之后变了 → 409 请重新预览。
+            planDigest: plan.digest,
+            // 「将恢复 / 将跳过（含原因）/ 凭据待授权 / 新版本号」都在这一份里。
+            plan: {
+                domains: plan.domains,
+                skipped: plan.skipped,
+                pendingAuthorization: plan.pendingAuthorization,
+                unknownModules: plan.unknownModules,
+                versions: plan.versions
+            },
+            legacy: Boolean(legacyFile),
+            manifest: result.manifest || null,
+            createdAt: result.createdAt || null,
+            appVersion: result.appVersion || null
+        });
+    } catch (err) {
+        console.error('WebDAV 恢复预览失败:', err);
+        res.status(500).json({ error: '预览失败: ' + err.message });
+    }
+});
+
+// Restore from backup（确认并应用）
+app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
+    try {
+        const {
+            configFile,
+            bookmarksFile,
+            memosFile,
+            manifestFile,
+            modulesFile,
+            timelineFile,
+            legacyFile,
+            restoreBookmarks = true,
+            restoreMemos = true,
+            restoreModules = true,
+            restoreTimeline = true,
+            planDigest
+        } = req.body;
+
+        if (!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile) {
+            return res.status(400).json({
+                error: configFile
+                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘录/模块/时间线的备份'
+                    : '请选择要恢复的备份文件'
+            });
+        }
+
+        if (!restore) return res.status(503).json({ error: '恢复服务尚未就绪，请稍后重试' });
+
+        // 取锁必须在**第一个 await 之前**：否则两个并发的恢复请求会一起穿过判定，
+        // 各自写一份快照、各自回滚，最后盘上是谁也不认识的状态。
+        if (!adminLock.acquire('restore', RESTORE_DOMAINS).ok) {
+            return adminLock.rejectBusy(res);
+        }
+
+        let result = null;
+        let outcome = null;
+        // 恢复期间的自动同步抑制：这里的 writeJSON 会被钩子当成「用户改了配置」，
         // 刚从远端拉回来的内容立刻再推上去是一次多余的上传。
         // 递增抑制**并同时取消已排期的定时器**——只递增挡不住「点恢复之前就已排期、
-        // 现在正在飞」的那一次，那次会读到写了一半的文件（见 runAutoSync 的守卫）。
-        // 递减放在 finally 里：中间任何一步抛错都不能让抑制永久留在开状态
-        //（那会让自动同步从此静默失效，而界面上开关还是「已开启」）。
-        let modulesRestored = false;
-        let memosRestored = false;
-        let timelineRestored = false;
-        let bookmarksRestored = false;
-        let modulesRevision = null;
-        let needsAuthorization = [];
+        // 现在正在飞」的那一次（那次会读到写了一半的文件，见 runAutoSync 的守卫）。
+        // 递减放在 finally 里：中间任何一步抛错都不能让抑制永久留在开状态。
         cancelScheduledAutoSync();
         autoSyncSuppressed++;
         try {
-            if (result.data.bookmarksHtml && restoreBookmarks) {
-                const imported = parseBookmarkHtml(result.data.bookmarksHtml);
-                await writeJSON(FAVORITES_FILE, { version: 1, favorites: imported });
-                bookmarksRestored = true;
+            // 排空在途：先 `scheduler.stop()` 再等（只停不等 / 只等不停都不行，
+            // 理由见 admin-lock.drainInFlight 的注释）。
+            const drain = await adminLock.drainInFlight(['timeline', 'metrics-cache'], RESTORE_DRAIN_TIMEOUT_MS);
+            if (!drain.drained) {
+                // 拍定继续执行：把用户锁在「点了恢复但永远失败」比一次可能交错的在途写更糟。
+                console.error(`恢复前排空未完成（仍在跑：${drain.pending.join('、')}），继续执行`);
             }
 
-            if (result.data.favorites && restoreBookmarks) {
-                await writeJSON(FAVORITES_FILE, result.data.favorites);
-                bookmarksRestored = true;
+            const passwordHash = await getPasswordHash();
+            const webdav = new WebDAVBackup(WEBDAV_CONFIG_FILE, passwordHash);
+            await webdav.loadConfig();
+            if (!webdav.config.url) {
+                return res.status(400).json({ error: '请先配置 WebDAV 服务器' });
             }
 
-            // 备忘录：整表替换（与时间线同一形状，一个事务）。备忘录是
-            // 「回到那个时间点」的语义，与书签一致；不需要逐条合并。
-            if (result.data.memos && restoreMemos) {
-                memosRestored = restoreMemosFromBackup(result.data.memos);
-            }
-
-            // 模块配置：**按稳定模块 id 合并**，不整份覆盖。
-            // publicModules / socialAccounts / symbols 与公开模块的布局项都在本机，
-            // 备份里没有它们——整份覆盖等于把它们删掉。凭据（token / 推送哈希 /
-            // 注册令牌）从来没进备份，恢复后这些机器状态落到「等待部署」。
-            if (result.data.modules && restoreModules) {
-                const current = await readJSON(MODULES_FILE);
-                const merged = mergePrivateModules(current, result.data.modules, {
-                    publicModuleIds: [...PUBLIC_MODULE_IDS]
-                });
-                const written = versionedModules.write(MODULES_FILE, merged.modules);
-                modulesRevision = written.revision;
-                needsAuthorization = merged.needsAuthorization;
-                modulesRestored = true;
-                // 采集缓存是派生数据：模块布局变了就要重算，否则页面还显示旧卡片。
-                invalidateMetricsCache();
-            }
-
-            // 时间线：整表替换（service 里是一个事务），凭据表随之清空——
-            // 备份不带凭据，所以恢复后的来源是「待授权」，用户重新填 token。
-            if (result.data.timeline && restoreTimeline) {
-                timeline.service.importTimeline(result.data.timeline);
-                timelineRestored = true;
-            }
+            // 重新取回：与预览同一条路径。应用前复验 planDigest（见 lib/restore.js 的 apply）。
+            result = await webdav.restoreBackup({
+                configFile,
+                bookmarksFile,
+                memosFile,
+                manifestFile,
+                modulesFile,
+                timelineFile,
+                legacyFile,
+                restoreBookmarks,
+                restoreMemos,
+                restoreModules,
+                restoreTimeline
+            });
+            outcome = await restore.apply({ backup: result, planDigest });
         } finally {
             autoSyncSuppressed--;
+            adminLock.release();
+            // drain 把调度器停了：无论成败都要放回去（失败路径上没人会再启动它）。
+            if (timeline) timeline.scheduler.start();
         }
 
+        const applied = outcome.applied || [];
+        // 模块布局变了就要重算采集缓存，否则首页还显示旧卡片（派生域不参与回滚）。
+        if (applied.length) invalidateMetricsCache();
+
         const parts = [];
-        if (bookmarksRestored) parts.push('书签');
-        if (memosRestored) parts.push('备忘录');
-        if (modulesRestored) parts.push('模块配置');
-        if (timelineRestored) parts.push('时间线');
+        if (applied.includes('favorites')) parts.push('书签');
+        if (applied.includes('memos')) parts.push('备忘录');
+        if (applied.includes('modules')) parts.push('模块配置');
+        if (applied.includes('timeline')) parts.push('时间线');
+        const modulesResult = outcome.results?.modules || {};
         res.json({
             success: true,
             message: parts.length ? `恢复成功（含${parts.join('、')}）` : '恢复成功',
-            restoredBookmarks: bookmarksRestored,
-            restoredMemos: memosRestored,
-            restoredModules: modulesRestored,
-            restoredTimeline: timelineRestored,
-            modulesRevision,
-            // 旧备份里被跳过的域（导航与配置）：界面据此提示「旧备份只恢复书签」。
-            skipped: result.skipped || [],
-            // 恢复后需要重新授权/重新部署的机器：凭据不随备份。
-            needsAuthorization,
+            restoredBookmarks: applied.includes('favorites'),
+            restoredMemos: applied.includes('memos'),
+            restoredModules: applied.includes('modules'),
+            restoredTimeline: applied.includes('timeline'),
+            modulesRevision: modulesResult.revision === undefined ? null : modulesResult.revision,
+            // 被跳过的域（旧备份的导航/引擎、本机没有的模块…）：界面据此提示原因。
+            skipped: outcome.plan?.skipped || [],
+            // 恢复后需要重新授权/重新部署的项目（凭据不随备份）。
+            needsAuthorization: modulesResult.needsAuthorization || outcome.plan?.pendingAuthorization || [],
             // 清单（只有新备份才有）：界面用来显示「这一组装了什么、跳过了什么」。
             manifest: result.manifest || null,
+            // 恢复记录：runId 用于排查，generation 在成功时才 +1。
+            restoreRunId: outcome.runId || null,
+            restoreGeneration: outcome.generation || 0,
+            versions: outcome.versions || null,
             createdAt: result.createdAt,
             appVersion: result.appVersion
         });
     } catch (err) {
         console.error('WebDAV 恢复失败:', err);
+        if (err.code === 'stale_plan') {
+            // 409：预览之后现场变了。这不是错误操作，而是必须重新预览。
+            return res.status(409).json({ error: err.message, code: err.code });
+        }
+        if (err.code === 'restore_halted') {
+            return res.status(503).json({
+                error: err.message, code: err.code, runId: err.runId, rolledBack: err.rolledBack
+            });
+        }
+        if (err.code === 'restore_rolled_back') {
+            return res.status(500).json({
+                error: err.message, code: err.code, runId: err.runId, rolledBack: err.rolledBack
+            });
+        }
         res.status(500).json({ error: '恢复失败: ' + err.message });
     }
 });
+
+/**
+ * 逐域**正向**写入。
+ *
+ * 快照、记录、回滚、续做都在 `lib/restore.js`；这里只回答「这一域要写成什么」。
+ * 参数形状是 `{ data }`：正常恢复时它就是本路由取回来的那份 `result`
+ * （所以下面是同一批 `result.data.*`），重启续做时它是快照里的 `incoming.json`
+ * 包成同一形状——**一份代码两种来源**，不存在第二套 if（两套必然漂移）。
+ *
+ * 定义在这两条路由之间是有意的：它属于恢复的实现细节，不放模块顶部当公共 API。
+ */
+const restoreDomains = {
+    // 收藏：整份替换（含隐私标签）。`revision` 是**恢复代次印记**——成功时 +1，
+    // 失败回滚靠快照逐字节还原把它退回去（见 lib/restore.js 的 restoreDomain）。
+    favorites: async result => {
+        const items = Array.isArray(result.data.favorites) ? result.data.favorites : [];
+        let current = {};
+        try { current = await readJSON(FAVORITES_FILE); } catch { current = {}; }
+        const revision = (Number(current?.revision) || 0) + 1;
+        await writeJSON(FAVORITES_FILE, { version: 1, favorites: items, revision });
+        return { count: items.length, revision };
+    },
+
+    // 备忘录：整表替换（与时间线同一形状），正文与置顶状态都在这里。
+    memos: async result => ({ count: restoreMemosFromBackup(result.data.memos) }),
+
+    // 模块配置：**按稳定模块 id 合并**，不整份覆盖。publicModules / socialAccounts /
+    // symbols 与公开模块的布局项都在本机，备份里没有它们——整份覆盖等于把它们删掉。
+    // 凭据（token / 推送哈希 / 注册令牌）从来没进备份，恢复后这些机器落到「等待部署」。
+    modules: async result => {
+        const current = await readJSON(MODULES_FILE);
+        const merged = mergePrivateModules(current, result.data.modules, {
+            publicModuleIds: [...PUBLIC_MODULE_IDS]
+        });
+        const written = versionedModules.write(MODULES_FILE, merged.modules);
+        return { revision: written.revision, needsAuthorization: merged.needsAuthorization };
+    },
+
+    // 时间线：整表替换（service 里是一个事务）。备份不带凭据，恢复后的来源是
+    // 「待授权」，用户重新填 token；凭据行只存在于恢复前快照里。
+    timeline: async result => timeline.service.importTimeline(result.data.timeline)
+};
+
 
 // Delete backup file
 app.post('/api/webdav/delete', rateLimit, requireAdmin, async (req, res) => {
@@ -3100,7 +3419,16 @@ app.get('/api/modules/metrics', modulePollLimit, requireAdmin, async (req, res) 
         }
 
         const passwordHash = await getPasswordHash();
-        const servers = await collectAllServers(passwordHash);
+        // 采集进 `metricsInFlight`：恢复要排空在途（见 admin-lock 的 drainInFlight）。
+        // 不登记的话，一次在飞的采集会在模块配置换掉之后把**旧配置**的结果写进缓存。
+        const task = collectAllServers(passwordHash);
+        metricsInFlight.add(task);
+        let servers;
+        try {
+            servers = await task;
+        } finally {
+            metricsInFlight.delete(task);
+        }
         const payload = { servers };
         writeCacheRow(db, METRICS_CACHE_KEY, payload, now);
         res.json({ servers, updatedAt: now, cached: false, pollInterval });

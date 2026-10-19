@@ -15,6 +15,9 @@ server-config.json
 .credential-rotation.json.tmp
 .navigation-upgrade-snapshot/
 .navigation-upgrade-snapshot.tmp/
+# 恢复快照（#13）：含时间线凭据密文，属私人数据，绝不进仓库/发布包
+.restore-snapshot/
+.restore-snapshot.tmp/
 .webdav-config.json
 
 # User bookmarks config (personal data)
