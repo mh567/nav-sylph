@@ -2,10 +2,10 @@
 
 核对日期：2026-10-29。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## 备忘与待办卡片精简、完整列表与直达编辑（2026-10-29，工作区，未提交）
+## 备忘与待办卡片精简、完整列表与直达编辑（2026-10-29，**已发布 v2.2.1**）
 
 - 本轮原始要求：首行居中放置「备忘 / 待办」，删除首页卡片可见标题与右上角同步；条目较多时可浏览全部；点击待办文字直接进入该条编辑。已确认采用限高滚动，不分页。计划见 `~/.commandcode/plans/memo-todo-card-refinement.md`。
-- 实际起点：`86dd241`，`main`；开始时仅有原来的未跟踪 `sylph-handoff-2026-10-18.md`，本轮未改动。未取得本轮提交、推送或发布授权。
+- 实际起点：`86dd241`，`main`；开始时仅有原来的未跟踪 `sylph-handoff-2026-10-18.md`，本轮未改动。提交、推送与发布授权由用户在实施完成后给出。
 - 实现范围：`public/modules/memo.js`、`public/styles.css`、`public/sw.js`、`tests/memo.test.js`，以及 README / architecture。本轮不改接口、库表、备份、排序、完成态或容量。SW `nav-v128 → nav-v129`。
 - 卡片：稳定头部仅居中页签，保持可访问名称；完整备忘/待办列表原生纵向滚动，`max-height: min(240px, 45dvh)`；底部固定在滚动区外显示计数、同步时刻或失败重试、待同步和管理。布局编辑把手为稳定底部节点，不挤偏首行。按页签记录 scrollTop，数据/相对时间/勾选重建后恢复滚动与对应焦点。
 - 待办：卡片文字携转义后的 id 调 `openPanel({ todoId })`，首次渲染即编辑该项、全选并滚入可见范围；无参「管理」仍开列表；面板复用不叠加 overlay。
@@ -17,6 +17,8 @@
   - 离线草稿：`todoTextOf` 先读同 id 草稿，卡片与面板入口都显示用户最后一次输入；保存成功后清草稿与失败记录，Esc 取消清失败记录。
   - **真实浏览器复现出的额外缺陷**：切换编辑目标时 `renderPanel` 替换聚焦输入框会同步触发 `focusout`，它在 `editingTodoId` 已改成新目标后执行，把旧文本写到新 id（实测 POST `/api/todos/fixture-t2` 的 body 是 t1 的文本）。修法：`panelRendering` 标志包住 `innerHTML` 赋值期间忽略失焦提交、失焦时核对输入框 `data-id` 与当前目标、面板内点另一条时先提交上一条。真实指针复验 t1→t2→t3：三次 POST 分别落到各自 id，内容为各自文本，服务端三条一致。
   - 测试：新增面板切目标回归；`extractFunction` 支持参数解构（否则 `commitTodoEdit({ epoch })` 被切成 39 字符）。
+- 发布：功能提交 `1a08f43`，版本提交 `4346026`；tag 与 GitHub Release **v2.2.1** 已创建，`main` 已推送（远端 = `4346026`）。
+- 发布物已下载核对：13,661,341 字节；`version.json` 与 `CHANGELOG.json[0]` 均为 2.2.1；`public/sw.js` 的 `CACHE = nav-v129`；含 `open-todo-edit` 入口、`panelRendering` 与 `failedTodoEdits` 保护、限高滚动规则 `max-height: min(240px, 45dvh)` 与完成态规则 `.memo-todo-text[data-done="1"]`（删除线 + `--text-muted` + 斜体）；`agent/dist` 三个 Linux 架构二进制齐全；`logs/` 只有 `.gitkeep`；**不含**任何私有文件（`.admin-password.json` / `config.json` / `favorites.json` / `.modules.json` / `nav-sylph.db` / `.webdav-config.json` / `server-config/config.json`）。
 
 ### 本轮浏览器测量
 
@@ -42,7 +44,7 @@
 ### 本轮待闭合
 
 1. ~~异步目标切换/保存拒绝/关闭重开与离线草稿保护~~：已修复并纳入执行型回归与真实指针复验。
-2. ~~最终语法、定向、全量与diff检查；同步隔离副本复验相关交互~~：已跑完（879/879），隔离副本已复验；本轮浏览器与 4337 服务在收尾时清理。
+2. ~~最终语法、定向、全量与diff检查；同步隔离副本复验相关交互~~：已跑完（879/879），隔离副本已复验；本轮浏览器与 4337 服务已清理，发布物已核对。
 3. 真机软键盘、触摸惯性及系统偏好控制的滚动条常驻效果仍需目标设备确认，不把本地可测布局推给真机。
 
 ## 备忘模块升级为「备忘 + 待办」（2026-10-29，**已发布 v2.2.0**）
