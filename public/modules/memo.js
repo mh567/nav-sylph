@@ -20,10 +20,6 @@
     const BODY_MAX = 10240;
     const TODO_TEXT_MAX = 200;
     const TODO_MAX_ENTRIES = 300;
-    /** 卡片上最多展示几条摘要 */
-    const PREVIEW_ROWS = 3;
-    /** 待办预览行会比备忘多一条：单行、没有时间列，四条才与三条备忘等高 */
-    const TODO_PREVIEW_ROWS = 4;
 
     const PIN_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
     const PIN_SVG_BIG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>';
@@ -82,14 +78,19 @@
     let requestStack = null;
     /** 当前挂载的卡片 body（本模块只有一张卡片） */
     let cardBody = null;
-    /** 卡片头标题：随页签显示「备忘 / 待办」 */
-    let cardLabel = null;
-    /** 卡片头里的状态区（状态胶囊写在这里，不参与正文的整块重建） */
-    let cardStatus = null;
+    let cardHead = null;
+    let cardFooter = null;
+    let renderedCardTab = null;
+    const cardScroll = { memo: 0, todo: 0 };
 
-    /** 打开的对话框：{ overlay, panelEl, close } */
+    /** 打开对话框时的面板代次：异步续做用它确认自己还是当前面板 */
     let panel = null;
+    let panelEpoch = 0;
+    /** 保存失败时保留用户原样输入（按 id），下一次打开该条时显示 */
+    const failedTodoEdits = new Map();
     let panelView = 'list'; // list | edit（备忘录编辑表单）
+    /** 正在替换面板 DOM：此时移除聚焦输入框会同步触发 focusout，必须忽略 */
+    let panelRendering = false;
     let editingId = null;   // 备忘录 id 或 'new'
     let confirmDeleteId = null;
     let confirmDeleteTodoId = null;
@@ -294,6 +295,7 @@
                     continue;
                 }
                 if (data && data.todo) applyTodo(data.todo);
+                if (d.id) failedTodoEdits.delete(d.id);
             } catch (e) {
                 remaining.push(d);
             }
@@ -426,6 +428,7 @@
             if (data && data.todo) applyTodo(data.todo);
             if (id) {
                 todoDrafts = todoDrafts.filter(d => d.id !== id);
+                failedTodoEdits.delete(id);
                 persistTodoDrafts();
             }
             lastSync = Date.now();
@@ -474,6 +477,7 @@
         }
         todos = todos.filter(t => t.id !== todo.id);
         todoDrafts = todoDrafts.filter(d => d.id !== todo.id);
+        failedTodoEdits.delete(todo.id);
         persistTodoDrafts();
         confirmDeleteTodoId = null;
         renderCard();
@@ -510,24 +514,11 @@
         return syncState === 'synced' && lastSync ? hm(lastSync) : '';
     }
 
-    /**
-     * 把状态写进**卡片头**（标题右侧）与底部小字里的同步时刻。
-     *
-     * 状态胶囊原先独占正文第一行，占掉整整一行高度（胶囊行 + 8px 外边距约 26px）；
-     * 现在挪进卡片头——与「服务器监控」那张卡一直以来的放法一致。
-     * 「管理」按钮因此也从头里挪到底部那行小字（那行本来就在说「点击管理」），
-     * 否则最窄的一档卡片（132px）装不下「标题 + 胶囊 + 管理」，标题会被截断。
-     */
     function fillStatus() {
-        if (cardStatus) cardStatus.innerHTML = statusPillHTML() + pendingPillHTML();
-        if (cardBody) {
-            const part = cardBody.querySelector('.memo-sync-part');
-            // 整段一起给：没有时刻时连分隔符都不渲染，不留一个孤零零的「·」
-            if (part) {
-                const t = syncTimeText();
-                part.textContent = t ? ` · ${t}同步` : '';
-            }
-        }
+        const part = cardFooter?.querySelector('.memo-sync-part');
+        if (!part) return;
+        const t = syncTimeText();
+        part.innerHTML = (syncState === 'synced' ? (t ? `${t}同步` : '') : statusPillHTML()) + pendingPillHTML();
     }
 
     /**
@@ -564,8 +555,6 @@
         if (key === lastCardStatusKey) return;
         lastCardStatusKey = key;
         fillStatus();
-        // 状态位本身也会变高：失败态多出一个「重试」按钮，而卡片头与底部
-        // 那行小字都是可折行的；不请求重排的话，下面那几张停在旧高度。
         if (requestStack) requestStack();
     }
 
@@ -594,6 +583,7 @@
         // 先收下未提交的就地编辑（与失焦保存同一语义），不静默丢弃用户刚打的字。
         // commitTodoEdit 会同步清掉 editingTodoId，因此下面的重渲染不会带着旧输入框。
         if (editingTodoId) commitTodoEdit();
+        saveCardScroll();
         activeTab = tab;
         renderCard();
         // 备忘编辑表单里没有页签，但卡片上的页签仍可点：此时不重渲染面板，
@@ -612,51 +602,70 @@
             `</label>`;
     }
 
+    /** 同一条待办若已有离线草稿或失败的编辑，显示用户最后一次输入。 */
+    function todoTextOf(todo) {
+        const draft = todoDrafts.find(d => d.id === todo.id);
+        if (draft) return draft.text;
+        if (failedTodoEdits.has(todo.id)) return failedTodoEdits.get(todo.id);
+        return todo.text;
+    }
+
 
     function memoCardHTML() {
-        const rows = memos.slice(0, PREVIEW_ROWS).map(m =>
+        const rows = memos.map(m =>
             `<div class="memo-row" data-action="open">` +
             `${m.pinned ? PIN_SVG : ''}` +
             `<span class="memo-row-title">${esc(m.title)}</span>` +
             `<span class="memo-row-time">${relTime(m.updatedAt)}</span>` +
             `</div>`).join('');
-        return (memos.length
-            ? `<div class="memo-rows">${rows}</div>`
-            : '<div class="memo-empty-card">还没有备忘</div>') +
-            `<div class="module-card-hint">共 ${memos.length} 条` +
-                `<span class="memo-sync-part"></span>` +
-                ` · <button class="memo-card-manage" type="button" data-action="open">管理</button>` +
-            `</div>`;
+        return memos.length
+            ? `<div class="memo-rows" tabindex="0" role="region" aria-label="备忘列表">${rows}</div>`
+            : '<div class="memo-empty-card">还没有备忘</div>';
     }
 
     function todoCardHTML() {
-        const rows = todos.slice(0, TODO_PREVIEW_ROWS).map(t =>
+        const rows = todos.map(t =>
             `<div class="memo-row memo-todo-row">` +
             todoCheckHTML(t) +
-            `<button class="memo-todo-text" type="button" data-action="open" data-done="${t.done ? 1 : 0}" title="打开待办清单">${esc(t.text)}</button>` +
+            `<button class="memo-todo-text" type="button" data-action="open-todo-edit" data-id="${esc(t.id)}" data-done="${t.done ? 1 : 0}" title="编辑这条待办">${esc(todoTextOf(t))}</button>` +
             `</div>`).join('');
-        const undone = todos.filter(t => !t.done).length;
-        return (todos.length
-            ? `<div class="memo-rows memo-todo-rows">${rows}</div>`
-            : '<div class="memo-empty-card">还没有待办</div>') +
-            `<div class="module-card-hint">共 ${todos.length} 项 · ${undone} 未完成` +
-                `<span class="memo-sync-part"></span>` +
-                ` · <button class="memo-card-manage" type="button" data-action="open">管理</button>` +
-            `</div>`;
+        return todos.length
+            ? `<div class="memo-rows memo-todo-rows" tabindex="0" role="region" aria-label="待办列表">${rows}</div>`
+            : '<div class="memo-empty-card">还没有待办</div>';
+    }
+
+    function saveCardScroll() {
+        const rows = cardBody?.querySelector('.memo-rows');
+        if (rows && renderedCardTab) cardScroll[renderedCardTab] = rows.scrollTop;
     }
 
     function renderCard() {
         if (!cardBody) return;
+        saveCardScroll();
+        const focused = document.activeElement;
+        const restoreFocus = cardBody.contains(focused);
+        const action = restoreFocus ? focused.dataset.action : null;
+        const id = restoreFocus ? focused.dataset.id : null;
         lastCardKey = cardKey();
-        // 卡片头标题随页签走：132px 卡片的头部只有 104px，写死「备忘与待办」
-        // 会被省略号截断，而当前页签名两个字一定放得下。
-        if (cardLabel) cardLabel.textContent = activeTab === 'memo' ? '备忘' : '待办';
-        cardBody.innerHTML = tabsHTML() + (activeTab === 'memo' ? memoCardHTML() : todoCardHTML());
-        // 整块重建时状态也一并重画了，指纹要跟着走，否则下一轮会白刷一次
+        cardHead.querySelectorAll('[data-action="switch-tab"]').forEach(tab => {
+            const selected = String(tab.dataset.tab === activeTab);
+            if (tab.getAttribute('aria-selected') !== selected) tab.setAttribute('aria-selected', selected);
+        });
+        cardBody.innerHTML = activeTab === 'memo' ? memoCardHTML() : todoCardHTML();
+        renderedCardTab = activeTab;
+        const rows = cardBody.querySelector('.memo-rows');
+        if (rows) rows.scrollTop = cardScroll[activeTab];
+        if (restoreFocus) {
+            const target = action
+                ? Array.from(cardBody.querySelectorAll('[data-action]')).find(el => el.dataset.action === action && el.dataset.id === id)
+                : rows;
+            if (target) target.focus({ preventScroll: true });
+        }
+        cardFooter.querySelector('.memo-card-count').textContent = activeTab === 'memo'
+            ? `共 ${memos.length} 条`
+            : `共 ${todos.length} 项 · ${todos.filter(t => !t.done).length} 未完成`;
         lastCardStatusKey = statusKey();
         fillStatus();
-        // 卡片高度随内容变化（0 条与 3 条差一截、页签行也占一行），
-        // 宽屏的纵向偏移按实测高度排。
         if (requestStack) requestStack();
     }
 
@@ -672,22 +681,15 @@
         }
 
         const card = document.createElement('section');
-        card.className = 'module-card';
+        card.className = 'module-card memo-card';
+        card.setAttribute('aria-label', '备忘与待办');
         // 布局键是稳定域 id，不是数组下标（平台约定）
         card.dataset.instanceId = 'memo:main';
 
         const head = document.createElement('div');
         head.className = 'module-widget-head';
 
-        const label = document.createElement('span');
-        label.className = 'module-widget-title';
-        label.textContent = '备忘';
-
-        // 状态胶囊放卡片头（标题右侧），不再独占正文第一行。
-        // ⚠️ 它是模块级状态 cardStatus，写在 **cardBody 之外**（在卡片头里）——
-        // 正文的整块重建不该顺手把它抹掉，两处各写各的。
-        const status = document.createElement('span');
-        status.className = 'memo-card-status';
+        head.innerHTML = tabsHTML();
 
         const handle = document.createElement('button');
         handle.type = 'button';
@@ -696,29 +698,24 @@
         handle.setAttribute('aria-label', '拖拽调整备忘与待办的位置');
         // 显隐交给平台的 .module-zone.is-editing 规则，不在这里写 hidden
 
-        // 「管理」不在卡片头里：最窄的一档卡片（132px）装不下
-        // 「标题 + 状态胶囊 + 管理」，标题会被截断。它挪到底部那行小字里
-        // （那行本来就在说「点击管理」），由 renderCard 渲染、走同一层事件委托。
-
-        head.append(label, status, handle);
-
         const body = document.createElement('div');
         body.className = 'module-widget-body';
-
-        card.append(head, body);
+        const footer = document.createElement('div');
+        footer.className = 'memo-card-footer module-card-hint';
+        footer.innerHTML = '<span class="memo-card-count"></span><div class="memo-card-tools"><span class="memo-sync-part"></span><button class="memo-card-manage" type="button" data-action="open">管理</button></div>';
+        footer.querySelector('.memo-card-tools').appendChild(handle);
+        card.append(head, body, footer);
         cardBody = body;
-        cardStatus = status;
-        cardLabel = label;
+        cardHead = head;
+        cardFooter = footer;
+        renderedCardTab = null;
 
-        // 事件委托挂在**整张卡**上，不是正文上。状态胶囊（含失败态的「重试」）
-        // 在卡片头里，而卡片头与正文是兄弟节点——委托挂在正文上时，头里那个
-        // 「重试」是死按钮。实测（停服制造失败态）：点头里的「重试」不发请求、
-        // 状态纹丝不动，而面板里的「同步」正常——同一个动作两种结果。
         card.addEventListener('click', event => {
             const t = event.target.closest('[data-action]');
             if (!t) return;
             const action = t.dataset.action;
             if (action === 'open') openPanel();
+            else if (action === 'open-todo-edit') openPanel({ todoId: t.dataset.id });
             else if (action === 'retry') poll({ manual: true });
             else if (action === 'switch-tab') switchTab(t.dataset.tab);
             else if (action === 'toggle-todo') {
@@ -739,7 +736,11 @@
 
     // ================= 管理对话框 =================
 
-    function openPanel() {
+    function openPanel({ todoId } = {}) {
+        if (panel) {
+            if (todoId !== undefined) openTodoTarget(todoId);
+            return panel.overlay;
+        }
         const overlay = document.createElement('div');
         overlay.className = 'module-overlay';
 
@@ -757,7 +758,14 @@
         confirmDeleteId = null;
         confirmDeleteTodoId = null;
         editingTodoId = null;
-        panel = { overlay, panelEl, close: null };
+        if (todoId !== undefined) {
+            saveCardScroll();
+            activeTab = 'todo';
+            editingTodoId = todos.some(t => t.id === todoId) ? todoId : null;
+            if (!editingTodoId) window.app?.showToast('这条待办已不存在，已打开待办清单', 'error');
+            renderCardMaybe();
+        }
+        panel = { overlay, panelEl, close: null, epoch: ++panelEpoch, targetSeq: 0 };
 
         const closePanel = () => {
             overlay.remove();
@@ -830,6 +838,8 @@
                     switchTab(t.dataset.tab);
                     break;
                 case 'edit-todo':
+                    // 换目标前先保存上一条，避免「点另一条」把未提交的编辑丢掉
+                    if (editingTodoId && editingTodoId !== id) commitTodoEdit();
                     editingTodoId = id;
                     confirmDeleteTodoId = null;
                     renderPanel();
@@ -885,6 +895,7 @@
         // 失焦保存。focusout 会冒泡（blur 不会），焦点移到行内按钮时也走这里；
         // 编辑态已经退出（commitTodoEdit 先清 editingTodoId）就不会重复触发。
         panelEl.addEventListener('focusout', event => {
+            if (panelRendering) return;
             if (event.target.id === 'memoTodoInput' && editingTodoId) commitTodoEdit();
         });
         // ⚠️ 行内操作按钮（删除 / 勾选）在 pointerdown 时阻止默认：
@@ -899,6 +910,39 @@
         return overlay;
     }
 
+    async function openTodoTarget(todoId) {
+        const owner = panel;
+        if (!owner) return;
+        if (panelView === 'edit') {
+            window.app?.showToast('请先保存或取消当前备忘编辑', 'error');
+            return;
+        }
+        if (owner.panelEl.querySelector('#memoTodoNew')?.value.trim()) {
+            window.app?.showToast('请先添加或清空正在输入的待办', 'error');
+            return;
+        }
+        const seq = ++owner.targetSeq;
+        const startTab = activeTab;
+        if (editingTodoId && editingTodoId !== todoId) {
+            if (await commitTodoEdit({ epoch: owner.epoch }) === false) return;
+        } else if (editingTodoId === todoId && todos.some(t => t.id === todoId)) {
+            const input = owner.panelEl.querySelector('#memoTodoInput');
+            input?.focus({ preventScroll: true });
+            input?.scrollIntoView({ block: 'nearest' });
+            return;
+        }
+        if (panel !== owner || owner.targetSeq !== seq || panelView === 'edit'
+            || editingTodoId || activeTab !== startTab) return;
+        saveCardScroll();
+        activeTab = 'todo';
+        panelView = 'list';
+        confirmDeleteTodoId = null;
+        editingTodoId = todos.some(t => t.id === todoId) ? todoId : null;
+        if (!editingTodoId) window.app?.showToast('这条待办已不存在，已打开待办清单', 'error');
+        renderCardMaybe();
+        renderPanel();
+    }
+
     function renderPanel() {
         if (!panel) return;
         // 编辑中的表单可能带着未保存内容：引用的备忘录若已不在
@@ -907,7 +951,12 @@
             panelView = 'list';
             editingId = null;
         }
-        panel.panelEl.innerHTML = panelView === 'edit' ? editFormHTML() : panelHTML();
+        panelRendering = true;
+        try {
+            panel.panelEl.innerHTML = panelView === 'edit' ? editFormHTML() : panelHTML();
+        } finally {
+            panelRendering = false;
+        }
         lastPanelKey = panelKey();
         if (panelView === 'edit') {
             const title = panel.panelEl.querySelector('#memoTitle');
@@ -919,8 +968,9 @@
             // 就地编辑：聚焦并把原文字全选，直接输入即可替换
             const input = panel.panelEl.querySelector('#memoTodoInput');
             if (input) {
-                input.focus();
+                input.focus({ preventScroll: true });
                 input.select();
+                input.scrollIntoView({ block: 'nearest' });
             }
         }
     }
@@ -948,9 +998,9 @@
         return [
             activeTab,
             syncState,
-            drafts.length + todoDrafts.length,
-            memos.map(m => `${m.id}:${m.pinned}:${m.updatedAt}`).join('|'),
-            todos.map(t => `${t.id}:${t.done}:${t.updatedAt}`).join('|')
+            activeTab === 'memo' ? drafts.length : todoDrafts.length,
+            activeTab === 'memo' ? memos.map(m => `${m.id}:${m.pinned}:${m.updatedAt}`).join('|') : '',
+            activeTab === 'todo' ? todos.map(t => `${t.id}:${t.done}:${t.updatedAt}`).join('|') : ''
         ].join('>');
     }
 
@@ -997,13 +1047,13 @@
         return todos.map(t => {
             if (confirmDeleteTodoId === t.id) {
                 return `<div class="memo-row-lg memo-todo-row">` +
-                    `<div class="memo-del-confirm"><span>删除「${esc(t.text)}」？</span>` +
+                    `<div class="memo-del-confirm"><span>删除「${esc(todoTextOf(t))}」？</span>` +
                     `<button class="btn" type="button" data-action="confirm-del-todo" data-id="${esc(t.id)}">删除</button>` +
                     `<button class="btn" type="button" data-action="cancel-del-todo">取消</button></div></div>`;
             }
             const body = editingTodoId === t.id
-                ? `<input class="memo-todo-input" id="memoTodoInput" type="text" data-id="${esc(t.id)}" maxlength="${TODO_TEXT_MAX}" value="${esc(t.text)}">`
-                : `<button class="memo-todo-text" type="button" data-action="edit-todo" data-id="${esc(t.id)}" data-done="${t.done ? 1 : 0}" title="点击编辑">${esc(t.text)}</button>`;
+                ? `<input class="memo-todo-input" id="memoTodoInput" type="text" data-id="${esc(t.id)}" maxlength="${TODO_TEXT_MAX}" value="${esc(todoTextOf(t))}">`
+                : `<button class="memo-todo-text" type="button" data-action="edit-todo" data-id="${esc(t.id)}" data-done="${t.done ? 1 : 0}" title="点击编辑">${esc(todoTextOf(t))}</button>`;
             return `<div class="memo-row-lg memo-todo-row">` + todoCheckHTML(t) + body +
                 `<div class="memo-row-actions">` +
                     `<button class="icon-btn danger" type="button" data-action="ask-del-todo" data-id="${esc(t.id)}" title="删除">✕</button>` +
@@ -1103,33 +1153,62 @@
     }
 
     /** 待办就地编辑：回车 / 失焦保存。先退出编辑态再写，避免重渲染触发第二次提交。 */
-    async function commitTodoEdit() {
-        if (!panel || !editingTodoId) return;
+    async function commitTodoEdit({ epoch } = {}) {
+        const owner = panel;
+        if (!owner || !editingTodoId || panelRendering) return;
+        if (epoch !== undefined && owner.epoch !== epoch) return;
         const id = editingTodoId;
         const todo = todos.find(t => t.id === id);
-        const input = panel.panelEl.querySelector('#memoTodoInput');
+        const input = owner.panelEl.querySelector('#memoTodoInput');
+        // 迟到的 focusout 可能来自已被替换的旧输入框：它的 id 与当前目标不一致时
+        // 绝不能把旧文本提交到新目标。
+        if (input && input.dataset?.id && input.dataset.id !== id) return;
+        const raw = input ? input.value : '';
         editingTodoId = null;
         if (!todo || !input) {
-            renderPanel();
+            if (panel === owner) renderPanel();
             return;
         }
-        const text = input.value.trim();
+        const text = raw.trim();
         if (!text) {
-            renderPanel();
+            if (panel === owner) renderPanel();
             window.app?.showToast('待办内容不能为空', 'error');
-            return;
+            return false;
         }
-        if (text === todo.text) {
-            renderPanel();
+        if (text === todoTextOf(todo)) {
+            if (panel === owner) renderPanel();
             return;
         }
         const ok = await saveTodo(id, text);
         if (ok) window.app?.showToast('已保存');
-        if (panel && panelView === 'list') renderPanel();
+        const retained = ok || todoDrafts.some(d => d.id === id && d.text === text);
+        if (!retained) failedTodoEdits.set(id, raw);
+        // 等待期间面板已换成别的对象、或用户已切到备忘页签/另一个编辑目标：
+        // 迟到的结果只保留文字，不写新上下文的 DOM，也不恢复孤立的 editingTodoId。
+        const sameContext = panel === owner
+            && panelView === 'list'
+            && !editingTodoId
+            && activeTab === 'todo';
+        if (!sameContext) return retained;
+        if (!retained) {
+            if (!todos.some(t => t.id === id)) {
+                window.app?.showToast('待办保存失败，且该条已不存在', 'error');
+                renderPanel();
+                return false;
+            }
+            editingTodoId = id;
+            renderPanel();
+            const again = panel.panelEl.querySelector('#memoTodoInput');
+            if (again) again.value = raw;
+            return false;
+        }
+        renderPanel();
+        return retained;
     }
 
     function cancelTodoEdit() {
         if (!editingTodoId) return;
+        failedTodoEdits.delete(editingTodoId);
         editingTodoId = null;
         renderPanel();
     }

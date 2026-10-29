@@ -3117,14 +3117,18 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-panel-detail dd { color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ===== 备忘录模块 ===== */
-/* 卡片头里的状态区：状态胶囊放这儿（标题右侧），不再独占正文第一行。 */
-.memo-card-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-/* 底部小字行里的「管理」：从卡片头挪下来，给最窄的一档卡片（132px）
-   腾出标题宽度——那里装不下「标题 + 胶囊 + 管理」三样。 */
+.memo-card .module-widget-head { justify-content: center; }
+.memo-card .module-widget-head .memo-tabs { flex: 0 1 160px; min-width: 0; margin: 0; }
+.memo-card .module-widget-body { min-width: 0; min-height: 0; }
+.memo-card .memo-rows { max-height: min(240px, 45dvh); min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable; }
+.memo-card .memo-rows:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.memo-card .memo-row { flex-shrink: 0; }
+.memo-card .memo-card-footer { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.memo-card .memo-card-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.memo-card .memo-sync-part { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
+
 .memo-card-manage { border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .memo-card-manage:hover { color: var(--accent); }
-/* 同步状态行现在**只**出现在管理面板的头部（卡片里那份已挪进卡片头）。
-   面板头自己给了 margin: 0，所以这里不再写底边距。 */
 .memo-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .memo-status-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .memo-retry { border: 0; padding: 0; background: none; color: var(--accent); font-size: 10px; text-decoration: underline; cursor: pointer; }
@@ -3246,7 +3250,7 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .memo-panel .module-panel-close { min-width: 30px; min-height: 30px; font-size: 18px; }
 
 /* ========== 备忘 / 待办页签 ==========
-   卡片正文顶部一行两段式切换。最窄卡片 132px、正文可用 106px，两个 11px
+   最窄卡片 132px、正文可用 106px，两个 11px
    中文页签各约 40px，加内边距与间隙刚好——别再加第三个页签。
    ⚠️ 这一组只写在 styles.css：admin.css 后加载，同名选择器会被它覆盖。 */
 .memo-tabs { display: flex; gap: 2px; margin-bottom: 7px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); }

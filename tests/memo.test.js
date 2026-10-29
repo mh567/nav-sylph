@@ -24,7 +24,7 @@ function stripComments(src) {
 }
 
 function tempDbPath() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-memo-db-'));
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-memo-db-'));
     return path.join(dir, 'memos.db');
 }
 
@@ -535,15 +535,15 @@ test('恢复备份时拒绝带引号的 id（否则会进前端的 data-id 属�
 // ========== 前端与发布面 ==========
 
 test('KNOWN_MODULES 收编 memo，模块文件存在且经 registerModule 注册', () => {
-    assert.match(appSource, /static KNOWN_MODULES = \[[^\]]*'memo'/,
+    assert.match(stripComments(appSource), /static KNOWN_MODULES = \[[^\]]*'memo'/,
         '白名单不含 memo 的话 loadModule 会直接拒绝加载');
-    assert.match(memoSrc, /window\.app\.registerModule\(\{/);
-    assert.match(memoSrc, /id: 'memo'/);
+    assert.match(stripComments(memoSrc), /window\.app\.registerModule\(\{/);
+    assert.match(stripComments(memoSrc), /id: 'memo'/);
     assert.ok(fs.existsSync(path.join(ROOT, 'public', 'modules', 'memo.js')));
 });
 
 test('sw.js 预缓存 memo.js，且 CACHE 与注释里最新的一级一致', () => {
-    assert.match(swSource, /'\/modules\/memo\.js'/,
+    assert.match(stripComments(swSource), /'\/modules\/memo\.js'/,
         '延后加载也要预缓存：否则回访用户每次打开模块区都要走一次网络');
 
     const cache = swSource.match(/const CACHE = '([^']+)'/)[1];
@@ -554,13 +554,13 @@ test('sw.js 预缓存 memo.js，且 CACHE 与注释里最新的一级一致', ()
 });
 
 test('备忘录模块把用户文本经 esc() 落进模板，原始字段不得直接插入', () => {
-    assert.match(memoSrc, /function esc\(/, '模块内自带转义助手');
+    assert.match(stripComments(memoSrc), /function esc\(/, '模块内自带转义助手');
 
     // 正向枚举：用户文本（标题 / 正文 / 待办文字 / 搜索词）在哪都行，但每一处
     // 插值都必须整体包在 esc() 里。只作「存在性检查」是不够的——标题在预览行
     // 与列表行各出现一次，去掉其中一处的 esc 仍然能匹配到另一处（实测踩过）。
     const offenders = [];
-    for (const tpl of [...memoSrc.matchAll(/`([^`]*)`/gs)].map(m => m[1])) {
+    for (const tpl of [...stripComments(memoSrc).matchAll(/`([^`]*)`/gs)].map(m => m[1])) {
         for (const hit of tpl.matchAll(/\$\{([^}]+)\}/g)) {
             const expr = hit[1].trim();
             if (!/\b(m\.title|m\.body|t\.text|search)\b/.test(expr)) continue;
@@ -574,7 +574,7 @@ test('备忘录模块把用户文本经 esc() 落进模板，原始字段不得�
         `这些插值把用户文本直接落进了 innerHTML：${offenders.join(' | ')}`);
     // id 也必须经 esc()：恢复备份时 id 来自外部 JSON，且会进 data-id 属性。
     // 服务端另有字符集校验（RESTORE_ID_PATTERN），这里是第二道。
-    const rawIdAttr = [...memoSrc.matchAll(/data-id="\$\{(?!esc\()([^}]+)\}"/g)]
+    const rawIdAttr = [...stripComments(memoSrc).matchAll(/data-id="\$\{(?!esc\()([^}]+)\}"/g)]
         .map(m => m[1].trim());
     assert.deepEqual(rawIdAttr, [], `这些 data-id 没有转义：${rawIdAttr.join(' | ')}`);
 });
@@ -592,7 +592,7 @@ test('模块只用平台注入的 api 对象，不引用 app.js 内部的裸标�
 
 test('模块用的元素 id 不与页面既有 id 冲突', () => {
     const indexHtml = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
-    const memoIds = [...memoSrc.matchAll(/(?<![-\w])id="([^"]+)"/g)].map(m => m[1]);
+    const memoIds = [...stripComments(memoSrc).matchAll(/(?<![-\w])id="([^"]+)"/g)].map(m => m[1]);
     assert.ok(memoIds.length >= 5, `备忘录模块应有若干 id，实测 ${memoIds.length}`);
 
     // 浏览器实测踩过：模块的 #saveBtn 与 app.js 后台弹窗的 #saveBtn 撞名，
@@ -645,7 +645,7 @@ async function waitForServer(base, deadlineMs) {
 }
 
 test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查', { timeout: 60000 }, async t => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-memo-e2e-'));
+    const tmp = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-memo-e2e-'));
     let child = null;
     t.after(() => {
         if (child) child.kill('SIGKILL');
@@ -798,12 +798,8 @@ test('卡片按数据指纹跳过整块重建，同步态就地更新', () => {
     const fillAt = code.indexOf('function fillStatus()');
     const fillBody = code.slice(fillAt, code.indexOf('\n    }', fillAt));
     assert.ok(fillBody.length > 150, `切出 fillStatus（${fillBody.length}）`);
-    assert.match(fillBody, /cardStatus\.innerHTML = statusPillHTML\(\) \+ pendingPillHTML\(\)/,
-        '状态胶囊写进**卡片头**的状态区（不再独占正文第一行）');
-    // ⚠️ 只断言「出现过 querySelector('.memo-sync-part')」是不够的：把那行
-    // **写入**删掉、只留查询，断言照样绿，而底部小字里的时刻就没了。
-    assert.match(fillBody, /part\.textContent = t \? ` · \$\{t\}同步` : ''/,
-        '真的把同步时刻写进底部小字（没有时刻时连分隔符一起不渲染）');
+    assert.match(fillBody, /cardFooter\?\.querySelector\('\.memo-sync-part'\)/);
+    assert.match(fillBody, /part\.innerHTML = .*statusPillHTML\(\).*pendingPillHTML\(\)/);
     // 时刻只在成功态给值——同步中/失败时显示上一次成功的时刻会误导
     assert.match(code, /function syncTimeText\(\)\s*\{[\s\S]{0,200}syncState === 'synced' && lastSync/,
         '同步时刻只在成功态给值');
@@ -858,58 +854,6 @@ test('卡片按数据指纹跳过整块重建，同步态就地更新', () => {
         '状态变化后也要请求重排（底部小字会折行变高）');
 });
 
-test('卡片布局：状态胶囊在卡片头，「管理」在正文（窄卡片才装得下）', () => {
-    // 用户原话：「备忘录的"已同步"状态应该放在第一行，不应该占用这么大空间」。
-    // 状态胶囊原来独占正文第一行（胶囊行 + 8px 外边距约 26px）。
-    //
-    // ⚠️ 但**不能连「管理」一起放进卡片头**：实测最窄的一档卡片只有 132px、
-    // 头部可用 104px，而「标题(33) + 胶囊(41) + 管理(36) + 间隙」需要 126px，
-    // 标题会被挤成 8px（对照表见 docs/mockup-module-status-motion.html，四个
-    // 位置 × 两档宽度的实测）。所以「管理」下移到右下角那行小字——那行本来
-    // 就在说「点击管理」。
-    const code = stripComments(memoSrc);
-
-    // ① 卡片头里有一个独立的状态容器，且不参与正文的整块重建
-    assert.match(code, /let cardStatus = null;/, '状态区是模块级状态');
-    assert.match(code, /const status = document\.createElement\('span'\);\s*\n\s*status\.className = 'memo-card-status'/,
-        '卡片头里建了状态容器');
-    assert.match(code, /head\.append\(label, status, handle\)/, '状态容器排在标题之后');
-    assert.match(code, /cardStatus = status;/, '挂载时记下状态容器');
-
-    // ② 正文里不再有那一行
-    const cardAt = code.indexOf('function renderCard() {');
-    const renderBody = code.slice(cardAt, code.indexOf('\n    }', cardAt));
-    assert.ok(renderBody.length > 300, `切出 renderCard（${renderBody.length}）`);
-    assert.doesNotMatch(renderBody, /memo-status-row/, '正文不再渲染独立的状态行');
-
-    // ③ 「管理」在正文底部，带 data-action（走那一层事件委托）。
-    //    卡片正文现在拆成两个页签各自的片段函数，两处都必须带同一个「管理」。
-    for (const name of ['memoCardHTML', 'todoCardHTML']) {
-        const at = code.indexOf(`function ${name}() {`);
-        assert.ok(at > 0, `找到 ${name}`);
-        const body = code.slice(at, code.indexOf('\n    }', at));
-        assert.ok(body.length > 150, `切出 ${name}（${body.length}）`);
-        assert.match(body, /class="memo-card-manage"[^>]*data-action="open"/,
-            `${name}：「管理」在底部小字里，仍是 data-action="open"`);
-        assert.match(body, /memo-sync-part/, `${name}：同步时刻的容器也在底部小字里`);
-    }
-    // 卡片头里不得再有「管理」按钮（那就是会挤掉标题的那个形状）
-    assert.doesNotMatch(code, /module-widget-expand/, '卡片头里不得再有「管理」按钮');
-
-    // ④ 委托必须挂在**整张卡**上，不能挂在正文上。
-    //    ⚠️ 这是本轮踩到的真缺陷：状态胶囊（含失败态的「重试」按钮）在卡片头里，
-    //    而卡片头与正文是**兄弟节点**——委托挂在正文上时，头里那个「重试」是
-    //    死按钮。实测（停服制造失败态）：点头里的「重试」不发请求、状态纹丝不动，
-    //    而面板里的「同步」正常。光断言「字符串 poll({manual:true}) 存在」抓不到它，
-    //    因为那个分支还在、只是永远走不到。
-    assert.match(code, /card\.addEventListener\('click'/, '点击委托挂在整张卡上');
-    assert.doesNotMatch(code, /body\.addEventListener\('click'/,
-        '不得只挂在正文上——卡片头里的「重试」会点不到');
-    assert.match(code, /card\.append\(head, body\)/, '卡片头与正文都是 card 的子节点');
-    assert.match(code, /action === 'retry'\)\s*poll\(\{ manual: true \}\)/,
-        '失败态的「重试」确实接到手动同步上');
-});
-
 // ========== 备忘 / 待办页签与完成态 ==========
 
 test('卡片顶部两个页签：默认备忘、正文按页签切换、页签进指纹', () => {
@@ -926,12 +870,11 @@ test('卡片顶部两个页签：默认备忘、正文按页签切换、页签�
     const cardAt = code.indexOf('function renderCard() {');
     const renderBody = code.slice(cardAt, code.indexOf('\n    }', cardAt));
     assert.ok(renderBody.length > 200, `切出 renderCard（${renderBody.length}）`);
-    assert.match(renderBody, /cardBody\.innerHTML = tabsHTML\(\)/,
-        '页签在卡片正文顶部');
+    assert.match(code, /head\.innerHTML = tabsHTML\(\)/, '页签在稳定头部');
+    assert.doesNotMatch(renderBody, /tabsHTML\(/, '正文重建不销毁页签');
     assert.match(renderBody, /activeTab === 'memo' \? memoCardHTML\(\) : todoCardHTML\(\)/,
         '切到待办时正文换成待办清单');
-    assert.match(renderBody, /cardLabel\.textContent = activeTab === 'memo' \? '备忘' : '待办'/,
-        '卡片头标题跟着页签走（132px 卡片放不下「备忘与待办」）');
+    assert.doesNotMatch(code, /cardLabel|cardStatus/, '旧标题与头状态已移除');
 
     // 页签与待办数据都必须进卡片指纹：切页签/勾选待办都要整块重建
     const keyAt = code.indexOf('function cardKey()');
@@ -957,7 +900,7 @@ test('卡片顶部两个页签：默认备忘、正文按页签切换、页签�
 });
 
 test('待办完成态：删除线 + 变灰 + 斜体，规则只声明一次', () => {
-    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
     // 只匹配基规则（`…[data-done="1"] {`）；`:hover` 那条选择器更长，不会命中
     const rules = [...css.matchAll(/\.memo-todo-text\[data-done="1"\]\s*\{([^}]*)\}/g)];
     assert.equal(rules.length, 1, `完成态基规则只声明一次，实测 ${rules.length}`);
@@ -975,7 +918,7 @@ test('待办就地编辑：点文字进编辑态、回车/失焦保存、Esc 取
     const code = stripComments(memoSrc);
 
     assert.match(code, /let editingTodoId = null;/, '有就地编辑状态');
-    assert.match(code, /case 'edit-todo':[\s\S]{0,120}editingTodoId = id;/,
+    assert.match(code, /case 'edit-todo':[\s\S]{0,320}editingTodoId = id;/,
         '点文字进入编辑态');
     assert.match(code, /editingTodoId === t\.id[\s\S]{0,200}memoTodoInput/,
         '编辑态下文字按钮换成输入框');
@@ -1005,7 +948,7 @@ test('待办就地编辑：点文字进编辑态、回车/失焦保存、Esc 取
     assert.match(pd, /preventDefault\(\)/, '行内操作按钮的 pointerdown 先拦截');
 
     // 保存成功后退出编辑态；空内容回退原文
-    const commitAt = code.indexOf('async function commitTodoEdit()');
+    const commitAt = code.indexOf('async function commitTodoEdit(');
     const commit = code.slice(commitAt, code.indexOf('\n    }', commitAt));
     assert.ok(commit.length > 200, `切出 commitTodoEdit（${commit.length}）`);
     assert.match(commit, /editingTodoId = null;/, '先退出编辑态，避免重渲染触发第二次提交');
@@ -1013,13 +956,13 @@ test('待办就地编辑：点文字进编辑态、回车/失焦保存、Esc 取
     assert.match(commit, /saveTodo\(id, text\)/, '走同一个保存入口');
 });
 
-test('卡片上的待办行：勾选框直接切完成态，点文字打开面板', () => {
+test('卡片上的待办行：勾选框直接切完成态，点文字直达指定编辑', () => {
     const code = stripComments(memoSrc);
     const at = code.indexOf('function todoCardHTML() {');
     const body = code.slice(at, code.indexOf('\n    }', at));
     assert.ok(body.length > 200, `切出 todoCardHTML（${body.length}）`);
     assert.match(body, /todoCheckHTML\(t\)/, '卡片复用共用的勾选框标记');
-    assert.match(body, /data-action="open"[^>]*data-done=/, '点文字打开面板（编辑只在面板里）');
+    assert.match(body, /data-action="open-todo-edit" data-id="\$\{esc\(t\.id\)\}"/, '点文字传入目标 id 编辑');
     // 勾选框的 data-action 在共用标记里；委托里必须有这条分支，否则它是死按钮
     const checkAt = code.indexOf('function todoCheckHTML(t) {');
     const checkBody = code.slice(checkAt, code.indexOf('\n    }', checkAt));
@@ -1039,7 +982,7 @@ test('待办达到 300 条上限时禁用添加（客户端不送必然被拒的
 });
 
 test('窄屏 44px 下限覆盖卡片页签与勾选（不只面板）', () => {
-    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
     const blocks = [...css.matchAll(/@media \(max-width: 1023px\) \{([\s\S]*?)\n\}/g)].map(m => m[1]);
     const memoBlock = blocks.find(b => b.includes('.memo-todo-check-wrap'));
     assert.ok(memoBlock, '找到备忘模块的窄屏块');
@@ -1061,7 +1004,20 @@ function extractFunction(src, name) {
     // `async function` 的 async 在 'function' 之前：不带上它，函数体里的 await
     // 会在 new Function 里直接 SyntaxError（症状是「测试文件加载失败」而不是断言）。
     if (src.slice(Math.max(0, at - 6), at) === 'async ') at -= 6;
-    const open = src.indexOf('{', at);
+    // 参数里可能有默认值解构（`{ epoch } = {}`）：先配平括号，再找函数体左花括号，
+    // 否则会把参数里的 `}` 当成函数结束（切出 39 个字符）。
+    const openParen = src.indexOf('(', at);
+    let parenDepth = 0;
+    let closeParen = -1;
+    for (let i = openParen; i < src.length; i++) {
+        if (src[i] === '(') parenDepth++;
+        else if (src[i] === ')') {
+            parenDepth--;
+            if (parenDepth === 0) { closeParen = i; break; }
+        }
+    }
+    assert.ok(closeParen > openParen, `${name} 的参数括号可配平`);
+    const open = src.indexOf('{', closeParen);
     assert.ok(open > at, `${name} 的函数体起点可定位`);
     let depth = 0;
     for (let i = open; i < src.length; i++) {
@@ -1094,7 +1050,7 @@ test('switchTab 真跑：真的切状态并重渲染；有未提交的编辑先�
 
     function build({ editing = false, panelOpen = true } = {}) {
         const calls = [];
-        const api = new Function('renderCard', 'renderPanelMaybe', 'commitTodoEdit', `
+        const api = new Function('renderCard', 'renderPanelMaybe', 'commitTodoEdit', 'saveCardScroll', `
             let activeTab = 'memo';
             let editingTodoId = ${editing ? "'t1'" : 'null'};
             let panel = ${panelOpen ? '{}' : 'null'};
@@ -1104,7 +1060,8 @@ test('switchTab 真跑：真的切状态并重渲染；有未提交的编辑先�
         `)(
             () => calls.push('card'),
             () => calls.push('panel'),
-            () => calls.push('commit')
+            () => calls.push('commit'),
+            () => calls.push(`scroll:${api.state().activeTab}`)
         );
         return { api, calls };
     }
@@ -1112,45 +1069,19 @@ test('switchTab 真跑：真的切状态并重渲染；有未提交的编辑先�
     const a = build();
     a.api.switchTab('todo');
     assert.equal(a.api.state().activeTab, 'todo', '真的切到待办');
-    assert.deepEqual(a.calls, ['card', 'panel'], '卡片与面板都重渲染');
+    assert.deepEqual(a.calls, ['scroll:memo', 'card', 'panel'], '卡片与面板都重渲染');
     a.api.switchTab('bogus');
     assert.equal(a.api.state().activeTab, 'todo', '非法页签不切换');
     a.api.switchTab('todo');
-    assert.deepEqual(a.calls, ['card', 'panel'], '重复点击同一页签不重渲染');
+    assert.deepEqual(a.calls, ['scroll:memo', 'card', 'panel'], '重复点击同一页签不重渲染');
 
     const b = build({ editing: true });
     b.api.switchTab('todo');
-    assert.deepEqual(b.calls, ['commit', 'card', 'panel'], '先收下未提交的就地编辑再切换');
+    assert.deepEqual(b.calls, ['commit', 'scroll:memo', 'card', 'panel'], '先收下未提交的就地编辑再切换');
 
     const c = build({ panelOpen: false });
     c.api.switchTab('todo');
-    assert.deepEqual(c.calls, ['card'], '面板没开时只重渲染卡片');
-});
-
-test('todoCardHTML 真跑：完成态、转义、预览条数与计数', () => {
-    const escBody = extractFunction(memoSrc, 'esc');
-    const checkBody = extractFunction(memoSrc, 'todoCheckHTML');
-    const cardBody = extractFunction(memoSrc, 'todoCardHTML');
-    const render = todos => new Function('todos', 'TODO_PREVIEW_ROWS', `
-        ${escBody}
-        ${checkBody}
-        ${cardBody}
-        return todoCardHTML();
-    `)(todos, 4);
-
-    const extra = Array.from({ length: 5 }, (_, i) => ({
-        id: `x${i}`, text: `第 ${i} 条`, done: false, createdAt: 1, updatedAt: 1
-    }));
-    const html = render([
-        { id: 't1', text: '<b>完成</b>', done: true, createdAt: 3, updatedAt: 4 },
-        { id: 't2', text: '未完成', done: false, createdAt: 2, updatedAt: 2 },
-        ...extra
-    ]);
-
-    assert.match(html, /data-done="1"[^>]*>&lt;b&gt;完成&lt;\/b&gt;/, '完成态 + 文字已转义');
-    assert.match(html, /data-id="t1" checked aria-label="标记未完成"/, '完成项勾选框已勾上');
-    assert.equal((html.match(/class="memo-row memo-todo-row"/g) || []).length, 4, '预览最多 4 条');
-    assert.match(html, /共 7 项 · 6 未完成/, '计数与未完成数来自真实数据');
+    assert.deepEqual(c.calls, ['scroll:memo', 'card'], '面板没开时只重渲染卡片');
 });
 
 test('toggleTodo 真跑：请求失败时把完成态回滚', async () => {
@@ -1196,22 +1127,617 @@ test('saveTodo 真跑：断网时进离线草稿队列（编辑与新建各一�
 
 test('commitTodoEdit 真跑：空内容不落库，只提示并退出编辑态', async () => {
     const body = extractFunction(memoSrc, 'commitTodoEdit');
+    const textOfBody = extractFunction(memoSrc, 'todoTextOf');
     const events = [];
     let saved = 0;
-    const api = new Function('renderPanel', 'window', 'saveTodo', `
-        let panel = { panelEl: { querySelector: () => ({ value: '   ' }) } };
+    const api = new Function('renderPanel', 'window', 'saveTodo', 'renderCardMaybe', `
+        let panel = { panelEl: { querySelector: () => ({ value: '   ' }) }, epoch: 1 };
         let editingTodoId = 't1';
         let todos = [{ id: 't1', text: '原文' }];
+        let todoDrafts = [];
+        const failedTodoEdits = new Map();
+        let panelRendering = false;
+        let activeTab = 'todo';
+        let panelView = 'list';
+        ${textOfBody}
         ${body}
         return { commitTodoEdit, get editingTodoId() { return editingTodoId; } };
     `)(
         () => events.push('render'),
         { app: { showToast: (msg, kind) => events.push(`${kind}:${msg}`) } },
-        () => { saved++; return true; }
+        () => { saved++; return true; },
+        () => events.push('card')
     );
 
     await api.commitTodoEdit();
     assert.equal(saved, 0, '空内容不调用保存');
     assert.equal(api.editingTodoId, null, '退出编辑态');
     assert.ok(events.includes('error:待办内容不能为空'), '给出提示');
+});
+
+class MemoElement {
+    constructor(tag, document) {
+        this.tagName = tag;
+        this.ownerDocument = document;
+        this.children = [];
+        this.attributes = {};
+        this.dataset = {};
+        this.listeners = {};
+        this.scrollTop = 0;
+        this.writes = 0;
+        this.value = '';
+        this._text = '';
+        this.history = [];
+    }
+    set className(value) { this.setAttribute('class', value); }
+    get className() { return this.attributes.class || ''; }
+    get id() { return this.attributes.id; }
+    setAttribute(name, value) {
+        this.attributes[name] = String(value);
+        if (name.startsWith('data-')) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = String(value);
+        if (name === 'value') this.value = String(value);
+        this.writes++;
+    }
+    getAttribute(name) { return this.attributes[name] ?? null; }
+    append(...nodes) { nodes.forEach(node => this.appendChild(node)); }
+    appendChild(node) { node.parent = this; this.children.push(node); return node; }
+    remove() {
+        if (this.parent) this.parent.children = this.parent.children.filter(node => node !== this);
+    }
+    contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+    matches(selector) {
+        if (selector.startsWith('#')) return this.id === selector.slice(1);
+        if (selector.startsWith('.')) return this.className.split(/\s+/).includes(selector.slice(1));
+        if (selector.startsWith('[')) {
+            const [, name, value] = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/) || [];
+            return name && this.getAttribute(name) !== null && (value === undefined || this.getAttribute(name) === value);
+        }
+        return this.tagName === selector;
+    }
+    closest(selector) { return this.matches(selector) ? this : this.parent?.closest(selector); }
+    querySelectorAll(selector) {
+        return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter(listener => listener !== fn); }
+    fire(type, target = this, extra = {}) {
+        const event = { target, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...extra };
+        for (const listener of this.listeners[type] || []) listener(event);
+        return event;
+    }
+    focus(options) { this.ownerDocument.activeElement = this; this.focusOptions = options; }
+    select() { this.selected = true; }
+    setSelectionRange(start, end) { this.selection = [start, end]; }
+    scrollIntoView(options) { this.scrollOptions = options; }
+    set textContent(value) { this._text = String(value); this.children = []; this.writes++; }
+    get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
+    set innerHTML(html) {
+        this._html = String(html);
+        this.history.push(this._html);
+        this.children = [];
+        this._text = '';
+        this.writes++;
+        const decode = text => text.replace(/&(?:amp|lt|gt|quot|#39);/g, entity => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" }[entity]));
+        const stack = [this];
+        for (const token of this._html.match(/<[^>]*>|[^<]+/g) || []) {
+            if (token.startsWith('</')) { stack.pop(); continue; }
+            if (!token.startsWith('<')) { stack.at(-1)._text += decode(token); continue; }
+            const tag = token.match(/^<([\w-]+)/)?.[1];
+            if (!tag) continue;
+            const node = new MemoElement(tag, this.ownerDocument);
+            for (const attr of token.slice(tag.length + 1, -1).matchAll(/([\w-]+)(?:="([^"]*)"|='([^']*)')?/g)) {
+                node.setAttribute(attr[1], decode(attr[2] ?? attr[3] ?? ''));
+            }
+            stack.at(-1).appendChild(node);
+            if (!['input', 'br', 'hr', 'img'].includes(tag) && !token.endsWith('/>')) stack.push(node);
+        }
+    }
+    get innerHTML() { return this._html || ''; }
+}
+
+function memoRuntime(source = memoSrc, { memoCount = 8, todoCount = 9, post } = {}) {
+    const document = new MemoElement('document', null);
+    document.ownerDocument = document;
+    document.body = new MemoElement('body', document);
+    document.appendChild(document.body);
+    document.createElement = tag => new MemoElement(tag, document);
+    const memos = Array.from({ length: memoCount }, (_, i) => ({ id: `m${i}`, title: `备忘 ${i}`, body: '正文', pinned: i === 0, createdAt: 100 - i, updatedAt: 100 - i }));
+    const todos = Array.from({ length: todoCount }, (_, i) => ({ id: `t${i}`, text: `待办 ${i}`, done: i === todoCount - 1, createdAt: 100 - i, updatedAt: 100 - i }));
+    let definition;
+    let ready;
+    let failed = false;
+    let stacks = 0;
+    const requests = [];
+    const toasts = [];
+    let clock = Date.now();
+    class MemoClock extends Date { static now() { return clock; } }
+    const context = vm.createContext({
+        document,
+        window: { app: { registerModule: value => { definition = value; }, showToast: (...args) => toasts.push(args) } },
+        localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        console: { error() {}, warn() {} },
+        setInterval: () => 1,
+        clearInterval() {},
+        Date: MemoClock
+    });
+    const marker = '    window.app.registerModule({';
+    assert.equal(source.split(marker).length, 2);
+    const instrumented = source.replace(marker, '    globalThis.inspectMemo = code => eval(code);\n' + marker);
+    vm.runInContext(instrumented, context);
+    const api = {
+        get: async url => {
+            requests.push(['get', url]);
+            if (failed) throw new Error('offline');
+            return url === '/api/memos' ? { memos: memos.map(m => ({ ...m })) } : { todos: todos.map(t => ({ ...t })) };
+        },
+        post: async (url, body) => {
+            requests.push(['post', url, body]);
+            return post ? post(url, body) : {};
+        }
+    };
+    const [card] = definition.mountWidget(null, { api, requestStack: () => { stacks++; }, whenReady: promise => { ready = promise; } });
+    const run = code => context.inspectMemo(code);
+    return {
+        document, card, run, requests, toasts, memos, todos, definition,
+        ready: () => ready,
+        fail: value => { failed = value; },
+        advance: ms => { clock += ms; },
+        get stacks() { return stacks; },
+        get body() { return card.querySelector('.module-widget-body'); },
+        get head() { return card.querySelector('.module-widget-head'); },
+        get footer() { return card.querySelector('.memo-card-footer'); },
+        get rows() { return card.querySelector('.memo-rows'); },
+        get panel() { return document.body.querySelector('.memo-panel'); },
+        click(action, id) {
+            const target = card.querySelectorAll('[data-action]').find(node => node.dataset.action === action && (id === undefined || node.dataset.id === id));
+            assert.ok(target, `卡片按钮存在：${action}/${id}`);
+            card.fire('click', target);
+        }
+    };
+}
+
+const settleMemo = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+async function assertCompleteMemoLists(source = memoSrc) {
+    const h = memoRuntime(source, { memoCount: 20, todoCount: 30 });
+    await h.ready();
+    assert.equal(h.body.querySelectorAll('.memo-row').length, 20);
+    assert.match(h.body.innerHTML, /备忘 19/);
+    assert.equal(h.rows.getAttribute('tabindex'), '0');
+    assert.equal(h.rows.getAttribute('aria-label'), '备忘列表');
+    assert.equal(h.footer.querySelector('.memo-card-count').textContent, '共 20 条');
+    h.card.fire('click', h.head.querySelector('[data-tab="todo"]'));
+    assert.equal(h.body.querySelectorAll('.memo-todo-row').length, 30);
+    assert.match(h.body.innerHTML, /待办 29/);
+    assert.equal(h.rows.getAttribute('aria-label'), '待办列表');
+    assert.equal(h.footer.querySelector('.memo-card-count').textContent, '共 30 项 · 29 未完成');
+    h.run(`todos[29].id = 'last"<'; todos[29].text = '<b>完成</b>'; renderCard()`);
+    assert.match(h.body.innerHTML, /data-id="last&quot;&lt;"/);
+    assert.match(h.body.innerHTML, /data-done="1"[^>]*>&lt;b&gt;完成&lt;\/b&gt;/);
+    assert.match(h.body.innerHTML, /data-id="last&quot;&lt;" checked aria-label="标记未完成"/);
+    h.run("memos[19].title = '<img>'; switchTab('memo')");
+    assert.match(h.body.innerHTML, /&lt;img&gt;/);
+    h.run("memos = []; todos = []; renderCard()");
+    assert.match(h.body.innerHTML, /还没有备忘/);
+    h.run("switchTab('todo')");
+    assert.match(h.body.innerHTML, /还没有待办/);
+}
+
+test('真实完整模块：备忘与待办超过旧预览上限仍含末项、计数、空态、转义与完成态', () => assertCompleteMemoLists());
+
+async function assertStableMemoShell(source = memoSrc) {
+    const h = memoRuntime(source);
+    await h.ready();
+    assert.equal(h.card.getAttribute('aria-label'), '备忘与待办');
+    assert.equal(h.card.dataset.instanceId, 'memo:main');
+    assert.equal(h.card.children.length, 3);
+    assert.equal(h.head.children.length, 1);
+    assert.equal(h.head.children[0].getAttribute('role'), 'tablist');
+    assert.equal(h.head.querySelectorAll('.module-card-status').length, 0);
+    assert.equal(h.body.querySelectorAll('.memo-tabs').length, 0);
+    assert.equal(h.body.querySelectorAll('.memo-card-manage').length, 0);
+    const handle = h.footer.querySelector('.module-drag-handle');
+    assert.ok(handle);
+    assert.equal(handle.getAttribute('hidden'), null);
+    const tab = h.head.querySelector('[data-tab="todo"]');
+    const writes = h.head.writes;
+    tab.focus();
+    h.card.fire('click', tab);
+    assert.equal(h.head.writes, writes);
+    assert.equal(h.document.activeElement, tab);
+    assert.equal(tab.getAttribute('aria-selected'), 'true');
+    assert.equal(h.head.querySelector('[data-tab="memo"]').getAttribute('aria-selected'), 'false');
+    assert.equal(h.footer.querySelector('.module-drag-handle'), handle);
+    assert.equal(h.footer.querySelectorAll('.memo-card-manage').length, 1);
+}
+
+test('真实挂载：首行仅稳定页签，底部计数/管理/把手，切页不重建首行或丢焦点', () => assertStableMemoShell());
+
+async function assertMemoScroll(source = memoSrc) {
+    const h = memoRuntime(source, { post: async () => { throw new Error('offline'); } });
+    await h.ready();
+    h.rows.scrollTop = 91;
+    h.run("switchTab('todo')");
+    assert.equal(h.rows.scrollTop, 0);
+    h.rows.scrollTop = 173;
+    h.run("switchTab('memo')");
+    assert.equal(h.rows.scrollTop, 91);
+    h.run("switchTab('todo')");
+    assert.equal(h.rows.scrollTop, 173);
+    const input = h.body.querySelectorAll('[data-action]').find(node => node.dataset.action === 'toggle-todo' && node.dataset.id === 't8');
+    input.focus();
+    h.card.fire('click', input);
+    assert.equal(h.rows.scrollTop, 173);
+    await settleMemo();
+    assert.equal(h.rows.scrollTop, 173);
+    assert.equal(h.run('todos[8].done'), true);
+    assert.equal(h.document.activeElement.dataset.id, 't8');
+    assert.equal(h.document.activeElement.dataset.action, 'toggle-todo');
+    assert.equal(h.document.activeElement.focusOptions.preventScroll, true);
+    h.run('todos[8].updatedAt++; renderCardMaybe()');
+    assert.equal(h.rows.scrollTop, 173);
+    h.run("switchTab('memo')");
+    h.rows.scrollTop = 117;
+    h.run('memos[0].updatedAt = Date.now() - 120000; renderCardMaybe()');
+    assert.equal(h.rows.scrollTop, 117);
+    const beforeTime = h.body.writes;
+    h.advance(60000);
+    h.run('renderCardMaybe()');
+    assert.ok(h.body.writes > beforeTime);
+    assert.equal(h.rows.scrollTop, 117);
+    assert.deepEqual({ ...h.run('cardScroll') }, { memo: 117, todo: 173 });
+}
+
+test('真实滚动流程：双页签独立记忆，勾选/失败回滚/数据与相对时间重建恢复滚动及焦点', () => assertMemoScroll());
+
+async function assertMemoBottomStatus(source = memoSrc) {
+    const h = memoRuntime(source);
+    await h.ready();
+    const sync = h.footer.querySelector('.memo-sync-part');
+    assert.match(sync.innerHTML, /\d{2}:\d{2}同步/);
+    assert.doesNotMatch(sync.innerHTML, /重试|同步失败|待同步/);
+    const bodyWrites = h.body.writes;
+    const statusWrites = sync.writes;
+    const stacks = h.stacks;
+    await h.run('poll()');
+    assert.equal(h.body.writes, bodyWrites);
+    assert.equal(sync.writes, statusWrites);
+    assert.equal(h.stacks, stacks);
+    h.fail(true);
+    await h.run('poll()');
+    assert.match(sync.innerHTML, /同步失败/);
+    assert.ok(sync.querySelector('[data-action="retry"]'));
+    assert.doesNotMatch(sync.innerHTML, /\d{2}:\d{2}同步/);
+    assert.equal(h.body.writes, bodyWrites);
+    assert.ok(h.stacks > stacks);
+    assert.match(h.body.innerHTML, /备忘 7/);
+    h.fail(false);
+    const before = h.requests.length;
+    h.click('retry');
+    assert.match(sync.innerHTML, /同步中/);
+    await settleMemo();
+    assert.equal(h.requests.length - before, 2);
+    assert.match(sync.innerHTML, /\d{2}:\d{2}同步/);
+    assert.doesNotMatch(sync.innerHTML, /同步失败|重试/);
+    await h.run("api.post = async () => { throw new Error('offline') }; saveTodo('t0', '离线修改')");
+    await h.run("saveMemo('m0', '离线标题', '离线正文')");
+    assert.match(sync.innerHTML, /待同步 2/);
+    assert.equal(h.head.querySelectorAll('.module-card-status').length, 0);
+    const unchanged = [h.body.writes, sync.writes, h.stacks];
+    h.run('renderCardMaybe()');
+    assert.deepEqual([h.body.writes, sync.writes, h.stacks], unchanged);
+}
+
+test('真实底部状态：成功时刻、失败保留列表、委托重试/同步中/恢复、双类离线待同步与零变化零写入', () => assertMemoBottomStatus());
+
+async function assertMemoTarget(source = memoSrc) {
+    for (const id of ['t0', 't8']) {
+        const h = memoRuntime(source);
+        await h.ready();
+        h.run("switchTab('todo')");
+        h.click('open-todo-edit', id);
+        assert.equal(h.document.body.querySelectorAll('.module-overlay').length, 1);
+        assert.equal(h.panel.history.length, 1);
+        assert.match(h.panel.history[0], new RegExp(`id="memoTodoInput"[^>]*data-id="${id}"`));
+        const input = h.panel.querySelector('#memoTodoInput');
+        assert.ok(input);
+        assert.equal(input.value, id === 't0' ? '待办 0' : '待办 8');
+        assert.equal(h.document.activeElement, input);
+        assert.equal(input.selected, true);
+        assert.equal(input.focusOptions.preventScroll, true);
+        assert.equal(input.scrollOptions.block, 'nearest');
+        const overlay = h.definition.openPanel({ todoId: id });
+        assert.equal(overlay, h.document.body.querySelector('.module-overlay'));
+        await settleMemo();
+        assert.equal(h.panel.querySelector('#memoTodoInput'), input);
+        assert.equal(h.document.listeners.keydown.length, 1);
+        assert.equal(h.document.body.querySelectorAll('.module-overlay').length, 1);
+    }
+}
+
+test('真实卡片 action/id → openPanel：首项/末项已完成项首次渲染即目标编辑、聚焦全选滚入、复用同一面板', () => assertMemoTarget());
+
+test('真实管理与 invalid：无参保留当前页签不自动编辑，勾选不打开面板，不存在 id 回退待办清单', async () => {
+    const h = memoRuntime();
+    await h.ready();
+    h.click('open');
+    assert.equal(h.panel.querySelector('#memoTodoInput'), null);
+    assert.ok(h.panel.querySelector('#memoSearch'));
+    h.run('panel.close()');
+    h.run("switchTab('todo')");
+    h.click('toggle-todo', 't0');
+    await settleMemo();
+    assert.equal(h.panel, null);
+    h.click('open');
+    assert.ok(h.panel.querySelector('#memoTodoNew'));
+    assert.equal(h.panel.querySelector('#memoTodoInput'), null);
+    h.run('panel.close()');
+    h.run("switchTab('memo')");
+    h.definition.openPanel({ todoId: 'missing' });
+    assert.ok(h.panel.querySelector('#memoTodoNew'));
+    assert.equal(h.panel.querySelector('#memoTodoInput'), null);
+    assert.match(h.toasts.at(-1)[0], /已不存在/);
+    assert.equal(h.document.listeners.keydown.length, 1);
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoInput').dataset.id, 't8');
+    h.definition.openPanel({ todoId: 'missing-again' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoInput'), null);
+    assert.equal(h.document.body.querySelectorAll('.module-overlay').length, 1);
+});
+
+test('真实复用保护：未保存备忘与新增待办不被目标跳转覆盖，轮询保留输入', async () => {
+    const h = memoRuntime();
+    await h.ready();
+    h.click('open');
+    h.panel.fire('click', h.panel.querySelector('[data-action="add"]'));
+    const title = h.panel.querySelector('#memoTitle');
+    title.value = '未保存备忘';
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTitle'), title);
+    assert.equal(title.value, '未保存备忘');
+    assert.match(h.toasts.at(-1)[0], /先保存或取消/);
+    h.run('renderPanelMaybe()');
+    assert.equal(h.panel.querySelector('#memoTitle'), title);
+    h.panel.fire('click', h.panel.querySelector('[data-action="back"]'));
+    h.run("switchTab('todo')");
+    const add = h.panel.querySelector('#memoTodoNew');
+    add.value = '未添加待办';
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoNew'), add);
+    assert.equal(add.value, '未添加待办');
+    assert.match(h.toasts.at(-1)[0], /先添加或清空/);
+    add.value = '';
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    const input = h.panel.querySelector('#memoTodoInput');
+    input.value = '正在编辑';
+    await h.run('poll()');
+    assert.equal(h.panel.querySelector('#memoTodoInput'), input);
+    assert.equal(input.value, '正在编辑');
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoInput'), input);
+    assert.equal(input.value, '正在编辑');
+});
+
+test('真实切换编辑目标：先提交，服务拒绝保留输入，断网草稿可保留后切换', async () => {
+    for (const mode of ['success', 'rejected', 'offline']) {
+        const h = memoRuntime(memoSrc, { post: async (url, body) => {
+            if (mode === 'offline') throw new Error('offline');
+            if (mode === 'rejected') return { error: '保存被拒绝' };
+            return { todo: { id: 't0', text: body.text, done: false, createdAt: 100, updatedAt: 200 } };
+        } });
+        await h.ready();
+        h.definition.openPanel({ todoId: 't0' });
+        h.panel.querySelector('#memoTodoInput').value = '修改后';
+        const overlay = h.definition.openPanel({ todoId: 't8' });
+        await settleMemo();
+        assert.equal(h.requests.filter(([method, url]) => method === 'post' && url === '/api/todos/t0').length, 1);
+        assert.equal(h.panel.querySelector('#memoTodoInput').dataset.id, mode === 'rejected' ? 't0' : 't8');
+        if (mode === 'rejected') assert.equal(h.panel.querySelector('#memoTodoInput').value, '修改后');
+        if (mode === 'offline') assert.equal(h.run('todoDrafts[0].text'), '修改后');
+        assert.equal(h.document.body.querySelector('.module-overlay'), overlay);
+        assert.equal(h.document.listeners.keydown.length, 1);
+    }
+});
+
+function delayedMemoPost() {
+    let resolve;
+    let reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+}
+
+for (const result of ['success', 'rejected', 'offline']) {
+    for (const reentry of ['target', 'inline', 'reopen', 'memo']) {
+        test(`真实延迟交错：${result}/${reentry} 旧目标不得覆盖新上下文`, async () => {
+            const pending = delayedMemoPost();
+            const h = memoRuntime(memoSrc, { post: () => pending.promise });
+            await h.ready();
+            h.definition.openPanel({ todoId: 't0' });
+            h.panel.querySelector('#memoTodoInput').value = '  A失败输入  ';
+            h.definition.openPanel({ todoId: 't1' });
+            if (reentry === 'reopen') {
+                h.run('panel.close()');
+                h.definition.openPanel({ todoId: 't2' });
+            } else if (reentry === 'target') {
+                h.definition.openPanel({ todoId: 't2' });
+            } else if (reentry === 'inline') {
+                const target = h.panel.querySelectorAll('[data-action="edit-todo"]').find(node => node.dataset.id === 't2');
+                h.panel.fire('click', target);
+            } else {
+                h.panel.fire('click', h.panel.querySelector('[data-tab="memo"]'));
+            }
+            const panel = h.panel;
+            const input = panel.querySelector(reentry === 'memo' ? '#memoSearch' : '#memoTodoInput');
+            input.value = 'C未提交输入';
+            input.focus();
+            const writes = panel.writes;
+            if (result === 'offline') pending.reject(new Error('offline'));
+            else pending.resolve(result === 'rejected' ? { error: '保存被拒绝' } : { todo: { ...h.todos[0], text: 'A失败输入', updatedAt: 200 } });
+            await settleMemo();
+            assert.equal(h.panel, panel);
+            assert.equal(panel.querySelector(reentry === 'memo' ? '#memoSearch' : '#memoTodoInput'), input);
+            assert.equal(input.value, 'C未提交输入');
+            assert.equal(panel.writes, writes);
+            assert.equal(h.document.activeElement, input);
+            if (reentry === 'memo') {
+                assert.equal(h.run('editingTodoId'), null);
+                h.run('memos[0].updatedAt++; renderPanelMaybe()');
+                assert.ok(panel.writes > writes);
+            } else {
+                assert.equal(input.dataset.id, 't2');
+            }
+            if (result !== 'success') {
+                h.run('panel.close()');
+                h.definition.openPanel({ todoId: 't0' });
+                assert.equal(h.panel.querySelector('#memoTodoInput').value, result === 'offline' ? 'A失败输入' : '  A失败输入  ');
+            }
+        });
+    }
+}
+
+test('真实延迟拒绝切页：不恢复孤立编辑状态，回到原目标保留失败原输入', async () => {
+    const pending = delayedMemoPost();
+    const h = memoRuntime(memoSrc, { post: () => pending.promise });
+    await h.ready();
+    h.definition.openPanel({ todoId: 't0' });
+    h.panel.querySelector('#memoTodoInput').value = '  拒绝原输入  ';
+    h.panel.fire('click', h.panel.querySelector('[data-tab="memo"]'));
+    pending.resolve({ error: '保存被拒绝' });
+    await settleMemo();
+    assert.equal(h.run('editingTodoId'), null);
+    const writes = h.panel.writes;
+    h.run('memos[0].updatedAt++; renderPanelMaybe()');
+    assert.ok(h.panel.writes > writes);
+    h.definition.openPanel({ todoId: 't0' });
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoInput').value, '  拒绝原输入  ');
+});
+
+test('真实离线重开：卡片与行内入口读取同id草稿，未修改不替换草稿', async () => {
+    const h = memoRuntime(memoSrc, { post: async () => { throw new Error('offline'); } });
+    await h.ready();
+    h.definition.openPanel({ todoId: 't0' });
+    let input = h.panel.querySelector('#memoTodoInput');
+    input.value = '离线 <草稿> & 原文';
+    h.panel.fire('keydown', input, { key: 'Enter' });
+    await settleMemo();
+    const draft = h.run('todoDrafts[0]');
+    h.run('panel.close()');
+    h.click('open-todo-edit', 't0');
+    input = h.panel.querySelector('#memoTodoInput');
+    assert.equal(input.value, draft.text);
+    h.panel.fire('keydown', input, { key: 'Enter' });
+    await settleMemo();
+    assert.equal(h.run('todoDrafts[0]'), draft);
+    const target = h.panel.querySelectorAll('[data-action="edit-todo"]').find(node => node.dataset.id === 't0');
+    h.panel.fire('click', target);
+    input = h.panel.querySelector('#memoTodoInput');
+    assert.equal(input.value, draft.text);
+    input.value += ' 新改';
+    h.panel.fire('focusout', input);
+    await settleMemo();
+    assert.equal(h.run('todoDrafts.length'), 1);
+    assert.equal(h.run('todoDrafts[0].text'), draft.text + ' 新改');
+});
+
+test('真实编辑事件：Enter/失焦各保存一次，Esc只取消编辑，pointerdown保护行内click', async () => {
+    const h = memoRuntime();
+    await h.ready();
+    h.definition.openPanel({ todoId: 't0' });
+    let input = h.panel.querySelector('#memoTodoInput');
+    input.value = '回车保存';
+    const enter = h.panel.fire('keydown', input, { key: 'Enter' });
+    await settleMemo();
+    assert.equal(enter.defaultPrevented, true);
+    assert.equal(h.requests.filter(([method]) => method === 'post').length, 1);
+    h.panel.fire('focusout', input);
+    await settleMemo();
+    assert.equal(h.requests.filter(([method]) => method === 'post').length, 1);
+    h.definition.openPanel({ todoId: 't8' });
+    await settleMemo();
+    input = h.panel.querySelector('#memoTodoInput');
+    input.value = '失焦保存';
+    h.panel.fire('focusout', input);
+    await settleMemo();
+    assert.equal(h.requests.filter(([method]) => method === 'post').length, 2);
+    h.definition.openPanel({ todoId: 't0' });
+    await settleMemo();
+    input = h.panel.querySelector('#memoTodoInput');
+    const button = h.panel.querySelector('[data-action="ask-del-todo"]');
+    assert.equal(h.panel.fire('pointerdown', button).defaultPrevented, true);
+    input.value = '取消的输入';
+    const escape = h.panel.fire('keydown', input, { key: 'Escape' });
+    assert.equal(escape.stopped, true);
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(h.panel.querySelector('#memoTodoInput'), null);
+    assert.ok(h.panel);
+    assert.equal(h.requests.filter(([method]) => method === 'post').length, 2);
+});
+
+test('面板内切换编辑目标：先保存上一条，旧文本不写到新 id', async () => {
+    const h = memoRuntime();
+    await h.ready();
+    h.definition.openPanel({ todoId: 't0' });
+    const input = h.panel.querySelector('#memoTodoInput');
+    input.value = 't0 的新文本';
+    const next = h.panel.querySelectorAll('[data-action="edit-todo"]').find(node => node.dataset.id === 't2');
+    h.panel.fire('click', next);
+    await settleMemo();
+    assert.equal(h.panel.querySelector('#memoTodoInput').dataset.id, 't2', '切到新目标');
+    assert.equal(h.requests.filter(([method, url]) => method === 'post' && url === '/api/todos/t0').length, 1,
+        '上一条先保存一次');
+    assert.equal(h.requests.filter(([method, url]) => method === 'post' && url === '/api/todos/t2').length, 0,
+        '绝不把上一条的文本写到新 id');
+});
+
+test('卡片CSS执行声明：居中、限高原生滚动、焦点与稳定底部，不凭注释通过', () => {
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    const rule = selector => {
+        const matches = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match => match[1].trim() === selector);
+        assert.equal(matches.length, 1, selector);
+        return matches[0][2];
+    };
+    assert.match(rule('.memo-card .module-widget-head'), /justify-content:\s*center\s*;/);
+    const rows = rule('.memo-card .memo-rows');
+    for (const declaration of [/max-height:\s*min\(240px,\s*45dvh\)/, /overflow-y:\s*auto\s*;/, /min-height:\s*0\s*;/, /overscroll-behavior:\s*contain\s*;/, /scrollbar-width:\s*thin\s*;/, /scrollbar-gutter:\s*stable\s*;/]) assert.match(rows, declaration);
+    assert.match(rule('.memo-card .memo-rows:focus-visible'), /outline:/);
+    assert.match(rule('.memo-card .memo-card-footer'), /flex-direction:\s*column/);
+});
+
+test('副本变异：旧slice、丢目标action/id/编辑赋值、无滚动恢复、无失败写入、旧头结构均变红', async t => {
+    const variants = [
+        ['备忘slice', 'memos.map(m =>\n            `<div class="memo-row"', 'memos.slice(0, 3).map(m =>\n            `<div class="memo-row"', assertCompleteMemoLists],
+        ['待办slice', 'const rows = todos.map(t =>', 'const rows = todos.slice(0, 4).map(t =>', assertCompleteMemoLists],
+        ['丢action', 'data-action="open-todo-edit"', 'data-action="open"', assertMemoTarget],
+        ['丢目标id', 'openPanel({ todoId: t.dataset.id })', 'openPanel()', assertMemoTarget],
+        ['丢编辑赋值', 'editingTodoId = todos.some(t => t.id === todoId) ? todoId : null;', 'editingTodoId = null;', assertMemoTarget],
+        ['丢滚动恢复', 'if (rows) rows.scrollTop = cardScroll[activeTab];', 'if (rows) rows.scrollTop = 0;', assertMemoScroll],
+        ['丢失败重试写入', ': statusPillHTML()) + pendingPillHTML()', ": '') + pendingPillHTML()", assertMemoBottomStatus],
+        ['旧标题', 'head.innerHTML = tabsHTML();', 'head.innerHTML = `<span class="module-widget-label">备忘</span>` + tabsHTML();', assertStableMemoShell],
+        ['旧头状态', 'head.innerHTML = tabsHTML();', 'head.innerHTML = tabsHTML() + statusPillHTML();', assertStableMemoShell]
+    ];
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'memo-mutants-'));
+    const original = Buffer.from(memoSrc);
+    try {
+        for (const [name, before, after, check] of variants) await t.test(name, async () => {
+            assert.ok(memoSrc.includes(before), `${name}变异锚点存在`);
+            const file = path.join(dir, 'memo.js');
+            const mutant = memoSrc.replace(before, after);
+            fs.writeFileSync(file, mutant);
+            assert.notEqual(mutant, memoSrc);
+            await assert.rejects(() => check(fs.readFileSync(file, 'utf8')), error => error.code === 'ERR_ASSERTION');
+        });
+    } finally {
+        fs.writeFileSync(path.join(dir, 'memo.js'), original);
+        assert.deepEqual(fs.readFileSync(path.join(dir, 'memo.js')), original);
+        assert.deepEqual(fs.readFileSync(path.join(ROOT, 'public', 'modules', 'memo.js')), original);
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
