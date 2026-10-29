@@ -1,3 +1,7 @@
+// nav-v127：首页支持输入取件码取回共享文本——整串命中 tiger-482 或绝对
+// /p/tiger-482 链接时主按钮从「搜索」变「取件」，回车跳转 /p/<code>；Esc 取消
+// 识别，粘贴链接时输入框只留裸码；搜索框下方的说明行补上「取件码 取回分享」。
+// 改了 app.js、index.html。
 // nav-v126：说明面板精简——只保留界面上看不见的操作（快捷键/手势/入口），管理员与口令
 // 空间的功能说明一律删掉（那些该由界面自己说清）；同步对话框首态补一句「这是做什么的」。
 // nav-v125：把同步相关的界面从「首页导航」拆出来，单独一个「同步管理」tab（第 5 个，
@@ -328,7 +332,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v126';
+const CACHE = 'nav-v127';
 const ASSETS = [
     '/',
     '/index.html',

@@ -250,6 +250,10 @@
             this.dragData = null;
             this.pasteMode = false;
             this.pasteUserResized = false;
+            // 首页取件码识别：记住被 Esc 取消过的**归一化后的码**（不是原始输入）。
+            // 记码而不是记一个布尔，换一个码就自动重新生效，不需要在登录、
+            // 模式切换这些事件上「重新武装」，也就不会留下永久失效的一次性标志。
+            this.pickupDismissedCode = null;
             // 书签检索
             this.favorites = [];
             this.favoritesLoading = true;
@@ -4621,6 +4625,23 @@
                 this.handleSearchInput(e);
                 this.autoGrowPasteInput();
             };
+            // 粘贴分享链接时只留取件码：识别本身并不依赖这一步，但 44px 高的
+            // 输入框里一条长链接会折成三行，码就看不清了。分享态粘的是正文、
+            // 书签态粘的是查询词，都不接管；取不到 clipboardData 时也不接管
+            // （部分 WebView 的 paste 事件不带数据，退化为普通粘贴，识别仍生效）。
+            $('#searchInput').addEventListener('paste', event => {
+                if (this.pasteMode || this.favSearchMode) return;
+                const text = event.clipboardData?.getData('text') || '';
+                const code = this.parsePickupCode(text);
+                if (!code) return;
+                event.preventDefault();
+                // 粘贴是一次明确的新意图：清掉 Esc 留下的「这个码不取件」，
+                // 否则把同一个码粘回来会被静默跳过。
+                this.pickupDismissedCode = null;
+                const field = $('#searchInput');
+                field.value = code;
+                this.handleSearchInput(field);
+            });
             // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随。
             // 撞上 min-height 的空拖会留下一个永不生效的小高度并锁死自增高，
             // 因此拖拽结束时按实际渲染高度回退：没真的变高就交还给自动增高。
@@ -4758,6 +4779,14 @@
                     } else if (this.pasteMode) {
                         // 分享态退出。移动端没有 Esc 键，主路径是左侧「退出」按钮
                         this.exitPasteMode();
+                    } else {
+                        // 取消取件识别：同一个输入不该因为「长得像码」就悄悄
+                        // 改变回车的含义。记下归一化后的码，换成别的码即恢复。
+                        const pickup = this.resolvePickup($('#searchInput').value);
+                        if (pickup.code) {
+                            this.pickupDismissedCode = pickup.code;
+                            this.syncSearchSubmitLabel(false);
+                        }
                     }
                 }
             };
@@ -6645,9 +6674,44 @@
             return char === '>' || char === '》';
         }
 
+        // 取件码识别：整串必须就是码本身，或指向 /p/<code> 的**绝对**链接。
+        // - 整串锚定：正文里夹着 tiger-482、或粘贴多行文本，都不算取件；
+        // - 只认绝对链接：相对路径 /p/<code> 会和书签模式的触发符 `/` 抢同一串
+        //   输入，而分享结果里复制出来的链接一定是绝对的，覆盖真实场景已经够了；
+        // - 码的字符集必须与服务端 isPasteCodeFormat 一致（tests 里有跨端断言）。
+        parsePickupCode(text) {
+            const raw = String(text ?? '').trim();
+            if (!raw) return null;
+            const bare = /^[a-z]{2,6}-\d{3}$/i.exec(raw);
+            if (bare) return bare[0].toLowerCase();
+            const link = /^https?:\/\/[^\s/]+\/p\/([a-z]{2,6}-\d{3})\/?(?:[?#].*)?$/i.exec(raw);
+            return link ? link[1].toLowerCase() : null;
+        }
+
+        // 「识别到码」和「这次输入确实要取件」是两个问题：Esc 取消后前者仍成立。
+        // 按钮文案与回车分发都从这里取值，避免各判一次而漂移。
+        resolvePickup(value) {
+            const code = this.parsePickupCode(value);
+            return { code, active: !!code && code !== this.pickupDismissedCode };
+        }
+
+        // 普通搜索态的主按钮文案：只写「取件 / 搜索」这两个。
+        // 分享态（发送）与书签态（打开）仍由各自的 toggle* 负责——同一个节点
+        // 被多处写会互相覆盖，modeBtn 历史上正是这样坏过一次。
+        syncSearchSubmitLabel(pickupActive) {
+            const searchBtn = $('.search-btn');
+            if (!searchBtn) return;
+            searchBtn.textContent = pickupActive ? '取件' : '搜索';
+            searchBtn.title = pickupActive ? '回车取回共享文本（Esc 改为搜索）' : '搜索';
+        }
+
         // 接收 input 元素；也兼容直接传入事件对象
         handleSearchInput(e) {
             const value = (e.target ?? e).value;
+
+            // 清空输入等于重新开始：Esc 留下的「这个码不取件」到此为止，
+            // 否则同一个码在这一页里再也取不了。
+            if (!value.trim()) this.pickupDismissedCode = null;
 
             // 检查书签检索模式（/ 或 //）
             const isFavMode = this.authenticated && value.length > 0 && this.isFavSearchTrigger(value[0]);
@@ -6709,6 +6773,12 @@
             if (isPasteMode !== this.pasteMode) {
                 this.pasteMode = isPasteMode;
                 this.togglePasteMode(isPasteMode);
+            }
+
+            // 取件码只在普通搜索态生效：书签态在上面已 early return，分享态下
+            // 输入的是正文，按钮文案与回车都不能被取件劫持。
+            if (!this.pasteMode && !this.favSearchMode) {
+                this.syncSearchSubmitLabel(this.resolvePickup(value).active);
             }
         }
 
@@ -6802,8 +6872,27 @@
                 return;
             }
 
+            // 取件码：直接交给 /p/<code> 页面。PIN 校验、过期判断与阅后即删
+            // 都在那边，首页不解密、也不预检存在性（那要多一次请求并吃掉
+            // 30 次/小时的读取额度）。
+            const pickup = this.resolvePickup(value);
+            if (pickup.active) {
+                this.openPickup(pickup.code);
+                return;
+            }
+
             // 正常搜索
             this.search();
+        }
+
+        // 取件码导航。码已由 parsePickupCode 限定为 [a-z]{2,6}-\d{3}，
+        // encodeURIComponent 只是双保险。与点击分享链接一致，走当前标签页。
+        // 不锁按钮：回到首页时 bfcache 会把 disabled 一并恢复，搜索按钮就死了；
+        // 连按两次只是对同一个地址 assign 两次，没有副作用。
+        openPickup(code) {
+            const dropdown = $('#engineDropdown');
+            if (dropdown) dropdown.hidden = true;
+            location.assign('/p/' + encodeURIComponent(code));
         }
 
         async showPasteOptions(content) {
@@ -6981,6 +7070,7 @@
                         <div class="help-section">
                             <strong>键盘与手势</strong>
                             <p>输入 <code>/</code> 检索书签；输入 <code>></code> 发送文本</p>
+                            <p>输入取件码（如 <code>tiger-482</code>）或粘贴分享链接，回车取回共享文本</p>
                             <p class="help-tip">↑↓ 选择，Enter 确认，Esc 退出；文本输入里 <code>Shift</code>+Enter 换行</p>
                             <p class="help-tip">文本输入框可拖右下角调高</p>
                         </div>

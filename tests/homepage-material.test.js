@@ -379,12 +379,15 @@ test('背板包住搜索区、收藏网格与底部操作栏', () => {
     assert.match(indexHtml, /<div class="engine-dropdown" id="engineDropdown"[\s\S]*?<\/div>\s*<\/div>\s*<\/header>/, '引擎下拉仍是 .search-wrapper 的子节点，绝对定位锚点才不位移');
 });
 
-test('说明行只讲 / 与 > 两个触发符', () => {
+test('说明行讲清三种入口，次要操作留在说明弹窗', () => {
     const cap = /<div class="search-caption"[^>]*>([\s\S]*?)<\/div>/.exec(indexHtml);
     assert.ok(cap, 'index.html 里有说明行');
     const text = cap[1];
     assert.match(text, /<kbd>\/<\/kbd>/, '说明行要点出 / 这个收藏触发符');
     assert.match(text, /<kbd>&gt;<\/kbd>/, '说明行要点出 > 这个分享触发符');
+    // 取件码不是触发符，但它和另外两个入口共用同一个搜索框，用户需要在这一行
+    // 知道「输入码能取回」，否则功能只有把码打进框里才会被发现。
+    assert.match(text, /取件码[\s\S]*取回/, '说明行要点出输入取件码可以取回分享');
     // 次要功能（方向键选择、Enter 打开）不在这行强调，细节留给「说明」弹窗
     for (const noise of ['Enter', '↑', '↓']) {
         assert.equal(text.includes(noise), false, `说明行不应再出现 ${noise}（次要功能留给说明弹窗）`);

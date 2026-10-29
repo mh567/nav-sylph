@@ -184,12 +184,20 @@ function mountComposer(controls = {}) {
         },
         fire(name) { (windowListeners[name] || []).forEach(fn => fn()); }
     };
+    const locationStub = {
+        origin: 'http://localhost',
+        assigned: null,
+        assign(url) { this.assigned = url; }
+    };
     const app = loadApp(
         document,
         windowStub,
-        { getComputedStyle: () => ({ maxHeight: controls.maxHeight ?? 'none', minHeight: controls.minHeight ?? '0px' }) }
+        {
+            location: locationStub,
+            getComputedStyle: () => ({ maxHeight: controls.maxHeight ?? 'none', minHeight: controls.minHeight ?? '0px' })
+        }
     );
-    return { app, dom, window: windowStub };
+    return { app, dom, window: windowStub, location: locationStub };
 }
 
 // ---- style shape guards ----
@@ -612,4 +620,217 @@ test('the help text documents the new composer shortcuts', () => {
     for (const forbidden of ['口令云端空间（跨设备同步）', '同步管理：批量生成', 'WebDAV 备份只含']) {
         assert.ok(!help.includes(forbidden), `说明面板不该再写「${forbidden}」——那是界面该说清的事`);
     }
+});
+
+// ---- 首页取件码（输入取件码 → 跳转 /p/<code>）----
+// 识别、按钮文案与回车分发都执行真实实现；只有 search()/showPasteOptions()
+// 这类与本问题无关的出口被替换成记录桩。
+
+const PICKUP_SAMPLES = [
+    'tiger-482', 'TIGER-482', '  tiger-482  ', 'ab-123', 'abcdef-999',
+    'https://nav.example.com/p/tiger-482', 'http://127.0.0.1:3000/p/tiger-482?x=1#y',
+    'https://a.b/p/tiger-482/', 'tiger-48', 'tiger-4821', 'abcdefg-482', 'tiger_482',
+    '看看 tiger-482', 'tiger-482 看看', 'tiger-482\n第二行', '/p/tiger-482', ''
+];
+
+test('取件码识别只认整串：夹字、多行、位数不对都不算', () => {
+    const { app } = mountComposer();
+    assert.equal(app.parsePickupCode('tiger-482'), 'tiger-482');
+    assert.equal(app.parsePickupCode('ab-123'), 'ab-123', '两位词也是合法码');
+    assert.equal(app.parsePickupCode('abcdef-999'), 'abcdef-999', '六位词也是合法码');
+
+    for (const bad of ['tiger-48', 'tiger-4821', 'abcdefg-482', 'tiger_482',
+        '看看 tiger-482', 'tiger-482 看看', 'tiger-482\n第二行', '', '   ']) {
+        assert.equal(app.parsePickupCode(bad), null, `${JSON.stringify(bad)} 不该被当作取件码`);
+    }
+});
+
+test('取件码大小写与首尾空白都归一化为小写', () => {
+    const { app } = mountComposer();
+    assert.equal(app.parsePickupCode('  TIGER-482  '), 'tiger-482');
+});
+
+test('绝对分享链接能取出码，相对 /p/xxx 不识别（会和 / 书签模式抢输入）', () => {
+    const { app } = mountComposer();
+    for (const okay of ['https://nav.example.com/p/tiger-482',
+        'http://127.0.0.1:3000/p/TIGER-482?x=1', 'https://a.b/p/tiger-482/#y']) {
+        assert.equal(app.parsePickupCode(okay), 'tiger-482', okay);
+    }
+    // 相对路径首字符就是 `/`，那是书签检索的触发符；分享结果里复制出来的
+    // 链接永远带 scheme，所以这条取舍不影响真实用法。
+    assert.equal(app.parsePickupCode('/p/tiger-482'), null);
+    assert.equal(app.parsePickupCode('nav.example.com/p/tiger-482'), null);
+});
+
+test('命中取件码时主按钮变「取件」，改回普通词恢复「搜索」', () => {
+    const { app, dom } = mountComposer();
+
+    dom.nodes.input.value = 'tiger-482';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '取件');
+    assert.match(dom.nodes.searchBtn.title, /取回共享文本/);
+
+    // 反向路径：识别只在当前输入上成立，改掉一个字就必须退回搜索
+    dom.nodes.input.value = 'tiger-48';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '搜索');
+});
+
+test('进入书签/分享态后按钮由模式决定，残留的取件码不会把它留在「取件」', () => {
+    const { app, dom } = mountComposer();
+    app.showFavDropdown = () => {};
+    app.hideFavDropdown = () => {};
+    app.debouncedSearchFavorites = () => {};
+
+    dom.nodes.input.value = 'tiger-482';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '取件');
+
+    dom.nodes.input.value = '/tiger-482';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '打开', '书签态的文案归 toggleFavSearchMode');
+
+    dom.nodes.input.value = '>tiger-482';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '发送', '分享态的文案归 togglePasteMode');
+});
+
+test('取件态回车导航到 /p/<小写码>，且不走搜索', async () => {
+    const { app, dom, location } = mountComposer();
+    let searched = 0;
+    app.search = () => { searched++; };
+
+    dom.nodes.input.value = 'TIGER-482';
+    app.handleSearchInput(dom.nodes.input);
+    await app.handleSearch();
+
+    assert.equal(location.assigned, '/p/tiger-482');
+    assert.equal(searched, 0, '取件与搜索只能二选一');
+});
+
+test('Esc 取消取件识别后，同一串输入回车走搜索', async () => {
+    const { app, dom, location } = mountComposer();
+    let searched = 0;
+    app.search = () => { searched++; };
+
+    app.bind();
+    // Escape 先用前两个分支关下拉/管理弹窗；默认态下要先把它们置为关闭
+    dom.nodes.dropdown.hidden = true;
+    dom.nodes.modal.hidden = true;
+
+    dom.nodes.input.value = 'tiger-482';
+    app.handleSearchInput(dom.nodes.input);
+    assert.equal(dom.nodes.searchBtn.textContent, '取件');
+
+    dom.document.onkeydown({ key: 'Escape' });
+    assert.equal(dom.nodes.searchBtn.textContent, '搜索', 'Esc 之后按钮回到「搜索」');
+
+    await app.handleSearch();
+    assert.equal(searched, 1, '同一个输入取消识别后应当搜索');
+    assert.equal(location.assigned, null);
+});
+
+test('分享态里的 tiger-482 仍然走分享，不被取件劫持', async () => {
+    const { app, dom, location } = mountComposer();
+    let shared = null;
+    app.showPasteOptions = async text => { shared = text; };
+    app.search = () => { throw new Error('分享态不该走搜索'); };
+
+    app.pasteMode = true;
+    dom.nodes.input.value = '>tiger-482';
+    await app.handleSearch();
+
+    assert.equal(shared, 'tiger-482');
+    assert.equal(location.assigned, null);
+});
+
+test('书签态 /p/tiger-482 走书签分支，不导航', async () => {
+    const { app, dom, location } = mountComposer();
+    app.search = () => { throw new Error('书签态不该走搜索'); };
+
+    dom.nodes.input.value = '/p/tiger-482';
+    // 没有选中的书签项时分支到此为止：既不开新页，也不跳取件
+    await app.handleSearch();
+    assert.equal(location.assigned, null);
+});
+
+test('粘贴绝对分享链接时输入框只留取件码；普通文本原样保留', () => {
+    const { app, dom } = mountComposer();
+    app.bind();
+    const input = dom.nodes.input;
+    const paste = input.listeners.paste;
+    assert.ok(paste, 'bind() 注册了 paste 监听');
+
+    let prevented = false;
+    paste({
+        clipboardData: { getData: () => 'https://nav.example.com/p/TIGER-482' },
+        preventDefault: () => { prevented = true; }
+    });
+    assert.equal(prevented, true);
+    assert.equal(input.value, 'tiger-482');
+    assert.equal(dom.nodes.searchBtn.textContent, '取件', '归一化后立刻进入取件态');
+
+    prevented = false;
+    paste({
+        clipboardData: { getData: () => 'hello world' },
+        preventDefault: () => { prevented = true; }
+    });
+    assert.equal(prevented, false, '普通文本不接管粘贴');
+    assert.equal(input.value, 'tiger-482', '输入框保持原值');
+});
+
+test('Esc 取消之后，清空输入或重新粘贴同一个码都会重新武装', () => {
+    // 「取消」按码记忆；如果缺一个复位事件，同一个码在这一页里就再也取不了——
+    // 用户在浏览器里实测到的正是这个：Esc 后清空重输，按钮仍是「搜索」。
+    const { app, dom } = mountComposer();
+    app.bind();
+    const input = dom.nodes.input;
+    dom.nodes.dropdown.hidden = true;
+    dom.nodes.modal.hidden = true;
+
+    input.value = 'tiger-482';
+    app.handleSearchInput(input);
+    dom.document.onkeydown({ key: 'Escape' });
+    assert.equal(dom.nodes.searchBtn.textContent, '搜索');
+
+    // 清空 = 重新开始
+    input.value = '';
+    app.handleSearchInput(input);
+    input.value = 'tiger-482';
+    app.handleSearchInput(input);
+    assert.equal(dom.nodes.searchBtn.textContent, '取件', '清空后重输同一个码应当重新识别');
+
+    // 粘贴 = 明确的新意图
+    dom.document.onkeydown({ key: 'Escape' });
+    assert.equal(dom.nodes.searchBtn.textContent, '搜索');
+    input.listeners.paste({
+        clipboardData: { getData: () => 'https://nav.example.com/p/tiger-482' },
+        preventDefault() {}
+    });
+    assert.equal(dom.nodes.searchBtn.textContent, '取件', '粘贴应当清掉 Esc 的取消');
+});
+
+test('客户端识别出的码必须能被服务端的 isPasteCodeFormat 接受', () => {
+    // 两边各有一份格式定义，漂移的后果是：首页把 /p/TIGER-482 推给服务端，
+    // 服务端按非法格式重定向回首页，看起来像「取件没反应」。
+    const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const fn = /function isPasteCodeFormat\(str\)\s*\{([\s\S]*?)\n\}/.exec(serverSource);
+    assert.ok(fn, 'server.js 里能找到 isPasteCodeFormat');
+    const serverAccepts = new Function('str', fn[1]);
+
+    const { app } = mountComposer();
+    for (const sample of PICKUP_SAMPLES) {
+        const code = app.parsePickupCode(sample);
+        if (code) assert.equal(serverAccepts(code), true, `${JSON.stringify(sample)} → ${code} 服务端必须接受`);
+    }
+
+    // 归一化是必需的一步，不是可选优化：服务端只认小写。
+    assert.equal(serverAccepts('TIGER-482'), false);
+    assert.equal(app.parsePickupCode('TIGER-482'), 'tiger-482');
+});
+
+test('取件走跳转，首页不引入代码高亮', () => {
+    // 高亮只属于 /p 接收页；首页首屏预算不允许把 highlight.min.js 拖进来。
+    assert.equal(htmlSource.includes('highlight.min.js'), false,
+        '首页不该加载 highlight.min.js');
 });
