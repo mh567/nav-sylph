@@ -288,7 +288,7 @@ WebDAV 备份范围收窄与可回滚恢复是 #12/#13；升级/浏览器/目标
 
 ## 登录后模块平台
 
-首页与后台都要承载模块（服务器监控、备忘录、时间线、微博热搜）。平台骨架、四个业务模块与下面的**分类边界**均已落地。
+首页与后台都要承载模块（服务器监控、备忘与待办、时间线、微博热搜）。平台骨架、四个业务模块与下面的**分类边界**均已落地。
 
 **模块在开发时声明分类，运行时只能缩小可用集合。** `registerModule()` 用 `App.validateModuleDef` 校验声明：缺 `category`（只认 `admin` / `public`）一律**拒绝注册**（不是只记一条日志——注册进表就意味着平台会去加载并渲染它），公开模块还必须声明 `settings` 白名单，每项带 `default` 与 `validate`。分类是源码事实；运行时只有「管理员开放」与「用户启用」两个开关，它们都只能缩小集合，**不能把 `admin` 模块变成 `public`**。服务端另持一份 `PUBLIC_MODULE_IDS`（`server.js`），`normalizeModulesConfig` 只收其中的 id：即使有人直接 POST 一份把 `server-monitor` 写进 `publicModules` 的配置，它也会被丢弃。两层缺一不可——服务端看不到客户端的声明，客户端也不能独占授权判定。
 
@@ -379,13 +379,15 @@ selfSigned / version                **函数**，读实时值
 
 **新增模块的落点**：定义放 `public/modules/<id>.js`，id 加入 `App.KNOWN_MODULES`，配置项加入 `normalizeModulesConfig()` 的白名单。需要增长或查询的数据（条目、缓存）在 `lib/db.js` 的 `MIGRATIONS` 尾部追加台阶，不预建空表。新增 `public/` 文件必须同步 `sw.js` 的 `ASSETS` 与 `CACHE`——延后加载的文件若不预缓存，回访用户每次打开模块都要走一次网络，与延后加载的初衷相反。
 
-**已按这条落地的第二个模块：备忘录（`memo.js`）**，它是目前唯一有自己数据表的模块——`MIGRATIONS` 尾部 v4 加 `memos`（`id` 主键 + `title` + `body` + `pinned` + `created_at` + `updated_at`）。五条路由的守卫**读与写不同**：读（`GET /api/memos`）是 15 秒一次的轮询，走 `modulePollLimit, requireAdmin`；写（新建 / 编辑 / 固定 / 删除）是用户手动发起的，走 `rateLimit, requireAdmin, memoLimit`。理由见「登录防爆破」一节：轮询按标签页数线性增长，算进管理桶会自己打满。三条与平台约定相关的实现纪律：
+**已按这条落地的第二个模块：备忘与待办（`memo.js`）**，它是目前唯一有自己数据表的模块——`MIGRATIONS` 尾部 v4 加 `memos`（`id` 主键 + `title` + `body` + `pinned` + `created_at` + `updated_at`），v13 再加 `todos`（`id` + `text` + `done` + `created_at` + `updated_at`）。五条备忘路由的守卫**读与写不同**：读（`GET /api/memos`）是 15 秒一次的轮询，走 `modulePollLimit, requireAdmin`；写（新建 / 编辑 / 固定 / 删除）是用户手动发起的，走 `rateLimit, requireAdmin, memoLimit`。待办的 `/api/todos` 五条路由是同一套形状（`todoLimit` 独立一只写桶）。理由见「登录防爆破」一节：轮询按标签页数线性增长，算进管理桶会自己打满。三条与平台约定相关的实现纪律：
 
 1. **模块不得引用 `app.js` 内部的标识符。** `API` 是 `app.js` IIFE 的 `const`，不是全局；平台通过 `mountWidget(shell, { api })` 注入。写裸 `API` 时 `node --check` 与源码形状断言都过得去，只有真在浏览器里跑起来才以 `ReferenceError` 现形。
-2. **模块自己的元素 id 必须带模块前缀。** 与管理端弹窗撞名（如 `#saveBtn`，`app.js:1037`）会让 `querySelector('#saveBtn')` 命中那个隐藏的按钮，点击落到遮罩上——看起来像「保存没反应」，实际是面板被关掉、内容丢失。
+2. **模块自己的元素 id 必须带模块前缀。** 与管理端弹窗撞名（如 `#saveBtn`——`public/app.js` 的管理弹窗与收藏编辑器里各有一个同名 id）会让 `querySelector('#saveBtn')` 命中那个隐藏的按钮，点击落到遮罩上——看起来像「保存没反应」，实际是面板被关掉、内容丢失。
 3. **同步的失败态不能清空已显示的数据。** 拉取失败只把状态位转成「同步失败 + 重试」，上一条已知列表留在卡片上；恢复后由下一次轮询自动回「已同步」。
 
-**第四个模块：微博热搜（`weibo-hot.js`）**，无数据表、无配置项——数据是外站公开榜单，经服务端代理 `GET /api/weibo-hot`（60 秒内存缓存 + 陈旧缓存兜底；上游形状校验与 href 白名单在服务端先做一道，模块里是第二道）。它是「列表会自己变」的模块，渲染约定与前三个不同：**整卡永不 innerHTML 重建，按条目 key（title）做行级 diff + FLIP 动画**——`listKey()` 指纹相同的一轮只刷状态行（零 DOM 写入）；不同时复用行节点移动重排、`translateY` 反转 + 强制 reflow + 过渡归零，新行淡入。三条可复用的判据：① 行元素的身份必须按稳定 key（title）而不是下标，下标键在换位时会把动画打乱成整列重建；② hover 效果**不能**用 `transform`（与 FLIP 冲突），这个模块的行 hover 只换背景色；③ 卡片是容器查询锚点（`.weibo-card { container-type: inline-size }`），侧挂窄卡（≤240px）自动隐藏热度列。轮询桶阈值 `MODULE_POLL_MAX` 的推导随轮询接口数走（现 4 条 → 240），新增轮询路由时 monitor-agent 的守卫会强制重算。
+**备忘与待办的交互约定。** 卡片正文顶部与面板顶部分别有同一组「备忘 | 待办」页签（共享一个内存态 `activeTab`，默认 `memo`，不落 localStorage——「默认展示备忘列表」是每次加载的约定）。卡片头标题随页签变，因为 132px 最窄卡片的头部只有 104px，「备忘与待办」会被省略号截断。待办完成态用一条共用规则 `.memo-todo-text[data-done="1"]`（删除线 + `--text-muted` + 斜体），卡片与面板渲染同一个属性，样式不会分叉。**就地编辑只在管理面板里**：点文字换成输入框（回车/失焦保存、Esc 取消），`renderPanelMaybe` 在 `editingTodoId` 非空时跳过轮询重渲染（与备忘录的 `panelView === 'edit'` 同一层保护）；行内操作按钮在 `pointerdown` 时 `preventDefault()`，否则输入框先失焦触发重渲染、click 会落空。待办排序只看 `created_at DESC`，**完成态不参与排序**（勾选不换位），`updated_at` 只在改文字时更新。
+
+**第四个模块：微博热搜（`weibo-hot.js`）**，无数据表、无配置项——数据是外站公开榜单，经服务端代理 `GET /api/weibo-hot`（60 秒内存缓存 + 陈旧缓存兜底；上游形状校验与 href 白名单在服务端先做一道，模块里是第二道）。它是「列表会自己变」的模块，渲染约定与前三个不同：**整卡永不 innerHTML 重建，按条目 key（title）做行级 diff + FLIP 动画**——`listKey()` 指纹相同的一轮只刷状态行（零 DOM 写入）；不同时复用行节点移动重排、`translateY` 反转 + 强制 reflow + 过渡归零，新行淡入。三条可复用的判据：① 行元素的身份必须按稳定 key（title）而不是下标，下标键在换位时会把动画打乱成整列重建；② hover 效果**不能**用 `transform`（与 FLIP 冲突），这个模块的行 hover 只换背景色；③ 卡片是容器查询锚点（`.weibo-card { container-type: inline-size }`），侧挂窄卡（≤240px）自动隐藏热度列。轮询桶阈值 `MODULE_POLL_MAX` 的推导随轮询接口数走（现 5 条 → 300），新增轮询路由时 monitor-agent 的守卫会强制重算。
 
 ## 凭据加密
 
@@ -638,7 +640,7 @@ selfSigned / version                **函数**，读实时值
 
 - `module_cache` 是单键 `'local'`，存「本次聚合采集的结果」（含聚合后的 `servers` 数组）；`agent_metrics` 按 `server_id` 一行一行存「某台机器的单份上报」。两者生命周期不同，**共用一个 key 会让一次推送覆写掉本机和其它拉取机器的结果**。
 - 进 SQLite 而非 JSON：`nav-sylph.db` 已在 `PRIVATE_FILES` 里、已是 0600、随发布包打包，且**在 `sylph.sh` 的升级备份里**（更新前整库拷走、替换文件后放回）。复用它意味着不需要新的文件权限管理、新的备份条目，也不需要改 `sylph.sh` 的备份/恢复列表。
-  - ⚠️ 它**不在 WebDAV 跨设备备份集内**——`createBackup(configData, favoritesData, appVersion, generateBookmarkHtml, modulesData)` 只收三个数据文件（`config.json` / `favorites.json` / `.modules.json`），数据库不在其中。所以会话与模块私有数据（`memos`）跨设备靠服务器本身，不是靠这份备份。这句早先写成「已被 WebDAV 备份覆盖」，与代码不符，已按实际改写。
+  - ⚠️ **`nav-sylph.db` 里的用户数据并不都在备份集内，也不都不在**：登录会话与监控缓存（`sessions` / `module_cache` / `agent_metrics`）不在；备忘（`memos`）与待办（`todos`）在——它们分别由 `projectMemosForBackup` / `projectTodosForBackup` 投影成独立文件，随 #12 的 WebDAV 备份与 #13 的恢复一起走。早先这段写成「数据库整体不在备份集内、memos 跨设备靠服务器本身」，与代码不符，已按实际改写。
 - **必须入库而不是只驻内存**：服务器重启后 agent 下一次推送（≤ pollInterval）即可自愈。
 
 ### agent 侧
@@ -713,9 +715,9 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **插入导致的基准跳变要补进 transform。** 视觉位置 = 基准 + `transform`；基准突变而 transform 仍相对拖拽起点，合成后卡片会猛弹（实测 247px）。补上差量并同步 `dragData.startY`，单帧跳动可降到与指针位移一致。
 - **采集缓存的失效跟着配置走。** `module_cache` 缓存的是「上次采到了什么」，而采集的目标由配置决定。加/改/删服务器时调用 `invalidateMetricsCache()` 让它失效——否则「新加的机器不出现、删掉的还在」，要等满 TTL 才自愈。`POST /api/modules/config` 也用于拖拽排序与开关模块，那两种改动不影响采集目标，所以那里加了前后比较、只在 `servers` 真的变了才清；无条件清会让「加机器立刻可见」退化成「任何保存都重采」，TTL 就失去了意义。**推送写入也清缓存**——推送是采集的输入之一，输入变了就得失效。
 - **`agent/` 随发布包分发**（`scripts/release.sh` 里的 `cp -r agent`）。不打进包的话，多服务器功能对下载者等于不存在。
-- **`.modules.json` 纳入 WebDAV 备份（范围见 Issue #12）。** #12 起备份产出的是 `nav-sylph-bookmarks-{ts}.html`、`nav-sylph-memos-{ts}.json`、`nav-sylph-modules-{ts}.json`、`nav-sylph-timeline-{ts}.json` 与一份 `nav-sylph-manifest-{ts}.json`（版本化清单：`included[]` 带**文件字节 sha256** 与 counts、`skipped[]` 带域与原因），按时间戳归为同一组；**不再产出** `nav-sylph-config-{ts}.json`（管理员导航/引擎/主题出范围）。模块配置参与「有无变化」判定——只改监控目标却判成 noChanges，远端会留一份旧布局。
+- **`.modules.json` 纳入 WebDAV 备份（范围见 Issue #12）。** #12 起备份产出的是 `nav-sylph-bookmarks-{ts}.html`、`nav-sylph-memos-{ts}.json`、`nav-sylph-todos-{ts}.json`、`nav-sylph-modules-{ts}.json`、`nav-sylph-timeline-{ts}.json` 与一份 `nav-sylph-manifest-{ts}.json`（版本化清单：`included[]` 带**文件字节 sha256** 与 counts、`skipped[]` 带域与原因），按时间戳归为同一组；**不再产出** `nav-sylph-config-{ts}.json`（管理员导航/引擎/主题出范围）。模块配置参与「有无变化」判定——只改监控目标却判成 noChanges，远端会留一份旧布局。
 - ⚠️ **凭据不进备份**：`servers[].token`、`pushSecretHash`、`enrollTokenHash` 全部剔除，恢复后显示「待授权/重新部署」。原因是密钥派生自**管理员密码哈希**，而 bcrypt 带盐 ⇒ 换一台机器用同一口令得到的是**不同的**哈希 ⇒ 密文**解不开**（旧文档里「换机器后用同一密码即可解开」是**失实**的，已改）。`certPem`/`certFingerprint`/`enrolledAt`/`deployState` 是公钥与注册信息，保留。**`.admin-password.json` 始终不进备份**——把密码哈希交出去等于把账号交出去。
-- 导出侧用**白名单投影**（不是 delete）：将来新增的凭据字段默认不进备份；投影按**固定键顺序**构造——`calculateChecksum` 是 `JSON.stringify` 摘要，键序一变摘要就变，`noChanges` 会失效（每轮都上传）。清理旧备份时五个文件一并删除，否则会出孤儿：清理按分组算，孤儿既不被计入也不会被清走。
+- 导出侧用**白名单投影**（不是 delete）：将来新增的凭据字段默认不进备份；投影按**固定键顺序**构造——`calculateChecksum` 是 `JSON.stringify` 摘要，键序一变摘要就变，`noChanges` 会失效（每轮都上传）。清理旧备份时同一组的六个文件（书签 / 备忘 / 待办 / 模块 / 时间线 / 清单）一并删除，否则会出孤儿：清理按分组算，孤儿既不被计入也不会被清走。`SCOPE_VERSION` 在范围变化时 +1（v3 即加入待办），否则「各域内容没变」会让远端长期留一份旧范围的清单。
 - **一键部署命令在后台生成，不在 `sylph.sh`。** `sylph.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。上一版是六步手工说明（下载、手动改配置、自检、systemd、防火墙…），现在合并成**一条可复制命令**——每一个由系统能自己生成的步骤（协议前缀、端口、令牌、证书指纹）都不该让用户填。
 - **命令里的凭据是占位符，明文不进页面 DOM。** 令牌明文只在「签发」那一次响应里出现一次；为了让命令可复制而不泄露，页面上的令牌位是 `<占位符>`，由 `agent/install.sh` 在目标机上自己填进 0600 的配置。
 - **二进制按架构分发**（`GET /agent/nav-agent-linux-<arch>`，白名单 amd64/arm64/armv7），路径穿越有防护。**失败必须分因**：文件缺失与架构不在白名单是两种原因，塌缩成一个 404 会让用户以为是网络问题。分发用 `fs.createReadStream`（从 `require('fs')` 拿，不是 `require('fs').promises`——后者没有流式 API），多 MB 产物不要 `readFile` 再 `send`。**不进 Service Worker 预缓存**（预缓存一个从不加载的文件只会在每次更新时多下载一次），并且 `Cache-Control: no-cache`——URL 稳定而内容随版本变，否则照旧命令执行的用户拿到的是旧版。404 的响应体必须是 **shell 注释**而不是 HTML 错误页，因为它会被 `bash -s` 执行。
@@ -863,7 +865,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ⚠️ **自动备份与手动备份各用一套校验和，这是最容易被漏掉的交互。** 只有一套 `last*Checksum` 时，自动备份跑完会让用户点「立即备份」得到一句「没有变化」、什么都不生成——一次显式请求被静默吞掉。因此自动路径读写 `lastAuto*Checksum`，手动路径仍用 `last*Checksum`；`lastBackupTime` 两条都更新（它就是界面上的「上次备份」）。
 
-**自动备份写固定槽位，不参与「保留最新 5 组」的轮换。** 文件名不带时间戳（`nav-sylph-config-auto.json` / `-bookmarks-auto.html` / `-modules-auto.json` / `-timeline-auto.json`，这四个名字只定义在 `lib/webdav-backup.js` 文件头，`createBackup` 与 `listBackups` 都用同一组常量拼），每次覆盖；`listBackups()` 把它归成一个 `{ timestamp:'auto', isAuto:true }` 分组并**显式排在最前**（不依赖 `'auto'` 恰好大于数字的字典序巧合），`createdAt` 取远端 `lastmod`（固定文件名里没有时刻）。`cleanupOldBackups()` 用 `backups.filter(b => !b.isAuto)` 把它排除在计数与删除之外——否则因为它永远排在最前，反而会最先被当成「最旧一组」删掉；反过来说，自动备份**不可能**挤掉手动备份的保留位。恢复对话框对 `isAuto` 加「自动同步」前缀，删除确认也用列表里渲染出来的那串名字（重算会退化成光秃秃的时间，用户认不出点的是哪一条）。**删掉自动槽位的文件必须同时清掉它那一组校验和**（`deleteBackup` 里按文件名判断，赋 `undefined` 而不是 `null`）——否则 `noChanges` 会在下一次自动同步时短路，远端那份再也不会被重新创建，而界面上还写着「已开启」。
+**自动备份写固定槽位，不参与「保留最新 5 组」的轮换。** 文件名不带时间戳（`-bookmarks-auto.html` / `-memos-auto.json` / `-todos-auto.json` / `-modules-auto.json` / `-timeline-auto.json` / `-manifest-auto.json`，这些名字只定义在 `lib/webdav-backup.js` 文件头，`createBackup` 与 `listBackups` 都用同一组常量拼），每次覆盖；`listBackups()` 把它归成一个 `{ timestamp:'auto', isAuto:true }` 分组并**显式排在最前**（不依赖 `'auto'` 恰好大于数字的字典序巧合），`createdAt` 取远端 `lastmod`（固定文件名里没有时刻）。`cleanupOldBackups()` 用 `backups.filter(b => !b.isAuto)` 把它排除在计数与删除之外——否则因为它永远排在最前，反而会最先被当成「最旧一组」删掉；反过来说，自动备份**不可能**挤掉手动备份的保留位。恢复对话框对 `isAuto` 加「自动同步」前缀，删除确认也用列表里渲染出来的那串名字（重算会退化成光秃秃的时间，用户认不出点的是哪一条）。**删掉自动槽位的文件必须同时清掉它那一组校验和**（`deleteBackup` 里按文件名判断，赋 `undefined` 而不是 `null`）——否则 `noChanges` 会在下一次自动同步时短路，远端那份再也不会被重新创建，而界面上还写着「已开启」。
 
 **备份载荷的组装只有一份**（`collectBackupPayload()` + `performBackup()`），手动路由与自动路径共用。手动路由里不得再出现 `readJSON(MODULES_FILE)` 这类「哪些文件进备份」的清单——两份副本必然漂移。
 
@@ -873,7 +875,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ⚠️ **`server-config.json` 会遮蔽 `server-config/` 目录**，这不是本项目的选择而是 Node 的解析顺序（`.js` → `.json` → `.node` → 目录）：该文件一旦存在于安装目录根下，`require('./server-config')` 返回的就是它的原文，`server-config/index.js` 一行都不执行，defaults 与 `rootDir` 全部落空。**因此 `server.js` 必须写成显式路径 `require('./server-config/index.js')`** —— 这是唯一让遮蔽不发生的方式；`rootDir` 不在 `defaults.js` 里（由 `index.js` 用 `__dirname` 推导后赋值），所以「把配置写全」补不出它。用户那份文件由后台「自签证书」开关写出（`POST /api/server-flags`，首次保存只写 `security` 一段），因此这条路径不是边缘情况。`server.js` 另在 `require` 之后调用 `assertConfigUsable(config)` 兜底：缺 `rootDir`/`server`/`paths`/`security` 或 `validate` 时直接报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 `ERR_INVALID_ARG_TYPE`。`tests/config-shadowing.test.js` 用真实启动钉住「残片存在时服务照常起来、且残片仍被应用」，另有一条钉住显式路径与 Node 的解析顺序。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载书签及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，当前保存管理端会话**；`sylph.sh` 只把它加进更新失败的本地回滚清单，不参与 WebDAV 跨设备备份（会话令牌不是用户内容）。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，保存管理端会话、备忘、待办与监控缓存**；其中会话与监控缓存不参与 WebDAV 跨设备备份（会话令牌与派生缓存不是用户内容），备忘与待办则随各自的数据域进备份。`sylph.sh` 只把库文件加进更新失败的本地回滚清单。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
 `GET /api/config` 在没有正常管理会话时返回剔除 `privacyMode` 的公开导航视图，正常管理会话可读取完整配置。`GET /api/favorites` 及导出接口仅接受正常管理会话，匿名及改密凭据均返回401。写入继续按 id 合并，缺席的既有私密条目保留；配置保存以现有文件为基底，不因客户端缺少字段而抹掉 `privacyMode`。
 
@@ -936,7 +938,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 `/api/session` 已从 `rateLimit` 改到 `publicReadLimit`：它每次首屏都调，不该挤占登录配额。
 锁定与总量两个 Map 都挂在既有的 60 秒清扫定时器上，不会随访问量无限增长。
 
-**`rateLimit` 是「管理操作」的桶，不是「页面自己按周期打的请求」的桶。** 它同时是 `/api/verify-password` 的第一层防爆破（30 次/分钟/IP），所以任何**按轮询或按首屏自动发出**的请求都不该计在它头上——否则「正常使用」自己就能把桶打满。这条已经处理过三次：`/api/session` 挪到 `publicReadLimit`；`GET /api/modules/metrics` 与 `GET /api/memos` 挪到 `modulePollLimit`；v1.13.0 加入 `GET /api/timeline/events` 后把该桶从 120 抬到 **180 次/分钟**（按「**3 个接口** × 周期下限 6 次/分钟 × 10 个标签页」重推）。⚠️ 这个乘数**每加一条「每个标签页每周期各打一次」的接口就要重算**：留着 120 的话，「三个模块全开 + 十个标签页」会把桶打满，复现的正是下面那个故障。
+**`rateLimit` 是「管理操作」的桶，不是「页面自己按周期打的请求」的桶。** 它同时是 `/api/verify-password` 的第一层防爆破（30 次/分钟/IP），所以任何**按轮询或按首屏自动发出**的请求都不该计在它头上——否则「正常使用」自己就能把桶打满。这条已经处理过三次：`/api/session` 挪到 `publicReadLimit`；`GET /api/modules/metrics` 与 `GET /api/memos` 挪到 `modulePollLimit`；v1.13.0 加入 `GET /api/timeline/events` 后把该桶抬到 **180 次/分钟**，微博热搜与待办陆续加入后现为 **300 次/分钟**（按「**5 个接口** × 周期下限 6 次/分钟 × 10 个标签页」推导）。⚠️ 这个乘数**每加一条「每个标签页每周期各打一次」的接口就要重算**：留着旧值的话，「所有模块全开 + 十个标签页」会把桶打满，复现的正是下面那个故障。
 
 ⚠️ 后者不是理论风险：轮询按**标签页数**线性增长，一个标签页空闲就占 8 次/分钟，而一次页面加载另占 3 次——单开一个标签页刷 7~8 次、两个标签页刷 4~5 次即打满。实测（一分钟连刷 12 次）：第 9 秒起 `/api/modules/config` 连续 429，**模块区整个渲染不出来**，`metrics` 同时报「监控数据读取失败」——两条症状同源，看起来却像两个不同的故障。
 

@@ -183,10 +183,12 @@ test('条目改称书签：收藏夹内的操作文案用「书签」', () => {
     // 时间线也在时是「（含备忘录、模块设置、时间线）」——没有任何私人数据时不显示这一项。
     assert.match(src, /<input type="radio" name="restoreType" value="all"/,
         'WebDAV 恢复选项：同时恢复书签与私人数据');
-    assert.match(src, /同时恢复书签与私人数据（含\$\{\[hasMemos && '备忘录'/,
+    assert.match(src, /同时恢复书签与私人数据（含\$\{\[hasMemos && '备忘'/,
         '括号内容由这一组实际包含的域决定');
-    assert.match(src, /<span>只恢复备忘录（正文与置顶状态）<\/span>/,
-        'WebDAV 恢复选项含备忘录');
+    assert.match(src, /<span>只恢复备忘（正文与置顶状态）<\/span>/,
+        'WebDAV 恢复选项含备忘');
+    assert.match(src, /<span>只恢复待办清单（完成状态）<\/span>/,
+        'WebDAV 恢复选项含待办');
     assert.match(src, /<span>只恢复时间线（事件与归档 \/ 收藏状态）<\/span>/,
         'WebDAV 恢复选项含时间线');
     // 恢复对话框不得再谈 token（凭据不随备份），并要列出「恢复后需重新授权」的项目
@@ -221,7 +223,6 @@ test('匿名搜索框仅提示网页搜索', () => {
 });
 
 test('sw.js：CACHE 与注释块的第一条始终一致（版本号不写死在测试名里）', () => {
-    assert.match(swJs, /const CACHE = 'nav-v127';/);
     // 注释块的第一条必须**以当前缓存号开头并带说明**。这里不写死「本轮的主题」：
     // 主题随每次升级变化，写死就要每轮改一次断言（而真正要钉的是「注释跟着 CACHE 走」
     // 这个关系，见下面的派生断言）。

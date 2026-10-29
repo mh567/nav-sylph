@@ -1,3 +1,8 @@
+// nav-v128：备忘录模块升级为「备忘 + 待办」——卡片正文顶部与面板顶部各有
+// 一组页签（默认备忘），待办条目的完成态是删除线 + 变灰 + 斜体，面板里点文字
+// 就地编辑（回车/失焦保存、Esc 取消）。新增 `/api/todos` 轮询接口与 `todos` 表，
+// WebDAV 备份/恢复增加第 5 个域（待办清单）。改了 app.js、modules/memo.js、
+// styles.css。
 // nav-v127：首页支持输入取件码取回共享文本——整串命中 tiger-482 或绝对
 // /p/tiger-482 链接时主按钮从「搜索」变「取件」，回车跳转 /p/<code>；Esc 取消
 // 识别，粘贴链接时输入框只留裸码；搜索框下方的说明行补上「取件码 取回分享」。
@@ -332,7 +337,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v127';
+const CACHE = 'nav-v128';
 const ASSETS = [
     '/',
     '/index.html',

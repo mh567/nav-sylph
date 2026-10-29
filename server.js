@@ -271,20 +271,21 @@ function publicReadLimit(req, res, next) {
 // 单独计数而**不是**提高 rateLimit：rateLimit 同时是
 // /api/verify-password 的第一层防爆破，放宽它等于把暴力破解的额度一起
 // 放宽 4 倍。这与 publicReadLimit 早先为 /api/session 做过的是同一件事。
-// 阈值按轮询推导：**4 个接口** × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 240。
+// 阈值按轮询推导：**5 个接口** × 6 次/分钟（周期下限 10 秒）× 10 个标签页 = 300。
 // ⚠️ 每新增一条「每个标签页每周期各打一次」的接口，这个乘数就要重算一次：
 // v1.11.7 定这个数是按 2 个接口推的（120），v1.13.0 加入
 // GET /api/timeline/events 之后抬到 180，新增 GET /api/weibo-hot（微博热搜模块，
-// 60 秒一轮）之后必须到 240——留着 180 的话，「四个模块全开 + 十个标签页」
-// 会把桶打满，复现的正是 v1.11.7 修过的那类故障
+// 60 秒一轮）之后必须到 240，v1.14.0 加入 GET /api/todos（待办清单，与备忘录
+// 同一张卡、同一周期）之后必须到 300——留着 240 的话，「五个模块全开 + 十个
+// 标签页」会把桶打满，复现的正是 v1.11.7 修过的那类故障
 //（429 → 模块区渲染不出来 / 时间线读取失败）。
 //
 // 代价：这几条是 requireAdmin 门控，无会话时它会跑一次 bcrypt（正常会话
 // 命中不走）。所以伪造 X-Admin-Password 打这些接口时，可触发的 bcrypt
-// 上限从 30 次/分钟升到 240 次/分钟；仍是有界的，且不必放宽登录那条路径。
+// 上限从 30 次/分钟升到 300 次/分钟；仍是有界的，且不必放宽登录那条路径。
 const modulePollLimitMap = new Map();
 const MODULE_POLL_WINDOW = 60000;
-const MODULE_POLL_MAX = 240;
+const MODULE_POLL_MAX = 300;
 
 function modulePollLimit(req, res, next) {
     const ip = resolveClientIp(req);
@@ -341,6 +342,8 @@ setInterval(() => {
     // 异常流量同样只增不减。桶定义在下方「备忘录 API」小节，
     // 与注册桶同理：定时器 60 秒后才触发，那时 const 已初始化。
     sweepRateLimitStore(memoRateLimitMap, now, MEMO_LIMIT_WINDOW);
+    // 待办写桶：与备忘录同理，定义在「待办 API」小节，60 秒后定时器才触发。
+    sweepRateLimitStore(todoRateLimitMap, now, TODO_LIMIT_WINDOW);
     // 模块轮询桶：按 IP 计数，不清就会随标签页数量无限增长。
     sweepRateLimitStore(modulePollLimitMap, now, MODULE_POLL_WINDOW);
     // 口令空间的三只桶。前两只按**空间**计数（读 240/分、写 120/分，与访问者
@@ -1053,6 +1056,7 @@ app.use('/api/modules', restoreHaltedGuard('modules'));
 app.use('/api/timeline', restoreHaltedGuard('timeline'));
 app.use('/api/admin/navigation', restoreHaltedGuard('navigation-admin'));
 app.use('/api/memos', restoreHaltedGuard('memos'));
+app.use('/api/todos', restoreHaltedGuard('todos'));
 
 /**
  * 环境变化的信号怎么传给客户端。
@@ -1214,6 +1218,8 @@ async function init() {
     // 所以由写路由显式调用（见 memoWriteHook 的注释）。在这里注册而不是在路由里
     // 直接调 scheduleAutoSync：那段代码会被测试单独切出来跑，见声明处。
     memoWriteHook = scheduleAutoSync;
+    // 待办与备忘录同在 SQLite，同理：写路由显式调用，实现在这里注册。
+    todoWriteHook = scheduleAutoSync;
 }
 
 // 这条软门在无会话时会跑一次 bcrypt 比对，而匿名访问必走这条路。
@@ -2475,7 +2481,7 @@ function scheduleAutoSync() {
 }
 
 /**
- * 备份载荷：**只收私人数据**（收藏、备忘录、私人模块、时间线）。
+ * 备份载荷：**只收私人数据**（收藏、备忘、待办、私人模块、时间线）。
  *
  * 管理员导航与搜索引擎、默认模板、普通口令空间、密码与会话、监控缓存、
  * 公开模块项与任何凭据都不在这里——范围与排除项的单一真相源是
@@ -2506,6 +2512,9 @@ async function collectBackupPayload() {
     // 等于**抹掉**远端那一份，而自动同步发生时用户不在场。
     // （MEMO_LIST_SQL / memoToClient 定义在文件后半段，函数声明与调用时机都在其之后。）
     const memosData = db.prepare(MEMO_LIST_SQL).all().map(memoToClient);
+    // 待办（SQLite，与备忘录同一个模块）。同一条纪律：读失败要抛，不能兜底成
+    // 空表——自动同步时用户不在场，空表上传等于抹掉远端那一份。
+    const todosData = db.prepare(TODO_LIST_SQL).all().map(todoToClient);
     let appVersion = '1.0.0';
     try {
         const versionData = await readJSON(path.join(config.rootDir, 'version.json'));
@@ -2526,6 +2535,7 @@ async function collectBackupPayload() {
     return {
         favorites: Array.isArray(favoritesData.favorites) ? favoritesData.favorites : [],
         memos: memosData,
+        todos: todosData,
         modules: modulesData,
         timeline: timelineData,
         appVersion,
@@ -2723,7 +2733,7 @@ app.get('/api/webdav/list', rateLimit, requireAdmin, async (req, res) => {
 // 写前记录、逐域应用、失败逆序回滚）。语义与生命周期见 lib/restore.js 的文件头；
 // 这里只负责传输、权限与「谁在什么顺序上被调用」。
 //
-// 恢复范围与备份范围对称：书签、备忘录、私人模块、时间线。
+// 恢复范围与备份范围对称：书签、备忘、待办、私人模块、时间线。
 // ⚠️ 主导航/主题/搜索引擎（旧备份里的 config 域）**永不恢复**：它在 #12 之后
 // 不在备份范围内，`published`/`draft` 也永不触碰。旧备份仍然能选，但只会恢复书签，
 // 响应与预览里的 skip 会说明原因。
@@ -2732,7 +2742,7 @@ app.get('/api/webdav/list', rateLimit, requireAdmin, async (req, res) => {
 const RESTORE_DRAIN_TIMEOUT_MS = 5000;
 
 /** 一次恢复要动的域。锁与守卫都认它，两处漂移的表现是「锁了一个、动了另一个」。 */
-const RESTORE_DOMAINS = ['favorites', 'memos', 'modules', 'timeline'];
+const RESTORE_DOMAINS = ['favorites', 'memos', 'todos', 'modules', 'timeline'];
 
 // Restore preview（只读）
 //
@@ -2744,20 +2754,22 @@ app.post('/api/webdav/restore/preview', rateLimit, requireAdmin, async (req, res
             configFile,
             bookmarksFile,
             memosFile,
+            todosFile,
             manifestFile,
             modulesFile,
             timelineFile,
             legacyFile,
             restoreBookmarks = true,
             restoreMemos = true,
+            restoreTodos = true,
             restoreModules = true,
             restoreTimeline = true
         } = req.body;
 
-        if (!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile) {
+        if (!bookmarksFile && !memosFile && !todosFile && !modulesFile && !timelineFile && !legacyFile) {
             return res.status(400).json({
                 error: configFile
-                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘录/模块/时间线的备份'
+                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘/待办/模块/时间线的备份'
                     : '请选择要恢复的备份文件'
             });
         }
@@ -2777,12 +2789,14 @@ app.post('/api/webdav/restore/preview', rateLimit, requireAdmin, async (req, res
             configFile,
             bookmarksFile,
             memosFile,
+            todosFile,
             manifestFile,
             modulesFile,
             timelineFile,
             legacyFile,
             restoreBookmarks,
             restoreMemos,
+            restoreTodos,
             restoreModules,
             restoreTimeline
         });
@@ -2818,21 +2832,23 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             configFile,
             bookmarksFile,
             memosFile,
+            todosFile,
             manifestFile,
             modulesFile,
             timelineFile,
             legacyFile,
             restoreBookmarks = true,
             restoreMemos = true,
+            restoreTodos = true,
             restoreModules = true,
             restoreTimeline = true,
             planDigest
         } = req.body;
 
-        if (!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile) {
+        if (!bookmarksFile && !memosFile && !todosFile && !modulesFile && !timelineFile && !legacyFile) {
             return res.status(400).json({
                 error: configFile
-                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘录/模块/时间线的备份'
+                    ? '该备份只含导航与配置：新范围不再恢复这部分，请选择含书签/备忘/待办/模块/时间线的备份'
                     : '请选择要恢复的备份文件'
             });
         }
@@ -2875,12 +2891,14 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
                 configFile,
                 bookmarksFile,
                 memosFile,
+                todosFile,
                 manifestFile,
                 modulesFile,
                 timelineFile,
                 legacyFile,
                 restoreBookmarks,
                 restoreMemos,
+                restoreTodos,
                 restoreModules,
                 restoreTimeline
             });
@@ -2898,7 +2916,8 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
 
         const parts = [];
         if (applied.includes('favorites')) parts.push('书签');
-        if (applied.includes('memos')) parts.push('备忘录');
+        if (applied.includes('memos')) parts.push('备忘');
+        if (applied.includes('todos')) parts.push('待办');
         if (applied.includes('modules')) parts.push('模块配置');
         if (applied.includes('timeline')) parts.push('时间线');
         const modulesResult = outcome.results?.modules || {};
@@ -2907,6 +2926,7 @@ app.post('/api/webdav/restore', rateLimit, requireAdmin, async (req, res) => {
             message: parts.length ? `恢复成功（含${parts.join('、')}）` : '恢复成功',
             restoredBookmarks: applied.includes('favorites'),
             restoredMemos: applied.includes('memos'),
+            restoredTodos: applied.includes('todos'),
             restoredModules: applied.includes('modules'),
             restoredTimeline: applied.includes('timeline'),
             modulesRevision: modulesResult.revision === undefined ? null : modulesResult.revision,
@@ -2967,6 +2987,9 @@ const restoreDomains = {
 
     // 备忘录：整表替换（与时间线同一形状），正文与置顶状态都在这里。
     memos: async result => ({ count: restoreMemosFromBackup(result.data.memos) }),
+
+    // 待办：与备忘录同一形状，整表替换。
+    todos: async result => ({ count: restoreTodosFromBackup(result.data.todos) }),
 
     // 模块配置：**按稳定模块 id 合并**，不整份覆盖。publicModules / socialAccounts /
     // symbols 与公开模块的布局项都在本机，备份里没有它们——整份覆盖等于把它们删掉。
@@ -4245,6 +4268,18 @@ const MEMO_SELECT = 'SELECT id, title, body, pinned, created_at, updated_at FROM
 const MEMO_LIST_SQL = MEMO_SELECT + ' ORDER BY pinned DESC, updated_at DESC';
 
 /**
+ * 备份里的 id 会原样进前端的 `data-id` 属性。备份文件是**外部输入**，而恢复
+ * 只校验了「非空字符串」——一个带引号的 id 足以在管理页面上注入属性。
+ * 服务端自己生成的 id 是 `crypto.randomUUID()`（十六进制与连字符），所以这里
+ * 限定同样的字符集；旧备份里的 id 也来自这个生成器，不会误伤。
+ */
+const RESTORE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function isRestorableId(id) {
+    return typeof id === 'string' && RESTORE_ID_PATTERN.test(id);
+}
+
+/**
  * WebDAV 恢复：把备份里的备忘录整表替换进来（一个事务）。
  *
  * 与时间线同一种语义——「回到那个时间点」，而不是逐条合并：备忘录的 id 是
@@ -4262,7 +4297,7 @@ function restoreMemosFromBackup(data) {
     const now = Date.now();
     const rows = [];
     for (const entry of entries) {
-        if (!entry || typeof entry.id !== 'string' || !entry.id) continue;
+        if (!entry || !isRestorableId(entry.id)) continue;
         const title = typeof entry.title === 'string' ? entry.title.trim() : '';
         if (!title || title.length > MEMO_TITLE_MAX) continue;
         const text = typeof entry.body === 'string' ? entry.body : '';
@@ -4377,6 +4412,175 @@ app.delete('/api/memos/:id', rateLimit, requireAdmin, memoLimit, (req, res) => {
         res.json({ success: true });
     } catch (err) {
         console.error('删除备忘录失败:', err);
+        res.status(500).json({ error: '删除失败' });
+    }
+});
+
+// ========== 待办 API ==========
+//
+// 待办与备忘录同属 memo 模块（卡片顶部页签切换），但**独立成表**（v13 迁移）：
+// 待办没有正文与置顶，有完成态；合表后每条 memo 路由都要记得带 kind 过滤，
+// 漏一处就把待办渲染成备忘录。
+//
+// 限流形状与备忘录完全一致：读是 15 秒一次的轮询 → modulePollLimit；写是
+// 用户手动发起 → rateLimit + todoLimit。两只桶分开，理由见 memoLimit 上方。
+const TODO_LIMIT_WINDOW = 60000;
+const TODO_LIMIT_MAX = 30;
+const TODO_MAX_ENTRIES = 300;
+const TODO_TEXT_MAX = 200;
+const todoRateLimitMap = new Map();
+
+function todoLimit(req, res, next) {
+    const ip = resolveClientIp(req);
+    const { allowed } = consumeRateLimit(todoRateLimitMap, ip, Date.now(), TODO_LIMIT_WINDOW, TODO_LIMIT_MAX);
+    if (!allowed) {
+        return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
+    }
+    next();
+}
+
+// 行 → 客户端形态：SQLite 的 0/1 转布尔，下划线键改驼峰
+function todoToClient(row) {
+    return {
+        id: row.id,
+        text: row.text,
+        done: !!row.done,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+/**
+ * 待办写入后的排期入口。**默认是空操作**，理由与 memoWriteHook 完全相同：
+ * `tests/memo.test.js` 会把从备忘录小节到「微博热搜代理」之间的代码单独切出来
+ * 在 vm 里跑，那里没有 init() 的定时器、抑制计数与去抖机制，直接调
+ * scheduleAutoSync 会让四条写路由全部 500。真实实现由 init() 注册。
+ */
+let todoWriteHook = () => {};
+
+const TODO_SELECT = 'SELECT id, text, done, created_at, updated_at FROM todos';
+// 完成态**不参与排序**：勾选不换位，连续勾选不会点错下一条。
+// id 作次级排序键，避免同一毫秒创建的两条顺序未定义。
+const TODO_LIST_SQL = TODO_SELECT + ' ORDER BY created_at DESC, id DESC';
+
+/** 两条写路由共用的文字校验：trim 与长度只在一处，避免两处漂移。 */
+function readTodoText(body) {
+    const text = typeof body?.text === 'string' ? body.text.trim() : '';
+    if (!text) return { error: '待办内容不能为空' };
+    if (text.length > TODO_TEXT_MAX) return { error: `待办内容最长 ${TODO_TEXT_MAX} 字符` };
+    return { text };
+}
+
+/**
+ * WebDAV 恢复：把备份里的待办整表替换进来（一个事务）。
+ *
+ * 与备忘录同一种语义——「回到那个时间点」，而不是逐条合并。形状校验在服务端
+ * 再做一遍：id/文字缺一不可，超长条目跳过（不因为一条坏数据让整次恢复失败）。
+ * @returns {boolean} 是否真的写入了（空备份也算：那是「那时候没有待办」）
+ */
+function restoreTodosFromBackup(data) {
+    const entries = Array.isArray(data && data.todos) ? data.todos : [];
+    const insert = db.prepare(
+        'INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
+    const now = Date.now();
+    const rows = [];
+    for (const entry of entries) {
+        if (!entry || !isRestorableId(entry.id)) continue;
+        const text = typeof entry.text === 'string' ? entry.text.trim() : '';
+        if (!text || text.length > TODO_TEXT_MAX) continue;
+        rows.push([
+            entry.id,
+            text,
+            entry.done === true ? 1 : 0,
+            Number(entry.createdAt) || now,
+            Number(entry.updatedAt) || now
+        ]);
+        if (rows.length >= TODO_MAX_ENTRIES) break;
+    }
+    const replace = db.transaction(list => {
+        db.prepare('DELETE FROM todos').run();
+        for (const row of list) insert.run(...row);
+    });
+    replace(rows);
+    return true;
+}
+
+// 轮询接口：与 /api/memos 同理，走轮询专用桶，不占管理操作的额度。
+app.get('/api/todos', modulePollLimit, requireAdmin, async (req, res) => {
+    try {
+        const rows = db.prepare(TODO_LIST_SQL).all();
+        const pollInterval = await readPollInterval();
+        res.json({ todos: rows.map(todoToClient), pollInterval });
+    } catch (err) {
+        console.error('读取待办失败:', err);
+        res.status(500).json({ error: '读取失败' });
+    }
+});
+
+app.post('/api/todos', rateLimit, requireAdmin, todoLimit, (req, res) => {
+    try {
+        const parsed = readTodoText(req.body);
+        if (parsed.error) return res.status(400).json({ error: parsed.error });
+        const text = parsed.text;
+        if (db.prepare('SELECT COUNT(*) AS n FROM todos').get().n >= TODO_MAX_ENTRIES) {
+            return res.status(400).json({ error: `最多 ${TODO_MAX_ENTRIES} 条待办` });
+        }
+        const now = Date.now();
+        const id = crypto.randomUUID();
+        db.prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)')
+            .run(id, text, now, now);
+        todoWriteHook();
+        const row = db.prepare(TODO_SELECT + ' WHERE id = ?').get(id);
+        res.json({ todo: todoToClient(row) });
+    } catch (err) {
+        console.error('创建待办失败:', err);
+        res.status(500).json({ error: '创建失败' });
+    }
+});
+
+app.post('/api/todos/:id', rateLimit, requireAdmin, todoLimit, (req, res) => {
+    try {
+        const parsed = readTodoText(req.body);
+        if (parsed.error) return res.status(400).json({ error: parsed.error });
+        const text = parsed.text;
+        const now = Date.now();
+        // 文字是内容变更，更新 updated_at；LWW 与备忘录一致。
+        const info = db.prepare('UPDATE todos SET text = ?, updated_at = ? WHERE id = ?')
+            .run(text, now, req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该待办' });
+        todoWriteHook();
+        const row = db.prepare(TODO_SELECT + ' WHERE id = ?').get(req.params.id);
+        res.json({ todo: todoToClient(row) });
+    } catch (err) {
+        console.error('保存待办失败:', err);
+        res.status(500).json({ error: '保存失败' });
+    }
+});
+
+app.post('/api/todos/:id/done', rateLimit, requireAdmin, todoLimit, (req, res) => {
+    try {
+        const v = req.body && req.body.done;
+        if (typeof v !== 'boolean') return res.status(400).json({ error: 'done 必须为布尔值' });
+        // 只改 done，不动 updated_at：完成态是状态变更，不是内容更新
+        //（与 memos 的 pinned 同一条约定）。
+        const info = db.prepare('UPDATE todos SET done = ? WHERE id = ?').run(v ? 1 : 0, req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该待办' });
+        todoWriteHook();
+        res.json({ success: true });
+    } catch (err) {
+        console.error('更新待办状态失败:', err);
+        res.status(500).json({ error: '操作失败' });
+    }
+});
+
+app.delete('/api/todos/:id', rateLimit, requireAdmin, todoLimit, (req, res) => {
+    try {
+        const info = db.prepare('DELETE FROM todos WHERE id = ?').run(req.params.id);
+        if (info.changes === 0) return res.status(404).json({ error: '未找到该待办' });
+        todoWriteHook();
+        res.json({ success: true });
+    } catch (err) {
+        console.error('删除待办失败:', err);
         res.status(500).json({ error: '删除失败' });
     }
 });

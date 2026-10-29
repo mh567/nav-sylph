@@ -223,7 +223,7 @@ test('服务端把 .modules.json 传进备份并写回', () => {
         '写回 .modules.json');
     assert.match(restoreRoute, /restoreModules = true/, '默认恢复模块配置');
     // 缺失的 modules（或 timeline）文件不能被当成「没选」，否则整个恢复被 400 挡下
-    assert.match(restoreRoute, /!bookmarksFile && !memosFile && !modulesFile && !timelineFile && !legacyFile/,
+    assert.match(restoreRoute, /!bookmarksFile && !memosFile && !todosFile && !modulesFile && !timelineFile && !legacyFile/,
         '只选模块文件也能恢复');
     assert.match(restoreRoute, /timeline\.service\.importTimeline\(result\.data\.timeline\)/,
         '时间线在恢复流程里整表替换（一个事务）');

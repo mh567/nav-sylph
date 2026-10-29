@@ -31,6 +31,7 @@ const PASSWORD = 'StrongPass123!';
 const FAV_MARKER = 'FAV-MARKER-13 私密书签';
 const MEMO_TITLE = 'MEMO-13 恢复出来的备忘';
 const MEMO_BODY = 'MEMO-BODY-13 正文';
+const TODO_TEXT = 'TODO-13 恢复出来的待办';
 const TIMELINE_TITLE = 'TIMELINE-13 一条事件';
 const LOCAL_MARKER = 'LOCAL-13 本机后加的书签';
 
@@ -162,6 +163,8 @@ async function seed(t) {
         const now = Date.now();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?,?,?,1,?,?)')
             .run('memo-1', MEMO_TITLE, MEMO_BODY, now, now);
+        db.prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, 1, ?, ?)')
+            .run('todo-1', TODO_TEXT, now, now);
         db.prepare(`INSERT INTO timeline_sources
             (id, provider_type, name, external_key, settings_json, enabled, sync_cursor,
              sync_interval_ms, next_sync_at, last_attempt_at, last_success_at, last_error, created_at, updated_at)
@@ -202,6 +205,7 @@ async function backupOnce(t) {
     const selection = {
         bookmarksFile: group.bookmarksFile,
         memosFile: group.memosFile,
+        todosFile: group.todosFile,
         modulesFile: group.modulesFile,
         timelineFile: group.timelineFile,
         manifestFile: group.manifestFile
@@ -242,7 +246,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
 
     const plan = preview.plan;
     const restoreDomains = plan.domains.filter(entry => entry.action === 'restore').map(entry => entry.domain).sort();
-    assert.deepEqual(restoreDomains, ['favorites', 'memos', 'modules', 'timeline'], '四域都将恢复');
+    assert.deepEqual(restoreDomains, ['favorites', 'memos', 'modules', 'timeline', 'todos'], '五域都将恢复');
     // 派生域与「本机不恢复的域」都在 skip 里给了原因
     const skippedDomains = plan.domains.filter(entry => entry.action === 'skip').map(entry => entry.domain);
     assert.ok(skippedDomains.includes('metrics-cache'), '派生域进 skip');
@@ -258,9 +262,9 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.deepEqual(pendingIds, ['src-1']);
     assert.equal(plan.pendingAuthorization[0].state, 'pending_authorization');
     assert.deepEqual(plan.unknownModules, [], '备份里的模块本机都有实现');
-    // 清单：有一份 manifest，且它列了四个域
+    // 清单：有一份 manifest，且它列了五个域
     assert.ok(preview.manifest && Array.isArray(preview.manifest.included));
-    assert.equal(preview.manifest.included.length, 4);
+    assert.equal(preview.manifest.included.length, 5);
     assert.equal(snapshotDirs(app.dir).length, 0, '预览不落快照');
 
     // 破坏现场：加一个本机书签、清掉备忘录
@@ -272,6 +276,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.equal(added.status, 200);
     const db0 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
     db0.prepare('DELETE FROM memos').run();
+    db0.prepare('DELETE FROM todos').run();
     db0.close();
 
     const restoreRes = await app.request('/api/webdav/restore', { cookie, body: { ...selection, planDigest: preview.planDigest } });
@@ -279,6 +284,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.equal(restoreRes.status, 200, JSON.stringify(restored));
     assert.equal(restored.restoredBookmarks, true);
     assert.equal(restored.restoredMemos, true);
+    assert.equal(restored.restoredTodos, true);
     assert.equal(restored.restoredModules, true);
     assert.equal(restored.restoredTimeline, true);
     assert.equal(restored.restoreGeneration, 1, '成功恢复的代次从 1 开始');
@@ -305,6 +311,12 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.equal(memos.memos.length, 1);
     assert.equal(memos.memos[0].title, MEMO_TITLE);
 
+    // 待办回来了（文字与完成态）
+    const todos = await (await app.request('/api/todos', { cookie })).json();
+    assert.equal(todos.todos.length, 1);
+    assert.equal(todos.todos[0].text, TODO_TEXT);
+    assert.equal(todos.todos[0].done, true);
+
     // 管理员导航/引擎：一字未动
     const navAfter = await (await app.request('/api/admin/navigation', { cookie })).json();
     assert.equal(navAfter.config.searchEngine, 'marker-engine');
@@ -314,7 +326,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.equal(records.length, 1);
     assert.equal(records[0].phase, 'applied');
     assert.equal(records[0].generation, 1);
-    assert.deepEqual(records[0].applied, ['memos', 'favorites', 'modules', 'timeline']);
+    assert.deepEqual(records[0].applied, ['memos', 'todos', 'favorites', 'modules', 'timeline']);
     assert.equal(records[0].snapshot_dir === null ? 0 : snapshotDirs(app.dir).length, 0, '快照被删除');
 
     // 时间线凭据：备份不带凭据 → 恢复后表是空的（来源待授权），而不是留着旧凭据
@@ -322,6 +334,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     try {
         assert.equal(db1.prepare('SELECT COUNT(*) AS n FROM timeline_credentials').get().n, 0);
         assert.equal(db1.prepare('SELECT COUNT(*) AS n FROM memos').get().n, 1);
+        assert.equal(db1.prepare('SELECT COUNT(*) AS n FROM todos').get().n, 1);
     } finally {
         db1.close();
     }
@@ -372,12 +385,14 @@ test('真实 HTTP：故障注入（时间线写失败）→ 已应用域逆序�
     const beforeModules = fs.readFileSync(path.join(app.dir, '.modules.json'));
     const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
     let beforeMemos;
+    let beforeTodos;
     let beforeSources;
     try {
         beforeMemos = db.prepare('SELECT * FROM memos ORDER BY id').all();
+        beforeTodos = db.prepare('SELECT * FROM todos ORDER BY id').all();
         beforeSources = db.prepare('SELECT * FROM timeline_sources ORDER BY id').all();
         // 故障注入：把时间线表拆掉 → importTimeline 在**应用阶段**抛错（不是取回阶段）。
-        // 此时 memos / favorites / modules 三个域已经写完了，正好验证「逆序全回滚」。
+        // 此时 memos / todos / favorites / modules 四个域已经写完了，正好验证「逆序全回滚」。
         db.exec('DROP TABLE timeline_event_state; DROP TABLE timeline_events;');
     } finally {
         db.close();
@@ -387,7 +402,7 @@ test('真实 HTTP：故障注入（时间线写失败）→ 已应用域逆序�
     const body = await res.json();
     assert.equal(res.status, 500, JSON.stringify(body));
     assert.equal(body.code, 'restore_rolled_back');
-    assert.deepEqual(body.rolledBack, ['modules', 'favorites', 'memos'], '按应用顺序的逆序回滚');
+    assert.deepEqual(body.rolledBack, ['modules', 'favorites', 'todos', 'memos'], '按应用顺序的逆序回滚');
 
     // 文件逐字节一致（含 `_sync.revision` 与回执）
     assert.deepEqual(fs.readFileSync(path.join(app.dir, 'favorites.json')), beforeFavorites, 'favorites.json 逐字节不变');
@@ -404,6 +419,7 @@ test('真实 HTTP：故障注入（时间线写失败）→ 已应用域逆序�
     const db2 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
     try {
         assert.deepEqual(db2.prepare('SELECT * FROM memos ORDER BY id').all(), beforeMemos);
+        assert.deepEqual(db2.prepare('SELECT * FROM todos ORDER BY id').all(), beforeTodos);
         assert.deepEqual(db2.prepare('SELECT * FROM timeline_sources ORDER BY id').all(), beforeSources);
     } finally {
         db2.close();

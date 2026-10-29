@@ -10,8 +10,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { mergePrivateModules } = require('../lib/webdav-backup.js');
+const { DOMAINS } = require('../lib/admin-lock.js');
 const {
     filterUnknownModules, normalizeServerDeployment, planDigest, APPLY_ORDER
 } = require('../lib/restore.js');
@@ -170,7 +173,26 @@ test('planDigest：同样的计划算出同一个摘要，任何一项变了就�
     }
 });
 
-test('应用顺序固定：备忘录/收藏在前，模块与时间线在后', () => {
+test('应用顺序固定：备忘/待办/收藏在前，模块与时间线在后', () => {
     // 顺序有语义（回滚按逆序走）。钉住它，免得「顺手调整」把回滚顺序弄反。
-    assert.deepEqual(APPLY_ORDER, ['memos', 'favorites', 'modules', 'timeline']);
+    assert.deepEqual(APPLY_ORDER, ['memos', 'todos', 'favorites', 'modules', 'timeline']);
+});
+
+test('恢复域三处清单一致：锁 / 应用顺序 / 路由', () => {
+    // admin-lock 的注释点名了漂移风险（「锁了一个、恢复了另一个」）。三处各写
+    // 一份时，新增一个域只改两处是必然会发生的事——这里让它们互相校验。
+    const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    const match = /const RESTORE_DOMAINS = \[([^\]]*)\]/.exec(serverSource);
+    assert.ok(match, '找到 RESTORE_DOMAINS');
+    const routes = [...match[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+
+    assert.deepEqual([...routes].sort(), [...APPLY_ORDER].sort(), '路由域与应用顺序一致');
+    for (const domain of APPLY_ORDER) {
+        assert.ok(DOMAINS.includes(domain), `锁域缺少 ${domain}`);
+    }
+    for (const domain of DOMAINS) {
+        // navigation-admin 是协调锁与版本表里的域，不属于备份恢复路由。
+        if (domain === 'navigation-admin') continue;
+        assert.ok(APPLY_ORDER.includes(domain), `应用顺序缺少 ${domain}`);
+    }
 });

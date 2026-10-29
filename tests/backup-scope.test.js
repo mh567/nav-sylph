@@ -21,6 +21,7 @@ const {
     WebDAVBackup,
     projectModulesForBackup,
     projectMemosForBackup,
+    projectTodosForBackup,
     projectFavoritesForBackup,
     mergePrivateModules,
     calculateChecksum,
@@ -177,6 +178,21 @@ test('备忘录投影只带正文与状态六项，多余字段被丢掉', () =>
     });
 });
 
+test('待办投影只带文字/完成态五项，多余字段被丢掉', () => {
+    const projected = projectTodosForBackup([
+        { id: 't1', text: '买牛奶', done: true, createdAt: 1, updatedAt: 2, ownerHash: 'secret' },
+        { id: '', text: '没有 id' },
+        { text: '缺 id' }
+    ]);
+    assert.equal(projected.todos.length, 1, '没有 id 的条目被丢掉（否则恢复时写不回去）');
+    assert.deepEqual(Object.keys(projected.todos[0]), ['id', 'text', 'done', 'createdAt', 'updatedAt']);
+    assert.deepEqual(projected.todos[0], {
+        id: 't1', text: '买牛奶', done: true, createdAt: 1, updatedAt: 2
+    });
+    // done 非严格布尔时按未完成处理，不把字符串带进备份
+    assert.equal(projectTodosForBackup([{ id: 't2', text: 'x', done: 'yes' }]).todos[0].done, false);
+});
+
 test('收藏投影只带标题/地址/分类/隐私标签', () => {
     const projected = projectFavoritesForBackup([
         { title: 'A', url: 'https://a.test', category: '工作', private: true, id: 'fav_1', tags: ['x'] },
@@ -188,7 +204,7 @@ test('收藏投影只带标题/地址/分类/隐私标签', () => {
 
 // ========== 产物：文件集合 + 清单 ==========
 
-test('备份产物只有清单声明的四个域 + manifest，且不含任何 AES-GCM 信封', async () => {
+test('备份产物只有清单声明的五个域 + manifest，且不含任何 AES-GCM 信封', async () => {
     const files = new Map();
     const { client } = recordingClient(files);
     const backup = offlineBackup({ remotePath: '/backups/' }, client);
@@ -196,6 +212,7 @@ test('备份产物只有清单声明的四个域 + manifest，且不含任何 AE
     const result = await backup.createBackup({
         favorites: [{ title: 'A', url: 'https://a.test', category: '工作', private: true }],
         memos: [{ id: 'm1', title: '备忘', body: '正文', pinned: true, createdAt: 10, updatedAt: 20 }],
+        todos: [{ id: 't1', text: '待办一条', done: true, createdAt: 30, updatedAt: 40 }],
         modules: modulesFixture(),
         timeline: {
             formatVersion: 1,
@@ -215,7 +232,8 @@ test('备份产物只有清单声明的四个域 + manifest，且不含任何 AE
         `nav-sylph-manifest-${result.timestamp}.json`,
         `nav-sylph-memos-${result.timestamp}.json`,
         `nav-sylph-modules-${result.timestamp}.json`,
-        `nav-sylph-timeline-${result.timestamp}.json`
+        `nav-sylph-timeline-${result.timestamp}.json`,
+        `nav-sylph-todos-${result.timestamp}.json`
     ]);
     assert.ok(!written.some(name => name.startsWith('nav-sylph-config')), '不再生成 config 备份');
 
@@ -250,6 +268,7 @@ test('备份产物只有清单声明的四个域 + manifest，且不含任何 AE
     const counts = Object.fromEntries(manifest.data.included.map(e => [e.domain, e.counts]));
     assert.deepEqual(counts.favorites, { favorites: 1, private: 1 });
     assert.deepEqual(counts.memos, { memos: 1, pinned: 1 });
+    assert.deepEqual(counts.todos, { todos: 1, done: 1 });
     assert.deepEqual(counts.modules, { servers: 1, widgets: 2, enabledModules: 2 });
     assert.deepEqual(counts.timeline, { sources: 1, events: 1, eventState: 1 });
 
@@ -266,12 +285,13 @@ test('备份产物只有清单声明的四个域 + manifest，且不含任何 AE
     assert.equal(skipped.length, SKIPPED_DOMAINS.length, '跳过的项与常量表一一对应');
 });
 
-test('五个校验和各自都能让「有没有变化」失效（少了任一项都会静默漏上传）', async () => {
-    const keys = ['lastFavoritesChecksum', 'lastMemosChecksum', 'lastModulesChecksum',
-        'lastTimelineChecksum', 'lastScopeChecksum'];
+test('六个校验和各自都能让「有没有变化」失效（少了任一项都会静默漏上传）', async () => {
+    const keys = ['lastFavoritesChecksum', 'lastMemosChecksum', 'lastTodosChecksum',
+        'lastModulesChecksum', 'lastTimelineChecksum', 'lastScopeChecksum'];
     const payload = {
         favorites: [{ title: 'A', url: 'https://a.test', category: '工作' }],
         memos: [{ id: 'm1', title: '备忘', body: '正文', pinned: false, createdAt: 10, updatedAt: 20 }],
+        todos: [{ id: 't1', text: '待办', done: false, createdAt: 10, updatedAt: 20 }],
         modules: modulesFixture(),
         timeline: { formatVersion: 1, sources: [], events: [{ id: 'e' }], eventState: [] },
         appVersion: '2.0.2',
@@ -299,6 +319,8 @@ test('五个校验和各自都能让「有没有变化」失效（少了任一�
     // 内容真的变了也必须重新上传（不是只靠校验和键的存在）
     const changed = { ...payload, memos: [{ id: 'm2', title: '新备忘', body: '', pinned: false, createdAt: 1, updatedAt: 1 }] };
     assert.equal((await backup.createBackup(changed)).noChanges, undefined, '备忘录变了要重新备份');
+    const todoChanged = { ...payload, todos: [{ id: 't2', text: '新待办', done: true, createdAt: 3, updatedAt: 4 }] };
+    assert.equal((await backup.createBackup(todoChanged)).noChanges, undefined, '待办变了也要重新备份');
 
     // 自动槽位与手动各一组，互不吞掉
     const auto = offlineBackup({ remotePath: '/backups/' }, recordingClient(new Map()).client);
@@ -329,7 +351,8 @@ test('清单也算进产物：篡改任一文件后按清单核对会拒绝恢�
         manifestFile: result.manifestFilename
     });
     assert.equal(ok.data.memos.memos[0].title, '备忘');
-    assert.equal(ok.manifest.included.length, 2);
+    // 收藏 + 备忘 + 待办（空表也要写：那是「那时候没有待办」）
+    assert.equal(ok.manifest.included.length, 3);
 
     // 把备忘录文件改一个字（信封 checksum 也会对不上，所以先只改 HTML——
     // 那一个没有自校验，只有清单能发现它被换过）
@@ -490,21 +513,28 @@ test('server.js 的载荷只取私人数据，且 memo 写入会排一次自动�
     assert.doesNotMatch(payloadFn, /navigation\.read\('admin'\)/, '不再读管理员导航配置进备份');
     assert.match(payloadFn, /publicModuleIds: \[\.\.\.PUBLIC_MODULE_IDS\]/, '公开模块白名单参与投影');
     assert.match(payloadFn, /db\.prepare\(MEMO_LIST_SQL\)\.all\(\)\.map\(memoToClient\)/, '备忘录进载荷');
+    assert.match(payloadFn, /db\.prepare\(TODO_LIST_SQL\)\.all\(\)\.map\(todoToClient\)/, '待办进载荷');
 
-    // 备忘录在 SQLite 里，不走 writeJSON 的自动同步钩子：四个写路由都要自己排期。
-    // 排期入口是注入式的 `memoWriteHook`（`tests/memo.test.js` 会把这一段单独切出来
-    // 在 vm 里跑，那里没有整份 server.js 的定时器机制），真实实现在 init() 里注册。
+    // 备忘录与待办都在 SQLite 里，不走 writeJSON 的自动同步钩子：各四条写路由
+    // 都要自己排期。排期入口是注入式的（`tests/memo.test.js` 会把这一段单独
+    // 切出来在 vm 里跑，那里没有整份 server.js 的定时器机制），真实实现由
+    // init() 注册。
     const memoRegion = source.slice(source.indexOf("app.post('/api/memos',"),
         source.indexOf('// ========== 微博热搜代理'));
     assert.equal((memoRegion.match(/memoWriteHook\(\);/g) || []).length, 4,
         '增/改/置顶/删 四条写路径各排一次，漏一处的表现是「改了备忘录但云端不更新」');
+    assert.equal((memoRegion.match(/todoWriteHook\(\);/g) || []).length, 4,
+        '待办增/改/勾选/删 四条写路径同样各排一次');
     assert.match(source, /memoWriteHook = scheduleAutoSync;/,
         '注册点在 init() 里；漏了注册的表现是四条写路由全部变成空操作');
+    assert.match(source, /todoWriteHook = scheduleAutoSync;/,
+        '待办的注册点也在 init() 里');
 
-    // 恢复路由：合并模块 + 整表替换备忘录
+    // 恢复路由：合并模块 + 整表替换备忘录/待办
     const restoreRoute = source.slice(source.indexOf("app.post('/api/webdav/restore'"),
         source.indexOf("app.post('/api/webdav/delete'"));
     assert.match(restoreRoute, /restoreMemosFromBackup\(result\.data\.memos\)/, '备忘录写回');
+    assert.match(restoreRoute, /restoreTodosFromBackup\(result\.data\.todos\)/, '待办写回');
     assert.match(restoreRoute, /needsAuthorization/, '响应里带「需重新授权」清单');
     assert.doesNotMatch(restoreRoute, /restoreConfig/, '恢复不再有配置域');
 });

@@ -320,16 +320,22 @@ test('前端恢复流程把时间线文件带上：列表项 → 选项 → 请�
     assert.match(src, /const timelineFile = item\.dataset\.timeline;/, '恢复对话框读得到它');
     assert.match(src, /timelineFile: backup\.timelineFile,/, '恢复请求体带上它');
     assert.match(src, /memosFile: backup\.memosFile,/, '恢复请求体带上备忘录');
+    assert.match(src, /todosFile: backup\.todosFile,/, '恢复请求体带上待办');
     assert.match(src, /manifestFile: backup\.manifestFile,/, '恢复请求体带上清单');
     assert.match(src, /const restoreTimeline = restoreType === 'all' \|\| restoreType === 'timeline';/,
         '恢复选项映射（全量与单恢复时间线）');
     assert.match(src, /const restoreMemos = restoreType === 'all' \|\| restoreType === 'memos';/,
         '恢复选项里有「只恢复备忘录」');
-    assert.match(src, /\[configFile, bookmarksFile, memosFile, modulesFile, timelineFile, manifestFile, legacyFile\]/,
+    assert.match(src, /const restoreTodos = restoreType === 'all' \|\| restoreType === 'todos';/,
+        '恢复选项里有「只恢复待办」');
+    assert.match(src, /\[configFile, bookmarksFile, memosFile, todosFile, modulesFile, timelineFile, manifestFile, legacyFile\]/,
         '删除整组时同组文件一起删——否则远端留下半新半旧的分组');
     assert.match(src, /res\.timelineFilename/, '备份成功的提示里列出时间线文件');
     assert.match(src, /res\.memosFilename/, '备份成功的提示里列出备忘录文件');
+    assert.match(src, /res\.todosFilename/, '备份成功的提示里列出待办文件');
     assert.match(src, /res\.manifestFilename/, '备份成功的提示里列出清单');
+    assert.match(src, /data-todos="\$\{this\.esc\(b\.todosFile \|\| ''\)\}"/,
+        '备份列表项上挂着 todosFile');
 });
 
 test('恢复选项对话框：恰好一个单选框默认选中（否则点「确认恢复」无声失败）', () => {
@@ -384,6 +390,8 @@ test('恢复选项对话框：恰好一个单选框默认选中（否则点「�
         '只含模块的分组默认选中「只恢复模块设置」');
     assert.deepEqual(checkedValues({ memosFile: 'nav-sylph-memos-auto.json', manifestFile: 'm.json' }), ['memos'],
         '只含备忘录的分组默认选中「只恢复备忘录」');
+    assert.deepEqual(checkedValues({ todosFile: 'nav-sylph-todos-auto.json', manifestFile: 'm.json' }), ['todos'],
+        '只含待办的分组默认选中「只恢复待办」');
     assert.deepEqual(checkedValues({ memosFile: 'memos.json', modulesFile: 'm.json', manifestFile: 'x.json' }), ['memos'],
         '备忘录+模块（无书签）也有且只有一个默认选中');
     assert.deepEqual(

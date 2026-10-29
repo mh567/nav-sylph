@@ -2,6 +2,28 @@
 
 核对日期：2026-10-29。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
+## 备忘模块升级为「备忘 + 待办」（2026-10-29，**本地已改动，未提交**）
+
+- 用户要求：`memo` 模块升级为「备忘 + 待办」；卡片顶部可切换、默认备忘；切到待办显示清单卡片；完成项加删除线、变灰、加斜体；点击文字可编辑该条内容。
+- 四项拍定（提问后按推荐全选）：页签在**卡片正文顶部 + 面板顶部**（共享状态）；就地编辑**只在管理面板**；待办**纳入 WebDAV 备份/恢复**（第 5 个域）；完成项**保持原位**不沉底。
+- 数据层：`lib/db.js` 尾部追加 **v13**：`todos`（`id` / `text` / `done` CHECK 0,1 / `created_at` / `updated_at` + `idx_todos_created`）。与 `memos` 分表而不是加 `kind` 列——合表后每条 memo 路由都要记得过滤，漏一处就把待办渲染成备忘。排序 `created_at DESC, id DESC`；`done` 切换不动 `updated_at`（与 `pinned` 同一条约定）。
+- 服务端：`server.js` 新增「待办 API」小节（五条路由）：`GET /api/todos` 走 `modulePollLimit, requireAdmin`；写四条走 `rateLimit, requireAdmin, todoLimit`（独立写桶，30/分钟，登记进 60 秒 sweep）。容量 300、单条 200 字，`done` 严格布尔。`todoWriteHook` 与 `memoWriteHook` 同一套注入式排期（init 注册），四条写路径各调一次。`app.use('/api/todos', restoreHaltedGuard('todos'))`。
+- 连带修正：`MODULE_POLL_MAX` **240 → 300**（轮询接口 4 → 5 条，`monitor-agent` 的推导守卫强制重算）。
+- 备份/恢复第 5 域：`lib/webdav-backup.js`（`SCOPE_VERSION` 2→3、`INCLUDED_DOMAINS` + `todos`、`AUTO_TODOS_FILE`、`projectTodosForBackup`、校验和/信封/清单/列表/清理/恢复读取）、`lib/restore.js`（`APPLY_ORDER`、快照 dump、incoming、项数、回滚）、`lib/admin-lock.js` 的 `DOMAINS`、`server.js` 的 `RESTORE_DOMAINS` 与恢复路由/响应 `restoredTodos`、`collectBackupPayload`。
+- 前端：`public/modules/memo.js` 约 1160 行。`activeTab` 只存内存（刷新恒回「备忘」）；卡片正文与面板各有 `tabsHTML()`，共享同一状态；卡片头标题随页签变（132px 卡片头部只有 104px，「备忘与待办」会被截断）；备忘/待办拆成 `memoCardHTML` / `todoCardHTML`、`memoPanelBodyHTML` / `todoPanelBodyHTML`；两处共用 `.memo-todo-text[data-done="1"]`。轮询用 `Promise.allSettled` **并发**取两份；`cardKey` / `panelKey` 含 `activeTab` 与待办指纹；`pendingPillHTML` 计两份草稿；待办新建/改文字有独立离线暂存 `nav-sylph-todo-drafts`，完成态只做乐观更新 + 回滚。
+- 就地编辑：点文字 → `#memoTodoInput`（聚焦并全选）；回车/失焦保存、Esc 取消（`stopPropagation`，不关面板）；**切页签时先保存未提交的编辑**（`switchTab` 调 `commitTodoEdit`，不再静默丢弃），并且走 `renderPanelMaybe()` 而不是 `renderPanel()`（`activeTab` 在面板指纹里，页签变了自然会重渲染；数据没变时保留搜索框焦点）；`renderPanelMaybe` 在 `editingTodoId` 非空时跳过轮询重渲染；行内按钮在 `pointerdown` 里 `preventDefault()`，否则输入框先失焦触发重渲染、click 落空。
+- 样式：`public/styles.css` 新增 `.memo-tabs` / `.memo-tab`（卡片 22px、面板 30px）、`.memo-todo-*`、完成态三件套；`≤1023px` 下**卡片与面板**的页签都抬到 44px、勾选热区 44×44（审查发现的漏项）。**只写 styles.css**（admin.css 后加载会覆盖）。
+- 安全：`restoreMemosFromBackup` / `restoreTodosFromBackup` 用 `RESTORE_ID_PATTERN`（`^[A-Za-z0-9_-]{1,64}$`）挡掉备份里的非法 id，前端所有 `data-id` 一律经 `esc()`——恢复文件是外部输入，id 会进属性。
+- 后台界面：`public/app.js` 的恢复域标签、备份成功文件列表、备份列表项（`data-todos` / 尺寸）、删除分组、恢复选项（「只恢复待办」；`defaultType` 改成有序数组回退，不再叠四层三元）、请求体与结果文案；备份范围提示补待办。`public/sw.js` `CACHE` nav-v127 → **nav-v128**。
+- 文档：README（备份文件、恢复选项、模块表、`nav-sylph.db` 说明纠正）；`docs/architecture.md`（页面模块描述、轮询桶 5→300、备份 5 域、**纠正**「数据库整体不在备份集内」与自动槽位「这四个名字」两处过时结论、清理文件数 6、`#saveBtn` 改按符号引用）。
+- 验证：单元 **846/846**（基线 823，新增 23 条：待办 CRUD/排序/容量/校验/404/映射、路由守卫、sweep、v12→v13 老库升级、恢复 id 字符集、页签、完成态样式、就地编辑、卡片勾选、300 上限、窄屏 44px、以及 6 条**执行真实函数**的用例：`tabsHTML` / `switchTab` / `todoCardHTML` / `toggleTodo` 回滚 / `saveTodo` 离线草稿 / `commitTodoEdit` 空内容）。变异 **20/20 全红**并逐字节还原：完成态三属性各一条、`renderPanelMaybe` 的编辑跳过、默认页签、`MODULE_POLL_MAX`、`INCLUDED_DOMAINS`、待办回滚分支、`todoWriteHook` 调用、`done` 布尔校验、切页签先保存、`renderPanelMaybe` 入口、页签选中态、勾选 checked、乐观回滚、离线草稿、恢复 id 正则、客户端上限、`APPLY_ORDER`、窄屏 44px。
+- 迁移在真实库副本上重放：`user_version` 12 → **13**，`todos` 列 `id,text,done,created_at,updated_at`，`memos` 与 `sessions` 原样。
+- 两轴审查（未提交工作区，基线 `b7d255a`）：Standards 13 条（6 硬 / 7 判断）、Spec 9 条。已整改：三处「四个域/备忘录」过时注释、architecture 两处互相矛盾的旧结论与漂移的行号、`todoLimit` 改用 `consumeRateLimit`、抽出 `readTodoText` / `todoCheckHTML`、`defaultType` 去嵌套、恢复域三处清单加对拍守卫、`fav-tab` 去掉写死的 `nav-v128`、迁移测试改名并补老库升级用例、`loadMemoTodoRoutes` 改名与注释、卡片 44px、文案统一为「备忘」、切页签先保存、去掉勾选/添加的成功 toast、id 转义与恢复校验、把页签/就地编辑/回滚/离线草稿改成执行真实函数。未修的两条判断题：`saveTodo`/`deleteTodo` 与备忘侧同形（刻意保留同一模式）；`hasTodos` 仍散在恢复对话框的多处（域列表本身是模板化的，再抽一层会遮住每一项的差异）。
+- 浏览器实测（临时副本 + 端口 4327/4329，不含私有文件；服务与副本已清理）：从后台「模块」开关启用（未手写 `.modules.json`）→ 卡片默认「备忘」；切「待办」后标题变「待办」；面板加 3 条；勾选后读 `getComputedStyle`：`textDecorationLine: line-through`、`fontStyle: italic`、`color: rgb(168,156,144)` = `--text-muted`，卡片与面板两处一致；点文字进编辑（`focused: true`、全选 0–3），输入后**等满 16 秒一个轮询周期**，值与焦点都还在；回车保存、Esc 取消（面板不关）、失焦保存各一次；编辑中点删除，确认行出现（pointerdown 拦截生效）；关面板后点卡片勾选框切完成态且提示「1 未完成」；刷新（先 unregister SW + 清 caches）后待办与完成态都在、页签回「备忘」、卡片文字点开面板落在「待办」；**审查后复验**：编辑一条待办但不按回车，直接点面板「备忘」页签，再切回「待办」，文字已是新值；390×844 下卡片页签 44px、勾选热区 44×44、无横向溢出。132px 强制宽度下两个页签各 48px、无溢出、`elementFromPoint` 均命中。浅色与深色截图各一张，完成态可读。
+- 自查修掉的失误：变异脚本首跑报了两条假 GREEN——一条是期望的测试标题在脚本里**丢了一个「全」字**，另一条把测试文件写成了 `backup-privacy`（守卫本身是好的）；改用短锚点后全红。另有一处实现期修正：切页签原本会静默丢弃未提交的就地编辑，审查指出后改为先保存。
+- 仍未验证：真实 WebDAV 远端（只用仓库既有的假客户端跑完备份→清空→恢复往返）；真机触控（headless 的 390×844 只是视口模拟，`elementFromPoint`/尺寸断言证明可点，不等于真手指）；iOS 软键盘弹起时面板的 `dvh` 表现（本轮没有动高度逻辑）。
+- 下一步：提交与发布（用户已授权「审查→提交→发布」）；发布物需核对 `nav-v128` 与 `version.json`/`CHANGELOG.json`。
+
 ## 首页取件码取回共享文本（2026-10-29，**已发布 v2.1.3**）
 
 - 用户的要求：拿到取件码的人不必先打开链接页，在首页搜索框输入即可取回共享文本；先出交互设计与流程，再实现。

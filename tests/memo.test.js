@@ -5,6 +5,7 @@ const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
 const vm = require('node:vm');
+const Database = require('better-sqlite3');
 const { spawn, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
@@ -29,8 +30,8 @@ function tempDbPath() {
 
 // ========== 迁移 ==========
 
-test('v4 迁移建出 memos 表，且是在数组尾部追加（不改已发布台阶）', () => {
-    assert.ok(MIGRATIONS.length >= 4, `迁移台阶至少 4 级，当前 ${MIGRATIONS.length}`);
+test('v13 迁移建出 todos 表', () => {
+    assert.ok(MIGRATIONS.length >= 13, `迁移台阶至少 13 级，当前 ${MIGRATIONS.length}`);
 
     const db = openDatabase(tempDbPath());
     try {
@@ -42,13 +43,53 @@ test('v4 迁移建出 memos 表，且是在数组尾部追加（不改已发布�
             ['body', 'created_at', 'id', 'pinned', 'title', 'updated_at'],
             'memos 表的列必须与设计一致');
         assert.equal(cols.id, 'TEXT', 'id 是客户端不可预测的字符串（服务端生成）');
+
+        const todoCols = db.prepare('PRAGMA table_info(todos)').all().reduce((acc, c) => {
+            acc[c.name] = c.type;
+            return acc;
+        }, {});
+        assert.deepEqual(Object.keys(todoCols).sort(),
+            ['created_at', 'done', 'id', 'text', 'updated_at'],
+            'todos 表的列必须与设计一致');
+        assert.equal(todoCols.id, 'TEXT', '待办 id 同样是服务端生成的字符串');
         assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length);
     } finally {
         db.close();
     }
 });
 
-// ========== 路由形状：五条，每条都带守卫 ==========
+test('v12 老库升级到 v13：原有备忘/会话不丢，todos 表新建', () => {
+    const file = tempDbPath();
+    // 先手工把库停在升级前的 v12，并写入一条备忘与一条会话。
+    const raw = new Database(file);
+    raw.pragma('journal_mode = WAL');
+    raw.pragma('foreign_keys = ON');
+    for (let version = 0; version < 12; version++) {
+        raw.transaction(() => {
+            MIGRATIONS[version](raw);
+            raw.pragma(`user_version = ${version + 1}`);
+        })();
+    }
+    const now = Date.now();
+    raw.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
+        .run('legacy-memo', '升级前', '正文', now, now);
+    raw.prepare("INSERT INTO sessions (token, trusted, expires_at, fp, region, purpose) VALUES (?, 0, ?, ?, NULL, 'admin')")
+        .run('legacy-token', now + 86400e3, 'legacy-fp');
+    raw.close();
+
+    const db = openDatabase(file);
+    try {
+        assert.equal(db.pragma('user_version', { simple: true }), 13, '老库补到 v13');
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memos WHERE id = ?').get('legacy-memo').n, 1,
+            '既有备忘不丢（迁移只追加）');
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get('legacy-token').n, 1,
+            '既有会话不丢');
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM todos').get().n, 0,
+            'todos 表已建好且为空');
+    } finally {
+        db.close();
+    }
+});
 
 test('五条 /api/memos 路由：读走轮询桶，写走管理桶 + memoLimit', () => {
     const code = stripComments(server);
@@ -88,21 +129,49 @@ test('备忘录限流桶登记进 60 秒 sweep 定时器（无界 Map 不能只�
     assert.match(code, /const memoRateLimitMap = new Map\(\)/, '限流桶已声明');
     assert.match(code, /sweepRateLimitStore\(memoRateLimitMap, now, MEMO_LIMIT_WINDOW\)/,
         '限流桶必须被 sweep 清理');
+    assert.match(code, /const todoRateLimitMap = new Map\(\)/, '待办写桶已声明');
+    assert.match(code, /sweepRateLimitStore\(todoRateLimitMap, now, TODO_LIMIT_WINDOW\)/,
+        '待办写桶也必须被 sweep 清理（与备忘录同一条纪律）');
+});
+
+test('五条 /api/todos 路由：读走轮询桶，写走管理桶 + todoLimit', () => {
+    const code = stripComments(server);
+    const routes = [...code.matchAll(/app\.(get|post|delete)\('(\/api\/todos[^']*)'/g)];
+    assert.equal(routes.length, 5, `应有 5 条待办路由，实测 ${routes.length}`);
+
+    for (const m of routes) {
+        const [, method, route] = m;
+        const head = code.slice(m.index);
+        const handlerAt = head.indexOf('=>');
+        assert.ok(handlerAt > 0, `${method} ${route} 的处理函数可定位`);
+        const chain = head.slice(0, handlerAt);
+        assert.ok(chain.includes('requireAdmin'),
+            `${method} ${route} 必须挂 requireAdmin，实际：${chain.trim()}`);
+        if (method === 'get') {
+            assert.ok(chain.includes('modulePollLimit'),
+                `GET ${route} 是轮询，必须走 modulePollLimit，实际：${chain.trim()}`);
+            assert.ok(!chain.includes('rateLimit,') && !chain.includes('todoLimit'),
+                `GET ${route} 不得占用管理桶或写桶，实际：${chain.trim()}`);
+        } else {
+            assert.ok(chain.includes('rateLimit') && chain.includes('todoLimit'),
+                `${method} ${route} 写操作必须挂 rateLimit 与 todoLimit，实际：${chain.trim()}`);
+        }
+    }
 });
 
 // ========== 真实处理函数（vm 抽出，配真实 SQLite） ==========
 
 /**
- * 抽出 server.js 的「备忘录 API」整节，只替换外部依赖：
+ * 抽出 server.js 的「备忘 + 待办 API」整节，只替换外部依赖：
  * app 记录路由，几个限流中间件与 requireAdmin 放行（鉴权与限流本身
  * 由别处的路由形状断言与 HTTP 边界用例覆盖），db 用临时库（真跑迁移），
  * readPollInterval 固定 15。
  *
- * ⚠️ 三只桶都要桩上：读接口走 modulePollLimit，写接口走 rateLimit + memoLimit。
- * 少桩一只，`app.get(..., undefined, ...)` 会在注册时抛，表现为一串与本用例
- * 无关的失败。
+ * ⚠️ 四只桶都要桩上：读接口走 modulePollLimit，备忘写走 rateLimit + memoLimit，
+ * 待办写走 rateLimit + todoLimit。少桩一只，`app.get(..., undefined, ...)`
+ * 会在注册时抛，表现为一串与本用例无关的失败。
  */
-function loadMemoRoutes(db) {
+function loadMemoTodoRoutes(db) {
     const begin = server.indexOf('const MEMO_LIMIT_WINDOW');
     // 端锚点用**下一节自己的标题**，不要用 Paste API：时间线 API 小节就排在
     // 备忘录之后、Paste 之前，用 Paste 当端点会把整节时间线路由拖进这个 vm，
@@ -123,6 +192,7 @@ function loadMemoRoutes(db) {
         rateLimit: pass,
         modulePollLimit: pass,
         memoLimit: pass,
+        todoLimit: pass,
         requireAdmin: pass,
         resolveClientIp: req => req.ip || '127.0.0.1',
         readPollInterval: async () => 15,
@@ -130,9 +200,11 @@ function loadMemoRoutes(db) {
         db,
         console
     };
-    const { memoToClient } = vm.runInNewContext(
-        `${server.slice(begin, end)}\n;({ memoToClient })`, context);
-    return { routes, memoToClient };
+    const { memoToClient, todoToClient, restoreMemosFromBackup, restoreTodosFromBackup } =
+        vm.runInNewContext(
+            `${server.slice(begin, end)}\n;({ memoToClient, todoToClient, restoreMemosFromBackup, restoreTodosFromBackup })`,
+            context);
+    return { routes, memoToClient, todoToClient, restoreMemosFromBackup, restoreTodosFromBackup };
 }
 
 function makeRes() {
@@ -159,7 +231,7 @@ async function callApi(routes, routeKey, { body = {}, params = {} } = {}) {
 test('增删改查往返：建 → 读 → 改 → 固定 → 删', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
 
         let res = await callApi(routes, 'POST /api/memos', { body: { title: '  周末爬山清单  ', body: '登山鞋、护膝' } });
         assert.equal(res.statusCode, 200);
@@ -196,7 +268,7 @@ test('增删改查往返：建 → 读 → 改 → 固定 → 删', async () => 
 test('固定组在前，组内按更新时间倒序；未固定的一律在其后', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
         // 直接种数据并写死 updated_at：连续两次创建会落在同一毫秒，
         // 并列时 SQLite 的顺序未定义——那样断言的是时间粒度，不是排序契约。
         const insert = db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)');
@@ -217,7 +289,7 @@ test('固定组在前，组内按更新时间倒序；未固定的一律在其�
 test('切换固定不改 updated_at（固定组内按内容更新时间排序）', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
         const created = await callApi(routes, 'POST /api/memos', { body: { title: '一条', body: '' } });
         const id = created.body.memo.id;
         const before = created.body.memo.updatedAt;
@@ -239,7 +311,7 @@ test('切换固定不改 updated_at（固定组内按内容更新时间排序）
 test('容量上限：第 201 条被拒', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
         const insert = db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)');
         const now = Date.now();
         db.transaction(() => {
@@ -257,7 +329,7 @@ test('容量上限：第 201 条被拒', async () => {
 test('字段校验在服务端把住：空标题 / 标题超 60 / 正文超 10KB / pinned 非布尔', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
 
         let res = await callApi(routes, 'POST /api/memos', { body: { title: '   ', body: 'x' } });
         assert.equal(res.statusCode, 400, '只有空白的标题不算标题');
@@ -281,7 +353,7 @@ test('字段校验在服务端把住：空标题 / 标题超 60 / 正文超 10KB
 test('编辑 / 删除 / 固定不存在的 id 都返回 404', async () => {
     const db = openDatabase(tempDbPath());
     try {
-        const { routes } = loadMemoRoutes(db);
+        const { routes } = loadMemoTodoRoutes(db);
         const params = { id: 'nope' };
 
         assert.equal((await callApi(routes, 'POST /api/memos/:id', { params, body: { title: 'x', body: '' } })).statusCode, 404);
@@ -293,12 +365,171 @@ test('编辑 / 删除 / 固定不存在的 id 都返回 404', async () => {
 });
 
 test('memoToClient 把 0/1 转布尔、下划线键转驼峰', () => {
-    const { memoToClient } = loadMemoRoutes(openDatabase(tempDbPath()));
+    const { memoToClient } = loadMemoTodoRoutes(openDatabase(tempDbPath()));
     const row = { id: 'a', title: 't', body: 'b', pinned: 1, created_at: 1, updated_at: 2 };
     // 展开进本 realm 再比：vm 里的对象原型与本文件不同，deepStrictEqual 会假红
     assert.deepEqual({ ...memoToClient(row) }, {
         id: 'a', title: 't', body: 'b', pinned: true, createdAt: 1, updatedAt: 2
     });
+});
+
+// ========== 待办：真实处理函数 ==========
+
+test('待办增删改查往返：建 → 读 → 改文字 → 勾选 → 取消勾选 → 删', async () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { routes } = loadMemoTodoRoutes(db);
+
+        let res = await callApi(routes, 'POST /api/todos', { body: { text: '  买牛奶  ' } });
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.body.todo.text, '买牛奶', '文字应 trim');
+        assert.equal(res.body.todo.done, false, '新建默认未完成');
+        const id = res.body.todo.id;
+        assert.ok(id && id.length >= 16, '服务端生成的 id 不可预测');
+        assert.equal(res.body.todo.createdAt, res.body.todo.updatedAt);
+
+        res = await callApi(routes, 'GET /api/todos');
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.body.todos.length, 1);
+        assert.equal(res.body.pollInterval, 15, '与备忘录一样回当前生效的周期');
+
+        res = await callApi(routes, 'POST /api/todos/:id', { params: { id }, body: { text: '买牛奶和面包' } });
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.body.todo.text, '买牛奶和面包');
+        const textUpdatedAt = res.body.todo.updatedAt;
+
+        res = await callApi(routes, 'POST /api/todos/:id/done', { params: { id }, body: { done: true } });
+        assert.equal(res.statusCode, 200);
+        res = await callApi(routes, 'GET /api/todos');
+        assert.equal(res.body.todos[0].done, true);
+        assert.equal(res.body.todos[0].updatedAt, textUpdatedAt,
+            '完成态是状态变更，不动 updated_at（与备忘录的 pinned 同一条约定）');
+
+        res = await callApi(routes, 'POST /api/todos/:id/done', { params: { id }, body: { done: false } });
+        assert.equal(res.statusCode, 200);
+        res = await callApi(routes, 'GET /api/todos');
+        assert.equal(res.body.todos[0].done, false);
+
+        res = await callApi(routes, 'DELETE /api/todos/:id', { params: { id } });
+        assert.equal(res.statusCode, 200);
+        res = await callApi(routes, 'GET /api/todos');
+        assert.equal(res.body.todos.length, 0);
+    } finally {
+        db.close();
+    }
+});
+
+test('待办按创建时间倒序；完成态不参与排序（勾选不换位）', async () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { routes } = loadMemoTodoRoutes(db);
+        const insert = db.prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
+        insert.run('a', '最早', 0, 1000, 1000);
+        insert.run('b', '中间', 0, 2000, 2000);
+        insert.run('c', '最新', 0, 3000, 3000);
+
+        let res = await callApi(routes, 'GET /api/todos');
+        assert.deepEqual([...res.body.todos.map(t => t.id)], ['c', 'b', 'a'], '新建的在上');
+
+        await callApi(routes, 'POST /api/todos/:id/done', { params: { id: 'b' }, body: { done: true } });
+        res = await callApi(routes, 'GET /api/todos');
+        assert.deepEqual([...res.body.todos.map(t => t.id)], ['c', 'b', 'a'],
+            '勾选后保持原位（否则连续勾选会点错下一条）');
+    } finally {
+        db.close();
+    }
+});
+
+test('待办容量上限：第 301 条被拒；字段校验在服务端把住', async () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { routes } = loadMemoTodoRoutes(db);
+        const insert = db.prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)');
+        const now = Date.now();
+        db.transaction(() => {
+            for (let i = 0; i < 300; i++) insert.run(`seed-${i}`, `第 ${i} 条`, now, now);
+        })();
+
+        let res = await callApi(routes, 'POST /api/todos', { body: { text: '第 301 条' } });
+        assert.equal(res.statusCode, 400);
+        assert.match(res.body.error, /300/);
+    } finally {
+        db.close();
+    }
+});
+
+test('待办字段校验：空白文字 / 超 200 字 / done 非布尔', async () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { routes } = loadMemoTodoRoutes(db);
+
+        let res = await callApi(routes, 'POST /api/todos', { body: { text: '   ' } });
+        assert.equal(res.statusCode, 400, '只有空白的待办不算内容');
+
+        res = await callApi(routes, 'POST /api/todos', { body: { text: 'x'.repeat(201) } });
+        assert.equal(res.statusCode, 400, '客户端 maxlength 只是体验，边界在服务端');
+
+        const created = await callApi(routes, 'POST /api/todos', { body: { text: 'y'.repeat(200) } });
+        assert.equal(created.statusCode, 200, '恰好 200 字必须通过');
+
+        res = await callApi(routes, 'POST /api/todos/:id', {
+            params: { id: created.body.todo.id }, body: { text: '   ' }
+        });
+        assert.equal(res.statusCode, 400, '编辑同样不许空内容');
+
+        res = await callApi(routes, 'POST /api/todos/:id/done', {
+            params: { id: created.body.todo.id }, body: { done: 'yes' }
+        });
+        assert.equal(res.statusCode, 400, 'done 必须严格是布尔值，字符串不能让完成态落成 1');
+    } finally {
+        db.close();
+    }
+});
+
+test('待办编辑 / 勾选 / 删除不存在的 id 都返回 404', async () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { routes } = loadMemoTodoRoutes(db);
+        const params = { id: 'nope' };
+        assert.equal((await callApi(routes, 'POST /api/todos/:id', { params, body: { text: 'x' } })).statusCode, 404);
+        assert.equal((await callApi(routes, 'POST /api/todos/:id/done', { params, body: { done: true } })).statusCode, 404);
+        assert.equal((await callApi(routes, 'DELETE /api/todos/:id', { params })).statusCode, 404);
+    } finally {
+        db.close();
+    }
+});
+
+test('todoToClient 把 0/1 转布尔、下划线键转驼峰', () => {
+    const { todoToClient } = loadMemoTodoRoutes(openDatabase(tempDbPath()));
+    const row = { id: 'a', text: 't', done: 1, created_at: 1, updated_at: 2 };
+    assert.deepEqual({ ...todoToClient(row) }, {
+        id: 'a', text: 't', done: true, createdAt: 1, updatedAt: 2
+    });
+});
+
+test('恢复备份时拒绝带引号的 id（否则会进前端的 data-id 属性）', () => {
+    const db = openDatabase(tempDbPath());
+    try {
+        const { restoreMemosFromBackup, restoreTodosFromBackup } = loadMemoTodoRoutes(db);
+        // 合法 id 照常恢复：服务端生成的就是这种字符集
+        restoreMemosFromBackup({
+            memos: [
+                { id: '2f0c5e1a-9b3d-4c7e-8a1b-0d2e3f4a5b6c', title: '正常', body: '' },
+                { id: 'bad" onmouseover="alert(1)', title: '注入', body: '' }
+            ]
+        });
+        restoreTodosFromBackup({
+            todos: [
+                { id: 'todo-ok_1', text: '正常' },
+                { id: "x' onclick='alert(1)", text: '注入' }
+            ]
+        });
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memos').get().n, 1, '只跳过非法 id');
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM todos').get().n, 1, '只跳过非法 id');
+        assert.ok(db.prepare('SELECT id FROM memos').get().id.startsWith('2f0c5e1a'));
+    } finally {
+        db.close();
+    }
 });
 
 // ========== 前端与发布面 ==========
@@ -325,14 +556,14 @@ test('sw.js 预缓存 memo.js，且 CACHE 与注释里最新的一级一致', ()
 test('备忘录模块把用户文本经 esc() 落进模板，原始字段不得直接插入', () => {
     assert.match(memoSrc, /function esc\(/, '模块内自带转义助手');
 
-    // 正向枚举：用户文本（标题 / 正文 / 搜索词）在哪都行，但每一处插值
-    // 都必须整体包在 esc() 里。只作「存在性检查」是不够的——标题在预览行
+    // 正向枚举：用户文本（标题 / 正文 / 待办文字 / 搜索词）在哪都行，但每一处
+    // 插值都必须整体包在 esc() 里。只作「存在性检查」是不够的——标题在预览行
     // 与列表行各出现一次，去掉其中一处的 esc 仍然能匹配到另一处（实测踩过）。
     const offenders = [];
     for (const tpl of [...memoSrc.matchAll(/`([^`]*)`/gs)].map(m => m[1])) {
         for (const hit of tpl.matchAll(/\$\{([^}]+)\}/g)) {
             const expr = hit[1].trim();
-            if (!/\b(m\.title|m\.body|search)\b/.test(expr)) continue;
+            if (!/\b(m\.title|m\.body|t\.text|search)\b/.test(expr)) continue;
             if (/^esc\(/.test(expr)) continue;                        // 正确写法
             if (/\.length\b/.test(expr)) continue;                    // 只取长度，得到数字
             if (/^\s*m\.title\.trim\(\)\s*\?/.test(expr)) continue;   // 三元只输出静态字面量
@@ -341,8 +572,11 @@ test('备忘录模块把用户文本经 esc() 落进模板，原始字段不得�
     }
     assert.deepEqual(offenders, [],
         `这些插值把用户文本直接落进了 innerHTML：${offenders.join(' | ')}`);
-    // 备注：m.id 不在此列——它是服务端 crypto.randomUUID() 生成的十六进制，
-    // 不是用户可控输入；data-id 用它没有注入面。
+    // id 也必须经 esc()：恢复备份时 id 来自外部 JSON，且会进 data-id 属性。
+    // 服务端另有字符集校验（RESTORE_ID_PATTERN），这里是第二道。
+    const rawIdAttr = [...memoSrc.matchAll(/data-id="\$\{(?!esc\()([^}]+)\}"/g)]
+        .map(m => m[1].trim());
+    assert.deepEqual(rawIdAttr, [], `这些 data-id 没有转义：${rawIdAttr.join(' | ')}`);
 });
 
 test('模块只用平台注入的 api 对象，不引用 app.js 内部的裸标识符', () => {
@@ -648,10 +882,17 @@ test('卡片布局：状态胶囊在卡片头，「管理」在正文（窄卡�
     assert.ok(renderBody.length > 300, `切出 renderCard（${renderBody.length}）`);
     assert.doesNotMatch(renderBody, /memo-status-row/, '正文不再渲染独立的状态行');
 
-    // ③ 「管理」在正文底部，带 data-action（走那一层事件委托）
-    assert.match(renderBody, /class="memo-card-manage"[^>]*data-action="open"/,
-        '「管理」在底部小字里，仍是 data-action="open"');
-    assert.match(renderBody, /memo-sync-part/, '同步时刻的容器也在底部小字里');
+    // ③ 「管理」在正文底部，带 data-action（走那一层事件委托）。
+    //    卡片正文现在拆成两个页签各自的片段函数，两处都必须带同一个「管理」。
+    for (const name of ['memoCardHTML', 'todoCardHTML']) {
+        const at = code.indexOf(`function ${name}() {`);
+        assert.ok(at > 0, `找到 ${name}`);
+        const body = code.slice(at, code.indexOf('\n    }', at));
+        assert.ok(body.length > 150, `切出 ${name}（${body.length}）`);
+        assert.match(body, /class="memo-card-manage"[^>]*data-action="open"/,
+            `${name}：「管理」在底部小字里，仍是 data-action="open"`);
+        assert.match(body, /memo-sync-part/, `${name}：同步时刻的容器也在底部小字里`);
+    }
     // 卡片头里不得再有「管理」按钮（那就是会挤掉标题的那个形状）
     assert.doesNotMatch(code, /module-widget-expand/, '卡片头里不得再有「管理」按钮');
 
@@ -665,6 +906,312 @@ test('卡片布局：状态胶囊在卡片头，「管理」在正文（窄卡�
     assert.doesNotMatch(code, /body\.addEventListener\('click'/,
         '不得只挂在正文上——卡片头里的「重试」会点不到');
     assert.match(code, /card\.append\(head, body\)/, '卡片头与正文都是 card 的子节点');
-    assert.match(code, /t\.dataset\.action === 'retry'\)\s*poll\(\{ manual: true \}\)/,
+    assert.match(code, /action === 'retry'\)\s*poll\(\{ manual: true \}\)/,
         '失败态的「重试」确实接到手动同步上');
+});
+
+// ========== 备忘 / 待办页签与完成态 ==========
+
+test('卡片顶部两个页签：默认备忘、正文按页签切换、页签进指纹', () => {
+    const code = stripComments(memoSrc);
+
+    assert.match(code, /let activeTab = 'memo';/, '默认展示备忘列表（只存内存，不落 localStorage）');
+    assert.match(code, /function tabsHTML\(/, '有页签渲染函数');
+    assert.match(code, /data-action="switch-tab" data-tab="memo"/, '备忘页签');
+    assert.match(code, /data-action="switch-tab" data-tab="todo"/, '待办页签');
+    assert.match(code, /data-tab="memo" aria-selected="\$\{activeTab === 'memo'\}">备忘<\/button>/,
+        '备忘按钮的选中态由 activeTab 决定');
+    assert.match(code, /data-tab="todo" aria-selected="\$\{activeTab === 'todo'\}">待办<\/button>/,
+        '待办按钮的选中态由 activeTab 决定');
+    const cardAt = code.indexOf('function renderCard() {');
+    const renderBody = code.slice(cardAt, code.indexOf('\n    }', cardAt));
+    assert.ok(renderBody.length > 200, `切出 renderCard（${renderBody.length}）`);
+    assert.match(renderBody, /cardBody\.innerHTML = tabsHTML\(\)/,
+        '页签在卡片正文顶部');
+    assert.match(renderBody, /activeTab === 'memo' \? memoCardHTML\(\) : todoCardHTML\(\)/,
+        '切到待办时正文换成待办清单');
+    assert.match(renderBody, /cardLabel\.textContent = activeTab === 'memo' \? '备忘' : '待办'/,
+        '卡片头标题跟着页签走（132px 卡片放不下「备忘与待办」）');
+
+    // 页签与待办数据都必须进卡片指纹：切页签/勾选待办都要整块重建
+    const keyAt = code.indexOf('function cardKey()');
+    const keyBody = code.slice(keyAt, code.indexOf('\n    }', keyAt));
+    assert.ok(keyBody.length > 80, `切出 cardKey（${keyBody.length}）`);
+    assert.match(keyBody, /^\s*activeTab,/m, '页签进指纹');
+    assert.match(keyBody, /todos\.map\(/, '待办数据进指纹');
+
+    // 切页签必须直接整块重建，不能落在「没变就只刷状态」那条路径上
+    const switchAt = code.indexOf('function switchTab(tab)');
+    const switchBody = code.slice(switchAt, code.indexOf('\n    }', switchAt));
+    assert.ok(switchBody.length > 80, `切出 switchTab（${switchBody.length}）`);
+    assert.match(switchBody, /activeTab = tab;/, '记录当前页签');
+    assert.match(switchBody, /renderCard\(\);/, '切页签整块重建卡片');
+    assert.match(switchBody, /if \(editingTodoId\) commitTodoEdit\(\)/,
+        '切换前收下未提交的就地编辑');
+    assert.match(switchBody, /renderPanelMaybe\(\)/,
+        '面板走「数据没变就不重渲染」的入口，不绕开守卫');
+    // 面板与卡片共享同一个 activeTab
+    assert.match(code, /\$\{tabsHTML\('memo-tabs-lg'\)\}/, '面板顶部也有一组页签');
+    assert.match(code, /activeTab === 'memo' \? memoPanelBodyHTML\(\) : todoPanelBodyHTML\(\)/,
+        '面板正文同样按页签切换');
+});
+
+test('待办完成态：删除线 + 变灰 + 斜体，规则只声明一次', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    // 只匹配基规则（`…[data-done="1"] {`）；`:hover` 那条选择器更长，不会命中
+    const rules = [...css.matchAll(/\.memo-todo-text\[data-done="1"\]\s*\{([^}]*)\}/g)];
+    assert.equal(rules.length, 1, `完成态基规则只声明一次，实测 ${rules.length}`);
+    const body = rules[0][1];
+    assert.match(body, /text-decoration:\s*line-through/, '完成态加删除线');
+    assert.match(body, /font-style:\s*italic/, '完成态加斜体');
+    assert.match(body, /color:\s*var\(--text-muted\)/, '完成态文字变灰');
+    // 卡片与面板渲染的是同一个属性，样式才能共用一条规则
+    const code = stripComments(memoSrc);
+    assert.equal((code.match(/data-done="\$\{t\.done \? 1 : 0\}"/g) || []).length, 2,
+        '卡片与面板两处都带 data-done');
+});
+
+test('待办就地编辑：点文字进编辑态、回车/失焦保存、Esc 取消、轮询不覆盖', () => {
+    const code = stripComments(memoSrc);
+
+    assert.match(code, /let editingTodoId = null;/, '有就地编辑状态');
+    assert.match(code, /case 'edit-todo':[\s\S]{0,120}editingTodoId = id;/,
+        '点文字进入编辑态');
+    assert.match(code, /editingTodoId === t\.id[\s\S]{0,200}memoTodoInput/,
+        '编辑态下文字按钮换成输入框');
+
+    // 轮询期间不得重渲染面板——否则每 15 秒就把正在输入的那一行换掉
+    const maybeAt = code.indexOf('function renderPanelMaybe()');
+    const maybeBody = code.slice(maybeAt, code.indexOf('\n    }', maybeAt));
+    assert.ok(maybeBody.length > 100, `切出 renderPanelMaybe（${maybeBody.length}）`);
+    assert.match(maybeBody, /panelView === 'edit' \|\| editingTodoId\) return;/,
+        '就地编辑时跳过轮询重渲染');
+
+    // 三条提交路径各自存在且真的接到了提交函数
+    const keydownAt = code.indexOf("panelEl.addEventListener('keydown'");
+    const keydown = code.slice(keydownAt, code.indexOf('\n        });', keydownAt));
+    assert.ok(keydown.length > 200, `切出 keydown（${keydown.length}）`);
+    assert.match(keydown, /key === 'Enter'[\s\S]{0,200}commitTodoEdit\(\)/, '回车保存');
+    assert.match(keydown, /key === 'Escape'[\s\S]{0,200}cancelTodoEdit\(\)/, 'Esc 取消');
+    assert.match(keydown, /stopPropagation\(\)/, 'Esc 不能连带把整个面板关掉');
+
+    const focusAt = code.indexOf("panelEl.addEventListener('focusout'");
+    const focus = code.slice(focusAt, code.indexOf('\n        });', focusAt));
+    assert.match(focus, /memoTodoInput[\s\S]{0,120}commitTodoEdit\(\)/, '失焦保存');
+
+    // 行内按钮在 pointerdown 先拦截：不拦的话输入框失焦 → 重渲染 → click 落空
+    const pdAt = code.indexOf("panelEl.addEventListener('pointerdown'");
+    const pd = code.slice(pdAt, code.indexOf('\n        });', pdAt));
+    assert.match(pd, /preventDefault\(\)/, '行内操作按钮的 pointerdown 先拦截');
+
+    // 保存成功后退出编辑态；空内容回退原文
+    const commitAt = code.indexOf('async function commitTodoEdit()');
+    const commit = code.slice(commitAt, code.indexOf('\n    }', commitAt));
+    assert.ok(commit.length > 200, `切出 commitTodoEdit（${commit.length}）`);
+    assert.match(commit, /editingTodoId = null;/, '先退出编辑态，避免重渲染触发第二次提交');
+    assert.match(commit, /if \(!text\)[\s\S]{0,160}不能为空/, '空内容不落库');
+    assert.match(commit, /saveTodo\(id, text\)/, '走同一个保存入口');
+});
+
+test('卡片上的待办行：勾选框直接切完成态，点文字打开面板', () => {
+    const code = stripComments(memoSrc);
+    const at = code.indexOf('function todoCardHTML() {');
+    const body = code.slice(at, code.indexOf('\n    }', at));
+    assert.ok(body.length > 200, `切出 todoCardHTML（${body.length}）`);
+    assert.match(body, /todoCheckHTML\(t\)/, '卡片复用共用的勾选框标记');
+    assert.match(body, /data-action="open"[^>]*data-done=/, '点文字打开面板（编辑只在面板里）');
+    // 勾选框的 data-action 在共用标记里；委托里必须有这条分支，否则它是死按钮
+    const checkAt = code.indexOf('function todoCheckHTML(t) {');
+    const checkBody = code.slice(checkAt, code.indexOf('\n    }', checkAt));
+    assert.match(checkBody, /data-action="toggle-todo"/, '勾选框直接切完成态');
+    assert.match(code, /else if \(action === 'toggle-todo'\)/, '卡片的勾选分支存在');
+    assert.match(code, /todos\.find\(x => x\.id === t\.dataset\.id\)[\s\S]{0,80}toggleTodo/,
+        '找到待办后调用 toggleTodo');
+});
+
+test('待办达到 300 条上限时禁用添加（客户端不送必然被拒的请求）', () => {
+    const code = stripComments(memoSrc);
+    assert.match(code, /const full = todos\.length >= TODO_MAX_ENTRIES/);
+    assert.match(code, /placeholder="\$\{full \? '已达上限' : '添加待办，回车保存'\}"\$\{full \? ' disabled' : ''\}/,
+        '输入框在满额时禁用');
+    assert.match(code, /data-action="add-todo"\$\{full \? ' disabled' : ''\}/,
+        '添加按钮在满额时禁用');
+});
+
+test('窄屏 44px 下限覆盖卡片页签与勾选（不只面板）', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+    const blocks = [...css.matchAll(/@media \(max-width: 1023px\) \{([\s\S]*?)\n\}/g)].map(m => m[1]);
+    const memoBlock = blocks.find(b => b.includes('.memo-todo-check-wrap'));
+    assert.ok(memoBlock, '找到备忘模块的窄屏块');
+    assert.match(memoBlock, /\.memo-tab, \.memo-panel \.memo-tab \{[^}]*min-height:\s*44px/,
+        '卡片与面板的页签都抬到 44px');
+    assert.match(memoBlock, /\.memo-todo-check-wrap, \.memo-panel \.memo-todo-check-wrap \{[^}]*width:\s*44px/,
+        '卡片与面板的勾选热区都抬到 44px');
+});
+
+// ========== 执行真实片段（不只匹配源码文本） ==========
+//
+// 源码存在性断言可以被「函数还在、但什么都不做」骗过：把 switchTab 改成空函数、
+// 把完成态标记删掉，正则仍然能匹配到。下面这些用例切出函数体、注入依赖真跑一遍。
+
+/** 从源码切出顶层 `function name(...) { ... }`；模板里的 `${}` 成对，不影响配对。 */
+function extractFunction(src, name) {
+    let at = src.indexOf(`function ${name}(`);
+    assert.ok(at > 0, `找到函数 ${name}`);
+    // `async function` 的 async 在 'function' 之前：不带上它，函数体里的 await
+    // 会在 new Function 里直接 SyntaxError（症状是「测试文件加载失败」而不是断言）。
+    if (src.slice(Math.max(0, at - 6), at) === 'async ') at -= 6;
+    const open = src.indexOf('{', at);
+    assert.ok(open > at, `${name} 的函数体起点可定位`);
+    let depth = 0;
+    for (let i = open; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                const text = src.slice(at, i + 1);
+                assert.ok(text.length > 60, `${name} 切片长度合理（${text.length}）`);
+                return text;
+            }
+        }
+    }
+    throw new Error(`${name} 未闭合`);
+}
+
+test('tabsHTML 真跑：选中态跟着 activeTab 走', () => {
+    const body = extractFunction(memoSrc, 'tabsHTML');
+    const render = activeTab => new Function('activeTab', `${body}; return tabsHTML('');`)(activeTab);
+    const memoHtml = render('memo');
+    assert.match(memoHtml, /data-tab="memo" aria-selected="true">备忘<\/button>/, '备忘选中');
+    assert.match(memoHtml, /data-tab="todo" aria-selected="false">待办<\/button>/, '待办未选中');
+    const todoHtml = render('todo');
+    assert.match(todoHtml, /data-tab="memo" aria-selected="false">备忘<\/button>/);
+    assert.match(todoHtml, /data-tab="todo" aria-selected="true">待办<\/button>/, '待办选中');
+});
+
+test('switchTab 真跑：真的切状态并重渲染；有未提交的编辑先保存', () => {
+    const body = extractFunction(memoSrc, 'switchTab');
+
+    function build({ editing = false, panelOpen = true } = {}) {
+        const calls = [];
+        const api = new Function('renderCard', 'renderPanelMaybe', 'commitTodoEdit', `
+            let activeTab = 'memo';
+            let editingTodoId = ${editing ? "'t1'" : 'null'};
+            let panel = ${panelOpen ? '{}' : 'null'};
+            let panelView = 'list';
+            ${body}
+            return { switchTab, state: () => ({ activeTab, editingTodoId }) };
+        `)(
+            () => calls.push('card'),
+            () => calls.push('panel'),
+            () => calls.push('commit')
+        );
+        return { api, calls };
+    }
+
+    const a = build();
+    a.api.switchTab('todo');
+    assert.equal(a.api.state().activeTab, 'todo', '真的切到待办');
+    assert.deepEqual(a.calls, ['card', 'panel'], '卡片与面板都重渲染');
+    a.api.switchTab('bogus');
+    assert.equal(a.api.state().activeTab, 'todo', '非法页签不切换');
+    a.api.switchTab('todo');
+    assert.deepEqual(a.calls, ['card', 'panel'], '重复点击同一页签不重渲染');
+
+    const b = build({ editing: true });
+    b.api.switchTab('todo');
+    assert.deepEqual(b.calls, ['commit', 'card', 'panel'], '先收下未提交的就地编辑再切换');
+
+    const c = build({ panelOpen: false });
+    c.api.switchTab('todo');
+    assert.deepEqual(c.calls, ['card'], '面板没开时只重渲染卡片');
+});
+
+test('todoCardHTML 真跑：完成态、转义、预览条数与计数', () => {
+    const escBody = extractFunction(memoSrc, 'esc');
+    const checkBody = extractFunction(memoSrc, 'todoCheckHTML');
+    const cardBody = extractFunction(memoSrc, 'todoCardHTML');
+    const render = todos => new Function('todos', 'TODO_PREVIEW_ROWS', `
+        ${escBody}
+        ${checkBody}
+        ${cardBody}
+        return todoCardHTML();
+    `)(todos, 4);
+
+    const extra = Array.from({ length: 5 }, (_, i) => ({
+        id: `x${i}`, text: `第 ${i} 条`, done: false, createdAt: 1, updatedAt: 1
+    }));
+    const html = render([
+        { id: 't1', text: '<b>完成</b>', done: true, createdAt: 3, updatedAt: 4 },
+        { id: 't2', text: '未完成', done: false, createdAt: 2, updatedAt: 2 },
+        ...extra
+    ]);
+
+    assert.match(html, /data-done="1"[^>]*>&lt;b&gt;完成&lt;\/b&gt;/, '完成态 + 文字已转义');
+    assert.match(html, /data-id="t1" checked aria-label="标记未完成"/, '完成项勾选框已勾上');
+    assert.equal((html.match(/class="memo-row memo-todo-row"/g) || []).length, 4, '预览最多 4 条');
+    assert.match(html, /共 7 项 · 6 未完成/, '计数与未完成数来自真实数据');
+});
+
+test('toggleTodo 真跑：请求失败时把完成态回滚', async () => {
+    const body = extractFunction(memoSrc, 'toggleTodo');
+    const events = [];
+    const fn = new Function('api', 'window', 'renderCard', 'renderPanelMaybe',
+        `${body}
+         return toggleTodo;`)(
+        { post: async () => { throw new Error('offline'); } },
+        { app: { showToast: (msg, kind) => events.push(`toast:${kind}:${msg}`) } },
+        () => events.push('render'),
+        () => events.push('panel')
+    );
+
+    const todo = { id: 't1', done: false };
+    await fn(todo);
+    assert.equal(todo.done, false, '失败后回滚到未完成');
+    assert.equal(events.filter(e => e === 'render').length, 2, '乐观更新与回滚各重渲染一次');
+    assert.ok(events.some(e => e.startsWith('toast:error')), '失败必须报错');
+});
+
+test('saveTodo 真跑：断网时进离线草稿队列（编辑与新建各一条）', async () => {
+    const body = extractFunction(memoSrc, 'saveTodo');
+    const fn = new Function('api', 'window', 'renderCard', 'renderPanelMaybe', 'persistTodoDrafts', 'setSyncState', `
+        let todoDrafts = [];
+        let lastSync = null;
+        ${body}
+        return { saveTodo, get drafts() { return todoDrafts; } };
+    `)(
+        { post: async () => { throw new Error('offline'); } },
+        { app: { showToast: () => {} } },
+        () => {}, () => {}, () => {}, () => {}
+    );
+
+    assert.equal(await fn.saveTodo('t1', '改后的文字'), false, '断网返回 false');
+    assert.equal(await fn.saveTodo(null, '新的待办'), false);
+    assert.equal(fn.drafts.length, 2);
+    assert.equal(fn.drafts[0].id, 't1');
+    assert.equal(fn.drafts[0].text, '改后的文字');
+    assert.equal(fn.drafts[1].id, null, '新建草稿没有 id');
+    assert.ok(fn.drafts.every(d => typeof d.ts === 'number' && d.ts > 0), '草稿带时间戳');
+});
+
+test('commitTodoEdit 真跑：空内容不落库，只提示并退出编辑态', async () => {
+    const body = extractFunction(memoSrc, 'commitTodoEdit');
+    const events = [];
+    let saved = 0;
+    const api = new Function('renderPanel', 'window', 'saveTodo', `
+        let panel = { panelEl: { querySelector: () => ({ value: '   ' }) } };
+        let editingTodoId = 't1';
+        let todos = [{ id: 't1', text: '原文' }];
+        ${body}
+        return { commitTodoEdit, get editingTodoId() { return editingTodoId; } };
+    `)(
+        () => events.push('render'),
+        { app: { showToast: (msg, kind) => events.push(`${kind}:${msg}`) } },
+        () => { saved++; return true; }
+    );
+
+    await api.commitTodoEdit();
+    assert.equal(saved, 0, '空内容不调用保存');
+    assert.equal(api.editingTodoId, null, '退出编辑态');
+    assert.ok(events.includes('error:待办内容不能为空'), '给出提示');
 });

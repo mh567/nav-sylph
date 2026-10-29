@@ -130,7 +130,8 @@
      */
     const RESTORE_DOMAIN_LABEL = {
         favorites: '书签（含隐私标签）',
-        memos: '备忘录（正文与置顶状态）',
+        memos: '备忘（正文与置顶状态）',
+        todos: '待办清单（完成状态）',
         modules: '私人模块（监控目标与布局）',
         timeline: 'Special Line 时间线（来源与事件）',
         // 旧备份的配置域。⚠️ 键是 `admin-navigation`（`lib/webdav-backup.js` 的
@@ -8449,8 +8450,8 @@
                         <label class="field-label">远程路径<input type="text" id="webdavPath" value="${this.esc(cfg.remotePath || '/nav-sylph-backups/')}"></label>
                     </div>
                 </div>
-                <p class="fav-hint">备份范围：<strong>收藏</strong>（含隐私标签）、<strong>备忘录</strong>正文与置顶状态、<strong>主机监控与私人模块</strong>的开关/布局、<strong>Special Line 时间线</strong>的来源与事件（含归档/收藏状态）。管理员导航、搜索引擎、站点默认模板、公开模块项、普通口令空间与设备令牌、密码与会话、监控缓存以及各类凭据（agent 令牌、推送凭据、来源凭据）都不进备份——凭据密文由本机管理密码派生，换台机器本就解不开，恢复后需要重新授权。</p>
-                <p class="fav-hint">开启自动同步后，收藏、备忘录、模块设置或时间线发生变化时会自动备份一次，同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
+                <p class="fav-hint">备份范围：<strong>收藏</strong>（含隐私标签）、<strong>备忘</strong>正文与置顶状态、<strong>待办清单</strong>与完成状态、<strong>主机监控与私人模块</strong>的开关/布局、<strong>Special Line 时间线</strong>的来源与事件（含归档/收藏状态）。管理员导航、搜索引擎、站点默认模板、公开模块项、普通口令空间与设备令牌、密码与会话、监控缓存以及各类凭据（agent 令牌、推送凭据、来源凭据）都不进备份——凭据密文由本机管理密码派生，换台机器本就解不开，恢复后需要重新授权。</p>
+                <p class="fav-hint">开启自动同步后，收藏、备忘、待办、模块设置或时间线发生变化时会自动备份一次，同一时段的连续改动合并为一次。自动备份写在固定的「自动同步」槽位，不占用手动备份的 5 份历史。</p>
                 ${cfg.lastAutoSyncError ? `<div class="webdav-message error webdav-autosync-error">上次自动同步失败${cfg.lastAutoSyncErrorAt ? `（${this.formatBackupTime(cfg.lastAutoSyncErrorAt)}）` : ''}：${this.esc(cfg.lastAutoSyncError)}</div>` : ''}
                 <div class="webdav-actions">
                     <button class="btn" id="webdavSaveBtn">保存配置</button>
@@ -8666,11 +8667,11 @@
                 const res = await API.post('/api/webdav/backup', {});
                 if (res.success) {
                     if (res.noChanges) {
-                        msgEl.textContent = res.message || '收藏、备忘录与模块设置没有变化，无需备份';
+                        msgEl.textContent = res.message || '收藏、备忘、待办与模块设置没有变化，无需备份';
                         msgEl.className = 'webdav-message';
                     } else {
-                        const files = [res.bookmarksFilename, res.memosFilename, res.modulesFilename,
-                            res.timelineFilename, res.manifestFilename].filter(Boolean);
+                        const files = [res.bookmarksFilename, res.memosFilename, res.todosFilename,
+                            res.modulesFilename, res.timelineFilename, res.manifestFilename].filter(Boolean);
                         msgEl.textContent = `备份成功: ${files.join(', ')}`;
                         msgEl.className = 'webdav-message success';
                         await this.loadWebDAVConfig();
@@ -8720,6 +8721,7 @@
                                     const hasConfig = !!b.configFile;
                                     const hasBookmarks = !!b.bookmarksFile;
                                     const hasMemos = !!b.memosFile;
+                                    const hasTodos = !!b.todosFile;
                                     const hasModules = !!b.modulesFile;
                                     const hasTimeline = !!b.timelineFile;
                                     const hasManifest = !!b.manifestFile;
@@ -8732,7 +8734,8 @@
                                     if (isLegacy) files.push('旧版备份');
                                     if (hasConfig) files.push('配置（不再恢复）');
                                     if (hasBookmarks) files.push('书签');
-                                    if (hasMemos) files.push('备忘录');
+                                    if (hasMemos) files.push('备忘');
+                                    if (hasTodos) files.push('待办');
                                     if (hasModules) files.push('模块');
                                     if (hasTimeline) files.push('时间线');
                                     if (hasManifest) files.push('清单');
@@ -8747,12 +8750,14 @@
                                          data-config="${this.esc(b.configFile || '')}"
                                          data-bookmarks="${this.esc(b.bookmarksFile || '')}"
                                          data-memos="${this.esc(b.memosFile || '')}"
+                                         data-todos="${this.esc(b.todosFile || '')}"
                                          data-modules="${this.esc(b.modulesFile || '')}"
                                          data-timeline="${this.esc(b.timelineFile || '')}"
                                          data-manifest="${this.esc(b.manifestFile || '')}"
                                          data-legacy="${this.esc(b.legacyFile || '')}"
                                          data-bookmarks-size="${b.bookmarksSize || ''}"
                                          data-memos-size="${b.memosSize || ''}"
+                                         data-todos-size="${b.todosSize || ''}"
                                          data-modules-size="${b.modulesSize || ''}"
                                          data-timeline-size="${b.timelineSize || ''}"
                                          data-created-at="${this.esc(b.createdAt || '')}">
@@ -8788,6 +8793,7 @@
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
                         const memosFile = item.dataset.memos;
+                        const todosFile = item.dataset.todos;
                         const modulesFile = item.dataset.modules;
                         const timelineFile = item.dataset.timeline;
                         const manifestFile = item.dataset.manifest;
@@ -8797,6 +8803,7 @@
                             configFile,
                             bookmarksFile,
                             memosFile,
+                            todosFile,
                             modulesFile,
                             timelineFile,
                             manifestFile,
@@ -8809,6 +8816,7 @@
                             sizes: {
                                 favorites: Number(item.dataset.bookmarksSize) || 0,
                                 memos: Number(item.dataset.memosSize) || 0,
+                                todos: Number(item.dataset.todosSize) || 0,
                                 modules: Number(item.dataset.modulesSize) || 0,
                                 timeline: Number(item.dataset.timelineSize) || 0
                             }
@@ -8823,6 +8831,7 @@
                         const configFile = item.dataset.config;
                         const bookmarksFile = item.dataset.bookmarks;
                         const memosFile = item.dataset.memos;
+                        const todosFile = item.dataset.todos;
                         const modulesFile = item.dataset.modules;
                         const timelineFile = item.dataset.timeline;
                         const manifestFile = item.dataset.manifest;
@@ -8842,7 +8851,7 @@
                             // 同组的每个文件都必须一起删，否则远端会留下孤儿文件
                             //（清单与备忘录同样在内：只删一半会留下「模块是旧的、
                             // 清单是新的」这种半新半旧的分组，恢复时无法核对）。
-                            const filesToDelete = [configFile, bookmarksFile, memosFile, modulesFile, timelineFile, manifestFile, legacyFile].filter(Boolean);
+                            const filesToDelete = [configFile, bookmarksFile, memosFile, todosFile, modulesFile, timelineFile, manifestFile, legacyFile].filter(Boolean);
                             for (const file of filesToDelete) {
                                 await API.post('/api/webdav/delete', { filename: file });
                             }
@@ -8879,6 +8888,7 @@
             // legacy 单文件格式里也带书签（backup-legacy 的 data.favorites）。
             const hasBookmarks = !!(backup.bookmarksFile || backup.legacyFile);
             const hasMemos = !!backup.memosFile;
+            const hasTodos = !!backup.todosFile;
             const hasModules = !!backup.modulesFile;
             const hasTimeline = !!backup.timelineFile;
             // 旧备份：有配置域、或者没有清单。它们按新范围只恢复书签。
@@ -8887,11 +8897,18 @@
             // 分组里一个 radio 都不会被选中，`$('input[name]:checked').value`
             // 会抛在 handler 里，表现是「点『确认恢复』什么都不发生」。
             // 「同时恢复」只有在 书签 + 至少一项私人数据 时才出现。
-            const hasPrivate = hasMemos || hasModules || hasTimeline;
+            const hasPrivate = hasMemos || hasTodos || hasModules || hasTimeline;
             const allOption = hasBookmarks && hasPrivate;
+            // 回退顺序与页面上的选项顺序一致；至少命中一个，保证 `:checked` 永远有值。
+            const hasType = {
+                bookmarks: hasBookmarks,
+                memos: hasMemos,
+                todos: hasTodos,
+                modules: hasModules,
+                timeline: hasTimeline
+            };
             const defaultType = allOption ? 'all'
-                : (hasBookmarks ? 'bookmarks'
-                    : (hasMemos ? 'memos' : (hasModules ? 'modules' : 'timeline')));
+                : (['bookmarks', 'memos', 'todos', 'modules', 'timeline'].find(key => hasType[key]) || 'timeline');
             const checkedFor = value => (value === defaultType ? 'checked' : '');
 
             // 恢复后需要重新授权/重新部署的项目：**凭据不随备份**，
@@ -8917,7 +8934,7 @@
                             ${allOption ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="all" ${checkedFor('all')}>
-                                <span>同时恢复书签与私人数据（含${[hasMemos && '备忘录', hasModules && '模块设置', hasTimeline && '时间线'].filter(Boolean).join('、')}）</span>
+                                <span>同时恢复书签与私人数据（含${[hasMemos && '备忘', hasTodos && '待办', hasModules && '模块设置', hasTimeline && '时间线'].filter(Boolean).join('、')}）</span>
                             </label>
                             ` : ''}
                             ${hasBookmarks ? `
@@ -8929,7 +8946,13 @@
                             ${hasMemos ? `
                             <label class="restore-option">
                                 <input type="radio" name="restoreType" value="memos" ${checkedFor('memos')}>
-                                <span>只恢复备忘录（正文与置顶状态）</span>
+                                <span>只恢复备忘（正文与置顶状态）</span>
+                            </label>
+                            ` : ''}
+                            ${hasTodos ? `
+                            <label class="restore-option">
+                                <input type="radio" name="restoreType" value="todos" ${checkedFor('todos')}>
+                                <span>只恢复待办清单（完成状态）</span>
                             </label>
                             ` : ''}
                             ${hasModules ? `
@@ -8971,6 +8994,7 @@
                 const restoreType = $('input[name="restoreType"]:checked').value;
                 const restoreBookmarks = restoreType === 'all' || restoreType === 'bookmarks';
                 const restoreMemos = restoreType === 'all' || restoreType === 'memos';
+                const restoreTodos = restoreType === 'all' || restoreType === 'todos';
                 const restoreModules = restoreType === 'all' || restoreType === 'modules';
                 // 时间线是「整表替换」：选了 all 就一起恢复；只想动时间线时也有单独一项。
                 // 凭据不随备份，恢复后来源显示「待授权」。
@@ -8979,12 +9003,14 @@
                     configFile: backup.configFile,
                     bookmarksFile: backup.bookmarksFile,
                     memosFile: backup.memosFile,
+                    todosFile: backup.todosFile,
                     modulesFile: backup.modulesFile,
                     timelineFile: backup.timelineFile,
                     manifestFile: backup.manifestFile,
                     legacyFile: backup.legacyFile,
                     restoreBookmarks,
                     restoreMemos,
+                    restoreTodos,
                     restoreModules,
                     restoreTimeline
                 }, backup, parentDialog, optionsDialog);
@@ -9224,7 +9250,8 @@
         restoreResultMessage(res) {
             const parts = [];
             if (res.restoredBookmarks) parts.push('书签');
-            if (res.restoredMemos) parts.push('备忘录');
+            if (res.restoredMemos) parts.push('备忘');
+            if (res.restoredTodos) parts.push('待办');
             if (res.restoredModules) parts.push('模块设置');
             if (res.restoredTimeline) parts.push('时间线');
             const lines = [`已恢复：${parts.length ? parts.join('、') : '（无）'}。页面即将刷新。`];

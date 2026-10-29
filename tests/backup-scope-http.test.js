@@ -36,6 +36,7 @@ const NAV_MARKER = 'NAV-MARKER-8f3a-私密分类';
 const ENGINE_MARKER = 'ENGINE-MARKER-5c1d';
 const MEMO_TITLE = 'MEMO-TITLE-2b7e 备忘正文标题';
 const MEMO_BODY = 'MEMO-BODY-9a44 这是一段只有备份里才该出现的正文';
+const TODO_MARKER = 'TODO-MARKER-51cf 待办一条';
 const FAV_MARKER = 'FAV-MARKER-4d21 私密书签';
 const TIMELINE_MARKER = 'TIMELINE-MARKER-77aa 一条事件';
 const PUSH_SECRET_HASH = 'f'.repeat(64);
@@ -209,6 +210,8 @@ async function seedInstallation(t) {
         const now = Date.now();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)')
             .run('memo-1', MEMO_TITLE, MEMO_BODY, now, now);
+        db.prepare('INSERT INTO todos (id, text, done, created_at, updated_at) VALUES (?, ?, 1, ?, ?)')
+            .run('todo-1', TODO_MARKER, now, now);
         db.prepare(`INSERT INTO timeline_sources
             (id, provider_type, name, external_key, settings_json, enabled, sync_cursor,
              sync_interval_ms, next_sync_at, last_attempt_at, last_success_at, last_error, created_at, updated_at)
@@ -265,13 +268,14 @@ test('真实 HTTP：备份产物只有一个清单声明的域集合，排除项
     const names = [...stored.keys()].sort();
     const ts = backup.timestamp;
 
-    // 1) 文件集合逐字：四个域 + 清单，**没有 config**
+    // 1) 文件集合逐字：五个域 + 清单，**没有 config**
     assert.deepEqual(names, [
         `nav-sylph-bookmarks-${ts}.html`,
         `nav-sylph-manifest-${ts}.json`,
         `nav-sylph-memos-${ts}.json`,
         `nav-sylph-modules-${ts}.json`,
-        `nav-sylph-timeline-${ts}.json`
+        `nav-sylph-timeline-${ts}.json`,
+        `nav-sylph-todos-${ts}.json`
     ]);
     assert.ok(!names.some(name => name.startsWith('nav-sylph-config')),
         '#12 起不再生成 nav-sylph-config-*.json');
@@ -325,6 +329,11 @@ test('真实 HTTP：备份产物只有一个清单声明的域集合，排除项
     assert.equal(memos.data.memos[0].body, MEMO_BODY, '备忘录正文进备份');
     assert.equal(memos.data.memos[0].pinned, true, '备忘录状态（置顶）进备份');
 
+    const todos = JSON.parse(stored.get(`nav-sylph-todos-${ts}.json`));
+    assert.equal(todos.data.todos.length, 1);
+    assert.equal(todos.data.todos[0].text, TODO_MARKER, '待办文字进备份');
+    assert.equal(todos.data.todos[0].done, true, '待办完成态进备份');
+
     const bookmarks = stored.get(`nav-sylph-bookmarks-${ts}.html`);
     assert.ok(bookmarks.includes(FAV_MARKER), '收藏进备份');
     assert.match(bookmarks, /DATA-SYLPH-PRIVATE="1"/, '隐私标签进备份');
@@ -338,7 +347,7 @@ test('真实 HTTP：备份产物只有一个清单声明的域集合，排除项
     const manifest = JSON.parse(stored.get(`nav-sylph-manifest-${ts}.json`));
     assert.equal(manifest.type, 'nav-sylph-manifest');
     assert.deepEqual(manifest.data.included.map(entry => entry.domain),
-        ['favorites', 'memos', 'modules', 'timeline']);
+        ['favorites', 'memos', 'todos', 'modules', 'timeline']);
     for (const entry of manifest.data.included) {
         const bytes = stored.get(entry.file);
         assert.ok(bytes !== undefined, `清单里的 ${entry.file} 真的在上游`);
@@ -417,10 +426,14 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
     const backup = await (await app.request('/api/webdav/backup', { cookie, body: {} })).json();
     assert.equal(backup.success, true);
 
-    // 破坏现场：删备忘录、换收藏、清掉模块布局
+    // 破坏现场：删备忘录与待办、换收藏、清掉模块布局
     const memos = await (await app.request('/api/memos', { cookie })).json();
     for (const memo of memos.memos) {
         assert.equal((await app.request(`/api/memos/${memo.id}`, { cookie, method: 'DELETE', body: {} })).status, 200);
+    }
+    const todosBefore = await (await app.request('/api/todos', { cookie })).json();
+    for (const todo of todosBefore.todos) {
+        assert.equal((await app.request(`/api/todos/${todo.id}`, { cookie, method: 'DELETE', body: {} })).status, 200);
     }
     const favs = await (await app.request('/api/favorites', { cookie })).json();
     for (const fav of favs.favorites) {
@@ -449,6 +462,7 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
     assert.equal(modulesWrite.status, 200, JSON.stringify(await modulesWrite.clone().json()));
 
     assert.equal((await (await app.request('/api/memos', { cookie })).json()).memos.length, 0, '备忘录被清空');
+    assert.equal((await (await app.request('/api/todos', { cookie })).json()).todos.length, 0, '待办被清空');
 
     // 真实恢复：文件按列表里的那组名字传
     const listed = await (await app.request('/api/webdav/list', { cookie })).json();
@@ -459,6 +473,7 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
         body: {
             bookmarksFile: group.bookmarksFile,
             memosFile: group.memosFile,
+            todosFile: group.todosFile,
             modulesFile: group.modulesFile,
             timelineFile: group.timelineFile,
             manifestFile: group.manifestFile
@@ -468,6 +483,7 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
     assert.equal(restoreRes.status, 200, JSON.stringify(restored));
     assert.equal(restored.success, true);
     assert.equal(restored.restoredMemos, true);
+    assert.equal(restored.restoredTodos, true);
     assert.equal(restored.restoredBookmarks, true);
     assert.equal(restored.restoredModules, true);
     assert.equal(restored.restoredTimeline, true);
@@ -479,6 +495,12 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
     assert.equal(memosAfter.memos[0].title, MEMO_TITLE);
     assert.equal(memosAfter.memos[0].body, MEMO_BODY);
     assert.equal(memosAfter.memos[0].pinned, true);
+
+    // 待办回来了（文字与完成态）
+    const todosAfter = await (await app.request('/api/todos', { cookie })).json();
+    assert.equal(todosAfter.todos.length, 1);
+    assert.equal(todosAfter.todos[0].text, TODO_MARKER);
+    assert.equal(todosAfter.todos[0].done, true);
 
     // 收藏回来了，且隐私标签在
     const favsAfter = await (await app.request('/api/favorites', { cookie })).json();
