@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>备忘 / 待办模块 · 风格对齐仿真</title>
+<style>
+/* ============================================================
+   1. 项目 2026 材质层 token（与 public/styles.css 逐字对应）
+   ============================================================ */
+:root {
+    color-scheme: light;
+    --bg: #efede8;
+    --bg-card: #faf8f4;
+    --bg-hover: #f2ece5;
+    --text: #302b27;
+    --text-secondary: #655e57;
+    --text-muted: #817970;
+    --border: rgba(92,76,64,.18);
+    --divider-rgb: 92,76,64;
+    --bookmark-face: linear-gradient(180deg,rgba(255,255,255,.48),rgba(255,255,255,.08) 38%,rgba(121,105,91,.025)),linear-gradient(165deg,rgba(251,249,245,.86),rgba(238,235,230,.90));
+    --bookmark-hover-face: linear-gradient(180deg,rgba(255,255,255,.62),rgba(255,255,255,.12) 40%,rgba(121,105,91,.035)),linear-gradient(165deg,rgba(253,251,247,.92),rgba(237,233,227,.94));
+    --bookmark-pressed-face: linear-gradient(180deg,rgba(101,81,64,.17),rgba(255,255,255,.02) 54%,rgba(255,255,255,.11)),linear-gradient(165deg,#e8e3dc,#f5f1eb);
+    --bookmark-border: rgba(116,100,85,.20);
+    --bookmark-hover-border: rgba(148,94,74,.37);
+    --bookmark-pressed-border: rgba(103,85,69,.34);
+    --bookmark-idle-shadow: inset 0 1px rgba(255,255,255,.74),inset 0 -1px rgba(120,102,86,.11),inset 1px 0 rgba(255,255,255,.12),var(--shadow);
+    --bookmark-hover-shadow: inset 0 1px rgba(255,255,255,.87),inset 0 -1px rgba(120,102,86,.16),inset 1px 0 rgba(255,255,255,.18),var(--shadow-lg);
+    --bookmark-press-shadow: inset 0 3px 6px rgba(91,72,56,.26),inset 0 0 0 1px rgba(121,98,77,.09),inset 0 -1px rgba(255,255,255,.48);
+    --bookmark-lift: -2px;
+    --bookmark-press-depth: 1px;
+    --bookmark-press-scale: .975;
+    --bookmark-glow-opacity: .32;
+    --bookmark-glow-motion: 85ms;
+    --bookmark-motion: 90ms;
+    --bookmark-press-motion: 35ms;
+    --accent: #945e4a;
+    --accent-hover: #79503f;
+    --focus: rgba(148,94,74,.58);
+    --glass: rgba(252,250,246,.66);
+    --glass-strong: rgba(252,250,246,.91);
+    --card-bottom: #f0ede7;
+    --control-top: #fcfaf6;
+    --control-bottom: #eee9e1;
+    --control-hover-top: #fffdf9;
+    --control-hover-bottom: #f4eee6;
+    --control-pressed-top: #e9e2d9;
+    --control-pressed-bottom: #f1ece5;
+    --glint: rgba(179,111,73,.34);
+    --glint-white: rgba(255,255,255,.90);
+    --shadow: 0 1px 3px rgba(60,45,32,.11),0 4px 10px rgba(60,45,32,.07);
+    --shadow-lg: 0 4px 10px rgba(60,45,32,.10),0 14px 30px rgba(60,45,32,.15);
+    --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
+    --radius: 10px;
+    --ctl-h: 44px;
+    --check-ink: #fff;
+}
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #211f1c;
+    --bg-card: #3a3530;
+    --bg-hover: #4a4139;
+    --text: #f3eee8;
+    --text-secondary: #c9beb3;
+    --text-muted: #a89c90;
+    --border: rgba(222,203,185,.18);
+    --divider-rgb: 222,203,185;
+    --bookmark-face: linear-gradient(165deg,var(--bg-card),var(--card-bottom));
+    --bookmark-hover-face: linear-gradient(165deg,var(--bg-card),var(--card-bottom));
+    --bookmark-pressed-face: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom));
+    --bookmark-border: var(--border);
+    --bookmark-hover-border: var(--focus);
+    --bookmark-pressed-border: rgba(222,203,185,.30);
+    --bookmark-idle-shadow: inset 0 1px rgba(255,255,255,.75),inset 0 -1px rgba(108,87,69,.08),var(--shadow);
+    --bookmark-hover-shadow: inset 0 1px rgba(255,255,255,.88),var(--shadow-lg);
+    --bookmark-press-shadow: inset 0 4px 8px rgba(0,0,0,.48),inset 0 0 0 1px rgba(0,0,0,.12),inset 0 -1px rgba(255,255,255,.08);
+    --bookmark-lift: -2px;
+    --bookmark-press-depth: 1px;
+    --bookmark-press-scale: .975;
+    --bookmark-glow-opacity: .8;
+    --bookmark-glow-motion: 160ms;
+    --bookmark-motion: 160ms;
+    --bookmark-press-motion: 55ms;
+    --accent: #c28d70;
+    --accent-hover: #d4a181;
+    --focus: rgba(223,169,140,.68);
+    --glass: rgba(65,58,51,.70);
+    --glass-strong: rgba(57,51,46,.93);
+    --card-bottom: #2c2925;
+    --control-top: #625951;
+    --control-bottom: #3c3630;
+    --control-hover-top: #71655b;
+    --control-hover-bottom: #4a4139;
+    --control-pressed-top: #292521;
+    --control-pressed-bottom: #39312b;
+    --glint: rgba(243,180,135,.28);
+    --glint-white: rgba(255,244,226,.18);
+    --shadow: 0 2px 4px rgba(0,0,0,.12),0 10px 28px rgba(0,0,0,.20);
+    --shadow-lg: 0 5px 10px rgba(0,0,0,.18),0 18px 34px rgba(0,0,0,.35);
+    --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
+    --check-ink: #241f1b;
+}
+
+/* ============================================================
+   2. 页框、工具条与演示台
+   ============================================================ */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+}
+button, input { font-family: inherit; }
+button { cursor: pointer; }
+
+.toolbar {
+    position: sticky; top: 0; z-index: 60;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--glass-strong);
+    box-shadow: inset 0 1px rgba(255,255,255,.55);
+    backdrop-filter: blur(18px) saturate(120%);
+    -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+.toolbar-title { font-size: 12px; font-weight: 650; letter-spacing: .04em; color: var(--text-secondary); margin-right: 4px; }
+.control { display: flex; align-items: center; gap: 6px; }
+.control-label { font-size: 10px; color: var(--text-muted); letter-spacing: .06em; }
+.seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: inset 0 1px 2px rgba(0,0,0,.16), inset 0 -1px rgba(255,255,255,.08); }
+.seg button { min-height: 26px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 11px; transition: background 110ms, color 110ms, box-shadow 110ms, transform 110ms; }
+.seg button[aria-pressed="true"] { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); font-weight: 600; box-shadow: inset 0 1px rgba(255,255,255,.55), 0 1px 2px rgba(60,45,32,.16); }
+.seg button:active { transform: translateY(1px); box-shadow: var(--press-shadow); }
+.ghost-btn { min-height: 28px; padding: 0 11px; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); font-size: 11px; box-shadow: inset 0 1px rgba(255,255,255,.5), 0 1px 2px rgba(60,45,32,.08); }
+.ghost-btn:hover { background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); transform: translateY(-1px); }
+.ghost-btn:active { background: var(--control-pressed-top); box-shadow: var(--press-shadow); transform: translateY(1px); }
+
+.stage { max-width: 1330px; margin: 0 auto; padding: 26px 22px 70px; display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 26px; align-items: start; }
+@media (max-width: 1080px) { .stage { grid-template-columns: minmax(0,1fr); } .notes { order: 2; } }
+
+.workspace { display: grid; grid-template-columns: minmax(0,936px) var(--card-w,220px); gap: 20px; align-items: start; justify-content: center; }
+.stage[data-card="400"] .workspace { grid-template-columns: minmax(0,1fr); }
+.stage[data-card="400"] .dock { margin-top: 20px; }
+
+/* 背板：与首页 .backboard 同一套材质语法 */
+.backboard {
+    position: relative; width: min(100%,936px); padding: 40px 30px 34px; border-radius: 18px;
+    background: linear-gradient(168deg,var(--glass-strong),var(--glass));
+    box-shadow: inset 0 1px rgba(255,255,255,.72),inset 0 -1px rgba(105,81,63,.07),0 2px 6px rgba(67,51,39,.035),0 20px 48px rgba(67,51,39,.07);
+    backdrop-filter: blur(20px) saturate(122%);
+    -webkit-backdrop-filter: blur(20px) saturate(122%);
+}
+.backboard::before { content: ''; position: absolute; left: 30px; right: 30px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.95) 22%,rgba(255,255,255,.95) 78%,transparent); }
+.backboard::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; padding: 1px; background: linear-gradient(90deg,transparent 0%,rgba(var(--divider-rgb),.10) 14%,rgba(var(--divider-rgb),.21) 50%,rgba(var(--divider-rgb),.10) 86%,transparent 100%); -webkit-mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); mask-composite: exclude; }
+
+.search-bar { display: flex; align-items: center; gap: 6px; min-height: 52px; padding: 5px 6px 5px 16px; margin-bottom: 26px; border: 1px solid rgba(132,109,92,.24); border-radius: 13px; background: linear-gradient(165deg,var(--glass-strong),var(--glass)); box-shadow: inset 0 1px rgba(255,255,255,.76),inset 0 -1px rgba(105,81,63,.08),0 3px 8px rgba(67,51,39,.045),0 12px 27px rgba(67,51,39,.065); }
+.search-bar span { flex: 1; color: var(--text-muted); font-size: 13px; }
+.search-bar b { display: inline-flex; align-items: center; justify-content: center; min-width: 62px; min-height: 40px; border-radius: 9px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); font-size: 12px; font-weight: 600; box-shadow: inset 0 1px rgba(255,255,255,.6),0 1px 3px rgba(60,45,32,.14); }
+
+.category { margin-top: 24px; }
+.category:first-of-type { margin-top: 0; }
+.category-header { margin-bottom: 10px; padding-bottom: 7px; background: linear-gradient(90deg,transparent 0%,rgba(var(--divider-rgb),.08) 18%,rgba(var(--divider-rgb),.18) 50%,rgba(var(--divider-rgb),.08) 82%,transparent 100%) center bottom / 100% 1px no-repeat; }
+.category-title { color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .07em; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(96px,1fr)); gap: 10px; }
+
+/* 书签：首页材质的锚点 */
+.bookmark {
+    position: relative; display: grid; place-items: center; min-height: 42px; padding: 6px 8px; overflow: hidden;
+    border: 1px solid var(--bookmark-border); border-radius: 7px;
+    background: var(--bookmark-face); box-shadow: var(--bookmark-idle-shadow);
+    color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: .015em;
+    transition: transform var(--bookmark-motion) cubic-bezier(.2,.8,.25,1),border-color var(--bookmark-motion),box-shadow var(--bookmark-motion),background var(--bookmark-motion);
+}
+.bookmark::after { content: ''; position: absolute; left: 12px; right: 12px; top: 0; height: 1px; pointer-events: none; background: linear-gradient(90deg,transparent,rgba(255,255,255,.96) 30%,rgba(255,255,255,.96) 70%,transparent); }
+.bookmark:hover { transform: translateY(var(--bookmark-lift)); border-color: var(--bookmark-hover-border); background: var(--bookmark-hover-face); box-shadow: var(--bookmark-hover-shadow); }
+.bookmark:active { transform: translateY(var(--bookmark-press-depth)) scale(var(--bookmark-press-scale)); border-color: var(--bookmark-pressed-border); background: var(--bookmark-pressed-face); box-shadow: var(--bookmark-press-shadow); transition-duration: var(--bookmark-press-motion); }
+.bookmark svg { width: 15px; height: 15px; margin-bottom: 2px; opacity: .72; }
+
+/* ============================================================
+   3. 备忘卡片：当前实现（与线上规则一致）
+   ============================================================ */
+.dock { width: var(--card-w,220px); }
+.module-card { position: relative; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); box-shadow: var(--shadow); transition: box-shadow var(--bookmark-motion), border-color var(--bookmark-motion); }
+.module-widget-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; justify-content: center; }
+.memo-tabs { display: flex; gap: 2px; flex: 0 1 160px; min-width: 0; margin: 0; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); }
+.memo-tab { flex: 1 1 0; min-width: 0; min-height: 22px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); font-size: 11px; line-height: 1; white-space: nowrap; transition: background 110ms, color 110ms; }
+.memo-tab:hover { color: var(--text); }
+.memo-tab[aria-selected="true"] { background: var(--bg-card); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(67,51,39,.08); }
+.module-widget-body { min-width: 0; min-height: 0; }
+.memo-rows { display: flex; flex-direction: column; gap: 2px; max-height: min(240px,45dvh); min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable; }
+.memo-rows:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.memo-row { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 5px 6px; border-radius: 7px; cursor: pointer; transition: transform 90ms, box-shadow 90ms, background 110ms; }
+.memo-row:hover, .memo-row.is-hover { background: var(--bg-hover); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.memo-row svg { flex: 0 0 auto; color: var(--accent); }
+.memo-pin { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); }
+.memo-pin[aria-pressed="true"] { color: var(--accent); }
+.memo-row-main { flex: 1; min-width: 0; }
+.memo-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: .015em; }
+.memo-row-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted); }
+.memo-row-time { flex: 0 0 auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-row-actions { flex: 0 0 auto; display: flex; gap: 4px; opacity: 0; transition: opacity 110ms; }
+.memo-row:hover .memo-row-actions, .memo-row.is-hover .memo-row-actions { opacity: 1; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; padding: 0 4px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); font-size: 11px; box-shadow: inset 0 1px rgba(255,255,255,.48),0 1px 3px rgba(67,51,39,.06); }
+.icon-btn.danger { color: #a44c46; }
+.memo-card-footer { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; font-size: 10px; color: var(--text-muted); }
+.memo-card-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 6px; min-width: 0; }
+.memo-sync-part { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
+.memo-status-time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-card-manage { border: 0; padding: 0; background: none; color: inherit; font: inherit; font-size: 10px; text-decoration: underline; text-underline-offset: 2px; }
+.memo-card-manage:hover { color: var(--accent); }
+.module-drag-handle { display: none; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text-muted); box-shadow: inset 0 1px rgba(255,255,255,.46); }
+body[data-editing="true"] .module-drag-handle { display: inline-flex; }
+
+/* 待办：当前实现 */
+.memo-todo-row { gap: 8px; }
+.memo-todo-check-wrap { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; }
+.memo-todo-check { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.memo-todo-text { flex: 1 1 auto; min-width: 0; padding: 2px 0; border: 0; background: transparent; color: var(--text); font-size: 12px; line-height: 1.35; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.memo-todo-text:hover { color: var(--accent); }
+.memo-todo-text[data-done="1"] { text-decoration: line-through; color: var(--text-muted); font-style: italic; }
+
+/* ============================================================
+   4. 提案：只改视觉层，不改结构/间距/限高/热区
+   ============================================================ */
+.memo-card[data-variant="proposal"] {
+    container: memo-card / inline-size;
+    border-color: var(--bookmark-border);
+    background: var(--bookmark-face);
+    box-shadow: inset 0 1px rgba(255,255,255,.72), inset 0 -1px rgba(105,81,63,.07), var(--shadow);
+}
+.memo-card[data-variant="proposal"]::before {
+    content: ''; position: absolute; left: 12px; right: 12px; top: 0; height: 1px; pointer-events: none;
+    background: linear-gradient(90deg,transparent,rgba(255,255,255,.9) 30%,rgba(255,255,255,.9) 70%,transparent);
+}
+.memo-card[data-variant="proposal"] .module-widget-head {
+    padding-bottom: 8px; margin-bottom: 8px;
+    background: linear-gradient(90deg,transparent 0%,rgba(var(--divider-rgb),.08) 18%,rgba(var(--divider-rgb),.18) 50%,rgba(var(--divider-rgb),.08) 82%,transparent 100%) center bottom / 100% 1px no-repeat;
+}
+.memo-card[data-variant="proposal"] .memo-tabs {
+    padding: 3px; border-radius: 8px;
+    background: var(--bg);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.18), inset 0 -1px rgba(255,255,255,.08);
+}
+.memo-card[data-variant="proposal"] .memo-tab { min-height: 26px; border-radius: 6px; }
+.memo-card[data-variant="proposal"] .memo-tab[aria-selected="true"] {
+    background: linear-gradient(170deg,var(--control-top),var(--control-bottom));
+    box-shadow: inset 0 1px rgba(255,255,255,.55), 0 1px 2px rgba(60,45,32,.16);
+}
+.memo-card[data-variant="proposal"] .memo-tab:active { transform: translateY(1px); box-shadow: var(--press-shadow); }
+
+.memo-card[data-variant="proposal"] .memo-row {
+    position: relative;
+    border: 1px solid transparent;
+    transition: transform var(--bookmark-motion) cubic-bezier(.2,.8,.25,1), box-shadow var(--bookmark-motion), background var(--bookmark-motion), border-color var(--bookmark-motion);
+}
+/* 行内操作收进悬停浮层：常驻占位会把 220 宽卡片的标题挤到只剩一个字。
+   与书签右上角的删除键同一思路——操作在需要时出现，不参与常态排版。 */
+.memo-card[data-variant="proposal"] .memo-row-actions {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    padding: 2px; border-radius: 7px;
+    background: var(--bookmark-hover-face);
+    box-shadow: inset 0 1px rgba(255,255,255,.45), 0 2px 6px rgba(60,45,32,.14);
+}
+.memo-card[data-variant="proposal"] .memo-row:hover .memo-row-time,
+.memo-card[data-variant="proposal"] .memo-row.is-hover .memo-row-time,
+.memo-card[data-variant="proposal"] .memo-row:active .memo-row-time,
+.memo-card[data-variant="proposal"] .memo-row.is-pressed .memo-row-time { opacity: 0; }
+.memo-card[data-variant="proposal"] .memo-row-time { transition: opacity 110ms; }
+.memo-card[data-variant="proposal"] .memo-row:hover,
+.memo-card[data-variant="proposal"] .memo-row.is-hover {
+    transform: translateY(var(--bookmark-lift));
+    border-color: var(--bookmark-hover-border);
+    background: var(--bookmark-hover-face);
+    box-shadow: inset 0 1px rgba(255,255,255,.6), var(--shadow);
+}
+.memo-card[data-variant="proposal"] .memo-row:active,
+.memo-card[data-variant="proposal"] .memo-row.is-pressed {
+    transform: translateY(var(--bookmark-press-depth)) scale(var(--bookmark-press-scale));
+    border-color: var(--bookmark-pressed-border);
+    background: var(--bookmark-pressed-face);
+    box-shadow: var(--bookmark-press-shadow);
+    transition-duration: var(--bookmark-press-motion);
+}
+.memo-card[data-variant="proposal"] .memo-row:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.memo-card[data-variant="proposal"] .memo-row:active .memo-row-actions,
+.memo-card[data-variant="proposal"] .memo-row.is-pressed .memo-row-actions { opacity: 1; }
+
+.memo-card[data-variant="proposal"] .memo-todo-check-wrap { width: 28px; height: 28px; }
+.memo-card[data-variant="proposal"] .memo-todo-check {
+    appearance: none; -webkit-appearance: none;
+    width: 18px; height: 18px; border-radius: 5px;
+    border: 1px solid var(--bookmark-border);
+    background: linear-gradient(180deg,var(--control-top),var(--control-bottom));
+    box-shadow: inset 0 1px rgba(255,255,255,.6), 0 1px 2px rgba(60,45,32,.14);
+    transition: background 110ms, border-color 110ms, box-shadow 110ms, transform 110ms;
+}
+.memo-card[data-variant="proposal"] .memo-todo-check:checked {
+    border-color: var(--accent-hover);
+    background: linear-gradient(180deg,var(--accent),var(--accent-hover));
+    box-shadow: inset 0 1px rgba(255,255,255,.32), inset 0 -2px rgba(0,0,0,.12);
+}
+.memo-card[data-variant="proposal"] .memo-todo-check-wrap { position: relative; }
+.memo-card[data-variant="proposal"] .memo-todo-check-wrap::after {
+    content: ''; position: absolute; inset: 0; margin: auto; width: 12px; height: 12px;
+    background: var(--check-ink); pointer-events: none;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4l3 3 6-6.4' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4l3 3 6-6.4' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    opacity: 0; transform: scale(.8); transition: opacity 110ms, transform 110ms;
+}
+.memo-card[data-variant="proposal"] .memo-todo-check-wrap:has(.memo-todo-check:checked)::after { opacity: 1; transform: scale(1); }
+.memo-card[data-variant="proposal"] .memo-todo-check:active { transform: scale(.92); box-shadow: var(--press-shadow); }
+.memo-card[data-variant="proposal"] .memo-todo-check:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+.memo-card[data-variant="proposal"] .memo-card-manage {
+    min-height: 24px; padding: 0 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: linear-gradient(170deg,var(--control-top),var(--control-bottom));
+    box-shadow: inset 0 1px rgba(255,255,255,.5), 0 1px 2px rgba(60,45,32,.08);
+    text-decoration: none;
+}
+.memo-card[data-variant="proposal"] .memo-card-manage:hover { color: var(--accent); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); transform: translateY(-1px); }
+.memo-card[data-variant="proposal"] .memo-card-manage:active { transform: translateY(1px); box-shadow: var(--press-shadow); }
+.memo-card[data-variant="proposal"] .memo-row-actions .icon-btn { border-radius: 7px; }
+/* 132px 侧栏：标题可读优先。时间与摘要在窄卡里只是噪声，隐藏后标题从 40px
+   回到 76px（约 5 个汉字）；容器查询按卡片自身宽度判断，不跟视口走。 */
+@container memo-card (max-width: 170px) {
+    .memo-card[data-variant="proposal"] .memo-row-time,
+    .memo-card[data-variant="proposal"] .memo-row-snippet { display: none; }
+    .memo-card[data-variant="proposal"] .memo-tab { font-size: 10px; }
+    .memo-card[data-variant="proposal"] .memo-card-count { display: none; }
+}
+
+/* ============================================================
+   5. 管理面板（当前 + 提案）
+   ============================================================ */
+.module-overlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 20px; background: rgba(22,32,40,.39); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+.module-overlay[hidden] { display: none; }
+.module-panel { width: min(100%,480px); max-height: min(84dvh,640px); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 16px; background: var(--glass-strong); box-shadow: inset 0 1px rgba(255,255,255,.57), 0 20px 48px rgba(35,27,21,.21); backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%); }
+.memo-panel { display: flex; flex-direction: column; overflow: hidden; }
+.memo-dialog-header { display: flex; align-items: center; gap: 10px; padding: 13px 18px 11px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.memo-dialog-header h2 { margin: 0 auto 0 0; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+.memo-status-row { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); }
+.memo-status-pill { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); box-shadow: inset 0 1px 2px rgba(0,0,0,.14); }
+.module-panel-close { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 30px; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text-secondary); font-size: 18px; line-height: 1; box-shadow: inset 0 1px rgba(255,255,255,.5),0 1px 2px rgba(60,45,32,.08); }
+.module-panel-close:hover { color: var(--accent); transform: translateY(-1px); }
+.module-panel-close:active { transform: translateY(1px); box-shadow: var(--press-shadow); }
+.memo-tabs-lg { margin: 10px 18px 0; flex: 0 0 auto; }
+.memo-panel .memo-tab { min-height: 30px; font-size: 12px; }
+.memo-search { padding: 10px 18px 6px; }
+.memo-search input { width: 100%; padding: 7px 11px; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; outline: none; box-shadow: inset 0 1px 2px rgba(0,0,0,.24), inset 0 -1px rgba(255,255,255,.09); }
+.memo-search input:focus { border-color: var(--accent); box-shadow: inset 0 1px 2px rgba(0,0,0,.24), 0 0 0 3px var(--focus); }
+.memo-search input::placeholder { color: var(--text-muted); }
+.memo-list { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 8px 18px 12px; }
+.memo-section-title { margin: 12px 0 6px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .06em; }
+.memo-row-lg { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; transition: background 110ms; }
+.memo-row-lg:hover { background: var(--bg-hover); }
+.memo-row-lg .memo-row-title { font-size: 13px; }
+.memo-row-lg .memo-row-time { font-size: 10px; }
+.memo-row-lg .memo-row-actions { opacity: 0; }
+.memo-row-lg:hover .memo-row-actions, .memo-row-lg:focus-within .memo-row-actions { opacity: 1; }
+.memo-del-confirm { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: #a44c46; flex-wrap: wrap; }
+.memo-none { padding: 19px 0; text-align: center; color: var(--text-muted); font-size: 12px; }
+.memo-dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 18px; border-top: 1px solid var(--border); }
+.memo-count { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.memo-panel .btn { padding: 6px 13px; font-size: 12px; min-height: 35px; border: 1px solid var(--border); border-radius: 7px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text); box-shadow: inset 0 1px rgba(255,255,255,.5),0 1px 2px rgba(60,45,32,.08); }
+.memo-panel .btn:hover { background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); }
+.memo-panel .btn:active { box-shadow: var(--press-shadow); transform: translateY(1px); }
+.memo-panel .btn-primary { border-color: var(--accent); background: linear-gradient(180deg,var(--accent),var(--accent-hover)); color: #fff; }
+.memo-panel .btn-primary:hover { background: var(--accent-hover); }
+.memo-panel .memo-todo-text { font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
+.memo-todo-list .memo-row-lg { gap: 8px; }
+.memo-todo-input { flex: 1 1 auto; min-width: 0; padding: 4px 8px; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--accent); border-radius: 6px; outline: none; box-shadow: 0 0 0 3px var(--focus); }
+.memo-todo-footer { flex-wrap: wrap; }
+.memo-todo-add { display: flex; align-items: center; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.memo-todo-add input { flex: 1 1 auto; min-width: 0; padding: 7px 11px; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; outline: none; box-shadow: inset 0 1px 2px rgba(0,0,0,.24), inset 0 -1px rgba(255,255,255,.09); }
+.memo-todo-add input:focus { border-color: var(--accent); box-shadow: inset 0 1px 2px rgba(0,0,0,.24), 0 0 0 3px var(--focus); }
+.memo-edit-form { flex: 1; overflow-y: auto; padding: 12px 18px 14px; display: flex; flex-direction: column; gap: 6px; }
+.memo-edit-form label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-top: 6px; }
+.memo-edit-form input, .memo-edit-form textarea { width: 100%; padding: 7px 11px; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; outline: none; resize: vertical; box-shadow: inset 0 1px 2px rgba(0,0,0,.24), inset 0 -1px rgba(255,255,255,.09); }
+.memo-edit-form input:focus, .memo-edit-form textarea:focus { border-color: var(--accent); box-shadow: inset 0 1px 2px rgba(0,0,0,.24), 0 0 0 3px var(--focus); }
+.memo-edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* 面板提案覆盖 */
+body[data-variant="proposal"] .memo-dialog-header,
+body[data-variant="proposal"] .memo-dialog-footer {
+    border: 0;
+    background: linear-gradient(90deg,transparent 0%,rgba(var(--divider-rgb),.08) 18%,rgba(var(--divider-rgb),.18) 50%,rgba(var(--divider-rgb),.08) 82%,transparent 100%) center bottom / 100% 1px no-repeat;
+}
+body[data-variant="proposal"] .memo-dialog-footer { background-position: center top; }
+body[data-variant="proposal"] .memo-tabs { background: var(--bg); box-shadow: inset 0 1px 2px rgba(0,0,0,.18), inset 0 -1px rgba(255,255,255,.08); padding: 3px; border-radius: 8px; }
+body[data-variant="proposal"] .memo-tab[aria-selected="true"] { background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px rgba(255,255,255,.55), 0 1px 2px rgba(60,45,32,.16); }
+body[data-variant="proposal"] .memo-row-lg { border-radius: 7px; }
+body[data-variant="proposal"] .memo-row-lg:hover { background: var(--bookmark-hover-face); box-shadow: inset 0 1px rgba(255,255,255,.5), var(--shadow); }
+body[data-variant="proposal"] .memo-row-lg:active { background: var(--bookmark-pressed-face); box-shadow: var(--bookmark-press-shadow); }
+body[data-variant="proposal"] .memo-row-lg:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+body[data-variant="proposal"] .memo-todo-check {
+    appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border-radius: 5px;
+    border: 1px solid var(--bookmark-border);
+    background: linear-gradient(180deg,var(--control-top),var(--control-bottom));
+    box-shadow: inset 0 1px rgba(255,255,255,.6), 0 1px 2px rgba(60,45,32,.14);
+}
+body[data-variant="proposal"] .memo-todo-check:checked {
+    border-color: var(--accent-hover);
+    background: linear-gradient(180deg,var(--accent),var(--accent-hover));
+    box-shadow: inset 0 1px rgba(255,255,255,.32), inset 0 -2px rgba(0,0,0,.12);
+}
+body[data-variant="proposal"] .memo-todo-check-wrap { position: relative; }
+body[data-variant="proposal"] .memo-todo-check-wrap::after {
+    content: ''; position: absolute; inset: 0; margin: auto; width: 12px; height: 12px;
+    background: var(--check-ink); pointer-events: none;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4l3 3 6-6.4' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.4l3 3 6-6.4' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    opacity: 0; transform: scale(.8); transition: opacity 110ms, transform 110ms;
+}
+body[data-variant="proposal"] .memo-todo-check-wrap:has(.memo-todo-check:checked)::after { opacity: 1; transform: scale(1); }
+
+/* ============================================================
+   6. 说明栏
+   ============================================================ */
+.notes { position: sticky; top: 72px; padding: 18px 18px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--glass-strong); box-shadow: inset 0 1px rgba(255,255,255,.55), var(--shadow); backdrop-filter: blur(18px); }
+.notes h2 { margin: 0 0 4px; font-size: 13px; font-weight: 650; letter-spacing: .02em; }
+.notes .lede { margin: 0 0 12px; font-size: 11px; color: var(--text-muted); line-height: 1.55; }
+.notes ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.notes li { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; color: var(--text-secondary); }
+.notes b { flex: 0 0 52px; color: var(--text); font-weight: 600; font-size: 10px; letter-spacing: .04em; padding-top: 1px; }
+.notes .keep { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text-muted); line-height: 1.55; }
+.notes code { font-size: 10px; white-space: nowrap; }
+
+@media (max-width: 620px) {
+    .stage { padding: 18px 14px 60px; }
+    .backboard { padding: 26px 18px 24px; }
+    .toolbar { padding: 9px 14px; gap: 10px; }
+    .toolbar-title { width: 100%; }
+    .notes { position: static; }
+}
+</style>
+</head>
+<body data-variant="proposal" data-editing="false">
+
+<header class="toolbar">
+    <span class="toolbar-title">备忘 / 待办 · 风格对齐仿真</span>
+    <div class="control">
+        <span class="control-label">方案</span>
+        <div class="seg" role="group" aria-label="方案">
+            <button type="button" data-set="variant" data-value="current" aria-pressed="false">当前</button>
+            <button type="button" data-set="variant" data-value="proposal" aria-pressed="true">提案</button>
+        </div>
+    </div>
+    <div class="control">
+        <span class="control-label">主题</span>
+        <div class="seg" role="group" aria-label="主题">
+            <button type="button" data-set="theme" data-value="light" aria-pressed="true">浅色</button>
+            <button type="button" data-set="theme" data-value="dark" aria-pressed="false">深色</button>
+        </div>
+    </div>
+    <div class="control">
+        <span class="control-label">卡片宽</span>
+        <div class="seg" role="group" aria-label="卡片宽度">
+            <button type="button" data-set="card" data-value="132" aria-pressed="false">132</button>
+            <button type="button" data-set="card" data-value="220" aria-pressed="true">220</button>
+            <button type="button" data-set="card" data-value="400" aria-pressed="false">400</button>
+        </div>
+    </div>
+    <div class="control">
+        <span class="control-label">行状态</span>
+        <div class="seg" role="group" aria-label="行状态">
+            <button type="button" data-set="row" data-value="idle" aria-pressed="true">常态</button>
+            <button type="button" data-set="row" data-value="hover" aria-pressed="false">悬停</button>
+            <button type="button" data-set="row" data-value="press" aria-pressed="false">按下</button>
+        </div>
+    </div>
+    <div class="control">
+        <span class="control-label">布局编辑</span>
+        <div class="seg" role="group" aria-label="布局编辑">
+            <button type="button" data-set="editing" data-value="false" aria-pressed="true">关</button>
+            <button type="button" data-set="editing" data-value="true" aria-pressed="false">开</button>
+        </div>
+    </div>
+    <button class="ghost-btn" type="button" id="openPanelBtn">打开管理面板</button>
+</header>
+
+<main class="stage" id="stage" data-card="220">
+    <div class="workspace">
+        <div class="backboard" aria-label="首页背板示例">
+            <div class="search-bar"><span>搜索网页或输入网址</span><b>搜索</b></div>
+            <div class="category">
+                <div class="category-header"><span class="category-title">开发</span></div>
+                <div class="grid">
+                    <button type="button" class="bookmark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5.5 4.5 2.5 8l3 3.5M10.5 4.5 13.5 8l-3 3.5"/></svg>GitHub</button>
+                    <button type="button" class="bookmark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 3.5h6.5v9H3zM9.5 5.5H13v7H9.5"/></svg>MDN</button>
+                    <button type="button" class="bookmark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.2"/><path d="M2.8 8h10.4M8 2.8c2.4 2.8 2.4 7.6 0 10.4"/></svg>Web</button>
+                </div>
+            </div>
+            <div class="category">
+                <div class="category-header"><span class="category-title">工具</span></div>
+                <div class="grid">
+                    <button type="button" class="bookmark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 4.5h10M3 8h7M3 11.5h10"/></svg>备忘</button>
+                    <button type="button" class="bookmark"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 13V6l4-2.5L12 6v7"/><path d="M6.5 13V9.5h3V13"/></svg>主页</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="dock" id="dock">
+            <section class="memo-card module-card" id="memoCard" data-variant="proposal" aria-label="备忘与待办">
+                <div class="module-widget-head">
+                    <div class="memo-tabs" role="tablist" id="cardTabs">
+                        <button type="button" class="memo-tab" role="tab" data-tab="memo" aria-selected="true">备忘</button>
+                        <button type="button" class="memo-tab" role="tab" data-tab="todo" aria-selected="false">待办</button>
+                    </div>
+                </div>
+                <div class="module-widget-body" id="cardBody"></div>
+                <div class="memo-card-footer">
+                    <span class="memo-card-count" id="cardCount"></span>
+                    <div class="memo-card-tools">
+                        <span class="memo-sync-part"><span class="memo-status-time">21:04 同步</span></span>
+                        <button type="button" class="memo-card-manage" data-action="open">管理</button>
+                        <button type="button" class="module-drag-handle" aria-label="拖拽调整位置">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="4" cy="2.5" r="1"/><circle cx="8" cy="2.5" r="1"/><circle cx="4" cy="6" r="1"/><circle cx="8" cy="6" r="1"/><circle cx="4" cy="9.5" r="1"/><circle cx="8" cy="9.5" r="1"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <aside class="notes">
+        <h2>提案改了什么</h2>
+        <p class="lede">只动视觉层，结构、间距节奏、限高滚动与 44px 热区保持不变。切换上方「当前 / 提案」与行状态即可对照。</p>
+        <ul>
+            <li><b>表面</b>卡片从平面 <code>--glass</code> 换成与书签同源的分层材质：渐变表面 + 内高光 + 发丝边 + 外投影。</li>
+            <li><b>页签</b>分段控件改为「下沉槽 + 抬起选中块」，按压下沉；与搜索栏三按钮同一套控制语言。</li>
+            <li><b>行</b>悬停 −2px、外投影跟随；按下 1px + 缩放，不再用单层大阴影悬空。</li>
+            <li><b>窄卡</b>行内按钮收进悬停浮层；132px 宽时隐藏时间与摘要，标题优先可读。</li>
+            <li><b>勾选</b>原生方框换成 18px 拟物控件，选中为 accent 渐变与手绘勾；44px 热区不变。</li>
+            <li><b>底部</b>「管理」从下划线文字改为 24px 小控制键；同步时刻仍是弱化元信息。</li>
+            <li><b>面板</b>头尾改用分类标题同款渐变发丝线；页签、关闭键、行内按钮统一到材料层。</li>
+        </ul>
+        <p class="keep">不改：DOM 结构、列表限高与滚动、按页签记忆位置、键盘焦点、深浅两套 token。仿真只用于看材质与状态，不代表最终像素。</p>
+    </aside>
+</main>
+
+<div class="module-overlay" id="overlay" hidden>
+    <div class="module-panel memo-panel" role="dialog" aria-modal="true" aria-label="备忘与待办">
+        <div id="panelRoot"></div>
+    </div>
+</div>
+
+<script>
+const memos = [
+    { id: 'm1', title: '周末整理书签', body: '把开发分类里的重复项合并，补两条文档链接。', pinned: true, time: '2 分钟前' },
+    { id: 'm2', title: '备份策略', body: 'WebDAV 每周一次，恢复步骤写在交接文档里。', pinned: true, time: '1 小时前' },
+    { id: 'm3', title: '备忘模块改版', body: '首行居中页签，完整列表滚动，待办文字直达编辑。', pinned: false, time: '昨天' },
+    { id: 'm4', title: '待读', body: '《Designing with Materials》第三章。', pinned: false, time: '昨天' },
+    { id: 'm5', title: '发票整理', body: '三月的纸质发票扫描后归档。', pinned: false, time: '周三' },
+    { id: 'm6', title: '路由器固件', body: '周末升级，升级前导出配置。', pinned: false, time: '周二' }
+];
+const todos = [
+    { id: 't1', text: '把备忘卡片换成材料层表面', done: false },
+    { id: 't2', text: '页签改为抬起选中块', done: false },
+    { id: 't3', text: '勾选框换成 18px 拟物控件', done: true },
+    { id: 't4', text: '管理入口改为小控制键', done: false },
+    { id: 't5', text: '面板头尾改渐变发丝线', done: false },
+    { id: 't6', text: '深色模式对照', done: false }
+];
+
+let cardTab = 'memo';
+let panelTab = 'memo';
+let editingTodoId = null;
+let rowState = 'idle';
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+function starSvg(pinned) {
+    return `<svg viewBox="0 0 16 16" width="13" height="13" fill="${pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.3"><path d="m8 2 1.6 3.6 3.9.4-2.9 2.6.8 3.8L8 10.6l-3.4 1.8.8-3.8L2.5 6l3.9-.4L8 2Z" stroke-linejoin="round"/></svg>`;
+}
+function pinSvg() {
+    return `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 2.5h4l-.6 4 2 1.8H4.6l2-1.8-.6-4Z"/><path d="M8 8.3V13.5"/></svg>`;
+}
+function memoRows() {
+    return memos.map(m => `
+        <div class="memo-row" data-memo="${m.id}" tabindex="0" role="button" aria-label="编辑 ${m.title}">
+            <button type="button" class="memo-pin" aria-pressed="${m.pinned}" aria-label="${m.pinned ? '取消固定' : '固定到最前'}">${pinSvg()}</button>
+            <div class="memo-row-main">
+                <div class="memo-row-title">${m.title}</div>
+                <div class="memo-row-snippet">${m.body}</div>
+            </div>
+            <span class="memo-row-time">${m.time}</span>
+            <div class="memo-row-actions">
+                <button type="button" class="icon-btn" aria-label="编辑">✎</button>
+                <button type="button" class="icon-btn danger" aria-label="删除">✕</button>
+            </div>
+        </div>`).join('');
+}
+function todoRows() {
+    return todos.map(t => `
+        <div class="memo-row memo-todo-row" data-todo="${t.id}">
+            <label class="memo-todo-check-wrap"><input class="memo-todo-check" type="checkbox" ${t.done ? 'checked' : ''} aria-label="${t.done ? '标记未完成' : '标记完成'}" data-check="${t.id}"></label>
+            ${editingTodoId === t.id
+                ? `<input class="memo-todo-input" id="cardTodoInput" value="${t.text}" aria-label="编辑待办">`
+                : `<button type="button" class="memo-todo-text" data-done="${t.done ? 1 : 0}" data-todo-text="${t.id}" title="编辑这条待办">${t.text}</button>`}
+        </div>`).join('');
+}
+function renderCard() {
+    const body = $('#cardBody');
+    body.innerHTML = cardTab === 'memo'
+        ? `<div class="memo-rows" tabindex="0" role="region" aria-label="备忘列表">${memoRows()}</div>`
+        : `<div class="memo-rows memo-todo-rows" tabindex="0" role="region" aria-label="待办列表">${todoRows()}</div>`;
+    $('#cardCount').textContent = cardTab === 'memo'
+        ? `共 ${memos.length} 条`
+        : `共 ${todos.length} 项 · ${todos.filter(t => !t.done).length} 未完成`;
+    $$('#cardTabs .memo-tab').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.tab === cardTab)));
+    applyRowState();
+    if (editingTodoId) {
+        const input = $('#cardTodoInput');
+        if (input) { input.focus(); input.select(); }
+    }
+}
+
+function applyRowState() {
+    $$('#cardBody .memo-row').forEach((row, i) => {
+        row.classList.toggle('is-hover', i === 0 && rowState === 'hover');
+        row.classList.toggle('is-pressed', i === 0 && rowState === 'press');
+    });
+}
+
+function setPressed(set, value) {
+    $$(`[data-set="${set}"]`).forEach(btn => btn.setAttribute('aria-pressed', String(btn.dataset.value === value)));
+}
+$$('[data-set]').forEach(btn => btn.addEventListener('click', () => {
+    const set = btn.dataset.set;
+    const value = btn.dataset.value;
+    setPressed(set, value);
+    if (set === 'variant') {
+        document.body.dataset.variant = value;
+        $('#memoCard').dataset.variant = value;
+        if (!$('#overlay').hidden) renderPanel();
+    } else if (set === 'theme') {
+        document.documentElement.dataset.theme = value;
+    } else if (set === 'card') {
+        $('#stage').dataset.card = value;
+        document.documentElement.style.setProperty('--card-w', `${value}px`);
+    } else if (set === 'row') {
+        rowState = value;
+        applyRowState();
+    } else if (set === 'editing') {
+        document.body.dataset.editing = value;
+    }
+}));
+
+$('#cardTabs').addEventListener('click', event => {
+    const tab = event.target.closest('.memo-tab');
+    if (!tab) return;
+    cardTab = tab.dataset.tab;
+    editingTodoId = null;
+    renderCard();
+});
+$('#cardBody').addEventListener('click', event => {
+    const check = event.target.closest('[data-check]');
+    if (check) {
+        const todo = todos.find(t => t.id === check.dataset.check);
+        todo.done = !todo.done;
+        renderCard();
+        return;
+    }
+    const todoText = event.target.closest('[data-todo-text]');
+    if (todoText) {
+        openPanel('todo', todoText.dataset.todoText);
+        return;
+    }
+    const memoRow = event.target.closest('[data-memo]');
+    if (memoRow) openPanel('memo', null, memoRow.dataset.memo);
+});
+$('#memoCard').addEventListener('click', event => {
+    if (event.target.closest('[data-action="open"]')) openPanel('memo');
+});
+
+/* ---------- 管理面板 ---------- */
+function panelListHTML() {
+    if (panelTab === 'memo') {
+        const memoRow = m => `
+            <div class="memo-row-lg" data-panel-memo="${m.id}" tabindex="0">
+                <div class="memo-row-main">
+                    <div class="memo-row-title">${m.title}</div>
+                    <div class="memo-row-snippet">${m.body}</div>
+                </div>
+                <span class="memo-row-time">${m.time}</span>
+                <div class="memo-row-actions">
+                    <button type="button" class="icon-btn" aria-label="编辑">✎</button>
+                    <button type="button" class="icon-btn danger" aria-label="删除">✕</button>
+                </div>
+            </div>`;
+        const pinned = memos.filter(m => m.pinned);
+        const recent = memos.filter(m => !m.pinned);
+        return `
+            <div class="memo-dialog-header">
+                <h2>备忘与待办</h2>
+                <span class="memo-status-row"><span class="memo-status-pill">已同步</span><span class="memo-status-time">21:04</span></span>
+                <button type="button" class="btn">同步</button>
+                <button type="button" class="module-panel-close" data-close aria-label="关闭">×</button>
+            </div>
+            <div class="memo-tabs memo-tabs-lg" role="tablist">
+                <button type="button" class="memo-tab" data-tab="memo" aria-selected="true">备忘</button>
+                <button type="button" class="memo-tab" data-tab="todo" aria-selected="false">待办</button>
+            </div>
+            <div class="memo-search"><input type="search" placeholder="搜索标题或正文" aria-label="搜索备忘"></div>
+            <div class="memo-list">
+                <div class="memo-section-title">已固定</div>${pinned.map(memoRow).join('')}
+                <div class="memo-section-title">最近更新</div>${recent.map(memoRow).join('')}
+            </div>
+            <div class="memo-dialog-footer">
+                <span class="memo-count">共 ${memos.length} / 200 条</span>
+                <button type="button" class="btn btn-primary">＋ 添加备忘</button>
+            </div>`;
+    }
+    return `
+        <div class="memo-dialog-header">
+            <h2>备忘与待办</h2>
+            <span class="memo-status-row"><span class="memo-status-pill">已同步</span><span class="memo-status-time">21:04</span></span>
+            <button type="button" class="btn">同步</button>
+            <button type="button" class="module-panel-close" data-close aria-label="关闭">×</button>
+        </div>
+        <div class="memo-tabs memo-tabs-lg" role="tablist">
+            <button type="button" class="memo-tab" data-tab="memo" aria-selected="false">备忘</button>
+            <button type="button" class="memo-tab" data-tab="todo" aria-selected="true">待办</button>
+        </div>
+        <div class="memo-list memo-todo-list">
+            ${todos.map(t => `
+                <div class="memo-row-lg memo-todo-row" data-panel-todo="${t.id}">
+                    <label class="memo-todo-check-wrap"><input class="memo-todo-check" type="checkbox" ${t.done ? 'checked' : ''} aria-label="${t.done ? '标记未完成' : '标记完成'}"></label>
+                    ${editingTodoId === t.id
+                        ? `<input class="memo-todo-input" id="panelTodoInput" value="${t.text}" aria-label="编辑待办">`
+                        : `<button type="button" class="memo-todo-text" data-done="${t.done ? 1 : 0}" data-panel-todo-text="${t.id}">${t.text}</button>`}
+                    <div class="memo-row-actions"><button type="button" class="icon-btn danger" aria-label="删除">✕</button></div>
+                </div>`).join('')}
+        </div>
+        <div class="memo-dialog-footer memo-todo-footer">
+            <span class="memo-count">共 ${todos.length} 项 · ${todos.filter(t => !t.done).length} 未完成</span>
+            <div class="memo-todo-add"><input type="text" placeholder="添加待办，回车保存" aria-label="添加待办"><button type="button" class="btn btn-primary">＋ 添加</button></div>
+        </div>`;
+}
+function panelEditHTML(id) {
+    const m = memos.find(x => x.id === id) || memos[0];
+    return `
+        <div class="memo-dialog-header">
+            <button type="button" class="btn" data-back>← 返回</button>
+            <h2>编辑备忘</h2>
+            <button type="button" class="module-panel-close" data-close aria-label="关闭">×</button>
+        </div>
+        <div class="memo-edit-form">
+            <label>标题 <span class="memo-count">${m.title.length} / 60</span></label>
+            <input value="${m.title}" aria-label="标题">
+            <label>正文 <span class="memo-count">${m.body.length} / 10240</span></label>
+            <textarea rows="5" aria-label="正文">${m.body}</textarea>
+            <div class="memo-edit-actions">
+                <button type="button" class="btn" data-back>取消</button>
+                <button type="button" class="btn btn-primary">保存</button>
+            </div>
+        </div>`;
+}
+function renderPanel(editId = null) {
+    const root = $('#panelRoot');
+    root.innerHTML = editId ? panelEditHTML(editId) : panelListHTML();
+    $$('.memo-tab', root).forEach(tab => tab.addEventListener('click', () => {
+        panelTab = tab.dataset.tab;
+        editingTodoId = null;
+        renderPanel();
+    }));
+    $$('[data-close]', root).forEach(btn => btn.addEventListener('click', closePanel));
+    $$('[data-back]', root).forEach(btn => btn.addEventListener('click', () => renderPanel()));
+    $$('[data-panel-memo]', root).forEach(row => row.addEventListener('click', event => {
+        if (event.target.closest('[data-panel-memo]') === row) renderPanel(row.dataset.panelMemo);
+    }));
+    $$('[data-panel-todo-text]', root).forEach(btn => btn.addEventListener('click', () => {
+        editingTodoId = btn.dataset.panelTodoText;
+        renderPanel();
+        const input = $('#panelTodoInput');
+        if (input) { input.focus(); input.select(); }
+    }));
+}
+function openPanel(tab = 'memo', todoId = null, editId = null) {
+    panelTab = tab;
+    editingTodoId = todoId;
+    $('#overlay').hidden = false;
+    renderPanel(editId);
+    if (todoId) {
+        setTimeout(() => {
+            const input = $('#panelTodoInput');
+            if (input) { input.focus(); input.select(); }
+        }, 0);
+    }
+}
+function closePanel() {
+    $('#overlay').hidden = true;
+    editingTodoId = null;
+}
+$('#openPanelBtn').addEventListener('click', () => openPanel('memo'));
+$('#overlay').addEventListener('click', event => { if (event.target === $('#overlay')) closePanel(); });
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !$('#overlay').hidden) closePanel();
+});
+
+/* 初始 */
+document.documentElement.style.setProperty('--card-w', '220px');
+renderCard();
+</script>
+</body>
+</html>

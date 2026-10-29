@@ -1697,6 +1697,24 @@ test('面板内切换编辑目标：先保存上一条，旧文本不写到新 i
         '绝不把上一条的文本写到新 id');
 });
 
+test('卡片复用首页材料层：表面、行悬停/按压、抬起页签与拟物勾选都有守卫', () => {
+    const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
+    const rule = selector => {
+        const matches = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(match => match[1].trim() === selector);
+        assert.equal(matches.length, 1, `${selector} 只声明一次`);
+        return matches[0][2];
+    };
+    const card = rule('.memo-card');
+    assert.match(card, /background:\s*var\(--bookmark-face\)/, '卡片表面与书签同源');
+    assert.match(card, /box-shadow:[^;]*inset 0 1px/, '卡片有内高光');
+    assert.match(rule('.memo-card .module-widget-head'), /linear-gradient\([^;]*center bottom/, '首行用渐变发丝线');
+    assert.match(rule('.memo-tab[aria-selected="true"]'), /linear-gradient\([^;]*var\(--control-top\)/, '选中页签是抬起块');
+    assert.match(rule('.memo-row:hover'), /var\(--bookmark-hover-face\)/, '行悬停用材料表面');
+    assert.match(rule('.memo-row:active'), /var\(--bookmark-press-shadow\)/, '行按下用拟物凹陷');
+    assert.match(rule('.memo-todo-check'), /appearance:\s*none/, '勾选框不再用原生外观');
+    assert.match(css, /\.memo-todo-check-wrap:has\(\.memo-todo-check:checked\)::after/, '勾选中时才显示勾');
+});
+
 test('卡片CSS执行声明：居中、限高原生滚动、焦点与稳定底部，不凭注释通过', () => {
     const css = stripComments(fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8'));
     const rule = selector => {

@@ -1,3 +1,6 @@
+// nav-v130：备忘卡片与管理面板对齐首页材料层——卡片表面材质、抬起式页签、
+// 行悬停/按压、18px 拟物勾选框、面板头尾渐变发丝线；行内操作收进悬停浮层，
+// 132px 窄卡隐藏时间与摘要。改了 styles.css。
 // nav-v129：备忘与待办卡片首行居中切换，完整列表限高滚动，待办文字直达对应编辑。
 // nav-v128：备忘录模块升级为「备忘 + 待办」——卡片正文顶部与面板顶部各有
 // 一组页签（默认备忘），待办条目的完成态是删除线 + 变灰 + 斜体，面板里点文字
@@ -338,7 +341,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v129';
+const CACHE = 'nav-v130';
 const ASSETS = [
     '/',
     '/index.html',
