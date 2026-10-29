@@ -1,6 +1,32 @@
 {
   "versions": [
     {
+      "version": "2.2.0",
+      "date": "2026-10-29",
+      "summary": "备忘模块新增待办清单：可与备忘切换，支持完成标记与就地编辑，并纳入云端备份。",
+      "highlights": [
+        "备忘模块升级为「备忘 + 待办」，卡片与面板顶部可切换，默认显示备忘",
+        "待办支持勾选完成，完成项显示删除线与灰色斜体；点击文字可就地编辑",
+        "待办随 WebDAV 备份与恢复，作为独立数据域"
+      ],
+      "changes": {
+        "add": [
+          "备忘模块新增待办清单（lib/db.js v13）：todos 表含 id/text/done/created_at/updated_at，与 memos 分表；排序按 created_at 倒序，完成态不参与排序；done 切换不更新 updated_at。",
+          "服务端新增五条 /api/todos 路由：读走 modulePollLimit，写走 rateLimit 与独立的 todoLimit（30 次/分钟/IP，登记进 60 秒清扫定时器）；容量 300 条、单条 200 字，done 必须严格布尔。",
+          "WebDAV 备份与恢复新增 todos 域：SCOPE_VERSION 2→3、独立信封与清单条目、恢复应用顺序、快照与回滚，管理界面的备份列表、删除分组与恢复选项同步更新。",
+          "前端页签与待办卡片：卡片正文与面板顶部共享 activeTab（默认 memo）；卡片头标题随页签；完成态统一为删除线、--text-muted 与斜体；面板内点文字就地编辑（回车/失焦保存、Esc 取消，切页签前先保存），离线新建与改文字进 nav-sylph-todo-drafts，完成态乐观更新失败回滚。",
+          "窄屏下卡片与面板的页签、勾选热区统一抬到 44px；恢复备份时用 RESTORE_ID_PATTERN 校验 id 字符集，前端 data-id 一律转义。",
+          "测试新增 23 条（含 v12→v13 老库升级、恢复 id 字符集，以及执行真实函数的页签/切换/渲染/回滚/离线草稿/空内容用例），全量 846/846；变异 20 条全部证红。"
+        ],
+        "improve": [
+          "MODULE_POLL_MAX 由 240 抬到 300：轮询接口从 4 条增至 5 条（新增 GET /api/todos），按每标签页每分钟 30 次、10 个标签页重新推导。",
+          "恢复域清单（admin-lock 的 DOMAINS、restore 的 APPLY_ORDER、server 的 RESTORE_DOMAINS）加对拍守卫，避免新增域时只改两处。",
+          "用户可见文案统一为「备忘 / 待办」；去掉勾选与添加的成功 toast，失败提示保留。",
+          "文档纠正：architecture 中「数据库整体不在备份集内」与自动槽位「这四个名字」两处过时结论，以及 README 的 nav-sylph.db 说明。"
+        ]
+      }
+    },
+    {
       "version": "2.1.3",
       "date": "2026-10-29",
       "summary": "首页搜索框支持输入取件码取回共享文本，搜索框下方补充取回方式的说明。",
