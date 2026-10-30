@@ -1925,6 +1925,23 @@ test('事件卡渲染（执行真实 eventHTML）：右上角归档、右下角�
         '有译文时左侧给「查看原文」，与右侧收藏并存');
 });
 
+test('普通模块布局：可读宽度、导航下限与三列预算随容器变化', () => {
+    const body = extractFunction(stripComments(appSource), 'compactLayoutFor(content) {');
+    const layoutFor = new Function(`return ({ ${body} }).compactLayoutFor;`)();
+    assert.equal(layoutFor(1199), null);
+    let prev;
+    for (let content = 1200; content <= 1700; content++) {
+        const layout = layoutFor(content);
+        assert.ok(layout.side >= 280 && layout.side <= 320);
+        assert.equal(layout.rail, layout.side);
+        assert.ok(layout.board >= 600 && layout.board <= 936);
+        assert.ok(layout.side * 2 + layout.board + 40 <= content);
+        if (prev) assert.ok(layout.side >= prev.side && layout.board >= prev.board);
+        prev = layout;
+    }
+    assert.deepEqual(layoutFor(1236), { side: 298, rail: 298, board: 600 });
+});
+
 test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（真跑 railLayoutFor）', () => {
     const app = stripComments(appSource);
     const body = extractFunction(app, 'railLayoutFor(content) {');
@@ -1944,7 +1961,7 @@ test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（�
             assert.ok(layout.side >= prev.side, `${content}: 左列不得变窄`);
             assert.ok(layout.board >= prev.board, `${content}: 背板不得变窄`);
         }
-        assert.ok(layout.side >= 180, `${content}: 左列不低于 180（132px 实测监控卡排版错乱）`);
+        assert.ok(layout.side >= 280, `${content}: 左列不低于 180（132px 实测监控卡排版错乱）`);
         assert.ok(layout.rail >= 400, `${content}: 时间线不低于 400（不然仿真那套版式立不住）`);
         assert.ok(layout.board >= 600, `${content}: 背板不低于 600`);
         assert.ok(layout.side + layout.board + layout.rail + 40 <= content + 1,
@@ -1955,14 +1972,14 @@ test('宽栏分配：随可用宽度单调变化，左列不再被压到 132（�
 
     // 常见桌面宽度：时间线拿满、左列不被压
     const wide = layoutFor(1396);   // 1440 视口（#app 上限 1440，内容宽 = 1440 - 44）
-    assert.ok(wide && wide.rail >= 400 && wide.side >= 180,
+    assert.ok(wide && wide.rail >= 400 && wide.side >= 280,
         `1440 视口下应进宽栏且两列都够：${JSON.stringify(wide)}`);
     // 放不下就返回 null——调用方退回普通布局，模块按容器宽度降级成窄版
     assert.equal(layoutFor(900), null, '放不下时不硬塞');
     // ⚠️ 阈值必须正好落在「三个下限 + 两个间距」上，不能更高。高出的那一段里
     // 时间线会退化成普通布局那个很窄的值（旧版就是 132px「内容显示不全」）。
     // 上半段只检查了非 null 档之间的单调性，单独加「阈值偏高」这个变异是不会红的。
-    const need = 180 + 2 * 20 + 600 + 400;
+    const need = 280 + 2 * 20 + 600 + 400;
     assert.equal(layoutFor(need - 1), null, `${need - 1} 还放不下`);
     assert.ok(layoutFor(need), `${need}（左列下限 + 两间距 + 背板下限 + 时间线下限）必须已经能进宽栏`);
     // 阈值附近不能有悬崖：进宽栏的第一档，时间线就已经 ≥400
@@ -2088,7 +2105,7 @@ test('平台宽栏机制：三列宽度由 JS 算出写进 #app 的变量，且�
     // 900：匿名分支现在要先判一次公开模块策略，到 `this.syncRail();` 的字符数变长了。
     const zone = extractFunction(app, 'async renderModuleZone() {');
     assert.match(zone, /if \(!this\.authenticated\) \{[\s\S]{0,900}?this\.syncRail\(\);/, '登出时走 syncRail 复位');
-    assert.match(app, /const layout = \(this\.authenticated && this\.wantsWideRail\(\)\)/, '未登录一律不进宽栏');
+    assert.match(app, /this\.enabledModuleIds\(\)\.length \? this\.compactLayoutFor\(content\)/, '已启用的公开模块同样参与让位');
     assert.match(app, /else app\.style\.removeProperty\(key\);/, '不进宽栏时清掉宽度变量，不留残留状态');
 
     // CSS 侧：背板让位 + 两列都用变量
@@ -2296,7 +2313,7 @@ test('sideDockAvailable 吃调用方给的终值：过渡期间实测是起点�
     let boardLive = 936;
     const $ = sel => sel === '.backboard'
         ? { getBoundingClientRect: () => ({ width: boardLive }) }
-        : { getBoundingClientRect: () => ({ width: 1100 }) };
+        : { getBoundingClientRect: () => ({ width: 1344 }) };
     const fn = new Function('$', `return ({ ${body} }).sideDockAvailable;`)($);
 
     // 视口 1100：让位后背板终值 696 → side=(1100-44-696)/2=178 ≥152 放得下；

@@ -804,15 +804,9 @@
             return ids.sort((a, b) => orderOf(a) - orderOf(b) || a.localeCompare(b));
         }
 
-        /**
-         * 背板外侧是否放得下模块。
-         *
-         * 用固定断点表达不了这件事：936px 的背板在 1024 视口下左右只剩 44px，
-         * 而 1440 下有 252px。断点只能二选一，另一头必然出错。
-         * 所以按实际余量判断——放得下才用两侧，否则退回网格下方。
-         */
+        /** 按导航终值与容器余量判断两侧是否各能放下 280px 模块及 20px 间距。 */
         sideDockAvailable(boardWidth) {
-            const MIN_SIDE = 132;   // 与 CSS 里的 clamp 下限一致
+            const MIN_SIDE = 280;   // 标题、数值与操作共同需要的可读宽度
             const GAP = 20;
             const board = $('.backboard');
             const app = $('#app');
@@ -836,28 +830,11 @@
             });
         }
 
-        /**
-         * 宽栏模式下三列各占多宽。**纯函数**（不碰 DOM），由 `syncRail()` 把结果写成
-         * `#app` 上的三个 CSS 变量（`--rail-w` / `--side-w` / `--board-max`）。
-         *
-         * 为什么用 JS 算而不是写死在 CSS 里：三列的宽度是**相互挤**出来的，用嵌套的
-         * `calc()` 表达会出现「阈值悬崖」——实测过一版，窗口缩 1px 该模块从 420 掉到
-         * 132（反而更窄），再缩一点又跳到 190（反而更宽）。这里是连续的：随着 content
-         * 变大，rail 400→440、side 180→220、board 600→936 单调变化，没有跳变。
-         *
-         * 分配顺序按「谁更需要」来：
-         *   1. 时间线（声明了 wideRail 的那个）先拿上限 440——它是被让位的对象，
-         *      太窄就没有存在意义（实测左列 132px 时监控卡的三行数值会挤乱）；
-         *   2. 背板拿余量并封顶 936（首页导航不该无限宽）；
-         *   3. 背板不足 600 时按「背板 → 时间线 → 左列」依次让步，都让到下限还不够
-         *      就返回 null——调用方退回普通布局，模块自己按容器宽度降级成窄版。
-         *
-         * 左边的监控卡最低给 180：132px 那版实测排版错乱，180 起才正常。
-         */
+        /** 时间线保留 400 到 440px，普通侧栏保留 280 到 320px，导航至少 600px。 */
         railLayoutFor(content) {
             const GAP = 20;
-            const SIDE_MIN = 180;
-            const SIDE_MAX = 220;
+            const SIDE_MIN = 280;
+            const SIDE_MAX = 320;
             const BOARD_MIN = 600;
             const BOARD_MAX = 936;
             const RAIL_MIN = 400;
@@ -883,29 +860,22 @@
             return { side, board, rail };
         }
 
-        /**
-         * 决定 `#app` 的 data-rail 与三个宽度变量，返回是否进了宽栏模式。
-         *
-         * ⚠️ 必须在 `sideDockAvailable()` **之前**调：后者读的是背板的实际宽度，
-         * 而宽栏模式会把背板收窄——顺序反了就会按旧宽度判停靠。
-         *
-         * 未登录也算「不进宽栏」——让位是给登录后那条时间线的，登出后不该让背板
-         * 继续窄着。这条判断放在这里而不是调用方，登出路径才只需要调一次本方法。
-         *
-         * 返回 `layout` 对象（或 null）而不是布尔：调用方拿 `layout.board`（背板**终值**）
-         * 去判停靠——让位带过渡时实测读的是过渡起点值，见 sideDockAvailable 的注释。
-         * 真相性不变（null 即假），忽略返回值的调用方（resize / 登出）不受影响。
-         */
+        /** 普通模块优先保留两侧可读宽度，导航在 600 到 936px 之间让位。 */
+        compactLayoutFor(content) {
+            if (content < 600 + 280 * 2 + 40) return null;
+            const side = Math.min(320, (content - 600 - 40) / 2);
+            return { side, rail: side, board: Math.min(936, content - side * 2 - 40) };
+        }
+
+        /** 先写入导航与模块终值，再供停靠判定使用；无模块或空间不足时恢复居中导航。 */
         syncRail() {
             const app = $('#app');
             if (!app) return null;
             const content = app.getBoundingClientRect().width - 22 * 2;
-            const layout = (this.authenticated && this.wantsWideRail())
-                ? this.railLayoutFor(content) : null;
+            const layout = this.wantsWideRail()
+                ? this.railLayoutFor(content)
+                : this.enabledModuleIds().length ? this.compactLayoutFor(content) : null;
             app.dataset.rail = layout ? 'wide' : 'narrow';
-            // 三个变量只在宽栏下有定义；不进宽栏就**清掉**，不要把上一档的宽度
-            // 留在 #app 的行内样式上。CSS 只在 [data-rail="wide"] 下消费它们，
-            // 所以留着不出症状——但那是一份读起来像「还在生效」的残留状态。
             const vars = { '--rail-w': layout && layout.rail, '--side-w': layout && layout.side, '--board-max': layout && layout.board };
             for (const key of Object.keys(vars)) {
                 if (vars[key]) app.style.setProperty(key, vars[key] + 'px');
@@ -5599,7 +5569,7 @@
             // 而渲染读的是另一条——卡片看着「拖了但没动」。
             const id = widget.dataset.instanceId || widget.dataset.moduleId;
 
-            const isWide = window.matchMedia('(min-width: 1024px)').matches;
+            const isWide = $('#moduleZone').dataset.dock === 'outside';
             const startX = event.clientX;
             const startY = event.clientY;
 
@@ -5623,8 +5593,7 @@
                 // 读回来的还是原顺序，于是拖 NAS 到本机位置两者纹丝不动。
                 this.reorderWhileDragging(ev.clientY, ev.clientX);
 
-                // 换边仅宽屏可用：窄屏模块区是横滑列表，
-                // 横向拖拽会与横滑抢同一个手势
+                // 换边仅两侧布局可用，下方网格只调整次序
                 if (!isWide) return;
                 this.markDropSide(dx > 80 ? 'right' : dx < -80 ? 'left' : null);
             };
@@ -5676,15 +5645,16 @@
          * 移位，于是「指针 < 中线」这个比较会在自己造成的移动中失配——
          * 实测把最后一张拖到最前，怎么拖都插不进去。
          *
-         * 窄屏是横滑列表，判据换成横向。
+         * 下方网格按行与列找插入点，侧栏沿纵向排序。
          */
         reorderWhileDragging(clientY, clientX) {
             const zone = $('#moduleZone');
             const drag = this.dragData;
             if (!zone || !drag) return;
             const widget = drag.widget;
-            const horizontal = zone.dataset.dock === 'below';
-            const pointer = horizontal ? clientX : clientY;
+            const grid = zone.dataset.dock === 'below';
+            const horizontal = grid;
+            const pointer = clientY;
 
             if (!drag.bounds) {
                 // 只量一次：被拖卡片之外那些，在「未让位」状态下的中线
@@ -5694,6 +5664,7 @@
                         const rect = node.getBoundingClientRect();
                         return {
                             node,
+                            top: rect.top, bottom: rect.bottom, midX: rect.left + rect.width / 2,
                             mid: horizontal
                                 ? rect.left + rect.width / 2
                                 : rect.top + rect.height / 2
@@ -5709,7 +5680,9 @@
                 .slice()
                 .sort((a, b) =>
                     (a.node.compareDocumentPosition(b.node) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
-            const anchor = ordered.find(entry => pointer < entry.mid) || null;
+            const anchor = ordered.find(entry => grid
+                ? clientY < entry.top || (clientY < entry.bottom && clientX < entry.midX)
+                : pointer < entry.mid) || null;
 
             const inner = zone.querySelector('.module-zone-inner') || zone;
 
@@ -5718,6 +5691,7 @@
             // 于是合成后的视觉位置猛跳 247px，卡片「弹」回原处。
             // 修法：记住基准的差量，补进 transform，让视觉位置保持不变。
             const before = this.readStackTop(widget);
+            const beforeRect = grid ? widget.getBoundingClientRect() : null;
             let moved = false;
             if (anchor) {
                 if (anchor.node.previousElementSibling === widget) return;  // 已经就位
@@ -5729,7 +5703,15 @@
             } else {
                 return;
             }
-            if (moved) this.compensateStackShift(widget, before, horizontal);
+            if (moved && grid) {
+                const after = widget.getBoundingClientRect();
+                const dx = after.left - beforeRect.left;
+                const dy = after.top - beforeRect.top;
+                const current = this.readTranslate(widget);
+                widget.style.transform = `translate(${current.x - dx}px, ${current.y - dy}px)`;
+                drag.startX += dx;
+                drag.startY += dy;
+            } else if (moved) this.compensateStackShift(widget, before, horizontal);
         }
 
         readStackTop(widget) {

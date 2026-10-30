@@ -144,6 +144,20 @@ test('browser: 访客按需启用公开模块，布局与偏好存本机，管�
     await visitor.page.locator('#localDoneBtn').click();
     await visitor.page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent === '仅保存在本机');
 
+    // 访客公开模块也为导航让位，窗口变窄后回到下方。
+    for (const width of [1280, 390]) {
+        await visitor.page.setViewportSize({ width, height: 844 });
+        await visitor.page.waitForTimeout(500);
+        const layout = await visitor.page.evaluate(() => ({
+            dock: document.querySelector('#moduleZone').dataset.dock,
+            width: document.querySelector('.module-widget').getBoundingClientRect().width,
+            overflow: document.documentElement.scrollWidth > innerWidth
+        }));
+        assert.equal(layout.dock, width === 1280 ? 'outside' : 'below');
+        assert.ok(layout.width >= 280);
+        assert.equal(layout.overflow, false);
+    }
+
     // ---------- 刷新后仍在（本机持久化） ----------
     await visitor.page.reload();
     await visitor.page.locator('.weibo-row').first().waitFor();

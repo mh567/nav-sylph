@@ -2715,11 +2715,11 @@ test('拖拽过程中真的移动 DOM，插入点按拖拽开始时的中线判�
     // 2) 中线只量一次并缓存
     assert.match(fn, /if \(!drag\.bounds\)/, '中线缓存有判空');
     assert.match(fn, /drag\.bounds\s*=\s*\[/, '中线被缓存到 dragData');
-    // 缓存之后不再读实时几何
+    // 插入点只使用缓存；网格允许测量被拖卡片来补偿插入后的视觉位移
     const afterCache = fn.slice(fn.indexOf('if (!drag.bounds)'));
     const cacheBlock = afterCache.slice(0, afterCache.indexOf('if (!drag.bounds.length) return;'));
     assert.match(cacheBlock, /getBoundingClientRect\(\)/, '中线在缓存块里量一次');
-    assert.doesNotMatch(afterCache.slice(afterCache.indexOf('if (!drag.bounds.length) return;')),
+    assert.doesNotMatch(afterCache.slice(afterCache.indexOf('if (!drag.bounds.length) return;'), afterCache.indexOf('const inner =')),
         /getBoundingClientRect\(\)/,
         '缓存之后不得再读实时几何——让位会让中线漂移，比较必然失配');
 

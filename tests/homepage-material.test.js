@@ -222,8 +222,8 @@ test('宽屏模块区绝对定位在背板外侧，放不下时退回网格下�
         '宽屏模块区绝对定位');
     // 宽度跟着可用余量伸缩，不写死：936 背板在 1280 视口下左右只剩 150px，
     // 写死 200px 实测会压进背板 50px。
-    assert.match(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*position:\s*absolute[^}]*width:\s*clamp\(/,
-        '宽屏 widget 绝对定位且宽度用 clamp 跟随可用空间');
+    assert.match(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*position:\s*absolute[^}]*width:\s*var\(--side-w/,
+        '宽屏 widget 使用分配后的侧栏宽度');
     // 纵向偏移按实测高度算，不是固定步进——见 stackWidgetsByHeight。
     assert.match(code, /\.module-widget\[data-side="(?:left|right)"\]\s*\{[^}]*margin-top:\s*var\(--stack-top/,
         '纵向偏移取 JS 实测的 --stack-top');

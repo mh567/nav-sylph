@@ -1,3 +1,4 @@
+// nav-v131：模块保留可读宽度，导航弹性让位，窄窗口下方网格重排与热搜标题换行。
 // nav-v130：备忘卡片与管理面板对齐首页材料层——卡片表面材质、抬起式页签、
 // 行悬停/按压、18px 拟物勾选框、面板头尾渐变发丝线；行内操作收进悬停浮层，
 // 132px 窄卡隐藏时间与摘要。改了 styles.css。
@@ -341,7 +342,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v130';
+const CACHE = 'nav-v131';
 const ASSETS = [
     '/',
     '/index.html',
