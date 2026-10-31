@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Nav Sylph — README hero</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 1600px;
+    height: 900px;
+    overflow: hidden;
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: #3a2c21;
+  }
+
+  body {
+    background:
+      radial-gradient(120% 95% at 4% -8%, #fdfaf5 0%, rgba(253,250,245,0) 58%),
+      radial-gradient(85% 80% at 102% 108%, #e2d8cc 0%, rgba(226,216,204,0) 58%),
+      linear-gradient(158deg, #f6f2ec 0%, #ece5dc 100%);
+    position: relative;
+  }
+
+  .floor {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 240px;
+    background: linear-gradient(180deg, rgba(120,101,80,0), rgba(120,101,80,.055));
+    pointer-events: none;
+  }
+
+  /* ---------- 左侧品牌区 ---------- */
+  .brand {
+    position: absolute;
+    left: 96px; top: 96px;
+    width: 600px;
+  }
+
+  .mark {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .mark svg { width: 40px; height: 40px; display: block; }
+  .mark .word {
+    font-size: 27px; font-weight: 600; letter-spacing: .04em; color: #4b382a;
+  }
+  .mark .word em {
+    font-style: normal; font-weight: 400; color: #a2937f; letter-spacing: .18em;
+    font-size: 12px; margin-left: 12px; text-transform: uppercase;
+  }
+
+  h1 {
+    margin-top: 40px;
+    font-size: 64px; line-height: 1.16; font-weight: 700; letter-spacing: -0.01em;
+    color: #33261c;
+  }
+  h1 .soft { color: #8a7359; }
+
+  .lede {
+    margin-top: 22px;
+    font-size: 19px; line-height: 1.85; color: #6f5d4c; width: 540px;
+  }
+
+  .tags {
+    margin-top: 32px; display: flex; flex-wrap: wrap; gap: 10px; width: 560px;
+  }
+  .tag {
+    padding: 9px 17px;
+    font-size: 14.5px; color: #4a382b;
+    border-radius: 999px;
+    border: 1px solid rgba(116,100,85,.22);
+    background: linear-gradient(180deg, rgba(255,255,255,.78), rgba(255,255,255,.26) 44%, rgba(121,105,91,.03)),
+                linear-gradient(165deg, #fbf9f5, #efece6);
+    box-shadow: inset 0 1px rgba(255,255,255,.9), inset 0 -1px rgba(120,102,86,.12), 0 2px 5px rgba(104,84,64,.07);
+  }
+  .tag.on {
+    color: #7a4526;
+    border-color: rgba(148,94,74,.35);
+  }
+
+  .points { margin-top: 30px; display: flex; flex-direction: column; gap: 16px; width: 566px; }
+  .pt { display: flex; gap: 14px; align-items: flex-start; font-size: 14.5px; line-height: 1.6; color: #7b6857; }
+  .pt span { text-wrap: balance; }
+  .pt b { flex: 0 0 auto; width: 104px; color: #3f3025; font-weight: 600; }
+  .pt b::before {
+    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #a97b55; margin-right: 9px; vertical-align: 2px;
+  }
+
+  .mods { margin-top: 26px; }
+  .mods-row { display: flex; align-items: center; gap: 9px; }
+  .mods-label { font-size: 11.5px; letter-spacing: .16em; color: #a2937f; margin-right: 3px; }
+  .mod {
+    font-size: 12.5px; color: #4a382b; padding: 6px 11px; border-radius: 8px; white-space: nowrap;
+    border: 1px solid rgba(116,100,85,.22);
+    background: linear-gradient(180deg, rgba(255,255,255,.72), rgba(255,255,255,.26) 40%, rgba(121,105,91,.03)),
+                linear-gradient(165deg, #fbf9f5, #efece6);
+    box-shadow: inset 0 1px rgba(255,255,255,.9), inset 0 -1px rgba(120,102,86,.10), 0 2px 5px rgba(104,84,64,.07);
+  }
+  .mods-note { margin-top: 9px; font-size: 12px; color: #9c8b78; }
+  .mods-note b { font-weight: 500; color: #7d6a58; }
+
+  .foot {
+    position: absolute; left: 96px; bottom: 84px;
+    display: flex; align-items: center; gap: 14px;
+    font-size: 13.5px; color: #8d7c69; letter-spacing: .02em;
+  }
+  .foot i { width: 4px; height: 4px; border-radius: 50%; background: #bdae9b; display: block; }
+  .foot b { font-weight: 600; color: #6b5644; }
+
+  /* ---------- 右侧界面 ---------- */
+  .glow {
+    position: absolute; left: 760px; top: 40px; width: 900px; height: 860px;
+    background: radial-gradient(50% 50% at 50% 45%, rgba(255,255,255,.85), rgba(255,255,255,0) 70%);
+    filter: blur(10px); pointer-events: none;
+  }
+
+  .screen {
+    position: absolute;
+    left: 700px; top: 76px;
+    width: 872px; height: 824px;
+    border-radius: 30px;
+    background: linear-gradient(180deg, rgba(255,255,255,.62), rgba(255,255,255,.30));
+    border: 1px solid rgba(116,100,85,.20);
+    box-shadow:
+      inset 0 1px rgba(255,255,255,.9),
+      0 40px 80px -28px rgba(88,66,46,.34),
+      0 8px 24px rgba(88,66,46,.10);
+    padding: 24px 24px 20px;
+    display: grid;
+    grid-template-columns: 194px 1fr 214px;
+    gap: 14px;
+    overflow: hidden;
+  }
+
+  .card {
+    border-radius: 14px;
+    border: 1px solid rgba(116,100,85,.20);
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.70), rgba(255,255,255,.26) 38%, rgba(121,105,91,.03)),
+      linear-gradient(165deg, #fbf9f5, #eeebe5);
+    box-shadow: inset 0 1px rgba(255,255,255,.85), inset 0 -1px rgba(120,102,86,.11),
+                0 6px 16px rgba(104,84,64,.08);
+  }
+
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+  .pad { padding: 12px 13px; }
+
+  .row-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12.5px; font-weight: 600; color: #453326;
+  }
+  .pill {
+    font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid rgba(116,100,85,.26); color: #6d5b49;
+    background: rgba(255,255,255,.5);
+  }
+  .pill.ok { color: #7a4526; border-color: rgba(148,94,74,.38); }
+
+  .tabs {
+    display: flex; gap: 4px; margin-top: 10px; padding: 3px;
+    border-radius: 9px; border: 1px solid rgba(116,100,85,.18);
+    background: rgba(238,233,226,.75);
+    box-shadow: inset 0 1px 2px rgba(104,84,64,.10);
+  }
+  .tab {
+    flex: 1; text-align: center; font-size: 11px; padding: 5px 0; border-radius: 7px; color: #8a7967;
+  }
+  .tab.on {
+    color: #3f2f22; background: linear-gradient(180deg,#fff,#f4f0ea);
+    box-shadow: 0 1px 3px rgba(104,84,64,.14), inset 0 1px rgba(255,255,255,.9);
+  }
+
+  .memo-row { margin-top: 12px; font-size: 11.5px; color: #7a6a58; }
+  .memo-row strong { display: block; font-size: 13px; color: #3b2d21; font-weight: 500; margin-bottom: 8px; }
+  .meta { font-size: 9.5px; color: #a2937f; text-align: right; white-space: nowrap; }
+
+  .metric { margin-top: 11px; }
+  .metric .line {
+    display: flex; justify-content: space-between; font-size: 10.5px; color: #7a6a58; margin-bottom: 5px;
+  }
+  .bar { height: 4px; border-radius: 999px; background: rgba(116,100,85,.16); overflow: hidden; }
+  .bar span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg,#8a5a3c,#6f4327); }
+  .metric .big { font-size: 11px; color: #3b2d21; font-weight: 500; }
+
+  /* 中间栏 */
+  .search {
+    display: flex; align-items: center; gap: 10px;
+    height: 56px; padding: 0 8px 0 10px;
+    border-radius: 16px; border: 1px solid rgba(116,100,85,.22);
+    background: linear-gradient(180deg,#fff,#f7f3ee);
+    box-shadow: inset 0 1px rgba(255,255,255,.95), 0 4px 12px rgba(104,84,64,.10);
+  }
+  .seg {
+    font-size: 12px; color: #4a382b; padding: 7px 12px; border-radius: 9px;
+    border: 1px solid rgba(116,100,85,.20);
+    background: linear-gradient(180deg,#fdfbf8,#f1ece5);
+    box-shadow: 0 1px 2px rgba(104,84,64,.10), inset 0 1px rgba(255,255,255,.9);
+    white-space: nowrap;
+  }
+  .seg.ghost { border-color: transparent; background: transparent; box-shadow: none; }
+  .caret { color: #9c8b78; font-size: 9px; margin-left: 6px; }
+  .search input {
+    flex: 1; border: 0; outline: 0; background: transparent;
+    font-size: 13.5px; color: #8b7a66; font-family: inherit;
+  }
+  .go {
+    height: 40px; padding: 0 18px; border-radius: 11px;
+    display: flex; align-items: center; white-space: nowrap;
+    font-size: 13px; color: #f8ece1; font-weight: 500; letter-spacing: .06em;
+    background: linear-gradient(180deg,#8d4f2c,#613520);
+    box-shadow: inset 0 1px rgba(255,255,255,.28), 0 5px 12px rgba(97,53,32,.32);
+  }
+
+  .hints {
+    display: flex; gap: 16px; justify-content: center; margin-top: 12px;
+    font-size: 10.5px; color: #a2937f;
+  }
+  .hints b { font-weight: 500; color: #8a7967; }
+
+  .share {
+    margin-top: 14px; display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 13px;
+    border: 1px solid rgba(148,94,74,.32);
+    background: linear-gradient(180deg, rgba(255,249,243,.94), rgba(246,234,222,.92));
+    box-shadow: inset 0 1px rgba(255,255,255,.95), inset 0 -1px rgba(160,110,75,.10),
+                0 4px 12px rgba(120,84,54,.10);
+  }
+  .share-key {
+    flex: 0 0 auto; width: 22px; height: 22px; border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #8d4f2c;
+    background: linear-gradient(180deg,#fff,#f4eae0);
+    border: 1px solid rgba(148,94,74,.32);
+    box-shadow: 0 1px 2px rgba(120,84,54,.14), inset 0 1px rgba(255,255,255,.9);
+  }
+  .share-main { min-width: 0; }
+  .share-title { font-size: 11px; font-weight: 600; color: #7a4526; letter-spacing: .02em; }
+  .share-sub { font-size: 9px; color: #8f7459; margin-top: 3px; line-height: 1.45; }
+  .share-code {
+    flex: 0 0 auto; margin-left: auto; padding: 4px 7px; border-radius: 6px;
+    font-size: 8.5px; color: #8d4f2c; white-space: nowrap;
+    border: 1px dashed rgba(148,94,74,.45); background: rgba(255,255,255,.6);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .group { margin-top: 22px; }
+  .group-label { font-size: 10.5px; color: #9b8a76; letter-spacing: .08em; margin-bottom: 9px; }
+  .chips { display: flex; gap: 9px; flex-wrap: wrap; }
+  .chip {
+    font-size: 11.5px; color: #3f3025; padding: 9px 15px; border-radius: 11px;
+    border: 1px solid rgba(116,100,85,.20);
+    background: linear-gradient(180deg, rgba(255,255,255,.75), rgba(255,255,255,.30) 40%, rgba(121,105,91,.03)),
+                linear-gradient(165deg, #fcfaf6, #f0ede7);
+    box-shadow: inset 0 1px rgba(255,255,255,.9), inset 0 -1px rgba(120,102,86,.12), 0 2px 5px rgba(104,84,64,.07);
+    white-space: nowrap;
+  }
+
+  .hots { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .hot { display: flex; align-items: center; gap: 6px; font-size: 9.5px; color: #4b3b2e; min-width: 0; }
+  .hot .n {
+    flex: 0 0 auto; width: 11px; text-align: right; font-size: 9px; color: #a2937f;
+    font-variant-numeric: tabular-nums;
+  }
+  .hot .n { color: #b4643c; }
+  .hot .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hot .tg {
+    flex: 0 0 auto; font-size: 7.5px; line-height: 1.4; padding: 0 3px; border-radius: 3px;
+    color: #b4643c; border: 1px solid rgba(180,100,60,.35);
+  }
+  .hot .tg.new { color: #8d7c69; border-color: rgba(116,100,85,.30); }
+
+  .bottom-line {
+    margin-top: auto; padding: 16px 0 18px;
+    border-top: 1px solid rgba(116,100,85,.14);
+    display: flex; justify-content: center; gap: 22px;
+    font-size: 10.5px; color: #a2937f;
+  }
+
+  /* 右栏 */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 11px 11px; gap: 6px; }
+  .topbar .name { font-size: 11.5px; font-weight: 600; color: #453326; white-space: nowrap; }
+  .topbar .right { display: flex; align-items: center; gap: 5px; }
+  .sync { font-size: 8.5px; color: #8d7c69; display: flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .save {
+    font-size: 8.5px; color: #f8ece1; padding: 3px 7px; border-radius: 6px; white-space: nowrap;
+    background: linear-gradient(180deg,#8d4f2c,#613520);
+    box-shadow: inset 0 1px rgba(255,255,255,.24);
+  }
+  .filters {
+    display: flex; align-items: center; gap: 4px; padding: 0 11px 10px;
+    font-size: 8.5px; color: #8a7967; white-space: nowrap;
+  }
+  .filters .f {
+    padding: 3px 6px; border-radius: 6px; border: 1px solid rgba(116,100,85,.20);
+    background: rgba(255,255,255,.55); white-space: nowrap;
+  }
+  .filters .f.on { color: #3f3025; }
+  .filters .sp { flex: 1; }
+
+  .item { display: flex; gap: 7px; padding: 10px 11px; border-top: 1px solid rgba(116,100,85,.12); }
+  .av {
+    width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+    background: linear-gradient(150deg,#c9b49c,#8c6f56);
+    box-shadow: inset 0 1px rgba(255,255,255,.5);
+  }
+  .item .head { font-size: 9.5px; color: #9b8a76; display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+  .item .head b { color: #4a382b; font-weight: 600; font-size: 10px; }
+  .item .tagx { font-size: 8px; padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(116,100,85,.24); color: #8d7c69; }
+  .item .text { margin-top: 6px; font-size: 10px; line-height: 1.7; color: #4b3b2e; }
+  .item .quote {
+    margin-top: 7px; padding: 8px 9px; border-radius: 8px;
+    background: rgba(238,233,226,.8); border: 1px solid rgba(116,100,85,.14);
+    font-size: 9.5px; line-height: 1.65; color: #6f5d4c;
+  }
+  .item .acts { margin-top: 8px; display: flex; align-items: center; justify-content: space-between; }
+  .item .acts span {
+    font-size: 9px; color: #8a7967; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid rgba(116,100,85,.20); background: rgba(255,255,255,.5);
+  }
+  .day { display: flex; justify-content: space-between; align-items: flex-start; padding: 6px 13px 0; font-size: 9px; color: #a2937f; }
+  .day .d { font-weight: 600; color: #6f5d4c; font-size: 9.5px; }
+  .more {
+    margin-top: auto; padding: 12px; text-align: center; font-size: 9.5px; color: #a2937f;
+    border-top: 1px solid rgba(116,100,85,.12);
+  }
+</style>
+</head>
+<body>
+  <div class="floor"></div>
+  <div class="glow"></div>
+
+  <div class="brand">
+    <div class="mark">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path d="M 70 10 C 40 0, 8 25, 8 55 C 8 85, 35 98, 60 90 C 80 84, 92 68, 90 48 L 55 55 L 90 28 L 98 62 L 70 50 C 75 68, 60 82, 45 80 C 25 76, 20 58, 24 42 C 28 26, 48 16, 65 22 L 70 10 Z" fill="#6f4327"/>
+      </svg>
+      <div class="word">Nav Sylph<em>self-hosted start page</em></div>
+    </div>
+
+    <h1>一个自托管的<br><span class="soft">极简导航首页</span></h1>
+
+    <p class="lede">搜索、书签、收藏、备忘与服务器监控收进一屏。自己搭在服务器上，朋友输入一条口令就能一起用。</p>
+
+    <div class="tags">
+      <span class="tag">自定义导航</span>
+      <span class="tag">超级搜索框</span>
+      <span class="tag on">分享文本</span>
+      <span class="tag">书签集中管理</span>
+      <span class="tag">隐私收藏</span>
+      <span class="tag">备忘录 · 待办</span>
+      <span class="tag">服务器监控</span>
+      <span class="tag on">口令跨端同步</span>
+    </div>
+
+    <div class="points">
+      <div class="pt"><b>分享文本</b><span>搜索框里敲一个「&gt;」，粘贴文字回车即得一条链接，可设 PIN、阅后即删</span></div>
+      <div class="pt"><b>一条口令</b><span>朋友输入同一口令就连上同一份导航，换设备也不用重新配置</span></div>
+      <div class="pt"><b>一份备份</b><span>收藏、备忘与模块设置自动同步到自己的 WebDAV</span></div>
+    </div>
+
+    <div class="mods">
+      <div class="mods-row">
+        <span class="mods-label">支持模块</span>
+        <span class="mod">服务器监控</span>
+        <span class="mod">备忘与待办</span>
+        <span class="mod">时间线</span>
+        <span class="mod">微博热搜</span>
+      </div>
+      <div class="mods-note">在管理面板按需启用，可拖到主页左栏或右栏；<b>公开模块还能开放给访客</b></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <b>免账号</b><i></i>单文件部署<i></i>Node 22+<i></i>数据在你自己手里
+  </div>
+
+  <div class="screen">
+    <!-- 左：模块 -->
+    <div class="col">
+      <div class="card pad">
+        <div class="row-head">备忘 <span class="pill ok">已同步</span></div>
+        <div class="tabs"><div class="tab on">备忘</div><div class="tab">待办</div></div>
+        <div class="memo-row">
+          <strong>写周报</strong>
+          <div class="meta">共 1 条 · 22:52 同步 · 管理</div>
+        </div>
+      </div>
+
+      <div class="card pad">
+        <div class="row-head">本机 <span class="pill ok">在线</span></div>
+        <div class="metric">
+          <div class="line"><span>CPU</span><span>10%</span></div>
+          <div class="bar"><span style="width:10%"></span></div>
+        </div>
+        <div class="metric">
+          <div class="line"><span>内存</span><span>28%</span></div>
+          <div class="bar"><span style="width:28%"></span></div>
+        </div>
+        <div class="metric">
+          <div class="line"><span>存储</span><span class="big">8.8 GB / 19.6 GB</span></div>
+          <div class="bar"><span style="width:45%"></span></div>
+        </div>
+      </div>
+
+      <div class="card pad">
+        <div class="row-head">cloudcone <span class="pill ok">在线</span></div>
+        <div class="metric">
+          <div class="line"><span>CPU</span><span>1%</span></div>
+          <div class="bar"><span style="width:1%"></span></div>
+        </div>
+        <div class="metric">
+          <div class="line"><span>内存</span><span>29%</span></div>
+          <div class="bar"><span style="width:29%"></span></div>
+        </div>
+        <div class="metric">
+          <div class="line"><span>存储</span><span class="big">15.9 GB / 49.1 GB</span></div>
+          <div class="bar"><span style="width:32%"></span></div>
+        </div>
+        <div class="meta" style="margin-top:10px">最后更新 不到 1 分钟前</div>
+      </div>
+
+      <div class="card pad">
+        <div class="row-head">微博热搜 <span class="meta" style="font-size:9px">更新 22:52</span></div>
+        <div class="hots">
+          <div class="hot"><span class="n">1</span><span class="t">浏览器首页也可以自己搭</span><span class="tg new">新</span></div>
+          <div class="hot"><span class="n">2</span><span class="t">自托管服务的备份清单</span><span class="tg">热</span></div>
+          <div class="hot"><span class="n">3</span><span class="t">书签整理的几种思路</span><span class="tg new">新</span></div>
+          <div class="hot"><span class="n">4</span><span class="t">本地优先的软件正在回潮</span><span class="tg">热</span></div>
+          <div class="hot"><span class="n">5</span><span class="t">家庭服务器的功耗账</span><span class="tg new">新</span></div>
+          <div class="hot"><span class="n">6</span><span class="t">把 RSS 重新捡起来</span><span class="tg">热</span></div>
+          <div class="hot"><span class="n">7</span><span class="t">一块硬盘能用多久</span><span class="tg new">新</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中：导航 -->
+    <div class="col">
+      <div class="search">
+        <div class="seg">网页</div>
+        <div class="seg ghost">Google <span class="caret">▾</span></div>
+        <input value="搜索网页" readonly>
+        <div class="go">搜索</div>
+      </div>
+
+      <div class="share">
+        <div class="share-key">&gt;</div>
+        <div class="share-main">
+          <div class="share-title">分享文本</div>
+          <div class="share-sub">粘贴文字，回车生成链接 · 可设 PIN · 阅后即删</div>
+        </div>
+        <div class="share-code">取件码 tiger-482</div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">资讯</div>
+        <div class="chips">
+          <span class="chip">联合早报</span><span class="chip">安全内参</span>
+          <span class="chip">36氪</span><span class="chip">AI-DAILY</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">论坛</div>
+        <div class="chips">
+          <span class="chip">Linuxdo</span><span class="chip">V2ex</span>
+          <span class="chip">Hostloc</span><span class="chip">Nodeseek</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">娱乐</div>
+        <div class="chips">
+          <span class="chip">Bilibili</span><span class="chip">Youtube</span>
+          <span class="chip">QQ音乐</span><span class="chip">UHD</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">工具</div>
+        <div class="chips">
+          <span class="chip">Gemini</span><span class="chip">ChatGPT</span>
+          <span class="chip">Github</span><span class="chip">Wallhaven</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">自建</div>
+        <div class="chips">
+          <span class="chip">Jellyfin</span><span class="chip">openwrt</span>
+          <span class="chip">fnos</span><span class="chip">blog</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-label">招聘</div>
+        <div class="chips">
+          <span class="chip">公共招聘网</span><span class="chip">国家人才网</span>
+          <span class="chip">就业在线</span><span class="chip">国聘网</span>
+        </div>
+      </div>
+
+      <div class="bottom-line">
+        <span>说明</span><span>外观</span><span>编辑</span><span>管理</span>
+      </div>
+    </div>
+
+    <!-- 右：时间线 -->
+    <div class="col">
+      <div class="card" style="display:flex;flex-direction:column;overflow:hidden;flex:1">
+        <div class="topbar">
+          <span class="name">Special Line</span>
+          <span class="right">
+            <span class="sync">22:52 同步 ↻</span>
+            <span class="save">＋ 保存</span>
+          </span>
+        </div>
+        <div class="filters">
+          <span class="f on">全部渠道 ✕</span>
+          <span class="sp"></span>
+          <span class="f on">全部</span><span class="f">收藏</span><span class="f">已归档</span>
+        </div>
+
+        <div class="item">
+          <div class="av"></div>
+          <div style="min-width:0">
+            <div class="head"><b>前端周刊</b><span>@weekly</span><span class="tagx">译</span><span class="tagx">归档</span></div>
+            <div class="text">这一期把焦点放在隐私与本地存储：不依赖账号的同步方案，以及如何把收藏数据留在自己的机器上。</div>
+            <div class="quote">「导航页不该是一座租来的房子。」文章从架构、备份与恢复三个角度拆解了自托管的取舍。</div>
+            <div class="acts"><span>查看原文</span><span>☆</span></div>
+          </div>
+        </div>
+
+        <div class="day"><span class="d">今天 13:42</span></div>
+
+        <div class="item">
+          <div class="av"></div>
+          <div style="min-width:0">
+            <div class="head"><b>工具观察</b><span>@toolwatch</span><span class="tagx">译</span></div>
+            <div class="text">把常用入口收进一个搜索框，按首个字符区分搜索、书签、分享与取件码，是今年见过最省事的交互。</div>
+            <div class="acts"><span>查看原文</span><span>☆</span></div>
+          </div>
+        </div>
+
+        <div class="day"><span class="d">今天 07:09</span></div>
+
+        <div class="item">
+          <div class="av"></div>
+          <div style="min-width:0">
+            <div class="head"><b>服务器日常</b><span>@ops</span></div>
+            <div class="text">两台机器的负载都能在首页一眼看到，磁盘接近阈值时提前处理，比夜里被报警叫醒好得多。</div>
+          </div>
+        </div>
+
+        <div class="more">向下滚动会自动加载更早事件</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

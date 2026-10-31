@@ -1,5 +1,7 @@
 # Nav Sylph
 
+<img src="docs/assets/readme-hero.png" alt="Nav Sylph 首页：左侧为备忘与服务器监控模块，中间是搜索框与分类导航，右侧是时间线" width="100%">
+
 一个极简的个人导航与书签管理页面，部署在自己的服务器或电脑上，作为浏览器首页使用。
 
 ## ✨ 核心功能
