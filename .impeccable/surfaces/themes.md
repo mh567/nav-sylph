@@ -1,0 +1,23 @@
+# 全站主题扩展与视觉重做
+
+MODE: Operate
+
+FORM: 用户指定 UHD Service 参考站，确认新增主题固定深色；首版因参考分析不足被用户拒绝。seed:278586cf2712a9e7，用户参考与纠正优先。本轮采用代码实现，Ego 为唯一浏览器验证工具。
+
+## 方向约定
+
+以 `.impeccable/reference/uhdnow/analysis.md` 的逐段观察为依据。新增棱镜使用近黑底、暗玻璃、155度方向反射、受光细边、24px卡片和胶囊控件；标题与正文采用清晰的字号层级。Inter Tight Latin 子集自托管，中文保留明确的系统回落。白灰为主，环境反射和主动作边缘保留局部光谱。经典主题不变。
+
+最新导航细化：分类标题桌面16px/手机15px；书签直接复用原版尺寸、12px字号和间距，保留轻反射按钮、细边与柔和投影，保留悬停/按压/键盘焦点。按钮变量只作用于书签。
+
+FIRST VIEWPORT: 搜索为浮动胶囊，分类内容形成有留白和标题层级的卡片。保留真实导航内容及模块左右/下方布局与拖动宿主。首页、模块、后台与分享页共享反射、字体、灰阶和状态语言。
+
+SIGNATURE INTERACTION: 150到200ms的控件悬停/按压、背景随玻璃透入、选中胶囊、可见键盘焦点；沿用模块入场、草稿保存与取消机制。手机后台全部分区入口完整可见。
+
+## 证据与边界
+
+Ego 空间3实查参考站首页至页脚、定价浅深色、社区菜单与手机菜单，截图和计算样式位于 `.impeccable/reference/uhdnow/`。未查看参考站私人账户页，不复制品牌、业务文案、影片或视频。
+
+本地Ego截图为 `.impeccable/review/rework-*.png`；合成备忘与待办用于查看真实内容状态。运行断言记录为 `ego-verification.json`、`ego-visitor-verification.json` 和 `ego-admin-tabs-verification.json`。未使用Chromium或Playwright执行本轮浏览器验证。运行测试与独立设计审查不能代替用户视觉认可。
+
+发布归档：参考截图及其余运行记录保留在任务工作区 `/Users/harris/.t3/worktrees/sylph/t3-36eb9eb7/.impeccable/`，仓库仅保留参考分析、设计系统与最终按钮尺寸的精简验证记录。

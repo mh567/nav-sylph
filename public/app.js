@@ -232,7 +232,7 @@
     // （那里要抢在样式表之前把它应用上，避免首屏闪一下系统色），
     // 两处必须一致——tests 里有跨文件断言钉住。
     const THEME_STORAGE_KEY = 'nav-sylph-theme';
-    const LOCAL_SETTINGS_FIELDS = ['searchEngine', 'searchEngines', 'theme', 'showBookmarkIcons'];
+    const LOCAL_SETTINGS_FIELDS = ['searchEngine', 'searchEngines', 'theme', 'themeStyle', 'showBookmarkIcons'];
     const APPEARANCE_ORDER = ['auto', 'light', 'dark'];
     const APPEARANCE_TEXT = { auto: '自动（跟随系统）', light: '浅色模式', dark: '深色模式' };
     /** 三态循环的下一格（深色之后回绕到自动）。 */
@@ -4022,7 +4022,9 @@
             const draft = this.localSettingsDraft = window.NavigationSchema.publicConfig(structuredClone(this.config));
             const select = $('#localCurrentEngine');
             const editor = $('#localEngineEditor');
-            $('#localThemeSelect').value = draft.theme;
+            this.renderThemeStyleSelect($('#localThemeStyleSelect'), draft);
+            $('#localThemeSelect').value = window.NavigationSchema.appearance(draft).mode;
+            $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[draft.themeStyle || 'classic'].mode;
             $('#localIconsToggle').checked = draft.showBookmarkIcons;
             $('#localSettingsError').hidden = true;
             const renderSelection = () => {
@@ -4075,6 +4077,11 @@
                 });
             };
             select.onchange = () => { draft.searchEngine = select.value; syncDefaultBadge(); };
+            $('#localThemeStyleSelect').onchange = event => {
+                draft.themeStyle = event.target.value;
+                $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[draft.themeStyle].mode;
+                $('#localThemeSelect').value = window.NavigationSchema.appearance(draft).mode;
+            };
             $('#localThemeSelect').onchange = event => { draft.theme = event.target.value; };
             $('#localIconsToggle').onchange = event => { draft.showBookmarkIcons = event.target.checked; };
             editor.onclick = event => {
@@ -4340,9 +4347,29 @@
             return this.config.theme || 'auto';
         }
 
+        renderThemeStyleSelect(select, config) {
+            select.innerHTML = Object.entries(window.NavigationSchema.THEMES).map(([id, item]) =>
+                `<option value="${id}">${this.esc(item.name)}${item.mode ? ` · ${item.mode === 'dark' ? '深色' : '浅色'}` : ''}</option>`).join('');
+            select.value = config.themeStyle || 'classic';
+        }
+
         applyTheme() {
-            const theme = this.resolveTheme();
+            const appearance = window.NavigationSchema.appearance({ ...this.config, theme: this.resolveTheme() });
+            const theme = appearance.mode;
             const root = document.documentElement;
+            root.dataset.themeStyle = appearance.style;
+            // 只缓存本标签页的已生效外观，供独立分享页沿用，不参与配置保存。
+            try { sessionStorage.setItem('nav-sylph-appearance', JSON.stringify(appearance)); } catch (e) {}
+            const fixed = !!window.NavigationSchema.THEMES[appearance.style].mode;
+            const modeSelect = $('#themeModeSelect');
+            if (modeSelect) { modeSelect.disabled = fixed; modeSelect.value = theme; }
+            document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
+                const dark = theme === 'dark' || (theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+                meta.content = appearance.style === 'prism' ? '#0a0b0e' : dark ? '#211f1c' : '#efede8';
+                if (theme === 'auto') {
+                    meta.content = meta.media.includes('dark') ? '#211f1c' : '#efede8';
+                }
+            });
 
             if (theme === 'auto') {
                 // 跟随系统
@@ -4358,7 +4385,8 @@
         renderAppearanceButton(theme) {
             const btn = $('#appearanceBtn');
             if (!btn) return;
-            const label = `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
+            const fixed = window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode;
+            const label = fixed ? `外观：${window.NavigationSchema.THEMES[this.config.themeStyle].name}，固定${APPEARANCE_TEXT[fixed]}，点击打开主题设置` : `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
             btn.title = label;
             btn.setAttribute('aria-label', label);
         }
@@ -4378,7 +4406,13 @@
             this.applyTheme();
         }
 
-        cycleTheme() {
+        async cycleTheme() {
+            if (window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode) {
+                await this.openAdmin();
+                $('#adminTabSite')?.click();
+                $('#themeStyleSelect')?.focus();
+                return;
+            }
             return this.setTheme(nextTheme(this.resolveTheme()));
         }
 
@@ -7927,7 +7961,13 @@
                     <div class="section-title">个人首页设置</div><p class="fav-hint">保存仅更新管理员个人导航。</p>
                     <div class="setting-row">
                         <label>
-                            <span>主题模式</span>
+                            <span>视觉主题</span>
+                            <select id="themeStyleSelect"></select>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <label>
+                            <span>明暗模式</span>
                             <select id="themeModeSelect">
                                 <option value="auto" ${this.config.theme === 'auto' ? 'selected' : ''}>跟随系统</option>
                                 <option value="light" ${this.config.theme === 'light' ? 'selected' : ''}>浅色模式</option>
@@ -8269,6 +8309,14 @@
             $('#templateCancelBtn').onclick = () => this.templateCancel();
             $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
             $('#templatePublishBtn').onclick = () => this.templateSubmit(true);
+            this.renderThemeStyleSelect($('#themeStyleSelect'), this.config);
+            $('#themeModeSelect').disabled = !!window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode;
+            $('#themeModeSelect').value = window.NavigationSchema.appearance(this.config).mode;
+            $('#themeStyleSelect').onchange = event => {
+                this.config.themeStyle = event.target.value;
+                this.applyTheme();
+                this.markConfigDirty();
+            };
             $('#themeModeSelect').onchange = (e) => {
                 this.config.theme = e.target.value;
                 this.applyTheme();

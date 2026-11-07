@@ -1,3 +1,7 @@
+// nav-v135：棱镜书签复用当前版本的尺寸、字号与间距，保留按钮材质。
+// nav-v134：棱镜分类标题收小，导航书签恢复精细按钮材质与按压反馈。
+// nav-v133：按完整参考站重做棱镜材质、排版与控件，加入自托管字体及完整可见的手机后台分区。
+// nav-v132：新增全站棱镜主题与可扩展主题注册表。
 // nav-v131：模块保留可读宽度，导航弹性让位，窄窗口下方网格重排与热搜标题换行。
 // nav-v130：备忘卡片与管理面板对齐首页材料层——卡片表面材质、抬起式页签、
 // 行悬停/按压、18px 拟物勾选框、面板头尾渐变发丝线；行内操作收进悬停浮层，
@@ -342,12 +346,14 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v131';
+const CACHE = 'nav-v135';
 const ASSETS = [
     '/',
     '/index.html',
     '/styles.css',
     '/admin.css',
+    '/themes.css',
+    '/fonts/inter-tight-latin-variable.woff2',
     '/app.js',
     '/navigation-schema.js',
     '/local-navigation.js',

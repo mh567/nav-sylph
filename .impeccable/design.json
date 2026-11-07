@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T13:31:56+08:00",
+  "title": "Design System: Nav Sylph",
+  "extensions": {
+    "colorMeta": {
+      "classic-light-bg": {
+        "role": "neutral",
+        "displayName": "经典浅色画布"
+      },
+      "classic-light-surface": {
+        "role": "neutral",
+        "displayName": "经典浅色表面"
+      },
+      "classic-light-accent": {
+        "role": "primary",
+        "displayName": "经典浅陶土色"
+      },
+      "classic-dark-bg": {
+        "role": "neutral",
+        "displayName": "经典深色画布"
+      },
+      "classic-dark-surface": {
+        "role": "neutral",
+        "displayName": "经典深色表面"
+      },
+      "classic-dark-accent": {
+        "role": "primary",
+        "displayName": "经典深陶土色"
+      },
+      "prism-bg": {
+        "role": "neutral",
+        "displayName": "棱镜近黑画布"
+      },
+      "prism-card": {
+        "role": "neutral",
+        "displayName": "棱镜玻璃底色"
+      },
+      "prism-accent": {
+        "role": "primary",
+        "displayName": "棱镜中性强调"
+      }
+    },
+    "typographyMeta": {
+      "interface": {
+        "displayName": "Sylph Inter Tight 与中文系统字体回落",
+        "purpose": "Latin 界面文字与中文内容。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "category-slab",
+        "value": "inset 1px 1px 0 -.25px #ffffff30,inset -1px -1px 0 -.25px #ffffff0c,0 1px 2px #0003,0 12px 28px -18px #0006",
+        "purpose": "分类卡片的边缘受光与短投影。"
+      },
+      {
+        "name": "pill",
+        "value": "inset 1px 1px 0 -.25px #ffffff45,inset -1px -1px 0 -.25px #ffffff14,0 2px 6px -2px #0003,0 12px 32px -14px #0006",
+        "purpose": "搜索及胶囊控件的内侧反光与环境阴影。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile-theme",
+        "value": "600px",
+        "purpose": "棱镜主题手机分类卡片、网格与字号规则。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "棱镜分类卡片",
+      "kind": "card",
+      "refersTo": "category-card",
+      "description": "采用暗玻璃、方向反射与细受光边的分类容器。",
+      "html": "<article class=\"ds-category\"><h2>分类</h2><a href=\"#\">书签名称</a></article>",
+      "css": ".ds-category { padding: 20px 24px; border: 1px solid rgba(255,255,255,.08); border-radius: 24px; background: linear-gradient(155deg,#ffffff12 0%,#ffffff07 30%,#ffffff03 75%,#ffffff08 100%),rgba(12,13,17,.60); box-shadow: inset 1px 1px 0 -.25px #ffffff30,inset -1px -1px 0 -.25px #ffffff0c,0 1px 2px #0003,0 12px 28px -18px #0006; backdrop-filter: blur(8px); color: #f3f4f6; font-family: 'Sylph Inter Tight','SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif; } .ds-category h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; line-height: 1.25; letter-spacing: -.01em; } .ds-category a { display: inline-flex; align-items: center; justify-content: center; width: 96px; min-height: 42px; padding: 6px 8px; border: 1px solid rgba(255,255,255,.10); border-radius: 7px; background: linear-gradient(165deg,#ffffff10,#ffffff04),rgba(12,13,17,.25); box-shadow: inset 0 1px #ffffff16,inset 0 -1px #0003,0 3px 8px -4px #0007; text-decoration: none; color: #f3f4f6; font-size: 12px; font-weight: 600; line-height: 1.5; white-space: nowrap; } @media (max-width: 600px) { .ds-category { padding: 20px 18px 16px; border-radius: 22px; } .ds-category h2 { font-size: 15px; } .ds-category a { min-height: 44px; } }"
+    },
+    {
+      "name": "棱镜搜索框",
+      "kind": "input",
+      "refersTo": "search-control",
+      "description": "纵向反光的暗色胶囊搜索容器。",
+      "html": "<label class=\"ds-search\"><input type=\"search\" placeholder=\"搜索\"></label>",
+      "css": ".ds-search { display: block; min-height: 62px; padding: 8px; border: 1px solid #ffffff14; border-radius: 999px; background: linear-gradient(180deg,#ffffff1f 0%,#ffffff0a 40%,#fff0 70%),rgba(10,11,14,.30); box-shadow: inset 1px 1px 0 -.25px #ffffff45,inset -1px -1px 0 -.25px #ffffff14,0 2px 6px -2px #0003,0 12px 32px -14px #0006; backdrop-filter: blur(16px) saturate(150%); } .ds-search input { width: 100%; min-height: 44px; border: 0; outline: 0; background: transparent; color: #f3f4f6; font: 400 16px 'Sylph Inter Tight','SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif; } .ds-search input::placeholder { color: #b7b8bc; } .ds-search:focus-within { border-color: #ffffff50; }"
+    }
+  ],
+  "narrative": {
+    "overview": "经典主题保留浅色与深色选择。固定深色棱镜主题将暗玻璃、方向反射与中性灰阶用于现有页面，沿用既有布局与交互。",
+    "keyCharacteristics": [
+      "Latin 使用自托管 Sylph Inter Tight Variable，中文使用系统字体回落。",
+      "分类卡片和胶囊控件采用各自的圆角与玻璃处理。",
+      "棱镜主要操作使用中性深色表面与细光谱描边。"
+    ],
+    "dos": [
+      "保留经典浅色和深色主题。",
+      "延续棱镜主题 155 度反射、暗玻璃与白灰文字。"
+    ],
+    "donts": [
+      "不使用旧版冷灰平面卡片、纯系统字体或蓝色默认强调色。",
+      "不把参考站的长滚动宣传动效用于操作型首页。"
+    ]
+  }
+}

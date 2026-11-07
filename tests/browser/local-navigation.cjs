@@ -298,6 +298,8 @@ test('browser: inline settings remain keyboard-accessible and fit narrow and lan
         await settings(page);
         assert.equal(await page.locator('.ui-dialog').count(), 0);
         await page.locator('#localCurrentEngine').focus(); await page.keyboard.press('Tab');
+        assert.equal(await page.locator('#localThemeStyleSelect').evaluate(el => el === document.activeElement), true);
+        await page.keyboard.press('Tab');
         assert.equal(await page.locator('#localThemeSelect').evaluate(el => el === document.activeElement), true);
         await page.locator('#localEnginesDetails > summary').click();
         await page.locator('#localDoneBtn').scrollIntoViewIfNeeded();

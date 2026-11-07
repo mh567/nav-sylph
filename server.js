@@ -4947,14 +4947,26 @@ app.get('/p/:code', (req, res) => {
     const paste = pasteStorage.get(code);
     const exists = paste && Date.now() <= paste.expiresAt;
     const requirePin = exists && paste.pin;
+    const appearance = require('./public/navigation-schema').appearance(navigation.read('published').config);
 
     // 返回支持客户端解密的 HTML 页面（使用分享码作为密钥）
     const html = `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme-style="${appearance.style}" data-theme="${appearance.mode}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>分享内容</title>
+    <script src="/navigation-schema.js"></script>
+    <script>
+        try {
+            const saved = JSON.parse(sessionStorage.getItem('nav-sylph-appearance'));
+            if (saved && Object.hasOwn(NavigationSchema.THEMES, saved.style) && ['auto', 'light', 'dark'].includes(saved.mode)) {
+                const appearance = NavigationSchema.appearance({ themeStyle: saved.style, theme: saved.mode });
+                document.documentElement.dataset.themeStyle = appearance.style;
+                document.documentElement.dataset.theme = appearance.mode;
+            }
+        } catch (e) {}
+    </script>
     <style>
         :root {
             color-scheme: light;
@@ -4972,7 +4984,7 @@ app.get('/p/:code', (req, res) => {
             --code-attr: #8a5a7a; --code-type: #7a6a3f; --code-deletion: #a4463f;
         }
         @media (prefers-color-scheme: dark) {
-            :root {
+            :root:not([data-theme="light"]) {
                 color-scheme: dark;
                 --bg: #211f1c; --panel: rgba(57,51,46,.93); --text: #f3eee8;
                 --text-secondary: #c9beb3; --border: rgba(222,203,185,.18); --accent: #c28d70;
@@ -4988,6 +5000,21 @@ app.get('/p/:code', (req, res) => {
                 --code-attr: #c99ec0; --code-type: #c7b581; --code-deletion: #e0897f;
             }
         }
+        :root[data-theme="dark"] {
+                color-scheme: dark;
+                --bg: #211f1c; --panel: rgba(57,51,46,.93); --text: #f3eee8;
+                --text-secondary: #c9beb3; --border: rgba(222,203,185,.18); --accent: #c28d70;
+                --accent-hover: #d4a181; --focus: rgba(223,169,140,.68);
+                --control-top: #625951; --control-bottom: #3c3630;
+                --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
+                --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
+                --input-top: #292521; --input-bottom: #39312b;
+                --inner-light: rgba(255,255,255,.09); --inner-dark: rgba(0,0,0,.24);
+                --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
+                --text-muted: #9c9287;
+                --code-string: #9dc49f; --code-number: #d9a877; --code-title: #8fb8d4;
+                --code-attr: #c99ec0; --code-type: #c7b581; --code-deletion: #e0897f;
+            }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
@@ -5058,6 +5085,7 @@ app.get('/p/:code', (req, res) => {
         .hljs-emphasis { font-style: italic; }
         .hljs-strong { font-weight: 600; }
     </style>
+    <link rel="stylesheet" href="/themes.css">
 </head>
 <body>
     <div class="container">

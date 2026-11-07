@@ -46,6 +46,7 @@
          toast 的样式都定义在 admin.css，必须在用户交互前就位，
          故不能按需加载，只能改为非阻塞。 -->
     <link rel="stylesheet" href="admin.css" media="print" onload="this.media='all'">
+    <link rel="stylesheet" href="themes.css">
 </head>
 <body>
     <div class="loader" id="loader"></div>
@@ -96,7 +97,11 @@
                     <div class="local-settings-group">
                         <h3>外观</h3>
                         <div class="local-settings-row">
-                            <label for="localThemeSelect">主题</label>
+                            <label for="localThemeStyleSelect">视觉主题</label>
+                            <select id="localThemeStyleSelect"></select>
+                        </div>
+                        <div class="local-settings-row">
+                            <label for="localThemeSelect">明暗模式</label>
                             <div class="local-settings-controls">
                                 <select id="localThemeSelect"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
                                 <label class="local-settings-inline"><input type="checkbox" id="localIconsToggle">显示导航图标</label>

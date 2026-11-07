@@ -1,6 +1,15 @@
 ((root) => {
     'use strict';
-const FIELDS = ['theme', 'showBookmarkIcons', 'searchEngine', 'searchEngines', 'categories'];
+const FIELDS = ['theme', 'themeStyle', 'showBookmarkIcons', 'searchEngine', 'searchEngines', 'categories'];
+// 新主题在此注册；样式集中在 themes.css，明暗偏好独立保留。
+const THEMES = Object.freeze({
+    classic: Object.freeze({ name: '经典', mode: null }),
+    prism: Object.freeze({ name: '棱镜', mode: 'dark' })
+});
+function appearance(config) {
+    const style = Object.hasOwn(THEMES, config.themeStyle) ? config.themeStyle : 'classic';
+    return { style, mode: THEMES[style].mode || config.theme || 'auto' };
+}
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }
 function text(value, max = 200) { return typeof value === 'string' && value.trim().length > 0 && value.length <= max; }
 function url(value) {
@@ -17,6 +26,7 @@ function validate(value) {
     keys(value, FIELDS);
     if (new TextEncoder().encode(JSON.stringify(value)).length > 1024 * 1024) fail('配置超过 1 MiB');
     if (!['auto', 'light', 'dark'].includes(value.theme) || typeof value.showBookmarkIcons !== 'boolean') fail('显示偏好无效');
+    if (value.themeStyle !== undefined && (typeof value.themeStyle !== 'string' || !Object.hasOwn(THEMES, value.themeStyle))) fail('主题无效');
     unique(value.searchEngines, 50);
     if (!value.searchEngines.length || !value.searchEngines.some(e => e.id === value.searchEngine)) fail('请选择有效搜索引擎');
     for (const e of value.searchEngines) {
@@ -40,9 +50,9 @@ function validate(value) {
 function publicConfig(value) {
     // 旧公开过滤只移除 privacyMode；再用封闭白名单隔离所有私人字段。
     const { privacyMode, ...legacy } = value;
-    return Object.fromEntries(FIELDS.map(k => [k, legacy[k]]));
+    return Object.fromEntries(FIELDS.filter(k => k !== 'themeStyle' || legacy[k] !== undefined).map(k => [k, legacy[k]]));
 }
-const schema = { validate, publicConfig, FIELDS };
+const schema = { validate, publicConfig, FIELDS, THEMES, appearance };
 if (typeof module !== 'undefined' && module.exports) module.exports = schema;
 else root.NavigationSchema = schema;
 })(globalThis);

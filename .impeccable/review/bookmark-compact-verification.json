@@ -1,0 +1,69 @@
+{
+  "browser": "Ego",
+  "results": [
+    {
+      "viewport": 1440,
+      "overflow": false,
+      "count": 9,
+      "width": 96,
+      "height": 42,
+      "font": "12px",
+      "padding": "6px 8px",
+      "gap": "8px",
+      "radius": "7px",
+      "background": "linear-gradient(165deg, rgba(255, 255, 255, 0.063), rgba(255, 255, 255, 0.016)), none"
+    },
+    {
+      "viewport": 834,
+      "overflow": false,
+      "count": 9,
+      "width": 96,
+      "height": 42,
+      "font": "12px",
+      "padding": "6px 8px",
+      "gap": "8px",
+      "radius": "7px",
+      "background": "linear-gradient(165deg, rgba(255, 255, 255, 0.063), rgba(255, 255, 255, 0.016)), none"
+    },
+    {
+      "viewport": 390,
+      "overflow": false,
+      "count": 9,
+      "width": 104,
+      "height": 44,
+      "font": "12px",
+      "padding": "6px 8px",
+      "gap": "8px",
+      "radius": "7px",
+      "background": "linear-gradient(165deg, rgba(255, 255, 255, 0.063), rgba(255, 255, 255, 0.016)), none"
+    },
+    {
+      "viewport": 320,
+      "overflow": false,
+      "count": 9,
+      "width": 80.66,
+      "height": 44,
+      "font": "12px",
+      "padding": "6px 8px",
+      "gap": "8px",
+      "radius": "7px",
+      "background": "linear-gradient(165deg, rgba(255, 255, 255, 0.063), rgba(255, 255, 255, 0.016)), none"
+    }
+  ],
+  "comparison": {
+    "prism": {
+      "width": 96,
+      "height": 42,
+      "padding": "6px 8px",
+      "font": "12px",
+      "gap": "8px"
+    },
+    "classic": {
+      "width": 96,
+      "height": 42,
+      "padding": "6px 8px",
+      "font": "12px",
+      "gap": "8px"
+    }
+  }
+}
