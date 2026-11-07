@@ -655,15 +655,12 @@ test('the exit button and Escape share one code path', () => {
     assert.equal(strays.length, 0, `no route may inline the draft clear, found ${strays.length}`);
 });
 
-test('the help text documents the new composer shortcuts', () => {
-    // 说明面板只写「界面上看不见的操作」，所以这两条留给它；功能本身由界面自己表达。
-    assert.match(appSource, /Shift<\/code>\+Enter 换行/, 'help mentions Shift+Enter');
-    assert.match(appSource, /拖右下角调高/, 'help mentions dragging the corner');
-    // 反向断言：# 后加的功能说明不该再出现在说明面板里（管理员分区、口令空间的操作流程等）。
-    const help = appSource.slice(appSource.indexOf('help-section'), appSource.indexOf('help-close') + 400);
-    for (const forbidden of ['口令云端空间（跨设备同步）', '同步管理：批量生成', 'WebDAV 备份只含']) {
-        assert.ok(!help.includes(forbidden), `说明面板不该再写「${forbidden}」——那是界面该说清的事`);
-    }
+test('the help text explains the three homepage features and composer shortcuts', () => {
+    const help = appSource.slice(appSource.indexOf('        showHelp()'), appSource.indexOf('        async openAdmin()'));
+    assert.deepEqual([...help.matchAll(/<strong>(.*?)<\/strong>/g)].map(match => match[1]),
+        ['文本分享', '多端同步', '可定制模块']);
+    assert.match(help, /Shift<\/code>\+Enter 换行/, 'help mentions Shift+Enter');
+    assert.match(help, /拖右下角调高/, 'help mentions dragging the corner');
 });
 
 // ---- 首页取件码（输入取件码 → 跳转 /p/<code>）----

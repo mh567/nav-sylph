@@ -7292,15 +7292,21 @@
                         <h3 id="helpTitle">Nav Sylph${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
-                            <strong>键盘与手势</strong>
-                            <p>输入 <code>/</code> 检索书签；输入 <code>></code> 发送文本</p>
-                            <p>输入取件码（如 <code>tiger-482</code>）或粘贴分享链接，回车取回共享文本</p>
-                            <p class="help-tip">↑↓ 选择，Enter 确认，Esc 退出；文本输入里 <code>Shift</code>+Enter 换行</p>
-                            <p class="help-tip">文本输入框可拖右下角调高</p>
+                            <strong>文本分享</strong>
+                            <p>无需登录，在设备之间临时传递文字，读取后自动删除。</p>
+                            <p>搜索框输入 <code>&gt;</code> 进入分享，填写内容并发送，可设置有效期和 PIN 码。接收方打开链接、扫描二维码，或在首页输入取件码后回车即可查看。</p>
+                            <p class="help-tip"><code>Shift</code>+Enter 换行，文本输入框可拖右下角调高</p>
                         </div>
                         <div class="help-section">
-                            <strong>入口</strong>
-                            <p>底部「同步」连接云端空间 · 「管理」进入管理面板</p>
+                            <strong>多端同步</strong>
+                            <p>让多台设备共用导航、搜索引擎和公开模块设置，修改后自动同步。</p>
+                            <p>点击底部「同步」，用口令连接云端空间；首次创建需向管理员获取邀请码，其他设备使用同一口令连接。管理员在各设备登录即可同步个人配置。</p>
+                            <p class="help-tip">请妥善保管口令，知道口令的人可读写该空间。</p>
+                        </div>
+                        <div class="help-section">
+                            <strong>可定制模块</strong>
+                            <p>按需在首页展示热搜、服务器监控、备忘与待办、时间线等内容。</p>
+                            <p>访客点击「编辑 → 模块配置」，启用管理员已开放的模块；管理员进入「管理 → 模块」启用并配置。进入首页编辑后，可拖动模块把手调整布局。</p>
                         </div>
                     </div>
                 </div>
