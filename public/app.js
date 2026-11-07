@@ -1979,7 +1979,7 @@
                 return `<div class="sync-invite-row${stale ? ' is-stale' : ''}">
                     <input type="checkbox" data-select-invite="${this.esc(invite.id)}" aria-label="选择邀请码 ${this.esc(invite.hint)}" ${selectable ? '' : 'disabled'} ${this.syncInviteSelected.has(String(invite.id)) ? 'checked' : ''}>
                     <code>${this.esc(invite.hint)}-····-…</code>
-                    <span class="sync-invite-state">${state}</span>${action}
+                    <span>${this.esc(invite.note || "")}</span><span class="sync-invite-state">${state}</span>${action}
                 </div>`;
             }).join('');
             this.updateSyncInviteBulk();
@@ -2033,14 +2033,17 @@
         }
 
         /** 批量生成。码只出现在响应里一次，所以结果区必须当场把它画出来。 */
-        async createSyncInvites() {
-            const target = this.syncInviteBatchCount();
+        async createSyncInvites(single = false) {
+            const target = single ? { ok: true, count: 1 } : this.syncInviteBatchCount();
             if (!target.ok) { this.showSyncInviteError(target.reason); return; }
-            const button = $('#createInviteBtn');
+            const button = single ? $('#createSingleInviteBtn') : $('#createInviteBtn');
+            const buttons = [$('#createSingleInviteBtn'), $('#createInviteBtn')];
+            if (buttons.some(item => item && item.disabled)) return;
+            buttons.forEach(item => { if (item) item.disabled = true; });
             this.showSyncInviteError('');
             if (button) { button.disabled = true; button.textContent = '生成中…'; }
             try {
-                const result = await API.post('/api/admin/sync-invites/batch', { count: target.count });
+                const result = await API.post('/api/admin/sync-invites/batch', { count: target.count, note: $('#syncInviteNote').value.trim() });
                 this.syncInviteBatch = result.invites || [];
                 this.paintSyncInviteBatch();
                 // 新码排在最前：回到第一页重新拉一次。列表里的每一行只有 hint，
@@ -2051,7 +2054,8 @@
             } catch (error) {
                 this.showSyncInviteError('生成失败：' + error.message);
             } finally {
-                if (button) { button.disabled = false; button.textContent = '批量生成'; }
+                buttons.forEach(item => { if (item) item.disabled = false; });
+                if (button) button.textContent = single ? '单个生成' : '批量生成';
             }
         }
 
@@ -2253,7 +2257,7 @@
                 list.innerHTML = `<table class="sync-table">
                     <thead><tr>
                         <th><input type="checkbox" id="syncSpacesSelectAll" aria-label="全选本页"></th>
-                        <th>标识</th><th>状态</th><th>体积</th><th>版本</th><th>代次</th><th>设备</th><th>创建</th><th>最近更新</th><th>操作</th>
+                        <th>备注 / 标识</th><th>状态</th><th>体积</th><th>版本</th><th>代次</th><th>设备</th><th>创建</th><th>最近更新</th><th>操作</th>
                     </tr></thead>
                     <tbody>${spaces.map(space => {
                         const id = String(space.id);
@@ -2267,7 +2271,7 @@
                                <button type="button" class="btn btn-sm btn-danger" data-action="delete-space" data-id="${this.esc(id)}">删除</button>`;
                         return `<tr class="sync-space-row ${mark}">
                             <td><input type="checkbox" data-select-space="${this.esc(id)}" aria-label="选择空间 ${this.esc(label(space))}" ${space.deleted ? 'disabled' : ''} ${selected.has(id) ? 'checked' : ''}></td>
-                            <td><code>${this.esc(label(space))}</code></td>
+                            <td>${this.esc(space.note || "未备注")}<br><code>${this.esc(label(space))}</code></td>
                             <td><span class="sync-space-state">${state}</span></td>
                             <td class="num">${space.contentBytes ? this.syncBytes(space.contentBytes) : '—'}</td>
                             <td class="num">${space.revision}</td>
@@ -8293,6 +8297,7 @@
                     <div class="section-title">邀请码</div>
                     <p class="fav-hint">一次可生成多张；码只显示这一次，离开就再也看不到。已有空间的其他设备连接时不需要邀请码。</p>
                     <div class="sync-toolbar">
+                        <input id="syncInviteNote" maxlength="100" placeholder="备注（如使用者姓名）" aria-label="邀请码备注"><button type="button" class="btn btn-sm" id="createSingleInviteBtn">单个生成</button>
                         <select id="syncInviteCount" aria-label="生成数量">
                             <option value="1">1 张</option>
                             <option value="5">5 张</option>
@@ -8321,9 +8326,9 @@
                 </div>
                 <div class="section" id="syncSpacesSection">
                     <div class="section-title">同步空间治理</div>
-                    <p class="fav-hint">这里只能看到空间的内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
+                    <p class="fav-hint">这里可以看到空间备注、内部标识、体积、版本与状态，看不到内容，也拿不到任何设备凭据。</p>
                     <div class="sync-toolbar">
-                        <input type="search" id="syncSpaceSearch" placeholder="搜索空间标识（前 8 位即可）" aria-label="搜索空间标识">
+                        <input type="search" id="syncSpaceSearch" placeholder="搜索使用者备注" aria-label="搜索使用者备注">
                         <select id="syncSpaceState" aria-label="空间状态">
                             <option value="all">全部状态</option>
                             <option value="active">正常</option>
@@ -8414,6 +8419,7 @@
             $('#templateEditBtn').onclick = () => this.templateSetMode('edit');
             // 邀请码：生成按钮固定，列表里的「撤销 / 重试」与结果区的「复制 / 下载」
             // 用事件委托——两块都会整块重画，逐项挂 onclick 会在重画后全部丢掉。
+            $('#createSingleInviteBtn').onclick = () => this.createSyncInvites(true);
             $('#createInviteBtn').onclick = () => this.createSyncInvites();
             $('#syncInviteList').addEventListener('click', event => {
                 const action = event.target.dataset.action;

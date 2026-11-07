@@ -1564,7 +1564,7 @@ app.post('/api/admin/sync-invites/:id/revoke', rateLimit, requireAdmin, (req, re
 // **码只在这里出现这一次**，库里只有哈希与 4 位 hint。
 app.post('/api/admin/sync-invites/batch', rateLimit, requireAdmin, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.createInvites((req.body || {}).count)); }
+    try { res.json(syncStore.createInvites((req.body || {}).count, (req.body || {}).note)); }
     catch (error) { syncFailure(res, error); }
 });
 

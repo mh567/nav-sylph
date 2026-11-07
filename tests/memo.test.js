@@ -79,7 +79,7 @@ test('v12 老库升级到 v13：原有备忘/会话不丢，todos 表新建', ()
 
     const db = openDatabase(file);
     try {
-        assert.equal(db.pragma('user_version', { simple: true }), 13, '老库补到 v13');
+        assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.length, '老库补到最新版本');
         assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memos WHERE id = ?').get('legacy-memo').n, 1,
             '既有备忘不丢（迁移只追加）');
         assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE token = ?').get('legacy-token').n, 1,

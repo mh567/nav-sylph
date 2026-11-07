@@ -659,7 +659,7 @@ test('邀请码批量生成：上限 20 在界面就拦、走 /batch、结果区
     assert.match(count, /preset === 'custom'/, '「自定义…」读数字框');
     const create = methodBodyOf(cleanApp, 'createSyncInvites');
     assert.match(create, /if \(!target\.ok\) \{ this\.showSyncInviteError\(target\.reason\); return; \}/, '拦下就不发请求');
-    assert.match(create, /API\.post\('\/api\/admin\/sync-invites\/batch', \{ count: target\.count \}\)/, '走批量接口');
+    assert.match(create, /API\.post\('\/api\/admin\/sync-invites\/batch', \{ count: target\.count, note: .*? \}\)/, '走批量接口');
     // 结果区：复制全部 + 下载 .txt，码来自**响应的** `code`（列表里只有 hint）
     const paint = methodBodyOf(cleanApp, 'paintSyncInviteBatch');
     assert.match(paint, /copy-invite-batch/);

@@ -1056,3 +1056,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 保持现有 Node.js、Express 和原生前端结构，先依据目标服务器及设备的实际数据优化首屏、搜索和管理加载。现有本地文件体积、压缩估算和静态检查不能替代真实网络或移动端性能测量。
 
 界面设计历史见 `docs/sylph-unified-interface-plan.md`。该文件包含当时的阶段状态，当前发布与验收状态以 `docs/current-work.md`、Git 和实际环境为准。部署方法见 `README.md` 与 `DEPLOYMENT.md`。
+
+### 同步管理备注
+
+管理员生成邀请码时可绑定最多 100 字的备注，SQLite 的 sync_invites.note 保存备注，激活事务将其复制到 sync_spaces.note。管理员空间列表支持备注子串搜索，保留内部标识前缀查询兼容。旧记录默认空备注；备注仅通过管理员治理接口返回。

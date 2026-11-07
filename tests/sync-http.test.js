@@ -564,7 +564,7 @@ test('HTTP: 空间列表只回非敏感项——正文/口令哈希/令牌/回�
     // ① 键集逐字断言：多一个字段就是多一条泄露面（这一条最容易在「顺手加个字段」时红）。
     assert.deepEqual(Object.keys(body.spaces[0]).sort(), [
         'activeDevices', 'contentBytes', 'createdAt', 'deleted', 'deletedAt',
-        'disabled', 'disabledAt', 'generation', 'id', 'revision', 'updatedAt'
+        'disabled', 'disabledAt', 'generation', 'id', 'note', 'revision', 'updatedAt'
     ].sort());
     // `devices` 是同步管理 tab 概览要的「活跃设备数」；`spaces`/`bytes` 仍是原有的两个。
     assert.deepEqual(Object.keys(body.usage).sort(), ['bytes', 'devices', 'spaces']);
@@ -1043,7 +1043,7 @@ test('HTTP: 邀请码列表按状态筛选 + 分页 + 计数量（四个桶加�
     assert.deepEqual(all.counts, { unused: 3, used: 1, expired: 1, revoked: 1 });
     assert.equal(Object.values(all.counts).reduce((a, b) => a + b, 0), all.page.total, '四个桶互不重叠且合起来等于总数');
     // 每行只有 hint 与状态/时间：没有完整码的字段。
-    assert.deepEqual(Object.keys(all.invites[0]).sort(), ['createdAt', 'expired', 'expiresAt', 'hint', 'id', 'revoked', 'state', 'used', 'usedAt']);
+    assert.deepEqual(Object.keys(all.invites[0]).sort(), ['createdAt', 'expired', 'expiresAt', 'hint', 'id', 'note', 'revoked', 'state', 'used', 'usedAt']);
     assert.equal(all.invites.every((i) => /^[0-9a-f]{4}$/.test(i.hint)), true);
     assert.equal(JSON.stringify(all).includes(codes[0].code.replace(/-/g, '')), false, '列表不回完整码');
 

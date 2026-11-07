@@ -834,7 +834,7 @@ test('store：空间列表的分页/筛选/排序走白名单映射，非法取�
     // 行里只有那 11 个非敏感字段，一个不多（多一个字段就是多一条泄露面）。
     assert.deepEqual(Object.keys(first.spaces[0]).sort(), [
         'activeDevices', 'contentBytes', 'createdAt', 'deleted', 'deletedAt',
-        'disabled', 'disabledAt', 'generation', 'id', 'revision', 'updatedAt'
+        'disabled', 'disabledAt', 'generation', 'id', 'note', 'revision', 'updatedAt'
     ].sort());
 
     // 第二页接着上一页：两页之间没有重叠、也没有缺口。
@@ -1015,4 +1015,14 @@ test('store：批量撤销只撤「未使用且未过期」的，返回的计数
     // 100 个 id 是允许的（上限本身不被拒）。
     assert.equal(f.store.revokeInvites(Array.from({ length: 100 }, (_, i) => `missing-${i}`)).revoked, 0,
         '不存在的 id 不算改动，也不报错');
+});
+
+test('邀请码备注关联空间并支持备注查询', async t => {
+    const f = await fixture(t);
+    const batch = f.store.createInvites(1, 'Alice');
+    assert.equal(f.store.listInvites().invites[0].note, 'Alice');
+    await f.create('note-test-passphrase', batch.invites[0].code);
+    assert.equal(f.store.listSpaces({ q: 'alice' }).spaces[0].note, 'Alice');
+    assert.equal(f.store.listSpaces({ q: 'Nobody' }).page.total, 0);
+    assert.throws(() => f.store.createInvites(1, 'a'.repeat(101)));
 });

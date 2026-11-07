@@ -1222,7 +1222,7 @@
 .sync-table th,
 .sync-table td { padding: 7px 6px; border-bottom: 1px solid var(--admin-edge); text-align: left; white-space: nowrap; }
 .sync-table th { color: var(--text-secondary); font-size: 11px; font-weight: 500; }
-.sync-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.sync-table td.num { text-align: left; font-variant-numeric: tabular-nums; }
 /* 已停用 / 已删除的行淡出，但**不是**不可读：墓碑本身是记录，要能看清它的标识。 */
 tr.sync-space-row.is-stale td { color: var(--text-secondary); }
 tr.sync-space-row.is-gone td { color: var(--text-secondary); text-decoration: line-through; }
