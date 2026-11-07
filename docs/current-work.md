@@ -2,6 +2,17 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
+## v2.2.12 棱镜滚动性能优化发布（2026-11-07，已发布并核对实际附件）
+
+- 用户报：Windows 上棱镜主题上下滚动帧率低、发卡，经典主题正常。定位到两处棱镜独有的逐帧开销：每张分类板/模块板的 `backdrop-filter: blur(20px)` 会在滚动时重新采样背景；`body` 的 `background-attachment: fixed` 会让整屏环境光逐帧重绘。
+- 测量：真实 Chrome（系统 Chrome，非 Playwright 自带内核）用 CDP Tracing 记录一次 41 帧滚动，统计 `PictureLayer::Update`：棱镜 328 次、经典 164 次；只去掉卡片模糊为 205 次，只去掉固定背景为 287 次，两处都去掉为 164 次，与经典持平。`position:fixed` 或 `sticky` 的环境光层都试过，均不能替代「背景随文档滚动」的收益（固定/粘附层仍为 205）。
+- 修复：棱镜 `body` 去掉 `background-attachment: fixed`，环境光随文档延伸；分类板与模块板移除 `backdrop-filter`，保留 `--prism-slab` 薄膜、内侧受光与光学薄边。浮层（下拉、弹窗、提示）静止且短暂，保留模糊。SW 为 `nav-v147`；无数据、权限或交互变更。正式版为 v2.2.12，版本的四处同步为 2.2.12。
+- 实现提交 `e0badc876d32121337c095f0ec354db0b63f5d2e` 已推送 main；`scripts/release.sh` 创建 [v2.2.12](https://github.com/mh567/nav-sylph/releases/tag/v2.2.12)，tag 解引用为该实现提交，非草稿、非预发布，`/releases/latest` 已返回 v2.2.12。
+- 实际附件：已下载 `nav-sylph-v2.2.12.tar.gz`，13,729,354 字节，SHA-256 `e2e510d958a907b21e5ecdc6f4ea808e14bf2eccf95fa60948b7fa6c37ff54a2`，与 GitHub 资产 digest 一致。包内 package/lock/version/最新 CHANGELOG 均为 2.2.12，SW 为 nav-v147，themes.css 含「背景随文档滚动 + 卡片无模糊」；关键运行文件与 main 逐字节一致，三个 Linux ELF Agent 齐全，无私有配置、会话库或 QA 记录。核验目录 `/tmp/sylph-release-2212/`。
+- 视觉对照：注入旧样式截图比较（1280×420 视口），滚动 0 处 98.7% 像素一致（差异来自卡片模糊，肉眼不可辨）；滚动 600 处 98.0% 一致，差异来自环境光不再固定在视口。已更新 `DESIGN.md` 的「棱镜环境打光」。
+- 验证：全量 Node 测试 **901 通过、0 跳过、0 失败**，日志 `/tmp/sylph-2212-tests.log`；新增守卫（棱镜不得用固定背景、分类板/模块板不得有 `backdrop-filter`、浮层仍需模糊），变异恢复固定背景与卡片模糊后用例转红，还原后全绿。1280 / 390 两档计算样式确认卡片模糊为 `none`、搜索框仍为 `blur(16px)`、页面无横向溢出。
+- 边界：本机是 macOS，**未能直接在 Windows 上测量帧率**；`PictureLayer::Update` 是重绘成本的代理指标，不是 Windows GPU 的实际帧时间。若真机仍卡，下一批嫌疑是卡片的 `mask-composite` 光学薄边与模块卡片自身的动画。未做目标服务器升级、Safari、Firefox 或真实手机验收。
+
 ## v2.2.11 分享长文本换行与完整链接展示发布（2026-11-07，已发布并核对实际附件）
 
 - 用户要求修复分享长文本换行不易读的问题，并在「复制链接」下方展示完整链接，随后授权提交新版本。正式版为 v2.2.11。基线 main 为 c20d46e（v2.2.10 发布记录），版本在 `package.json` / `package-lock.json` / `version.json` / `CHANGELOG.json` 四处同步为 2.2.11，SW 为 nav-v146；无新增依赖，数据格式、权限、分享加密协议与保存行为不变。
