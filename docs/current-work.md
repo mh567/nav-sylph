@@ -2,6 +2,15 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
+## v2.2.11 分享长文本换行与完整链接展示发布（2026-11-07，已发布并核对实际附件）
+
+- 用户要求修复分享长文本换行不易读的问题，并在「复制链接」下方展示完整链接，随后授权提交新版本。正式版为 v2.2.11。基线 main 为 c20d46e（v2.2.10 发布记录），版本在 `package.json` / `package-lock.json` / `version.json` / `CHANGELOG.json` 四处同步为 2.2.11，SW 为 nav-v146；无新增依赖，数据格式、权限、分享加密协议与保存行为不变。
+- 实现提交 `ff0851b9d484d9ea450c71ddb70b7cdbb9548b9a` 已推送 main；`scripts/release.sh` 创建 [v2.2.11](https://github.com/mh567/nav-sylph/releases/tag/v2.2.11)，tag 解引用为该实现提交，非草稿、非预发布，`/releases/latest` 已返回 v2.2.11。
+- 实际附件：已下载 `nav-sylph-v2.2.11.tar.gz`，13,728,939 字节，SHA-256 `247d4e105bc95489a0d6c5b415ce1000a0fa246a0845c2cb62e2ac51876a603f`，与 GitHub 资产 digest 一致。包内 package/lock/version/最新 CHANGELOG 均为 2.2.11，SW 为 nav-v146，含两行 grid 编辑区、`.paste-url`、接收页按词换行与 `.content:not(.hljs)`；运行文件与 main 逐字节匹配，三个 Linux ELF Agent 齐全；logs 仅 `.gitkeep`，无已知私有配置、会话库或 QA 记录。核验目录 `/tmp/sylph-release-2211/`。
+- 验证：全量 Node 测试 **900 通过、0 跳过、0 失败**，日志 `/tmp/sylph-2211-tests.log`；定向 59 项通过。系统 Chrome 实测 1280 / 390 / 320 三档：编辑区无横向滚动，退出与发送同一行且发送在视口内；接收页普通英文按词换行；完整链接位于复制按钮下方、在面板内，注入 300+ 字符长链接后在 320px 下折成 14 行且面板与页面均无横向溢出。
+- 两轴审查在本轮改动上完成，采纳四项：`.paste-url` 不再用 `word-break: break-all`，只保留 `overflow-wrap: anywhere`（有余量时不拆开 `https://`）；接收页纯文本字体改用 `font-family: inherit`，不再复写 body 字体栈；接收页守卫改为从 `/p/:code` 路由内按两端锚点切片，不依赖模板缩进；`DESIGN.md` 补上 ≤768px 的 `55vh - inset - 58px`。未采纳并说明理由：共享 `stripComments` 助手（仓库四个测试文件各自持有本地版本，抽公共模块会扩大本轮范围）、把接收页守卫移入 `paste-composer.test.js`（`dialog-regressions.test.js` 已负责分享页 meta 与对话框）、`text-wrap` 调优（本轮已用按词断行解决报告的症状）。
+- 边界：未做目标服务器升级、Safari、Firefox、真实手机软键盘或屏幕阅读器验收；分享页常见的语言误判沿用既有检测逻辑，本轮未改。
+
 ## v2.2.10 棱镜选中态控件改白面深标记发布（2026-11-07，已发布并核对实际附件）
 
 - 用户授权发布小版本，正式版为 v2.2.10。基线 main 为 85daaad（v2.2.9 发布记录）、远端 latest 为 v2.2.9；本轮修掉棱镜选中态控件「白压白」的状态不可分辨缺陷。范围只有棱镜主题的两处选中态材质，数据格式、权限、默认主题与保存行为不变。版本四处同步为 2.2.10，SW 为 nav-v144，无新增依赖。
