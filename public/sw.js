@@ -1,3 +1,4 @@
+// nav-v151：精简首页三项功能说明，保留用途与操作入口。
 // nav-v150：首页说明聚焦文本分享、多端同步与可定制模块的用途和操作。
 // nav-v149：邀请码单个生成与备注关联，空间备注搜索及列表对齐。
 // nav-v148：宽栏停靠时收紧背板与棱镜分类的横向留白，分类每行可放 5 个书签。
@@ -360,7 +361,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v150';
+const CACHE = 'nav-v151';
 const ASSETS = [
     '/',
     '/index.html',
