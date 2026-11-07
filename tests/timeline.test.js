@@ -2032,7 +2032,9 @@ test('首屏宽栏判定：模块定义必须在 syncRail 之前注册（真跑 
         teardownUnusedModules() {},
         waitFirstRound: async () => { seen.push({ at: 'firstRound' }); },
         applyWidgetLayout() {},
-        playModuleEntrance() {}
+        playModuleEntrance() {},
+        // 模块区顶端对齐搜索框是布局协作者，本条只关心判定顺序，给空壳。
+        alignModuleTop() {}
     };
     // preloadModuleDefs 用**真实实现**（切出来接上），不能在测试里重写一遍——
     // 那样测的就是测试自己的逻辑，「先加载定义」这件事根本没被验证。
@@ -2500,16 +2502,16 @@ test('内联卡片的 CSS：高度有上限、列表内滚动、两套版式按�
     assert.match(narrow[1], /\.special-line-time \{ display: block/, '<time> 必须显式 block，否则 padding 盒压到卡上沿');
 
     // 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块，
-    // 而 below 停靠下卡片是 static——那些盒子会以 .module-zone（absolute）为
+    // 而 below 停靠下卡片曾经是 static——那些盒子会以 .module-zone（absolute）为
     // 包含块，溢出逃出横滑条的裁剪、把整个文档撑宽（实测 390 视口多出 338px）。
-    // ⚠️ 这条规则的特异性必须 ≥ 平台那条 0-3-0 的 below 规则，否则被压掉。
+    // 现在这条要求由平台那条 below 规则**全模块通用**地承担（卡片一律 relative）。
     assert.match(css,
-        /\.module-zone\[data-dock="below"\] \.module-widget\[data-module-id="special-line"\] \{ position: relative; \}/,
-        '卡片必须是自身绝对定位后代的包含块（0-4-0 压得过平台的 below 规则）');
-    // 且这条不得越过 dock 限定：不限定就是 0-3-0，会把 outside 模式的
+        /\.module-zone\[data-dock="below"\] \.module-widget \{ position: relative;/,
+        'below 停靠下模块卡必须是 relative，才能当自身绝对定位后代的包含块');
+    // 且这条不得越过 dock 限定：不限定就会把 outside 模式的
     // `.module-widget[data-side="right"]`（0-2-0）的 absolute 也顶掉，宽屏那一列散架
-    assert.doesNotMatch(css, /^\.module-zone \.module-widget\[data-module-id="special-line"\] \{ position: relative; \}/m,
-        '不得写成不限 dock 的版本');
+    assert.doesNotMatch(css, /^\.module-zone \.module-widget \{ position: relative;/m,
+        'below 规则不得写成不限 dock 的版本');
 
     const wrap = /\.special-line-listwrap \{([\s\S]*?)\n\}/.exec(css);
     assert.ok(wrap, '切出 .special-line-listwrap 规则');

@@ -2863,8 +2863,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .app { position: relative; }
 
 /* 两侧布局由 JS 分配导航与模块宽度，模块至少 280px，导航至少 600px。
-   余量不足时回到下方网格，保存的左右归属与排序继续保留。 */
-.module-zone { position: absolute; top: 48px; left: 22px; right: 22px; margin-top: 0; pointer-events: none; }
+   余量不足时回到下方网格，保存的左右归属与排序继续保留。
+   top 取 --module-top：那是 JS 实测出来的**搜索框顶端**（见 app.js 的
+   alignModuleTop）。模块卡原先钉死在 48px，也就是背板顶边之上、页面最上沿，
+   三栏没有共同的首行，读起来像两张卡挤在页角。 */
+.module-zone { position: absolute; top: var(--module-top, 48px); left: 22px; right: 22px; margin-top: 0; pointer-events: none; }
 .module-zone[hidden] { display: none; }
 .module-zone-inner { display: contents; }
 /* 纵向偏移由 JS 实测高度后写入 --stack-top，不是固定步进——
@@ -2901,7 +2904,13 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .module-zone[data-dock="below"] { position: static; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); pointer-events: auto; }
 /* 单卡封顶 400px，手机占满可用宽度；平板与窄桌面可并排显示。 */
 .module-zone[data-dock="below"] .module-zone-inner { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 14px; align-items: start; justify-items: center; max-width: 936px; margin-inline: auto; }
-.module-zone[data-dock="below"] .module-widget { position: static; width: min(100%, 400px); margin-top: 0; }
+/* 卡片是 relative 而不是 static：绝对定位的子元素需要一个包含块，static 会让
+   它们去用 .module-zone（below 停靠时它也是 static，最终落到视口），那些
+   逐行累积的溢出会撑宽整个文档——实测 390 视口下多出 338px，页面能真的横向
+   滚动（这条原本只给 special-line 单开了一条例外，见下）。relative 不改变布局
+   （top/left 为 auto），只是把包含块收到卡片自己身上。
+   棱镜主题的模块卡要靠这层包含块画光学薄边（见 themes.css）。 */
+.module-zone[data-dock="below"] .module-widget { position: relative; width: min(100%, 400px); margin-top: 0; }
 
 /* 让位动画。基准（--stack-top）一变，卡片就换到新位置；给一个短过渡，
    让它「滑过去」而不是瞬移。没有过渡时其余卡片是硬跳的——用户说「生硬」
@@ -3442,14 +3451,13 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 .special-line-listwrap:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 /* ⚠️ 卡片必须自成一个包含块：它是第一个在卡片里用 .sr-only（绝对定位）的模块。
-   below 停靠下卡片是 position: static，那些 1×1 的盒子会以 .module-zone
+   below 停靠下卡片曾经是 position: static，那些 1×1 的盒子会以 .module-zone
    （它本身是 position: absolute）为包含块，逐行累积的溢出逃出横滑条的裁剪，
    把**整个文档**撑宽——实测 390 视口下多出 338px，页面能真的横向滚动。
-   （container-type 的 layout containment 也提供这个包含块，但显式写上更稳。）
-   选择器要 ①压得过平台那条 0-3-0 的 below 规则（`.special-line-card` 只有
-   0-1-0，会被压掉），又 ②**只作用于 below**——不限定 dock 就是 0-3-0，会把
-   outside 模式的 `.module-widget[data-side="right"]`（0-2-0）的 absolute 也顶掉。 */
-.module-zone[data-dock="below"] .module-widget[data-module-id="special-line"] { position: relative; }
+   现在平台那条 below 规则已把卡片改成 relative（全模块通用），这条特例不再需要；
+   留在这里是提醒：**改回 static 会同时打回这个缺陷与棱镜主题的模块卡光学薄边**
+   （薄边是 ::after，要靠卡片自己的包含块定位）。
+   （container-type 的 layout containment 也提供这个包含块，但显式写上更稳。） */
 
 /* ---------- 头：标题 + 副标题 + 状态 + 同步 / 保存 + 拖拽把手 ---------- */
 /* ⚠️ 头 / 筛选 / 底三段都必须 `flex: 0 0 auto`。
@@ -4103,14 +4111,23 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .local-engine-item input { min-height: 40px; }
 }
 
-/* 首页首屏主题入口，使用同一套明暗控件材质。 */
-.home-theme-toolbar { display: flex; justify-content: flex-end; margin: -28px 0 18px; }
+/* 首页首屏主题入口，使用同一套明暗控件材质。
+   它**不占文档流**：绝对定位到背板右上角，落在背板自己的上内边距里。
+   为什么不能放在搜索框上面那一行：背板的上内边距 48px 是被钉死的（见
+   homepage-material.test.js「背板上边距还原仿真的纵向节奏」）。主题入口这一行
+   有 40px 高 + 18px 下外边距，插在搜索框前面会把搜索框顶从 83px 顶到 141px。
+   v2.2.5 引入这个入口时靠 `margin-top: -28px` 把它按回 113px——搜索框因此比
+   仿真里的节奏低了 30px，而入口自己悬在搜索框右上角那条缝里，不与任何东西对齐。
+   绝对定位同时避开这两件事：入口回到背板右上角，搜索框顶也回到 83px。
+   窄屏背板没有上内边距（≤1023px 全部清零），绝对定位会压到搜索框，
+   那时退回常规流里的一行。 */
+.home-theme-toolbar { position: absolute; top: 4px; right: 30px; display: flex; justify-content: flex-end; margin: 0; }
 .home-theme-switcher { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: linear-gradient(165deg,var(--control-pressed-top),var(--control-pressed-bottom)); }
 .home-theme-switcher button { min-width: 68px; min-height: 32px; padding: 5px 15px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 160ms,color 160ms,border-color 160ms; }
 .home-theme-switcher button:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
 .home-theme-switcher button[aria-pressed="true"] { color: var(--text); border-color: var(--border); background: linear-gradient(165deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px var(--inner-light,transparent),0 2px 4px -2px var(--inner-dark,transparent); }
 .home-theme-switcher button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .home-theme-switcher button:disabled { opacity: .5; cursor: not-allowed; }
-@media (max-width: 1023px) { .home-theme-toolbar { margin: 0 0 20px; } }
+@media (max-width: 1023px) { .home-theme-toolbar { position: static; margin: 0 0 20px; } }
 @media (max-width: 600px) { .home-theme-switcher button { min-height: 44px; min-width: 72px; } }
 @media (prefers-reduced-motion: reduce) { .home-theme-switcher button { transition: none; } }

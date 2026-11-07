@@ -885,6 +885,32 @@
         }
 
         /**
+         * 模块区顶端对齐搜索框，而不是钉在页面最上沿。
+         *
+         * 为什么实测而不写死：搜索框的顶端由 `.app` 的上内边距和 `.backboard` 的
+         * 上内边距决定。两处都会变——经典与棱镜两套内边距、窄屏断点、背板断点——
+         * 写死一个数字等于把这两个魔数抄进 CSS，改一处就悄悄对不上。实测宽屏下
+         * 这两项是 35 + 48 = 83px，与搜索框顶端一致。
+         *
+         * 量 `.header` 相对 `#app` 的偏移写进 `--module-top`，`.module-zone` 在两侧
+         * 停靠时用它定位。回到文档流（`data-dock="below"`）时位置由文档流决定，
+         * 变量不参与，那时把它清掉，免得留一个看似生效其实无效的值。
+         */
+        alignModuleTop() {
+            const app = $('#app');
+            const zone = $('#moduleZone');
+            if (!app || !zone) return;
+            if (zone.dataset.dock !== 'outside') {
+                app.style.removeProperty('--module-top');
+                return;
+            }
+            const header = $('.header');
+            if (!header) return;
+            const top = Math.round(header.getBoundingClientRect().top - app.getBoundingClientRect().top);
+            app.style.setProperty('--module-top', top + 'px');
+        }
+
+        /**
          * 先把要挂载的模块脚本加载好（脚本执行时注册自己的定义）。
          *
          * ⚠️ 必须在 `syncRail()` 之前调用：平台判定「要不要为某个模块让出宽栏」读的是
@@ -976,6 +1002,8 @@
             // 按它算余量会把边界档位判错（改前无过渡所以读得到终值）。
             const sideDock = this.sideDockAvailable(railLayout && railLayout.board);
             zone.dataset.dock = (this.modulesError || !sideDock) ? 'below' : 'outside';
+            // 停靠方式定了才知道模块区是不是绝对定位，这时才量得出它该落在哪。
+            this.alignModuleTop();
 
             // ⚠️ 加载失败要**先说话**：config 没拿到时 enabledModuleIds() 是空的，
             // 若先判空再返回，模块区会静默消失——用户看到的是「模块加载不出来」
@@ -4479,6 +4507,9 @@
                 button.disabled = !!disabled;
                 button.title = disabled ? '请先完成当前编辑或保存' : `切换为${window.NavigationSchema.THEMES[button.dataset.homeTheme].name}主题`;
             }
+            // 这里不再重量模块区顶端：主题入口在宽屏是绝对定位，在窄屏是常规流的
+            // 一行，而窄屏模块区本就回到文档流、不参与定位，两种情况都不会挪动
+            // 搜索框。顶线的重量在 renderModuleZone 与 resize 两处。
         }
 
         async setThemeStyle(style) {
@@ -4872,6 +4903,9 @@
                     const railChanged = ($('#app') ? $('#app').dataset.rail : null) !== railBefore;
                     const want = this.sideDockAvailable() ? 'outside' : 'below';
                     if (railChanged || zone.dataset.dock !== want) this.renderModuleZone();
+                    // 断点变了（上内边距、按钮高度都会跟着变）时搜索框顶端会挪，
+                    // 哪怕停靠方式没变也要重量一次。
+                    this.alignModuleTop();
                 }, 150);
             });
             $('#modalBackdrop').onclick = () => this.closeAdmin();

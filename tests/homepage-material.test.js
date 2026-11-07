@@ -234,8 +234,14 @@ test('宽屏模块区绝对定位在背板外侧，放不下时退回网格下�
     // 936 背板在 1024 下留 44px、1440 下留 252px，断点表达不了这个连续量。
     assert.match(code, /\.module-zone\[data-dock="below"\]\s*\{[^}]*position:\s*static/,
         'data-dock=below 时模块区回到文档流');
-    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-widget\s*\{[^}]*position:\s*static/,
-        'data-dock=below 时 widget 也撤掉绝对定位');
+    // widget 必须**退出绝对定位**（absolute 会脱离文档流、页面高度塌掉），
+    // 但要留一个包含块：relative 既在流里，又让卡片内绝对定位的子元素以卡片
+    // 为准——旧版给 special-line 单开过一条例外（390 视口多出 338px 横向溢出），
+    // 现在全模块通用。
+    assert.match(code, /\.module-zone\[data-dock="below"\] \.module-widget\s*\{[^}]*position:\s*relative/,
+        'data-dock=below 时 widget 退出绝对定位并保留自身包含块');
+    assert.doesNotMatch(code, /\.module-zone\[data-dock="below"\] \.module-widget\s*\{[^}]*position:\s*absolute/,
+        'data-dock=below 时 widget 不得仍是绝对定位');
     // 窄屏是**纵向堆叠**，不是横向滑条：模块是纵向内容，横滑意味着「要左右滑才看得见」。
     assert.match(code, /\.module-zone\[data-dock="below"\] \.module-zone-inner\s*\{[^}]*display:\s*grid/,
         'data-dock=below 时纵向堆叠');
@@ -520,6 +526,26 @@ test('背板上边距还原仿真的纵向节奏', () => {
 
     const fb = mediaBlock(code, '@media (max-width: 1023px)', '.backboard');
     assert.match(fb, /\.backboard\s*\{[^}]*padding:\s*0/, '窄屏背板内边距必须清零');
+});
+
+test('模块区顶端取实测值，主题入口退出文档流', () => {
+    // 模块区原先钉在 top: 48px（背板顶边之上、页面最上沿），两侧模块卡与搜索框
+    // 没有共同的首线。现在 top 取 --module-top，由 app.js 实测搜索框顶线写入。
+    const zone = ruleBlock(code, '.module-zone', 'pointer-events');
+    assert.match(zone, /top:\s*var\(--module-top/,
+        '模块区的 top 必须取实测变量，而不是写死的数值');
+
+    // 主题入口不能占文档流：它插在搜索框上面那一行会把搜索框顶从 83px 顶到
+    // 141px，破坏「背板上边距还原仿真的纵向节奏」那条契约。
+    const toolbar = ruleBlock(code, '.home-theme-toolbar', 'justify-content');
+    assert.match(toolbar, /position:\s*absolute/, '主题入口绝对定位，不占文档流');
+    assert.match(toolbar, /right:\s*30px/, '右缘与内容栏对齐（背板右内边距 30px）');
+    assert.doesNotMatch(toolbar, /margin:\s*-/, '不得再用负外边距把自己拉进上内边距');
+
+    // 窄屏背板没有上内边距，绝对定位会压住搜索框，那时必须退回常规流。
+    const narrow = mediaBlock(code, '@media (max-width: 1023px)', '.home-theme-toolbar');
+    assert.match(narrow, /\.home-theme-toolbar\s*\{[^}]*position:\s*static/,
+        '窄屏主题入口退回常规流');
 });
 
 test('搜索框有顶边受光高光', () => {

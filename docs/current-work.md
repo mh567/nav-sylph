@@ -2,6 +2,27 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
+## 首屏竖向对齐与主题入口定位（2026-11-07，本地实现，未提交）
+
+- 用户反馈模块位置太靠上、主题切换按钮的位置奇怪。实测证实两处都成立：模块卡钉在 `top: 48px`，也就是背板顶边（35px）之上、页面最上沿，比搜索框顶高 65px；主题入口靠 `margin-top: -28px` 把自己拉进背板上内边距，悬在搜索框右上角那条缝里，不与任何东西对齐。基线为已发布的 v2.2.6，本轮只改首屏竖向定位，不动材质、数据、权限、默认主题与保存行为。SW 为 nav-v141。
+- 实现：模块区 `top` 改取 `--module-top`，由新增的 `app.js` 的 `alignModuleTop()` 量 `.header` 相对 `#app` 的偏移写入，两侧模块卡与搜索框落在同一条顶线（宽屏棱镜实测 83px）。写死数值等于把两个会变的魔数抄进 CSS（`.app` 上内边距、背板上内边距），故改为实测；调用点在 `renderModuleZone` 定了 `data-dock` 之后与 resize 处理器里，窄屏 `below` 停靠时清掉该变量。主题入口改为 `position: absolute; top: 4px; right: 30px`，落在背板上内边距里成为右上角控件，右缘与内容栏同一条线，窄屏用 `position: static` 退回常规流的一行。
+- **搜索框顶从 113px 回到 83px**：背板上内边距 48px 是被 homepage-material.test.js「背板上边距还原仿真的纵向节奏」钉死的（仿真里靠一个 4px + 20px 的 `.topbar` 占位元素叠出 83px）。v2.2.5 把主题入口插在搜索框前面那一行（40px 高 + 18px 下外边距），靠 `margin-top: -28px` 把搜索框顶从 141px 按回 **113px**——实测 v2.2.6 的搜索框顶就是 113px，比仿真的节奏低了 30px，同时入口自己悬在搜索框右上角那条缝里。中途曾按「主题入口独占一行」的方案实现，搜索框落到 141px；最终改成绝对定位，入口不再占流，搜索框顶回到 83px（v2.2.4 没有这个入口，那一版就是 83px）。
+- 验证：全量 Node 测试 895 项，895 通过、0 跳过、0 失败，日志 `/tmp/sylph-release-227-tests.log`（在主项目上跑的，Agent 产物齐备，没有跳过项）。新增两条用例：一条真跑 `alignModuleTop` 量出 `--module-top` 并验窄屏停靠时清空变量，一条钉住 CSS 侧「模块区 top 取实测变量、主题入口绝对定位、窄屏退回常规流」。变异验证：把 `top` 写回 48px 使 CSS 那条转红，把 `alignModuleTop` 改成写死 48 使方法那条转红，还原后全绿。public/app.js、public/sw.js、public/navigation-schema.js、public/local-navigation.js、server.js、lib/navigation.js 的 node --check 与 scripts/release.sh 的 bash -n 通过，git diff --check 干净。
+- Ego：1440px 下模块卡顶 83px、搜索框顶 83px、首个分类顶 209px，主题入口 39 至 79px 且右缘与内容栏右缘同为 932px；1024px 起停靠转 `below`，模块区回到文档流；834/390/320px 无横向溢出（scrollWidth 与视口同宽），窄屏主题入口回到常规流（25 至 69px）。棱镜与经典两套主题都核过：主题入口底缘 79px 在搜索框顶 83px 之上，两者不重叠；编辑态重命名与取消可用；光学薄边仍 `pointer-events: none`；减少透明度仍回退不透明。
+- 证据：`.impeccable/review/layout-aligned-*.png`（1440/1024/834/390/320 与经典主题）。按用户此前「不要用 chromium，用 ego」的明确要求未运行 Playwright 浏览器回归。
+- Standards/Spec：改动限于 public/themes.css、public/styles.css、public/app.js、public/sw.js 缓存版本、三条测试、DESIGN.md 与 docs/architecture.md 的定位描述；无存储、权限、默认主题或数据格式改动，无新依赖。
+- 下一步与边界：本轮改动随 v2.2.7 提交与发布，发布与附件核验记录见本文件顶部 v2.2.7 一节。未做 Safari、Firefox、真实手机和屏幕阅读器验收。
+
+## 分类板液态玻璃薄膜（2026-11-07，本地实现，未提交）
+
+- 用户反馈导航主体尤其是各分类底板死板生硬，希望更通透、接近液态玻璃。基线为已发布的 v2.2.6（实现提交 233ac6f），本轮只改棱镜材质与视觉规范：数据格式、权限、默认主题、保存行为、经典主题与背景搜索框主题按钮均不变。SW 缓存随本轮一起升到 nav-v141。
+- 实现：分类板与模块板底色由 rgba(19,29,38,.38) 改为近乎无色的 rgba(255,255,255,.01) 薄膜，叠加上方冷调 #e1f4ff14 与斜向 #a5dcf608 的低透色偏，环境光直接透过表面；外沿的均匀描边换成 1.5px 光学薄边，用 mask-composite: exclude 从矩形环切出，左上暖白高光、右下 #b8eaff68 冷光，常态不透明度 0.5、悬停 0.8；圆角放宽到 32px（手机 28px），模糊提到 blur(20px) saturate(135%) brightness(1.02)。薄边 pointer-events: none，浏览器不支持该遮罩时直接不绘制；减少透明度时表面回退为不透明 #27323b 并隐藏薄边。薄边起初只挂在分类板上，模块卡仍是一圈均匀 1px 描边——用户指的是「各个模块尤其是各类的背景板」，两者同一诉求，发布前把薄边一并给到模块卡，窄屏模块卡的包含块由 static 改为 relative（那条 static 曾让 special-line 的 1×1 盒子以 .module-zone 为包含块，390 视口多出 338px 横向溢出）。
+- 验证：全量 Node 测试 895 项，895 通过、0 跳过、0 失败，日志 `/tmp/sylph-release-227-tests.log`。public/app.js、public/sw.js、public/navigation-schema.js、public/local-navigation.js、server.js、lib/navigation.js 的 node --check 与 scripts/release.sh 的 bash -n 通过，git diff --check 干净，package.json、version.json、CHANGELOG.json 三处版本一致为 2.2.6。按用户此前「不要用 chromium，用 ego」的明确要求，本轮未运行 Playwright 浏览器回归；tests/browser/themes.cjs 里模块板底色的预期值已同步为 rgba(255,255,255,0.01)，该值由 Ego 读取同一份 CSS 的计算样式确认。
+- Ego：1440/834/390/320px 无横向溢出；分类板计算底色 rgba(255,255,255,0.01)、圆角 32px（390/320 为 28px）、blur(20px) saturate(1.35) brightness(1.02)；薄边 content 为 ""、pointer-events 为 none、mask-composite 为 exclude。模块板经管理员后台真实入口启用三个模块后同为薄膜。悬停薄边不透明度 0.5→0.797；编辑态 elementFromPoint 命中 category-edit 按钮本身，重命名对话框与取消均可操作；prefers-reduced-transparency 下表面回退 rgb(39,50,59) 且薄边 display 为 none；经典主题薄边 content 为 none，切回棱镜恢复。
+- 证据：`.impeccable/review/liquid-glass-*.png` 截图与 `/tmp/sylph-liquid-behavior.json` 行为记录。开发隔离实例读取候选资源时绕过旧 SW 缓存，不代表目标服务器升级已验收。设计机械扫描 22 项，相对已发布 v2.2.6 无新增项，本轮新增的七个色值与圆角已写入 DESIGN.md 色板与圆角刻度。
+- Standards/Spec：改动限于 public/themes.css、public/sw.js 缓存版本、DESIGN.md 材质与圆角描述、docs/architecture.md 材质段及浏览器回归预期；无存储、权限、默认主题或数据格式改动，无新依赖和新图片。
+- 下一步与边界：本轮改动随 v2.2.7 提交与发布，发布与附件核验记录见本文件顶部 v2.2.7 一节。未做 Safari、Firefox、真实手机和屏幕阅读器验收。
+
 ## v2.2.6 玻璃材质修正版发布（2026-11-07，已发布并核对实际附件）
 
 - 用户授权提交并发布小版本，正式版为v2.2.6。基线main为c626cb5、远端latest为v2.2.5；玻璃材质修正与精简Ego证据集成至main，截图保留在T3任务工作区。
@@ -11,7 +32,7 @@
 - 提交与发布：实现提交 `233ac6f481330ef44af76c6d69c00493598c00e0` 已推送main；`scripts/release.sh`创建 [v2.2.6](https://github.com/mh567/nav-sylph/releases/tag/v2.2.6)，tag解引用为该实现提交，非草稿、非预发布，`/releases/latest`已返回v2.2.6。收尾文档单独提交，不移动版本tag。无关联独立Issue。
 - 实际附件：已下载 `nav-sylph-v2.2.6.tar.gz`，13,722,164字节，SHA-256 `89846e0d4911f295f0ce652769fafcb5fb06ed4d9eee21cd5b5db1432d141b52`，与GitHub资产digest一致。包内package/lock/version/最新CHANGELOG均为2.2.6，SW为nav-v139；运行文件、玻璃参数与字体许可逐字节匹配main，三个Linux ELF Agent齐全，本机Agent自报2.2.6、协议v1。logs仅.gitkeep，无已知私有配置、会话库、依赖或QA记录。核验文件 `/tmp/sylph-release-226-verification/result.json`。
 - 下一步：目标主机可运行 `./sylph.sh update` 获取正式版，目标升级尚未执行。主项目原未跟踪交接文件保持原样，T3工作区同步正式版源码与发布记录，保留开发截图。
-- 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。下方历史状态以本节为准。
+- 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。上方「分类板液态玻璃薄膜」是该发布之后的本地未提交改动，本节记录已发布状态。
 
 ## 棱镜圆润玻璃材质复修（2026-11-07，本地实现，未提交）
 

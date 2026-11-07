@@ -422,7 +422,9 @@ test('renderModuleZone 按新的启用集合卸载模块（执行真实方法 + 
         mountModule: async () => node(),
         waitFirstRound: async () => {},
         applyWidgetLayout() {},
-        playModuleEntrance() {}
+        playModuleEntrance() {},
+        // 模块区顶端对齐搜索框是布局协作者，本条的主题是卸载；给空壳。
+        alignModuleTop() {}
     };
     app.teardownUnusedModules = buildMethod(body, 'teardownUnusedModules', {});
 
@@ -441,6 +443,42 @@ test('renderModuleZone 按新的启用集合卸载模块（执行真实方法 + 
 
     assert.deepEqual(unmounted, ['memo'], '离开启用集合的模块被卸载，留下的不动');
     assert.deepEqual([...app.mountedModuleIds], ['weibo-hot']);
+});
+
+test('模块区顶端对齐搜索框：真跑 alignModuleTop 量出顶线', () => {
+    // 这条盯的是「两侧模块卡与搜索框同一条顶线」。原先模块区钉死在 48px，
+    // 也就是背板顶边之上、页面最上沿——三栏没有共同的首行，读起来像两张卡
+    // 挤在页角。改成实测之后，写死数值会立刻与代码脱节，所以断言量法本身。
+    //
+    // 执行真实方法体：切出来接上，不是读源码字符串。
+    const body = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+    const el = top => ({ getBoundingClientRect: () => ({ top }) });
+    const makeApp = dock => {
+        const props = {};
+        const removed = [];
+        const style = {
+            setProperty: (key, value) => { props[key] = value; },
+            removeProperty: key => { removed.push(key); delete props[key]; }
+        };
+        const element = Object.assign(el(0), { style });
+        const run = buildMethod(body, 'alignModuleTop', {
+            $: selector => selector === '#app' ? element
+                : selector === '#moduleZone' ? { dataset: { dock } }
+                : selector === '.header' ? el(83) : null
+        });
+        return { props, removed, run };
+    };
+
+    // 两侧停靠：写出 --module-top = 搜索框顶相对 #app 的偏移
+    const outside = makeApp('outside');
+    outside.run.call({});
+    assert.equal(outside.props['--module-top'], '83px', '模块区顶端取搜索框的顶线');
+
+    // 回到文档流（窄屏）时位置由文档流决定，变量不参与，要清掉
+    const below = makeApp('below');
+    below.run.call({});
+    assert.deepEqual(below.removed, ['--module-top'], '窄屏停靠时清掉 --module-top');
+    assert.equal(below.props['--module-top'], undefined, '窄屏停靠时不写 --module-top');
 });
 
 /**
