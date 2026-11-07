@@ -21,3 +21,7 @@ Ego 空间3实查参考站首页至页脚、定价浅深色、社区菜单与手
 本地Ego截图为 `.impeccable/review/rework-*.png`；合成备忘与待办用于查看真实内容状态。运行断言记录为 `ego-verification.json`、`ego-visitor-verification.json` 和 `ego-admin-tabs-verification.json`。未使用Chromium或Playwright执行本轮浏览器验证。运行测试与独立设计审查不能代替用户视觉认可。
 
 发布归档：参考截图及其余运行记录保留在任务工作区 `/Users/harris/.t3/worktrees/sylph/t3-36eb9eb7/.impeccable/`，仓库仅保留参考分析、设计系统与最终按钮尺寸的精简验证记录。
+
+2026-11-07 环境打光细化：用户认为近黑底不友好，并选择青灰底配柔和冷暖环境光。当前棱镜改为 #1b232b 青灰底、左上暖光、右侧冷光及底部淡蓝反射；玻璃卡片、浮层、输入与主按钮共同提亮，保持固定深色与既有布局。图片证据为 review/prism-lighting-*。设计侧车已有历史同步提示，本轮未扩展为完整 document 刷新。
+
+2026-11-07 默认主题与可发现性：首页搜索上方靠右显示常驻经典/棱镜分段按钮，访客和管理员均可使用；编辑时禁用快捷入口。未指定themeStyle时默认prism，显式classic保留，切换不会改动theme明暗偏好。验证证据为 review/theme-entry-*。

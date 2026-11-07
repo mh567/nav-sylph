@@ -7,7 +7,7 @@ const THEMES = Object.freeze({
     prism: Object.freeze({ name: '棱镜', mode: 'dark' })
 });
 function appearance(config) {
-    const style = Object.hasOwn(THEMES, config.themeStyle) ? config.themeStyle : 'classic';
+    const style = Object.hasOwn(THEMES, config.themeStyle) ? config.themeStyle : 'prism';
     return { style, mode: THEMES[style].mode || config.theme || 'auto' };
 }
 function fail(message, status = 400) { throw Object.assign(new Error(message), { status }); }

@@ -1,0 +1,16 @@
+{
+  "browser": "Ego",
+  "checks": [
+    "fresh visitor defaults to prism",
+    "visitor classic choice survives reload",
+    "keyboard switches theme",
+    "shortcut disabled during guest draft",
+    "1440 shortcut visible and fits",
+    "834 shortcut visible and fits",
+    "390 shortcut visible and fits",
+    "320 shortcut visible and fits",
+    "fresh admin defaults to prism",
+    "admin shortcut persists to personal navigation",
+    "personal switch does not change published default"
+  ]
+}

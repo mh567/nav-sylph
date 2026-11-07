@@ -1,0 +1,54 @@
+[
+  {
+    "width": 1440,
+    "overflow": false,
+    "bg": "rgb(27, 35, 43)",
+    "layers": "radial-gradient(72vw 70vh at 4% -10%, rgba(196, 167, 125, 0.15), rgba(0, 0, 0, 0) 72%), radial-gradient(75vw 85vh at 100% 12%, rgba(118, 174, 189, 0.16), rgba(0, 0, 0, 0) 74%), radial-gradient(80vw 65vh at 44% 110%, rgba(125, 148, 188, 0.1), rgba(0, 0, 0, 0) 76%), linear-gradient(165deg, rgb(37, 46, 54), rgb(27, 35, 43) 55%, rgb(32, 43, 53))",
+    "attachment": "fixed, fixed, fixed, fixed",
+    "card": "rgba(31, 41, 49, 0.72)",
+    "bookmark": {
+      "width": 96,
+      "height": 42
+    },
+    "meta": "#1b232b"
+  },
+  {
+    "width": 834,
+    "overflow": false,
+    "bg": "rgb(27, 35, 43)",
+    "layers": "radial-gradient(72vw 70vh at 4% -10%, rgba(196, 167, 125, 0.15), rgba(0, 0, 0, 0) 72%), radial-gradient(75vw 85vh at 100% 12%, rgba(118, 174, 189, 0.16), rgba(0, 0, 0, 0) 74%), radial-gradient(80vw 65vh at 44% 110%, rgba(125, 148, 188, 0.1), rgba(0, 0, 0, 0) 76%), linear-gradient(165deg, rgb(37, 46, 54), rgb(27, 35, 43) 55%, rgb(32, 43, 53))",
+    "attachment": "fixed, fixed, fixed, fixed",
+    "card": "rgba(31, 41, 49, 0.72)",
+    "bookmark": {
+      "width": 96,
+      "height": 42
+    },
+    "meta": "#1b232b"
+  },
+  {
+    "width": 390,
+    "overflow": false,
+    "bg": "rgb(27, 35, 43)",
+    "layers": "radial-gradient(72vw 70vh at 4% -10%, rgba(196, 167, 125, 0.15), rgba(0, 0, 0, 0) 72%), radial-gradient(75vw 85vh at 100% 12%, rgba(118, 174, 189, 0.16), rgba(0, 0, 0, 0) 74%), radial-gradient(80vw 65vh at 44% 110%, rgba(125, 148, 188, 0.1), rgba(0, 0, 0, 0) 76%), linear-gradient(165deg, rgb(37, 46, 54), rgb(27, 35, 43) 55%, rgb(32, 43, 53))",
+    "attachment": "fixed, fixed, fixed, fixed",
+    "card": "rgba(31, 41, 49, 0.72)",
+    "bookmark": {
+      "width": 104,
+      "height": 44
+    },
+    "meta": "#1b232b"
+  },
+  {
+    "width": 320,
+    "overflow": false,
+    "bg": "rgb(27, 35, 43)",
+    "layers": "radial-gradient(72vw 70vh at 4% -10%, rgba(196, 167, 125, 0.15), rgba(0, 0, 0, 0) 72%), radial-gradient(75vw 85vh at 100% 12%, rgba(118, 174, 189, 0.16), rgba(0, 0, 0, 0) 74%), radial-gradient(80vw 65vh at 44% 110%, rgba(125, 148, 188, 0.1), rgba(0, 0, 0, 0) 76%), linear-gradient(165deg, rgb(37, 46, 54), rgb(27, 35, 43) 55%, rgb(32, 43, 53))",
+    "attachment": "fixed, fixed, fixed, fixed",
+    "card": "rgba(31, 41, 49, 0.72)",
+    "bookmark": {
+      "width": 80.6640625,
+      "height": 44
+    },
+    "meta": "#1b232b"
+  }
+]

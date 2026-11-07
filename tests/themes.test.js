@@ -14,8 +14,8 @@ test('themes: legacy configuration stays valid; registered styles survive public
 
 test('themes: fixed dark style preserves the saved classic mode', () => {
     assert.deepEqual(schema.appearance({ ...config, themeStyle: 'prism' }), { style: 'prism', mode: 'dark' });
-    assert.deepEqual(schema.appearance(config), { style: 'classic', mode: 'auto' });
-    assert.deepEqual(schema.appearance({ ...config, theme: 'light' }), { style: 'classic', mode: 'light' });
+    assert.deepEqual(schema.appearance(config), { style: 'prism', mode: 'dark' });
+    assert.deepEqual(schema.appearance({ ...config, themeStyle: 'classic', theme: 'light' }), { style: 'classic', mode: 'light' });
 });
 
 test('themes: personal and published styles persist through real HTTP writes and restart', async t => {
@@ -31,7 +31,7 @@ test('themes: personal and published styles persist through real HTTP writes and
     const personal = await (await app.request('/api/admin/navigation', { cookie })).json();
     const prism = { ...personal.config, themeStyle: 'prism', theme: 'light' };
     assert.equal((await app.request('/api/admin/navigation', { cookie, body: { config: prism, revision: personal.revision, operationId: 'theme-personal' } })).status, 200);
-    assert.equal((await (await app.request('/api/config')).json()).themeStyle, undefined);
+    assert.equal((await (await app.request('/api/config')).json()).themeStyle, 'prism');
     const draft = await (await app.request('/api/admin/default-homepage', { cookie })).json();
     const saved = await (await app.request('/api/admin/default-homepage/draft', { cookie, body: { config: { ...draft.config, themeStyle: 'prism' }, revision: draft.revision, operationId: 'theme-draft' } })).json();
     assert.equal((await app.request('/api/admin/default-homepage/publish', { cookie, body: { revision: saved.revision, publishedRevision: draft.publishedRevision, operationId: 'theme-publish' } })).status, 200);
@@ -44,4 +44,20 @@ test('themes: personal and published styles persist through real HTTP writes and
     const share = await (await app.request('/p/tiger-482')).text();
     assert.match(share, /data-theme-style="prism" data-theme="dark"/);
     assert.match(share, /href="\/themes.css"/);
+});
+
+
+test('themes: explicit classic installation remains classic after default changes and restart', async t => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { installation } = require('./helpers/installation');
+    const app = await installation(t);
+    fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify({ ...config, themeStyle: 'classic', theme: 'light' }));
+    await app.start();
+    const first = await (await app.request('/api/config')).json();
+    assert.equal(first.themeStyle, 'classic');
+    assert.deepEqual(schema.appearance(first), { style: 'classic', mode: 'light' });
+    await app.stop();
+    await app.start();
+    assert.equal((await (await app.request('/api/config')).json()).themeStyle, 'classic');
 });

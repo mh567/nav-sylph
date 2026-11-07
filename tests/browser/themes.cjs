@@ -41,6 +41,7 @@ async function saveAdmin(page) {
 test('browser: 访客主题真实保存、取消、重载、离线回访与经典明暗偏好恢复', async t => {
     const { page, context } = await fixture(t);
     await page.locator('#layoutBtn').click();
+    await localSelect(page, 'localThemeStyleSelect', 'classic');
     await localSelect(page, 'localThemeSelect', 'light');
     await localSelect(page, 'localThemeStyleSelect', 'prism');
     assert.equal(await page.locator('#localThemeSelect').isDisabled(), true);
@@ -72,6 +73,7 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     const { page, app, context, browser } = await fixture(t);
     fs.mkdirSync(shots, { recursive: true });
     await login(page);
+    await page.locator('#themeStyleSelect').selectOption('classic');
     await page.locator('#themeModeSelect').selectOption('light');
     await page.locator('#themeStyleSelect').selectOption('prism');
     await appearance(page, 'prism', 'dark');
@@ -92,10 +94,10 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     for (const [name, width] of [['desktop', 1440], ['tablet', 834], ['mobile', 390], ['narrow', 320]]) {
         await page.setViewportSize({ width, height: 900 });
         await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
-        assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(10, 11, 14)');
+        assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 35, 43)');
         const colors = await page.locator('.module-widget').evaluateAll(nodes => nodes.map(n => getComputedStyle(n).backgroundColor));
         assert.ok(colors.length >= 2);
-        assert.ok(colors.every(c => c === 'rgba(12, 13, 17, 0.6)'), JSON.stringify(colors));
+        assert.ok(colors.every(c => c === 'rgba(31, 41, 49, 0.72)'), JSON.stringify(colors));
         await page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true });
     }
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -108,13 +110,13 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     const shareCode = await page.locator('.paste-code').textContent();
     await page.goto(app.base + '/p/' + shareCode);
     await appearance(page, 'prism', 'dark');
-    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(10, 11, 14)');
+    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 35, 43)');
     await page.locator('#content').filter({ hasText: '用于验证主题的分享内容。' }).waitFor();
     const shareColors = await page.evaluate(() => Object.fromEntries(['body', '.container', '#content', '#copyBtn'].map(selector => {
         const style = getComputedStyle(document.querySelector(selector));
         return [selector, { background: style.backgroundColor, color: style.color }];
     })));
-    assert.equal(shareColors['.container'].background, 'rgba(12, 13, 17, 0.94)');
+    assert.equal(shareColors['.container'].background, 'rgba(32, 43, 53, 0.96)');
     assert.equal(shareColors['#content'].color, 'rgb(243, 244, 246)');
     console.log('share computed styles: ' + JSON.stringify(shareColors));
     await page.screenshot({ path: path.join(shots, 'share.png'), fullPage: true });
@@ -138,6 +140,31 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     t.after(() => anonymous.close());
     const anonymousPage = await anonymous.newPage();
     await anonymousPage.goto(app.base);
-    await appearance(anonymousPage, 'classic', 'auto');
-    assert.equal((await (await app.request('/api/config')).json()).themeStyle, undefined);
+    await appearance(anonymousPage, 'prism', 'dark');
+    assert.equal((await (await app.request('/api/config')).json()).themeStyle, 'prism');
+});
+
+
+test('browser: first visit uses prism and the top shortcut persists explicit choices', async t => {
+    const { page } = await fixture(t);
+    await appearance(page, 'prism', 'dark');
+    const classic = page.locator('[data-home-theme="classic"]');
+    const prism = page.locator('[data-home-theme="prism"]');
+    assert.equal(await prism.getAttribute('aria-pressed'), 'true');
+    const box = await prism.boundingBox();
+    const search = await page.locator('#searchForm').boundingBox();
+    assert.ok(box.y + box.height <= search.y);
+    await classic.click();
+    await page.waitForFunction(() => !window.app.themeStyleSaving);
+    await page.reload();
+    await appearance(page, 'classic', 'auto');
+    await prism.focus();
+    await page.keyboard.press('Enter');
+    await appearance(page, 'prism', 'dark');
+    await page.waitForFunction(() => !window.app.themeStyleSaving);
+    await page.locator('#layoutBtn').click();
+    assert.equal(await classic.isDisabled(), true);
+    await page.locator('#localCancelBtn').click();
+    await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
+    assert.equal(await classic.isEnabled(), true);
 });

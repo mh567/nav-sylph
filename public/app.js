@@ -1441,7 +1441,7 @@
          * `toggleEditLayout(false)` 能静默退出，而实际上它做不到。
          */
         async toggleEditLayout() {
-            if (this.suspendedAdministrator) return;
+            if (this.suspendedAdministrator || this.themeStyleSaving) return;
             if (this.editLayout) return this.saveEditSession();
             this.editSession = {
                 config: JSON.parse(JSON.stringify(this.config)),
@@ -1456,6 +1456,7 @@
          *  文案只有一处来源，其余位置只调这一个方法，避免两处各写一遍后漂移。 */
         syncEditEntries() {
             const editing = this.editLayout;
+            this.renderHomeThemeSwitcher();
             const btn = $('#layoutBtn');
             if (btn) {
                 btn.hidden = editing;
@@ -4138,7 +4139,7 @@
             const editor = $('#localEngineEditor');
             this.renderThemeStyleSelect($('#localThemeStyleSelect'), draft);
             $('#localThemeSelect').value = window.NavigationSchema.appearance(draft).mode;
-            $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[draft.themeStyle || 'classic'].mode;
+            $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[window.NavigationSchema.appearance(draft).style].mode;
             $('#localIconsToggle').checked = draft.showBookmarkIcons;
             $('#localSettingsError').hidden = true;
             const renderSelection = () => {
@@ -4465,10 +4466,52 @@
             return this.config.theme || 'auto';
         }
 
+        renderHomeThemeSwitcher() {
+            const host = $('#homeThemeSwitcher');
+            if (!host || !this.config) return;
+            const style = window.NavigationSchema.appearance(this.config).style;
+            const disabled = this.editLayout || this.themeStyleSaving || !!this.suspendedAdministrator;
+            host.setAttribute('aria-busy', String(!!this.themeStyleSaving));
+            if (!host.children.length) host.innerHTML = Object.entries(window.NavigationSchema.THEMES).map(([id, item]) =>
+                `<button type="button" data-home-theme="${id}" aria-label="${this.esc(item.name)}主题">${this.esc(item.name)}</button>`).join('');
+            for (const button of host.children) {
+                button.setAttribute('aria-pressed', String(button.dataset.homeTheme === style));
+                button.disabled = !!disabled;
+                button.title = disabled ? '请先完成当前编辑或保存' : `切换为${window.NavigationSchema.THEMES[button.dataset.homeTheme].name}主题`;
+            }
+        }
+
+        async setThemeStyle(style) {
+            if (!Object.hasOwn(window.NavigationSchema.THEMES, style) || this.themeStyleSaving || this.editLayout || this.suspendedAdministrator) return;
+            if (window.NavigationSchema.appearance(this.config).style === style) return;
+            const previous = this.config;
+            const candidate = { ...previous, themeStyle: style };
+            this.themeStyleSaving = true;
+            this.config = candidate;
+            this.applyTheme();
+            try {
+                if (this.authenticated) {
+                    const result = await this.saveNavigation();
+                    if (!result.success) throw new Error(result.error || '主题保存失败');
+                } else if (!await this.saveLocalNavigation(candidate)) throw new Error('主题未能保存到本机');
+            } catch (error) {
+                // 身份变化后不把旧配置重新带回当前首页。
+                if (this.config === candidate) {
+                    this.config = previous;
+                    this.applyTheme();
+                    this.showToast(error.message + '，已还原原主题', 'error');
+                }
+            } finally {
+                this.themeStyleSaving = false;
+                this.renderHomeThemeSwitcher();
+                $('#homeThemeSwitcher')?.querySelector(`[data-home-theme="${window.NavigationSchema.appearance(this.config).style}"]`)?.focus({ preventScroll: true });
+            }
+        }
+
         renderThemeStyleSelect(select, config) {
             select.innerHTML = Object.entries(window.NavigationSchema.THEMES).map(([id, item]) =>
                 `<option value="${id}">${this.esc(item.name)}${item.mode ? ` · ${item.mode === 'dark' ? '深色' : '浅色'}` : ''}</option>`).join('');
-            select.value = config.themeStyle || 'classic';
+            select.value = window.NavigationSchema.appearance(config).style;
         }
 
         applyTheme() {
@@ -4483,7 +4526,7 @@
             if (modeSelect) { modeSelect.disabled = fixed; modeSelect.value = theme; }
             document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
                 const dark = theme === 'dark' || (theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
-                meta.content = appearance.style === 'prism' ? '#0a0b0e' : dark ? '#211f1c' : '#efede8';
+                meta.content = appearance.style === 'prism' ? '#1b232b' : dark ? '#211f1c' : '#efede8';
                 if (theme === 'auto') {
                     meta.content = meta.media.includes('dark') ? '#211f1c' : '#efede8';
                 }
@@ -4497,14 +4540,16 @@
                 root.setAttribute('data-theme', theme);
             }
             this.renderAppearanceButton(theme);
+            this.renderHomeThemeSwitcher();
         }
 
         /** 底栏外观入口的当前态只走无障碍文案（入口本身是纯文字）。 */
         renderAppearanceButton(theme) {
             const btn = $('#appearanceBtn');
             if (!btn) return;
-            const fixed = window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode;
-            const label = fixed ? `外观：${window.NavigationSchema.THEMES[this.config.themeStyle].name}，固定${APPEARANCE_TEXT[fixed]}，点击打开主题设置` : `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
+            const style = window.NavigationSchema.appearance(this.config).style;
+            const fixed = window.NavigationSchema.THEMES[style].mode;
+            const label = fixed ? `外观：${window.NavigationSchema.THEMES[style].name}，固定${APPEARANCE_TEXT[fixed]}，点击打开主题设置` : `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
             btn.title = label;
             btn.setAttribute('aria-label', label);
         }
@@ -4525,7 +4570,7 @@
         }
 
         async cycleTheme() {
-            if (window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode) {
+            if (window.NavigationSchema.THEMES[window.NavigationSchema.appearance(this.config).style].mode) {
                 await this.openAdmin();
                 $('#adminTabSite')?.click();
                 $('#themeStyleSelect')?.focus();
@@ -4794,6 +4839,11 @@
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
             // 外观切换不需要登录：未登录时写本机，登录后写服务端（见 setTheme）
             $('#appearanceBtn').onclick = () => this.cycleTheme();
+            const themeSwitcher = $('#homeThemeSwitcher');
+            if (themeSwitcher) themeSwitcher.onclick = event => {
+                const button = event.target.closest('[data-home-theme]');
+                if (button && !button.disabled) this.setThemeStyle(button.dataset.homeTheme);
+            };
             // Esc 放弃编辑。放在 window 而非按钮上：编辑态下焦点可能在
             // 任何 widget 或书签内部，按钮收不到冒泡不到的路径。
             document.addEventListener('keydown', event => {
@@ -7244,6 +7294,7 @@
         }
 
         async openAdmin() {
+            if (this.themeStyleSaving) return;
             this.adminReturnFocus = document.activeElement;
             if (!this.authenticated) {
                 // 一次对话框同时收密码与「信任此设备」，不额外弹第二个窗。
@@ -8428,7 +8479,7 @@
             $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
             $('#templatePublishBtn').onclick = () => this.templateSubmit(true);
             this.renderThemeStyleSelect($('#themeStyleSelect'), this.config);
-            $('#themeModeSelect').disabled = !!window.NavigationSchema.THEMES[this.config.themeStyle || 'classic'].mode;
+            $('#themeModeSelect').disabled = !!window.NavigationSchema.THEMES[window.NavigationSchema.appearance(this.config).style].mode;
             $('#themeModeSelect').value = window.NavigationSchema.appearance(this.config).mode;
             $('#themeStyleSelect').onchange = event => {
                 this.config.themeStyle = event.target.value;

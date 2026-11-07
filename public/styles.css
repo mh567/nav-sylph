@@ -4102,3 +4102,15 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .local-engine-item { grid-template-columns: 20px minmax(0, 1fr); row-gap: 6px; padding: 8px 0; }
     .local-engine-item input { min-height: 40px; }
 }
+
+/* 首页首屏主题入口，使用同一套明暗控件材质。 */
+.home-theme-toolbar { display: flex; justify-content: flex-end; margin: -28px 0 18px; }
+.home-theme-switcher { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: linear-gradient(165deg,var(--control-pressed-top),var(--control-pressed-bottom)); }
+.home-theme-switcher button { min-width: 68px; min-height: 32px; padding: 5px 15px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background 160ms,color 160ms,border-color 160ms; }
+.home-theme-switcher button:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.home-theme-switcher button[aria-pressed="true"] { color: var(--text); border-color: var(--border); background: linear-gradient(165deg,var(--control-top),var(--control-bottom)); box-shadow: inset 0 1px var(--inner-light,transparent),0 2px 4px -2px var(--inner-dark,transparent); }
+.home-theme-switcher button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.home-theme-switcher button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 1023px) { .home-theme-toolbar { margin: 0 0 20px; } }
+@media (max-width: 600px) { .home-theme-switcher button { min-height: 44px; min-width: 72px; } }
+@media (prefers-reduced-motion: reduce) { .home-theme-switcher button { transition: none; } }

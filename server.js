@@ -753,6 +753,7 @@ function globalLoginLimit(req, res, next) {
 
 const defaultConfig = {
     theme: 'auto',
+    themeStyle: 'prism',
     searchEngine: 'google',
     showBookmarkIcons: true,
     categories: [

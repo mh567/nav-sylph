@@ -37,6 +37,8 @@ async function setup(t, options = {}) {
     page.on('dialog', dialog => dialog.accept());
     await page.goto(app.base);
     await page.locator('#app').waitFor({ state: 'visible' });
+    await page.locator('[data-home-theme="classic"]').click();
+    await page.waitForFunction(() => document.documentElement.dataset.themeStyle === 'classic' && !window.app.themeStyleSaving);
     return { app, browser, context, page };
 }
 const saved = page => page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent === '仅保存在本机');

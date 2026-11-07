@@ -1,0 +1,21 @@
+{
+  "browser": "Ego",
+  "share": {
+    "background": "rgb(27, 35, 43)",
+    "panel": "rgba(32, 43, 53, 0.96)",
+    "text": "rgb(243, 244, 246)",
+    "overflow": false
+  },
+  "admin": {
+    "panel": "rgba(32, 43, 53, 0.96)",
+    "background": "rgb(27, 35, 43)",
+    "overflow": false
+  },
+  "reducedTransparency": "rgb(39, 50, 59)",
+  "classicLight": "rgb(239, 237, 232)",
+  "contrastSamples": {
+    "main": 10.41,
+    "secondary": 6.97,
+    "muted": 5.13
+  }
+}

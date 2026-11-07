@@ -1,3 +1,5 @@
+// nav-v138：首页顶部提供主题快捷切换，未指定视觉主题默认使用棱镜。
+// nav-v137：棱镜改为青灰底色与柔和冷暖环境光，统一提亮玻璃表面。
 // nav-v136：匿名编辑设置分组抽屉、收起指示与主题化选择面板。
 // nav-v135：棱镜书签复用当前版本的尺寸、字号与间距，保留按钮材质。
 // nav-v134：棱镜分类标题收小，导航书签恢复精细按钮材质与按压反馈。
@@ -347,7 +349,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v136';
+const CACHE = 'nav-v138';
 const ASSETS = [
     '/',
     '/index.html',
