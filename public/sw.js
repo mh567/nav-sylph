@@ -1,3 +1,4 @@
+// nav-v146：分享编辑器改为正文整行、操作在下，长文本按词换行；分享接收页不再拆断普通单词；结果面板在「复制链接」下方展示完整链接。
 // nav-v144：棱镜的选中态控件改用白面加深色标记，后台模块开关不再是一块白板。
 // nav-v143：少透明时改用同款设计的哑光版，不再把面板压成平涂实底。
 // nav-v142：浏览器没有背景模糊时，内容面板不再退回不透明实底。
@@ -355,7 +356,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v144';
+const CACHE = 'nav-v146';
 const ASSETS = [
     '/',
     '/index.html',

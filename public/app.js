@@ -7208,6 +7208,7 @@
                     ${pinInfo}
                     <div class="paste-qr"><img alt="分享链接二维码"></div>
                     <button class="paste-link" type="button" data-url="${this.esc(url)}">复制链接</button>
+                    <div class="paste-url">${this.esc(url)}</div>
                     <div class="paste-expiry">${this.esc(this.pasteExpiryText(expiresAt))}</div>
                 </div>
             `);

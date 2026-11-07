@@ -433,6 +433,28 @@ test('the share receive page declares viewport-fit=cover', () => {
     assert.match(meta[1], /viewport-fit=cover/, '分享页必须声明 viewport-fit=cover');
 });
 
+test('the share receive page wraps prose at word boundaries', () => {
+    // 旧样式写的是 word-break:break-all，普通英文单词会被从中间劈开
+    // （"whether the" → "whet / her the"），长文读起来很费劲。
+    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+    // 先剥注释：下面禁止的写法在注释里被原样引用，否则断言会匹配到说明文字。
+    const noComments = server.replace(/\/\*[\s\S]*?\*\//g, '');
+    // 从分享页路由里定位 .content，不依赖模板的字面缩进；两端都断言，
+    // 避免切片落空却仍被后续断言当作「规则存在」。
+    const routeAt = noComments.indexOf("app.get('/p/:code'");
+    const start = noComments.indexOf('.content {', routeAt);
+    const end = noComments.indexOf('}', start);
+    assert.ok(routeAt > -1 && start > routeAt && end > start, '分享页存在 .content 规则');
+    const block = noComments.slice(start, end);
+    assert.ok(block.length > 100, '切片必须覆盖整条规则，不能截断');
+    assert.match(block, /overflow-wrap:\s*break-word/, '只有超长不可断的词才强制换行');
+    assert.match(block, /word-break:\s*normal/, '普通单词按正常规则断行');
+    assert.doesNotMatch(block, /word-break:\s*break-all/, 'break-all 会把普通单词劈开');
+
+    // 纯文字内容用界面字体，识别为代码（.hljs）时才保留等宽字体。
+    assert.match(server, /\.content:not\(\.hljs\)\s*\{[^}]*font-family:\s*inherit/, '纯文本分享继承界面字体栈');
+});
+
 test('the PIN field sits directly under its checkbox, not below the expiry options', async () => {
     const { document, state } = createDocument();
     const app = loadApp(document);

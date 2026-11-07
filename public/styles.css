@@ -533,11 +533,22 @@ body {
    内容随输入增高则是即时反馈，不需要动画。 */
 .search { transition: min-height var(--transition), padding var(--transition), border-radius var(--transition), border-color 160ms, box-shadow 160ms, background 160ms; }
 
+/* 分享态是「编辑区在上、操作在下」的两行结构，而不是把编辑区夹在两个
+   按钮中间。旧版左右两侧的「退出 / 发送」把正文挤在 425px 的窄列里，长
+   文本会折成密密麻麻的一长条，读起来费力。改为 grid 后正文占满整行，
+   按钮落在下方同一行，长文本每行可多放约 1/4 的字。
+   两个按钮仍留在原 DOM 位置，只靠 grid-area 移动，不改变点击路径。 */
 .search.paste-mode {
-    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+        "input input"
+        "mode  submit";
+    align-items: center;
+    gap: 8px 10px;
     border-radius: 16px;
     padding: 10px 12px;
-    min-height: 116px;
+    min-height: 0;
 }
 
 .search.paste-mode #engineBtn { display: none; }
@@ -547,26 +558,37 @@ body {
    rows=1 对应的高度，内容超出后转为内部滚动。JS 用 scrollHeight 写入
    inline height 让它跟随内容，max-height 负责封顶。 */
 .search.paste-mode .search-input {
+    grid-area: input;
+    width: 100%;
     height: auto;
     min-height: 96px;
     /* 软键盘弹出时按被遮挡高度收矮（--kb-inset 由 app.js 写入，无键盘时为 0），
-       否则 60dvh 的上限会把「发送」按钮顶到键盘后面。 */
-    max-height: calc(60vh - var(--kb-inset, 0px));
-    padding: 6px 8px;
-    line-height: 1.6;
+       并扣掉下方操作行的 44px + 间距；否则 60vh 的上限会把「发送」顶到键盘
+       后面。60vh 不动，改的是它留给正文的净高度。 */
+    max-height: calc(60vh - var(--kb-inset, 0px) - 62px);
+    padding: 10px 12px;
+    line-height: 1.7;
+    /* 正常文本按词/标点断行，只有超长不可断的词（链接、哈希）才强制折断。
+       不写 word-break:break-all —— 那会把普通英文单词也拆开。 */
+    overflow-wrap: break-word;
+    word-break: normal;
+    tab-size: 2;
     resize: vertical;
     overflow-y: auto;
     /* 自增高由 JS 逐帧计算 height，过渡会拖慢输入手感 */
     transition: none;
 }
 
-/* 分享态下按钮贴底，编辑区占据主空间 */
-.search.paste-mode .search-btn { align-self: flex-end; }
-.search.paste-mode .search-mode { align-self: flex-start; }
+/* 操作行：退出贴左、发送贴右，与正文分开。 */
+.search.paste-mode .search-mode { grid-area: mode; justify-self: start; }
+.search.paste-mode .search-btn { grid-area: submit; justify-self: end; }
 
 @media (max-width: 768px) {
-    .search.paste-mode { min-height: 100px; padding: 8px 10px; }
-    .search.paste-mode .search-input { min-height: 84px; }
+    .search.paste-mode { padding: 8px 10px; gap: 6px 8px; }
+    .search.paste-mode .search-input {
+        min-height: 84px;
+        max-height: calc(55vh - var(--kb-inset, 0px) - 58px);
+    }
 }
 
 /* 结果面板：与编辑框同宽，读作编辑器的输出区。
@@ -658,6 +680,22 @@ body {
 
 .paste-link:active {
     transform: scale(0.98);
+}
+
+/* 「复制链接」下方的完整链接。小字展示，便于手动复制或核对；
+   链接没有空格，只在放不下时按任意位置折行（overflow-wrap:anywhere），
+   不用 break-all —— 那会在还有余量时也把 https:// 和查询参数拆开。 */
+.paste-url {
+    font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    margin: 0 0 8px;
+    padding: 0 6px;
+    word-break: normal;
+    overflow-wrap: anywhere;
+    user-select: all;
+    -webkit-user-select: all;
 }
 
 .paste-expiry {
@@ -864,6 +902,10 @@ body {
     .paste-link {
         padding: 10px 20px;
         font-size: 14px;
+    }
+
+    .paste-url {
+        font-size: 12px;
     }
 
     .paste-content-text {

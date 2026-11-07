@@ -8,6 +8,10 @@ const appSource = fs.readFileSync(path.join(__dirname, '..', 'public/app.js'), '
 const htmlSource = fs.readFileSync(path.join(__dirname, '..', 'public/index.html'), 'utf8');
 const cssSource = fs.readFileSync(path.join(__dirname, '..', 'public/styles.css'), 'utf8');
 
+// 源码形状断言必须先剥掉注释：下面的反例断言里，注释原样引用了
+// word-break:break-all 这个被禁止的写法，否则断言会匹配到自己的说明文字。
+const stripComments = source => source.replace(/\/\*[\s\S]*?\*\//g, '');
+
 const exportPoint = '    let app;\n';
 assert.equal(appSource.split(exportPoint).length, 2);
 
@@ -256,6 +260,46 @@ test('the composer grows taller than the single-line search row', () => {
     assert.match(block[1], /max-height:\s*[^;]*\d+v?h/, 'composer needs a max-height bound');
     assert.match(block[1], /--kb-inset/, 'composer max-height must yield to the on-screen keyboard');
     assert.match(block[1], /resize:\s*vertical/, 'composer should be vertically draggable');
+});
+
+test('the share composer puts the text on its own full-width row above the controls', () => {
+    // 旧版把「退出 / 发送」夹在编辑区两侧，正文只能排在 425px 的窄列里，
+    // 长文本被折成又窄又长的一列。现在是「输入在上、按钮在下」的两行。
+    const block = /^\.search\.paste-mode\s*\{([^}]*)\}/m.exec(stripComments(cssSource));
+    assert.ok(block, '.search.paste-mode rule exists');
+    assert.match(block[1], /grid-template-areas:\s*"input input"\s*"mode\s+submit"/,
+        '正文独占第一行，退出与发送排在第二行');
+
+    const input = /^\.search\.paste-mode\s+\.search-input\s*\{([^}]*)\}/m.exec(stripComments(cssSource));
+    assert.ok(input, '.search.paste-mode .search-input rule exists');
+    assert.match(input[1], /grid-area:\s*input/, '输入框必须落在整行的 grid-area');
+    assert.match(input[1], /width:\s*100%/, '输入框撑满容器宽度');
+
+    // 按词断行：普通英文单词不能被拆开，只有超长不可断的词才强制折断。
+    assert.match(input[1], /overflow-wrap:\s*break-word/, '超长 token 才强制断行');
+    assert.match(input[1], /word-break:\s*normal/, '普通单词按正常规则断行');
+    assert.doesNotMatch(input[1], /word-break:\s*break-all/, 'break-all 会把普通单词劈开');
+});
+
+test('the share result panel shows the full link under the copy button', () => {
+    // 复制按钮承担动作，完整链接承担核对与手动复制；链接通常没有空格，
+    // 必须允许在任意位置折行，否则会撑破结果面板。
+    const start = appSource.indexOf('showPasteResult(code, hasPin = false');
+    assert.ok(start > -1, 'showPasteResult exists');
+    const body = appSource.slice(start, appSource.indexOf('pasteExpiryText(expiresAt)', start));
+
+    const urlAt = body.indexOf('class="paste-url"');
+    const copyAt = body.indexOf('class="paste-link"');
+    assert.ok(urlAt > -1, '结果面板包含 .paste-url');
+    assert.ok(urlAt > copyAt, '完整链接必须排在「复制链接」之后');
+    assert.match(body, /class="paste-url">\$\{this\.esc\(url\)\}/, '完整链接以转义后的 URL 渲染');
+
+    const block = /^\.paste-url\s*\{([^}]*)\}/m.exec(stripComments(cssSource));
+    assert.ok(block, '.paste-url 样式存在');
+    assert.match(block[1], /font-size:\s*11px/, '链接用比正文更小的字号');
+    assert.match(block[1], /overflow-wrap:\s*anywhere/, '放不下时按任意位置折行，避免撑破面板');
+    assert.match(block[1], /word-break:\s*normal/, '有余量时保持自然断行');
+    assert.doesNotMatch(block[1], /word-break:\s*break-all/, 'break-all 会在有余量时也拆开 https://');
 });
 
 test('the composer auto-grows with its content but yields to manual resizing', () => {

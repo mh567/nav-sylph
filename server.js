@@ -5039,9 +5039,18 @@ app.get('/p/:code', (req, res) => {
         .content {
             background: linear-gradient(180deg,var(--input-top),var(--input-bottom)); border: 1px solid var(--border); border-radius: 9px;
             box-shadow: inset 0 1px 2px var(--inner-dark), inset 0 -1px var(--inner-light);
-            padding: 16px; font-family: 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 1.6;
-            white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;
+            padding: 16px; font-family: 'SF Mono', Menlo, monospace; font-size: 14px; line-height: 1.7;
+            /* 按词/标点断行；只有链接、哈希这类超长不可断的词才强制折断。
+               旧代码用的是 word-break:break-all，普通英文单词也会被从中间
+               劈开（"whether the" 断成 "whet / her the"），长文读起来很费劲。 */
+            white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; tab-size: 2;
+            max-height: min(60dvh, 460px); overflow-y: auto; overscroll-behavior: contain;
         }
+        /* 非代码内容用界面字体而不是等宽字体：分享的多半是普通文字，等宽
+           字体让中文与英文都更松散，长段落反而更难读。识别出语言时
+           renderContent 会给容器加 .hljs，代码仍保持等宽。
+           font-family:inherit 直接沿用 body 的字体栈，不再复写一份。 */
+        .content:not(.hljs) { font-family: inherit; font-size: 15px; line-height: 1.75; }
         .btn {
             display: inline-flex; align-items: center; gap: 8px;
             min-height: 38px; padding: 7px 15px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text);
