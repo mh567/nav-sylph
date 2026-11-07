@@ -1,3 +1,4 @@
+// nav-v148：宽栏停靠时收紧背板与棱镜分类的横向留白，分类每行可放 5 个书签。
 // nav-v147：棱镜滚动性能优化——环境光背景改为随文档滚动，分类板与模块板不再使用 backdrop-filter。
 // nav-v146：分享编辑器改为正文整行、操作在下，长文本按词换行；分享接收页不再拆断普通单词；结果面板在「复制链接」下方展示完整链接。
 // nav-v144：棱镜的选中态控件改用白面加深色标记，后台模块开关不再是一块白板。
@@ -357,7 +358,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v147';
+const CACHE = 'nav-v148';
 const ASSETS = [
     '/',
     '/index.html',

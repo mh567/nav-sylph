@@ -1508,6 +1508,38 @@ test('＋占位卡与真实书签卡同尺寸，否则网格错位', () => {
     assert.equal(realRadius[1], '7px', '真实书签卡圆角同为 7px');
 });
 
+test('宽栏停靠时分类一行放得下 5 个书签', () => {
+    // 用户报：两侧模块加载的宽栏下每行只有 4 个书签，右侧余量又差一点
+    // 放不下第 5 个。背板被压到 600px 时，原内边距会让分类内宽只剩 490px
+    // （4×96 + 3×8 = 408，再余 82px，离第 5 个还差 22px）。
+    // 现在把宽栏下的横向留白收到 22px，棱镜分类收到 20px：
+    // 600 - 2×22 - 2×20 - 2×1(边框) = 514px >= 5×96 + 4×8 = 512px。
+    const boardMin = Number(/const BOARD_MIN\s*=\s*(\d+)/.exec(appSource)[1]);
+    assert.ok(boardMin > 0, '从 railLayoutFor 读到背板下限');
+
+    const backboardRule = /#app\[data-rail="wide"\] \.backboard \{([^}]*)\}/.exec(code);
+    assert.ok(backboardRule, '宽栏背板规则存在');
+    const backboardPad = [...backboardRule[1].matchAll(/padding-(?:left|right):\s*(\d+)px/g)]
+        .map(m => Number(m[1]));
+    assert.deepEqual(backboardPad, [22, 22], '宽栏背板左右内边距各 22px');
+
+    const categoryRule = /:root\[data-theme-style="prism"\] #app\[data-rail="wide"\] \.category \{([^}]*)\}/.exec(code);
+    assert.ok(categoryRule, '宽栏棱镜分类规则存在');
+    const categoryPad = [...categoryRule[1].matchAll(/padding-(?:left|right):\s*(\d+)px/g)]
+        .map(m => Number(m[1]));
+    assert.deepEqual(categoryPad, [20, 20], '宽栏棱镜分类左右内边距各 20px');
+
+    const bookmarks = /\.bookmarks\s*\{([^}]*)\}/.exec(code);
+    assert.ok(bookmarks, '.bookmarks 规则存在');
+    const bookmarkWidth = Number(/grid-template-columns:\s*repeat\(auto-fill,\s*(\d+)px\)/.exec(bookmarks[1])[1]);
+    const gap = Number(/(?:^|;)\s*gap:\s*(\d+)px/.exec(bookmarks[1])[1]);
+
+    const inner = boardMin - backboardPad[0] - backboardPad[1] - categoryPad[0] - categoryPad[1] - 2;
+    const need = 5 * bookmarkWidth + 4 * gap;
+    assert.ok(inner >= need,
+        `背板 ${boardMin}px 时分类内宽 ${inner}px，放不下 5 个书签（需要 ${need}px）`);
+});
+
 test('编辑态显隐只由 .grid.is-editing 控制，JS 不写 hidden', () => {
     // 与模块拖拽把手同一条纪律：hidden 属性压过任何 CSS，
     // 而 editLayout 在挂载时几乎总是 false，控件会实测 0×0、点不到。

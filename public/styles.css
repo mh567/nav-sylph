@@ -3450,9 +3450,27 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     max-width: var(--board-max, 936px);
     margin-left: calc(var(--side-w, 180px) + 20px);
     margin-right: auto;
+    /* 宽栏停靠时两侧模块把背板压到 600px：原 30px 侧内边距加分类自身的
+       24px，分类内宽只剩 490px（再扣 2px 边框），放 4 个 96px 书签后还余
+       82px，差 22px 才够第 5 个。这里把横向留白收到 22px，配合下面棱镜
+       分类的 20px，内宽变为 600 - 44 - 40 - 2 = 514px，正好容纳 5 列
+       （5×96 + 4×8 = 512）。 */
+    padding-left: 22px;
+    padding-right: 22px;
 }
+/* 顶边受光高光按基础规则的 30px 内缩；背板内边距收到 22px 后要跟着对齐，
+   否则经典主题的那条 1px 亮边会比内容左缘再缩进 8px。棱镜隐藏了背板伪元素。 */
+#app[data-rail="wide"] .backboard::before { left: 22px; right: 22px; }
 #app[data-rail="wide"] .module-widget[data-side="right"] { width: var(--rail-w, 420px); }
 #app[data-rail="wide"] .module-widget[data-side="left"] { width: var(--side-w, 180px); }
+
+/* 棱镜分类卡自身还有 24px 横向内边距；宽栏停靠时收到 20px，让背板那侧
+   让出的 16px 与这里的 8px 一起凑成 516px 内宽。经典主题分类没有内边距，
+   不需要这条。 */
+:root[data-theme-style="prism"] #app[data-rail="wide"] .category {
+    padding-left: 20px;
+    padding-right: 20px;
+}
 
 /* 首现那次让位的过渡：登录后模块区第一次出现时，背板从「936 居中」滑到
    「--board-max + 左让位」。这是入场编排的**第一段**——卡片的首张
