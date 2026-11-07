@@ -1,3 +1,4 @@
+// nav-v142：浏览器没有背景模糊时，内容面板不再退回不透明实底。
 // nav-v141：模块卡顶端对齐搜索框，主题切换入口改为背板右上角定位，不再占用文档流。
 // nav-v140：导航分类与模块改用轻透玻璃薄膜，分类边缘增加局部折光层。
 // nav-v139：恢复棱镜玻璃透光、圆润边缘与柔和浮起层次，保留青灰环境光。
@@ -352,7 +353,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v141';
+const CACHE = 'nav-v142';
 const ASSETS = [
     '/',
     '/index.html',

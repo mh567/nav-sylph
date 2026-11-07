@@ -229,13 +229,22 @@
     :root[data-theme-style="prism"] .modal-header { padding: 14px 16px; }
     :root[data-theme-style="prism"] .modal-header h2 { font-size: 20px; }
 }
+/* 明确要求「少透明」时（macOS 的「降低透明度」，Windows 没有这个开关）：
+   表面回退为不透明卡片，薄边也一并去掉——一条亮边配一块实心板，与「少透明」
+   的诉求相冲。 */
 @media (prefers-reduced-transparency: reduce) {
     :root[data-theme-style="prism"] :is(.category,.module-widget)::after { display: none; }
     :root[data-theme-style="prism"] :is(.category,.module-widget,.search,.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container,.engine-dropdown,.fav-dropdown,.help-content,.toast) { background: var(--bg-card); backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
+/* 浏览器没有背景模糊时**不要**退回不透明卡片：那正是 v2.2.5 那种死板厚重的底板，
+   用户点名的就是它。分类板与模块板保留透明薄膜与光学薄边——页面底子是一层平滑的
+   冷暖渐变，少一层模糊几乎看不出来；真正需要不透明底的是盖在任意内容上的浮层
+   （弹窗、下拉、提示、分享页容器），它们失去模糊后必须换实底才读得清。
+   ⚠️ 这一条在 Windows 上不是理论问题：Firefox 123 之前在「GPU 厂商识别不出来」
+   的机器上不提供 backdrop-filter（bug 1868737），Windows 的虚拟机与部分驱动
+   正落在这类机器上，于是整页退回旧样式。 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    :root[data-theme-style="prism"] :is(.category,.module-widget)::after { display: none; }
-    :root[data-theme-style="prism"] :is(.category,.module-widget,.search,.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container,.engine-dropdown,.fav-dropdown,.help-content,.toast) { background: var(--bg-card); }
+    :root[data-theme-style="prism"] :is(.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container,.engine-dropdown,.fav-dropdown,.help-content,.toast) { background: var(--bg-card); }
 }
 
 @media (prefers-reduced-motion: reduce) { :root[data-theme-style="prism"] :is(.category,.module-widget)::after { transition: none; } }
