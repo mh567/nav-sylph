@@ -2,13 +2,15 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## v2.2.5-beta.1 测试版发布（2026-11-07，已通过候选检查，待发布）
+## v2.2.5-beta.1 测试版发布（2026-11-07，已发布并核对实际附件）
 
 - 用户授权：提交并发布小测试版本；本轮将匿名编辑抽屉改动集成至主项目 main，起点 `c55aa1d`。版本统一为 2.2.5-beta.1，仅发布 GitHub prerelease，正式 latest 保持 v2.2.4。
 - 发布脚本补充 SemVer 预发布后缀识别，测试版明确传入 --prerelease 和 --latest=false；正常版本沿用原参数。定向测试先复现缺少预发布标志，再核对修复后的实际 shell 发布调用。
 - 实现与 Ego 证据沿用下方匿名抽屉小节；本轮不重跑 Chromium，不新增依赖。精简布局与行为 JSON 随提交归档，截图保留在 T3 任务工作区。
 - 本轮验证：主项目全量 Node 测试 **887通过、0跳过、0失败**，包含三项发布参数与说明测试；bash 及八个相关 JavaScript 文件语法检查、版本 JSON 解析一致性、`git diff --check` 均通过，日志 `/tmp/sylph-release-225-beta-tests.log`。Standards/Spec 复核未见阻塞项，未修改既有存储、鉴权与数据格式。
-- 待完成：main 提交/推送，scripts/release.sh 发布及实际附件核对。保留原未跟踪交接文件，不纳入提交。未关联独立 Issue。
+- 提交与发布：实现提交 `1830022025f98fa8f6f84bf36a45a5112044669c` 已推送 main，`scripts/release.sh` 创建 [v2.2.5-beta.1](https://github.com/mh567/nav-sylph/releases/tag/v2.2.5-beta.1)。远端 tag 解引用为同一实现提交，Release 为非草稿 prerelease，`/releases/latest` 仍返回 v2.2.4。测试版从 Release 附件主动下载，常规安装和自动更新继续使用正式版。收尾记录单独追加提交至 main。
+- 实际附件：从 GitHub 下载 `nav-sylph-v2.2.5-beta.1.tar.gz`，13,721,703 字节，SHA-256 `1d85fbc089889a3b81f9b306d8aaf52e040f1e9778e4bdb3da8ef24d742c6e2b`，与资产 digest 相同。包内版本、更新说明均为 2.2.5-beta.1，SW为nav-v136；抽屉代码、CSS、主题、字体及许可逐字节匹配 main，三个 Linux ELF Agent 齐全，logs仅.gitkeep，无已知私有配置、会话库、依赖或QA资料。本机 Agent 输出2.2.5-beta.1、协议v1。核验文件 `/tmp/sylph-release-225-beta-verification/result.json`。
+- 工作区与下一步：保留主项目原未跟踪 `sylph-handoff-2026-10-18.md`，未纳入提交或发布；T3工作区同步测试版源码和发布记录，保留截图。未关联独立 Issue。等待测试环境部署与用户体验反馈。
 - 边界：未升级目标服务器，未执行 Safari、Firefox、真实手机或屏幕阅读器验收。以下历史状态由本节覆盖。
 
 ## 匿名编辑抽屉与主题选择器（2026-11-07，本地实现，未提交）
