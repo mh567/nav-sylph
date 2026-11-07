@@ -2,7 +2,16 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## Windows 上效果不同的原因分析与兜底修正（2026-11-07，本地实现，未提交）
+## v2.2.8 Windows 兜底修正发布（2026-11-07，已发布并核对实际附件）
+
+- 用户授权提交并发布，正式版为 v2.2.8。基线 main 为 63bda57（v2.2.7 发布记录）、远端 latest 为 v2.2.7；本轮修掉 v2.2.7 引入的兜底缺陷。范围只有棱镜材质在「浏览器没有背景模糊」时的降级路径，数据格式、权限、默认主题与保存行为不变。版本四处同步为 2.2.8，SW 为 nav-v142，无新增依赖。
+- 修复：v2.2.7 的 `@supports not (backdrop-filter)` 把分类板与模块卡一起换成不透明实底 `rgb(39,50,59)`，等于整页退回 v2.2.5 那种厚重底板。改为内容面板保留透明薄膜与光学薄边，只有盖在任意内容上的浮层（弹窗、下拉、提示、分享页容器）换实底；「减少透明度」那条路仍整体不透明并隐藏薄边。
+- 候选验证：全量 Node 测试 **896 通过、0 跳过、0 失败**，日志 `/tmp/sylph-228-tests.log`（新增一条用例钉住两条兜底路径的分工）；变异验证：把分类板加回实底列表即转红，还原后全绿。相关 JavaScript 语法、版本一致性和 git diff --check 通过。
+- 提交与发布：实现提交 `7e76ec04ea8e83f168885b2c2c31790579100758` 已推送 main；`scripts/release.sh` 创建 [v2.2.8](https://github.com/mh567/nav-sylph/releases/tag/v2.2.8)，tag 解引用为该实现提交，非草稿、非预发布，`/releases/latest` 已返回 v2.2.8。收尾文档单独提交，不移动版本 tag。无关联独立 Issue。
+- 实际附件：已下载 `nav-sylph-v2.2.8.tar.gz`，13,726,414 字节，SHA-256 `9bd1a4e196681255279e21556d3a888a185a022aec8fc143c1a17ca3cf5f2909`，与 GitHub 资产 digest 一致。包内 package/lock/version/最新 CHANGELOG 均为 2.2.8，SW 为 nav-v142；themes.css 的兜底块正文只含浮层选择器，不含 `.category`、`.module-widget` 与 `::after`；运行文件与 main 逐字节匹配，三个 Linux ELF Agent 齐全，本机 Agent 自报 2.2.8、协议 v1。logs 仅 .gitkeep，无已知私有配置、会话库或 QA 记录。核验目录 `/tmp/sylph-release-228-verification/`。
+- 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。**Windows 上的实际表现仍需用户用控制台探针确认**，本轮没有在 Windows 机器上实测过任何一种状态；macOS 的「降低透明度」与中文字体回落（微软雅黑无 600 字重）两条也仍待确认。
+
+## Windows 上效果不同的原因分析与兜底修正（2026-11-07，已随 v2.2.8 发布）
 
 - 用户反馈同一套代码在 macOS 浏览器正常、在 Windows 浏览器效果不同，要求分析原因。棱镜材质依赖三项浏览器能力：`backdrop-filter`（背景模糊）、`mask` + `mask-composite: exclude`（1.5px 光学薄边）、`prefers-reduced-transparency`（macOS 独有的「降低透明度」，Windows 没有这个开关）。
 - **查到的最可能原因（已修）**：v2.2.7 的兜底 `@supports not (backdrop-filter)` 把分类板与模块卡一起换成不透明实底 `rgb(39,50,59)`，等于整页退回 v2.2.5 那种厚重底板。而 Firefox 123 之前在**GPU 厂商识别不出来**的机器上不提供 `backdrop-filter`（MDN 引 bug 1868737），Windows 的虚拟机与部分驱动正落在这类机器上；Chrome 76+ 与 Edge 79+ 各版本都提供。若用户的 Windows 浏览器命中这条，整页看到的正是「死板厚重的实心板」。兜底已改为：分类板与模块卡保留透明薄膜与光学薄边，只有盖在任意内容上的浮层（弹窗、下拉、提示、分享页容器）换不透明底；「减少透明度」那条路仍整体不透明并隐藏薄边。
@@ -10,7 +19,7 @@
 - **已排除的两条**：`mask-composite` 在 Chrome/Edge 120+ 与 Firefox 53+ 与 Safari 15.4+ 都支持 `exclude`（Chrome 120 之前只有 `-webkit-mask-composite: xor`，语义等价）；实测 devicePixelRatio 1 / 1.25 / 1.5 下薄边渲染一致，不是缩放造成的错位。
 - **给用户的自查手段**：在 Windows 浏览器控制台粘贴一段探针，输出 `CSS.supports('backdrop-filter','blur(1px)')`、`CSS.supports('mask-composite','exclude')`、`matchMedia('(prefers-reduced-transparency: reduce)').matches`、devicePixelRatio 与中文实际字体，一眼可判落在哪条分支上。
 - 验证：全量 Node 测试 895 通过、0 跳过、0 失败（新增一条用例钉住两条兜底路径的分工）；变异验证：把分类板加回实底列表即转红，还原后全绿。Ego 取 v2.2.7 的 `@supports not (backdrop-filter)` 块正文原样注入，分类板计算底色仍为 rgba(255,255,255,0.01)、薄边 content 为 ""、pointer-events 为 none，截图 `.impeccable/review/win-fallback-fixed.png`；对照截图 `win-no-backdrop.png`（修正前的实心板）、`win-mask-add.png`（遮罩合成退化为 add 时整块填充）、`win-baseline.png`。SW 为 nav-v142。
-- 边界：未提交、未推送、未发布，版本保持 2.2.8 待发布。Windows 上的实际表现仍需用户用探针确认；本轮没有在 Windows 机器上实测过任何一种状态。
+- 边界：本轮已随 v2.2.8 提交与发布，发布与附件核验记录见本文件顶部 v2.2.8 一节。Windows 上的实际表现仍需用户用探针确认；本轮没有在 Windows 机器上实测过任何一种状态。
 
 ## v2.2.7 通透玻璃薄膜与首屏竖向对齐发布（2026-11-07，已发布并核对实际附件）
 
