@@ -1,0 +1,118 @@
+[
+  {
+    "dimensions": {
+      "width": 1440,
+      "overflow": false,
+      "columns": "342.219px 273.781px",
+      "base": {
+        "x": 396,
+        "y": 759,
+        "right": 738.21875,
+        "bottom": 1040.5
+      },
+      "modules": {
+        "x": 770.21875,
+        "y": 759
+      },
+      "toggleHeight": 44,
+      "selectHeight": 36
+    },
+    "popup": {
+      "left": 554.21875,
+      "right": 738.21875,
+      "top": 636.5,
+      "bottom": 792.5,
+      "height": 900,
+      "background": "rgba(12, 13, 17, 0.94)",
+      "color": "rgb(243, 244, 246)",
+      "optionHeight": 36
+    }
+  },
+  {
+    "dimensions": {
+      "width": 834,
+      "overflow": false,
+      "columns": "227.773px 182.227px",
+      "base": {
+        "x": 366,
+        "y": 861,
+        "right": 593.7734375,
+        "bottom": 1142.5
+      },
+      "modules": {
+        "x": 625.7734375,
+        "y": 861
+      },
+      "toggleHeight": 44,
+      "selectHeight": 36
+    },
+    "popup": {
+      "left": 258.6640625,
+      "right": 442.6640625,
+      "top": 323.81622314453125,
+      "bottom": 479.81622314453125,
+      "height": 900,
+      "background": "rgba(12, 13, 17, 0.94)",
+      "color": "rgb(243, 244, 246)",
+      "optionHeight": 36
+    }
+  },
+  {
+    "dimensions": {
+      "width": 390,
+      "overflow": false,
+      "columns": "358px",
+      "base": {
+        "x": 16,
+        "y": 334.5,
+        "right": 374,
+        "bottom": 652
+      },
+      "modules": {
+        "x": 16,
+        "y": 674
+      },
+      "toggleHeight": 44,
+      "selectHeight": 44
+    },
+    "popup": {
+      "left": 190,
+      "right": 374,
+      "top": 424,
+      "bottom": 612,
+      "height": 900,
+      "background": "rgba(12, 13, 17, 0.94)",
+      "color": "rgb(243, 244, 246)",
+      "optionHeight": 44
+    }
+  },
+  {
+    "dimensions": {
+      "width": 320,
+      "overflow": false,
+      "columns": "288px",
+      "base": {
+        "x": 16,
+        "y": 334.5,
+        "right": 304,
+        "bottom": 652
+      },
+      "modules": {
+        "x": 16,
+        "y": 674
+      },
+      "toggleHeight": 44,
+      "selectHeight": 44
+    },
+    "popup": {
+      "left": 120,
+      "right": 304,
+      "top": 424,
+      "bottom": 612,
+      "height": 900,
+      "background": "rgba(12, 13, 17, 0.94)",
+      "color": "rgb(243, 244, 246)",
+      "optionHeight": 44
+    }
+  }
+]

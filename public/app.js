@@ -1492,7 +1492,7 @@
             const editing = this.editLayout;
             this.syncEditEntries();
             const tools = $('#localNavigationTools');
-            if (tools) tools.hidden = this.authenticated || !editing;
+            if (tools) this.setLocalSettingsVisible(!this.authenticated && editing);
             const status = $('#localNavigationStatus');
             if (status) status.hidden = this.authenticated || (!editing && !this.localStatusError);
             const engine = $('#engineBtn');
@@ -1551,6 +1551,7 @@
                     const status = $('#localSettingsError');
                     status.textContent = error.message;
                     status.hidden = false;
+                    this.setLocalDrawerOpen(true);
                 } finally {
                     this.localSettingsSaving = false;
                     $('#localSettingsForm').inert = false;
@@ -4018,6 +4019,119 @@
             return !!this.localSettingsDraft && LOCAL_SETTINGS_FIELDS.some(key => JSON.stringify(this.localSettingsDraft[key]) !== JSON.stringify(this.config[key]));
         }
 
+        setLocalSettingsVisible(visible) {
+            const tools = $('#localNavigationTools');
+            if (!tools || this.localToolsVisible === visible) return;
+            this.localToolsVisible = visible;
+            tools.getAnimations().forEach(animation => animation.cancel());
+            tools.style.overflow = '';
+            if (visible) tools.hidden = false;
+            else this.closeLocalSelects();
+            tools.inert = !visible;
+            if (matchMedia('(prefers-reduced-motion: reduce)').matches) { tools.hidden = !visible; return; }
+            const height = tools.getBoundingClientRect().height;
+            tools.style.overflow = 'clip';
+            const animation = tools.animate([
+                { height: `${visible ? 0 : height}px`, opacity: visible ? 0 : 1, transform: visible ? 'translateY(-8px)' : 'none' },
+                { height: `${visible ? height : 0}px`, opacity: visible ? 1 : 0, transform: visible ? 'none' : 'translateY(-8px)' }
+            ], { duration: 260, easing: 'cubic-bezier(.16,1,.3,1)' });
+            animation.onfinish = () => { tools.hidden = !visible; tools.style.overflow = ''; };
+        }
+
+        setLocalDrawerOpen(open) {
+            const tools = $('#localNavigationTools');
+            this.closeLocalSelects();
+            tools.dataset.open = String(open);
+            $('#localSettingsToggle').setAttribute('aria-expanded', String(open));
+            $('#localSettingsToggleText').textContent = open ? '收起设置' : '展开设置';
+            $('#localSettingsForm').inert = !open;
+            $('#localSettingsBody').setAttribute('aria-hidden', String(!open));
+        }
+
+        closeLocalSelects() {
+            document.querySelectorAll('.local-select-menu:popover-open').forEach(menu => menu.hidePopover());
+        }
+
+        syncLocalSelects() {
+            for (const select of document.querySelectorAll('#localSettingsForm select')) {
+                let wrapper = select.closest('.local-select');
+                if (!wrapper) {
+                    wrapper = document.createElement('div');
+                    wrapper.className = 'local-select';
+                    select.before(wrapper);
+                    wrapper.append(select);
+                    const label = document.querySelector(`label[for="${select.id}"]`);
+                    label.id = `${select.id}Label`;
+                    label.htmlFor = `${select.id}Button`;
+                    wrapper.insertAdjacentHTML('beforeend', `<button type="button" class="local-select-button" id="${select.id}Button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${select.id}Menu" aria-labelledby="${label.id} ${select.id}Value"><span id="${select.id}Value"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="local-select-menu" id="${select.id}Menu" popover="auto" role="listbox" aria-labelledby="${label.id}"></div>`);
+                    select.hidden = true;
+                    const button = wrapper.querySelector('button');
+                    const menu = wrapper.querySelector('[role="listbox"]');
+                    const highlight = index => {
+                        const options = [...menu.children];
+                        options.forEach((option, i) => option.classList.toggle('is-active', i === index));
+                        button.setAttribute('aria-activedescendant', options[index]?.id || '');
+                        options[index]?.scrollIntoView({ block: 'nearest' });
+                    };
+                    const open = () => {
+                        this.closeLocalSelects();
+                        const rect = button.getBoundingClientRect();
+                        const width = Math.min(Math.max(rect.width, 184), innerWidth - 24);
+                        menu.style.width = `${width}px`;
+                        menu.style.left = `${Math.max(12, Math.min(rect.right - width, innerWidth - width - 12))}px`;
+                        const below = innerHeight - rect.bottom - 12;
+                        const above = rect.top - 12;
+                        const upward = below < 180 && above > below;
+                        menu.style.maxHeight = `${Math.max(44, Math.min(272, upward ? above - 8 : below - 8))}px`;
+                        menu.style.top = upward ? 'auto' : `${rect.bottom + 6}px`;
+                        menu.style.bottom = upward ? `${innerHeight - rect.top + 6}px` : 'auto';
+                        menu.showPopover();
+                        highlight(select.selectedIndex);
+                    };
+                    const choose = index => {
+                        if (!select.options[index] || select.options[index].disabled) return;
+                        select.selectedIndex = index;
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                        menu.hidePopover();
+                        button.focus({ preventScroll: true });
+                    };
+                    button.onclick = () => menu.matches(':popover-open') ? menu.hidePopover() : open();
+                    menu.addEventListener('toggle', () => {
+                        button.setAttribute('aria-expanded', String(menu.matches(':popover-open')));
+                        if (!menu.matches(':popover-open')) button.removeAttribute('aria-activedescendant');
+                    });
+                    menu.onclick = event => {
+                        const option = event.target.closest('[role="option"]');
+                        if (option) choose(Number(option.dataset.index));
+                    };
+                    button.onkeydown = event => {
+                        const expanded = menu.matches(':popover-open');
+                        if (event.key === 'Escape' && expanded) {
+                            event.preventDefault(); event.stopPropagation(); menu.hidePopover(); return;
+                        }
+                        if (event.key === 'Tab') { if (expanded) menu.hidePopover(); return; }
+                        if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) {
+                            event.preventDefault();
+                            if (!expanded) { open(); return; }
+                            const current = [...menu.children].findIndex(option => option.classList.contains('is-active'));
+                            if (event.key === 'Enter' || event.key === ' ') choose(current);
+                            else highlight(event.key === 'Home' ? 0 : event.key === 'End' ? select.options.length - 1 : Math.max(0, Math.min(select.options.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1))));
+                        } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+                            event.preventDefault();
+                            if (!expanded) open();
+                            const index = [...select.options].findIndex(option => option.textContent.toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase()));
+                            if (index >= 0) highlight(index);
+                        }
+                    };
+                }
+                const button = wrapper.querySelector('button');
+                button.disabled = select.disabled;
+                wrapper.querySelector('button span').textContent = select.selectedOptions[0]?.textContent || '请选择';
+                const menu = wrapper.querySelector('[role="listbox"]');
+                menu.innerHTML = [...select.options].map((option, index) => `<button type="button" role="option" tabindex="-1" id="${select.id}Option${index}" data-index="${index}" aria-selected="${option.selected}"${option.disabled ? ' disabled' : ''}><span>${this.esc(option.textContent)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></button>`).join('');
+            }
+        }
+
         renderLocalSettings() {
             const draft = this.localSettingsDraft = window.NavigationSchema.publicConfig(structuredClone(this.config));
             const select = $('#localCurrentEngine');
@@ -4030,6 +4144,7 @@
             const renderSelection = () => {
                 select.innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
                 select.value = draft.searchEngine;
+                this.syncLocalSelects();
             };
             const render = () => {
                 editor.innerHTML = draft.searchEngines.map((e, i) => {
@@ -4109,6 +4224,8 @@
             // 公开模块分组只填自己的那块容器（#localModulesList），
             // 所以它异步完成后不会碰到上面的引擎草稿。
             this.renderLocalModulesGroup();
+            this.syncLocalSelects();
+            this.setLocalDrawerOpen(true);
         }
 
         /**
@@ -4123,15 +4240,10 @@
             const list = $('#localModulesList');
             if (!group || !list) return;
             const policy = this.publicModulePolicy;
-            if (this.authenticated || !Array.isArray(policy) || !policy.length) {
-                group.hidden = true;
-                list.replaceChildren();
-                return;
-            }
-            const ids = policy.filter(id => App.KNOWN_MODULES.includes(id));
-            if (!ids.length) {
-                group.hidden = true;
-                list.replaceChildren();
+            const ids = Array.isArray(policy) ? policy.filter(id => App.KNOWN_MODULES.includes(id)) : [];
+            if (this.authenticated || !ids.length) {
+                group.hidden = this.authenticated;
+                list.innerHTML = '<p class="local-modules-empty">暂无可用模块<span>管理员开放后，可在这里选择与配置。</span></p>';
                 return;
             }
             group.hidden = false;
@@ -4224,6 +4336,12 @@
 
         bindLocalNavigation() {
             this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
+            window.addEventListener('resize', () => this.closeLocalSelects());
+            window.addEventListener('scroll', event => {
+                if (!event.target.closest?.('.local-select-menu')) this.closeLocalSelects();
+            }, { capture: true, passive: true });
+            $('#localSettingsToggle').onclick = () => this.setLocalDrawerOpen($('#localNavigationTools').dataset.open !== 'true');
+            $('#localSettingsForm').addEventListener('change', () => this.syncLocalSelects());
             $('#localSettingsForm').onsubmit = event => { event.preventDefault(); this.saveEditSession(); };
             $('#localCancelBtn').onclick = () => this.cancelEditSession();
             $('#localUndoBtn').onclick = async () => {

@@ -3986,51 +3986,76 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
     .special-line-form-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
 
-/* ========== 首页「导航设置」面板 ==========
-   布局是一个统一网格 `.local-settings-grid`：两个常显分组各占一列，宽内容
-   （引擎表、数据管理）跨整行；≤560px 收成单列。
-   每个设置行都是「标签左、控件右」，控件贴本列尾部对齐。控件本身仍按内容定宽
-   （给的是上限，不是固定宽度），省下的宽度交回列——这是「下拉别那么宽」与
-   「右侧别留一大片白」能同时成立的前提：行是满的，控件是小的，列是它的对齐基准。
-   密度：组内 4px 负空间、网格 gap 22/40px，横线只留给面板顶部与两个折叠区。
-   窄屏：输入控件 16px 字号（iOS 小于 16px 聚焦会放大整页）、40px 高，按钮 44px。 */
-.local-navigation-tools { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; }
-.local-settings-heading h2 { font-size: 14px; font-weight: 600; }
-.local-settings-heading p { margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
-.local-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 40px; margin-top: 22px; }
+/* 首页编辑抽屉，展开与收起不改变草稿及保存语义。 */
+.local-navigation-tools { margin-top: 24px; font-size: 13px; }
+.local-settings-toggle { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.local-settings-toggle:hover { color: var(--text); }
+.local-settings-rule { flex: 1; height: 1px; background: var(--border); transition: background 160ms; }
+.local-settings-toggle:hover .local-settings-rule { background: var(--text-muted); }
+.local-settings-toggle svg, .local-select-button svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform 220ms cubic-bezier(.16,1,.3,1); }
+.local-navigation-tools[data-open="true"] .local-settings-toggle svg { transform: rotate(180deg); }
+.local-settings-body { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 260ms cubic-bezier(.16,1,.3,1),opacity 180ms; }
+.local-navigation-tools[data-open="false"] .local-settings-body { grid-template-rows: 0fr; opacity: 0; }
+.local-settings-body > form { min-height: 0; overflow: clip; }
+.local-settings-grid { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap: 24px 32px; padding: 16px 4px 4px; }
 .local-settings-group { min-width: 0; }
-.local-settings-group > h3 { margin: 0 0 2px; color: var(--text-secondary); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
+.local-settings-group > h2 { margin: 0 0 16px; color: var(--text); font-size: 15px; font-weight: 600; }
+.local-settings-modules { padding-left: 32px; border-left: 1px solid var(--border); }
 .local-settings-span { grid-column: 1 / -1; }
-.local-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 3px 0; }
+.local-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 5px 0; }
 .local-settings-row > label { color: var(--text-secondary); font-size: 12px; }
-/* 外观组是「控件 + 勾选项」一行：用户明确要求勾选项不单独占一行。
-   控件列是 auto，这一行就贴在列尾。 */
-.local-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
-.local-settings-inline { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
-.local-settings-hint { margin: 4px 0 10px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.local-settings-inline { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; min-height: 36px; }
+.local-settings-hint { margin: 4px 0 12px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .local-navigation-tools select,
-.local-navigation-tools input:not([type="checkbox"]) { width: auto; min-width: 84px; min-height: 32px; padding: 4px 9px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); color: var(--text); font: inherit; transition: border-color 140ms; }
-/* 上限只给「标签 + 控件」那种设置行；引擎表里的输入框要吃掉整列余量。 */
-.local-settings-row select,
-.local-settings-row input:not([type="checkbox"]) { max-width: 176px; }
-/* 控件也要有悬停态：静态样式表里 select 与输入框都是默认态，鼠标划过没有任何回应 */
-.local-navigation-tools select:hover:not(:disabled),
+.local-navigation-tools input:not([type="checkbox"]) { width: auto; min-width: 64px; min-height: 36px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); color: var(--text); font: inherit; transition: border-color 140ms; }
 .local-navigation-tools input:not([type="checkbox"]):hover { border-color: var(--focus); }
 .local-navigation-tools input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
-.local-navigation-tools :is(input, select, button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.local-navigation-tools :is(input,button,summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .local-settings-disclosure { border-top: 1px solid var(--border); padding-top: 10px; }
-.local-settings-disclosure summary { display: flex; align-items: baseline; gap: 6px; width: fit-content; padding: 2px 0; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.local-settings-base > .local-settings-disclosure { margin-top: 16px; }
+.local-settings-disclosure summary { display: flex; align-items: center; gap: 7px; min-height: 32px; cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 600; list-style: none; }
+.local-settings-disclosure summary::-webkit-details-marker { display: none; }
+.local-settings-disclosure summary::after { content: ''; width: 6px; height: 6px; margin-left: auto; margin-right: 4px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 160ms; }
 .local-settings-disclosure[open] summary { color: var(--text); }
-.local-settings-count { color: var(--text-muted); font-weight: 400; }
+.local-settings-disclosure[open] summary::after { transform: rotate(225deg); }
+.local-settings-count { color: var(--text-secondary); font-weight: 400; }
+.local-modules-empty { padding-top: 12px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.local-modules-empty span { display: block; margin-top: 6px; font-size: 12px; }
 
-/* 引擎列表：一行一项（序号 / 名称 / 搜索地址 / 操作）。名称列给上限而不是比例，
-   把余量让给搜索地址——地址比引擎名长得多。 */
+/* 保留 select 作为配置源；自绘按钮与顶层选项面板统一主题、键盘和触控。 */
+.local-select { min-width: 0; width: 156px; max-width: 100%; }
+.local-select-button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(165deg,var(--control-top),var(--control-bottom)); color: var(--text); box-shadow: inset 0 1px var(--inner-light,transparent),0 2px 4px -2px var(--inner-dark,transparent); font: inherit; text-align: left; cursor: pointer; transition: border-color 150ms,background 150ms,box-shadow 150ms; }
+.local-select-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-select-button:hover:not(:disabled),.local-select-button[aria-expanded="true"] { border-color: var(--focus); background: linear-gradient(165deg,var(--control-hover-top),var(--control-hover-bottom)); }
+.local-select-button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.local-select-button:active:not(:disabled) { box-shadow: var(--press-shadow); }
+.local-select-button:disabled { opacity: .5; cursor: not-allowed; }
+.local-select-menu { position: fixed; inset: auto; margin: 0; padding: 5px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 12px; background: var(--glass-strong); color: var(--text); box-shadow: var(--shadow-lg); backdrop-filter: blur(24px) saturate(150%); -webkit-backdrop-filter: blur(24px) saturate(150%); font: inherit; font-size: 13px; scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
+.local-select-menu:popover-open { animation: local-select-enter 150ms cubic-bezier(.16,1,.3,1); }
+.local-select-menu [role="option"] { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.local-select-menu [role="option"] > span { min-width: 0; overflow-wrap: anywhere; }
+.local-select-menu [role="option"] svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; visibility: hidden; }
+.local-select-menu [aria-selected="true"] { font-weight: 600; }
+.local-select-menu [aria-selected="true"] svg { visibility: visible; }
+.local-select-menu [role="option"]:is(:hover,.is-active) { background: var(--bg-hover); }
+.local-select-menu [role="option"]:disabled { opacity: .5; cursor: not-allowed; }
+@keyframes local-select-enter { from { opacity: .6; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+    .local-settings-body,.local-settings-toggle svg,.local-settings-disclosure summary::after,.local-select-button svg { transition: none; }
+    .local-select-menu:popover-open { animation: none; }
+}
+
+/* 引擎编辑位于导航基础列内；名称、地址与操作分行，长地址不挤压名称。 */
 .local-engine-head,
-.local-engine-item { display: grid; grid-template-columns: 20px minmax(0, 176px) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.local-engine-head { padding: 0 0 4px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
-.local-engine-item { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.local-engine-item { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 8px; }
+.local-engine-head { display: none; padding: 0 0 4px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.local-engine-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .local-engine-item:last-child { border-bottom: 0; }
-.local-engine-item input { width: 100%; min-height: 30px; }
+.local-engine-item input { width: 100%; min-height: 36px; min-width: 0; }
+.local-engine-index { grid-area: 1 / 1; }
+.local-engine-name { grid-area: 1 / 2; }
+.local-engine-item input[data-field="url"] { grid-area: 2 / 2; }
+.local-engine-item .local-engine-actions { grid-area: 3 / 2; }
 .local-engine-index { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .local-engine-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .local-engine-name input { flex: 1 1 auto; min-width: 0; }
@@ -4058,31 +4083,22 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 /* 上面那条 84px 的 min-width 是给下拉框的；条数是个两位数，收窄一点。 */
 .local-module-setting input { min-width: 64px; max-width: 88px; }
 #localAdoptBtn { margin-top: 8px; }
-/* 单列只是网格收窄：设置行仍然是「标签左、控件右」。
-   折点由内容算出来，不是套模板：两列各需「标签 72 + 间隙 12 + 16px 字号控件 136
-   + 至少 20px 的标签到控件间隔 = 240px」，加 40px 列间隙与 24px 内边距 ≈ 544px。
-   取 560px 留一点余量。收得太早（例如 600px）反而更差——单列下标签与控件会被
-   拉开 413px，读数跳得太远。 */
-@media (max-width: 560px) {
-    .local-settings-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; margin-top: 18px; }
-    .local-settings-row { padding: 6px 0; }
-    /* 320px 视口下「下拉 + 勾选项」并排会超出列宽，让它们在本列内竖排并贴右。 */
-    .local-settings-controls { flex-direction: column; align-items: flex-end; }
+@media (max-width: 700px) {
+    .local-settings-grid { grid-template-columns: minmax(0,1fr); gap: 22px; }
+    .local-settings-modules { padding: 20px 0 0; border-left: 0; border-top: 1px solid var(--border); }
 }
 @media (max-width: 600px) {
-    .local-navigation-tools { margin-top: 20px; padding-top: 16px; }
+    .local-navigation-tools { margin-top: 20px; }
     /* iOS 在 font-size 小于 16px 的输入控件上聚焦会自动放大整个页面，弹层会被顶出视口。
        本项目其它表单遵守同一条（见 .special-line-form textarea 的注释），这里补上。 */
-    .local-navigation-tools select,
+    .local-select-button,
     .local-navigation-tools input:not([type="checkbox"]) { min-height: 40px; font-size: 16px; }
-    .local-navigation-tools button, .local-settings-disclosure summary { min-height: 44px; }
+    .local-navigation-tools button, .local-settings-disclosure summary, .local-select-menu [role="option"] { min-height: 44px; }
+    .local-select { width: 148px; }
+    .local-select-menu { font-size: 16px; }
     /* 上面那两条把操作压到 30px 的规则权重更高，窄屏必须显式还原到触控下限。 */
     .local-engine-actions .btn { min-height: 44px; }
     .local-engine-head { display: none; }
     .local-engine-item { grid-template-columns: 20px minmax(0, 1fr); row-gap: 6px; padding: 8px 0; }
     .local-engine-item input { min-height: 40px; }
-    .local-engine-index { grid-area: 1 / 1; }
-    .local-engine-name { grid-area: 1 / 2; }
-    .local-engine-item input[data-field="url"] { grid-area: 2 / 2; }
-    .local-engine-item .local-engine-actions { grid-area: 3 / 2; }
 }

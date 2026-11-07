@@ -184,15 +184,26 @@ log_info "压缩包: $ARCHIVE_PATH ($ARCHIVE_SIZE)"
 # 生成发布说明
 log_step "生成发布说明..."
 
+# 测试包由用户主动下载，常规安装和更新继续使用正式渠道。
+INSTALL_INSTRUCTIONS='```bash
+curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+```'
+UPDATE_INSTRUCTIONS='已安装用户可运行:
+```bash
+./sylph.sh update
+```'
+if [[ "$VERSION" == *-* ]]; then
+    INSTALL_INSTRUCTIONS='本版本为测试预发布，请下载本页安装包并在独立测试环境解包部署。'
+    UPDATE_INSTRUCTIONS='常规自动更新继续使用正式版；测试环境请使用本页附件。'
+fi
+
 # 从 CHANGELOG.json 提取最新版本的信息
 RELEASE_NOTES=$(cat <<EOF
 ## Nav Sylph v${VERSION}
 
 ### 安装方式
 
-\`\`\`bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
-\`\`\`
+${INSTALL_INSTRUCTIONS}
 
 ### 更新亮点
 
@@ -217,10 +228,7 @@ RELEASE_NOTES="${RELEASE_NOTES}"$'\n\n'"${HIGHLIGHTS}
 
 ### 更新方式
 
-已安装用户可运行:
-\`\`\`bash
-./sylph.sh update
-\`\`\`
+${UPDATE_INSTRUCTIONS}
 "
 
 echo "$RELEASE_NOTES"
@@ -258,9 +266,15 @@ if gh release view "v${VERSION}" >/dev/null 2>&1; then
     log_error "Release v${VERSION} 已存在，请先删除：gh release delete v${VERSION}"
     exit 1
 fi
+# SemVer 预发布版本只进入测试渠道，保持正式更新入口不变。
+RELEASE_FLAGS=()
+if [[ "$VERSION" == *-* ]]; then
+    RELEASE_FLAGS=(--prerelease --latest=false)
+fi
 gh release create "v${VERSION}" \
     --title "Nav Sylph v${VERSION}" \
     --notes "$RELEASE_NOTES" \
+    "${RELEASE_FLAGS[@]}" \
     "$ARCHIVE_PATH"
 
 # 清理

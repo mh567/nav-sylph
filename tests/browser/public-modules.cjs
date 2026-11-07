@@ -100,11 +100,11 @@ test('browser: 访客按需启用公开模块，布局与偏好存本机，管�
     const visitor = await openPage(visitorContext, app);
     const admin = await openPage(adminContext, app);
 
-    // ---------- 未开放：访客一个模块脚本都不下载，设置里也没有模块分组 ----------
+    // ---------- 未开放：保留模块空态，不下载任何模块脚本 ----------
     await visitor.page.locator('#layoutBtn').click();
     await visitor.page.locator('#localNavigationTools').waitFor({ state: 'visible' });
-    assert.equal(await visitor.page.locator('#localModulesGroup').isHidden(), true,
-        '没有开放的公开模块时，设置里不出现模块分组');
+    assert.equal(await visitor.page.locator('#localModulesGroup').isVisible(), true);
+    assert.match(await visitor.page.locator('#localModulesList').textContent(), /暂无可用模块/);
     assert.equal(await visitor.page.locator('.module-widget').count(), 0, '首页没有模块卡片');
     await visitor.page.locator('#localCancelBtn').click();
     assert.equal(visitor.scriptRequests(), 0, '未开放期间不下载模块脚本（首屏不为它付费）');

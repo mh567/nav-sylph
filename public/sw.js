@@ -1,3 +1,4 @@
+// nav-v136：匿名编辑设置分组抽屉、收起指示与主题化选择面板。
 // nav-v135：棱镜书签复用当前版本的尺寸、字号与间距，保留按钮材质。
 // nav-v134：棱镜分类标题收小，导航书签恢复精细按钮材质与按压反馈。
 // nav-v133：按完整参考站重做棱镜材质、排版与控件，加入自托管字体及完整可见的手机后台分区。
@@ -346,7 +347,7 @@
 // nav-v38：更新周期可配 + agent 部署命令面板，改了 app.js、admin.css、server.js。
 // nav-v37：服务器监控改为多服务器（每台一张卡片）+ 后台监控目标列表，
 // 改了 app.js、styles.css、admin.css、modules/server-monitor.js。
-const CACHE = 'nav-v135';
+const CACHE = 'nav-v136';
 const ASSETS = [
     '/',
     '/index.html',

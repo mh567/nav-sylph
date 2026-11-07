@@ -6,6 +6,7 @@ const path = require('node:path');
 const bcrypt = require('bcrypt');
 const { chromium } = require('playwright');
 const { installation } = require('../helpers/installation');
+const localSelect = require('../helpers/local-select.cjs');
 const shots = path.join(__dirname, '../../.impeccable/review');
 
 async function fixture(t) {
@@ -40,8 +41,8 @@ async function saveAdmin(page) {
 test('browser: 访客主题真实保存、取消、重载、离线回访与经典明暗偏好恢复', async t => {
     const { page, context } = await fixture(t);
     await page.locator('#layoutBtn').click();
-    await page.locator('#localThemeSelect').selectOption('light');
-    await page.locator('#localThemeStyleSelect').selectOption('prism');
+    await localSelect(page, 'localThemeSelect', 'light');
+    await localSelect(page, 'localThemeStyleSelect', 'prism');
     assert.equal(await page.locator('#localThemeSelect').isDisabled(), true);
     await page.locator('#localDoneBtn').click();
     await appearance(page, 'prism', 'dark');
@@ -52,13 +53,13 @@ test('browser: 访客主题真实保存、取消、重载、离线回访与经�
     await appearance(page, 'prism', 'dark');
     await context.setOffline(false);
     await page.locator('#layoutBtn').click();
-    await page.locator('#localThemeStyleSelect').selectOption('classic');
+    await localSelect(page, 'localThemeStyleSelect', 'classic');
     await page.locator('#localCancelBtn').click();
     await page.locator('.ui-dialog button[type="submit"]').click();
     await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
     await appearance(page, 'prism', 'dark');
     await page.locator('#layoutBtn').click();
-    await page.locator('#localThemeStyleSelect').selectOption('classic');
+    await localSelect(page, 'localThemeStyleSelect', 'classic');
     assert.equal(await page.locator('#localThemeSelect').isDisabled(), false);
     assert.equal(await page.locator('#localThemeSelect').inputValue(), 'light');
     await page.locator('#localDoneBtn').click();

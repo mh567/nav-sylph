@@ -1,0 +1,17 @@
+{
+  "browser": "Ego",
+  "checks": [
+    "outside click dismisses menu",
+    "keyboard tab reaches theme selector",
+    "public module setting applies",
+    "invalid save reopens collapsed drawer",
+    "public module setting persists",
+    "cancel discards engine draft",
+    "classic light menu themed",
+    "classic dark menu themed",
+    "reduced motion has no drawer animation",
+    "removed introductory copy",
+    "landscape menu inside viewport",
+    "collapsed form inert"
+  ]
+}

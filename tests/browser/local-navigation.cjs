@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const { installation } = require('../helpers/installation');
+const localSelect = require('../helpers/local-select.cjs');
 
 test('browser: visitor navigation changes persist through reload', async t => {
     const app = await installation(t);
@@ -50,7 +51,7 @@ async function settings(page, { engines = false, data = false } = {}) {
 async function changeTheme(page) {
     await settings(page);
     const current = await page.locator('#localThemeSelect').inputValue();
-    await page.locator('#localThemeSelect').selectOption(current === 'dark' ? 'light' : 'dark');
+    await localSelect(page, 'localThemeSelect', current === 'dark' ? 'light' : 'dark');
     await page.locator('#localDoneBtn').click();
 }
 
@@ -63,7 +64,7 @@ async function engines(page, entries, current) {
         const row = page.locator('.local-engine-item').nth(i);
         for (const [field, value] of Object.entries(entries[i])) if (field !== 'id') await row.locator(`[data-field="${field}"]`).fill(value);
     }
-    if (current) await page.locator('#localCurrentEngine').selectOption({ index: entries.findIndex(entry => entry.id === current) });
+    if (current) await localSelect(page, 'localCurrentEngine', entries.findIndex(entry => entry.id === current));
 }
 
 
@@ -297,10 +298,10 @@ test('browser: inline settings remain keyboard-accessible and fit narrow and lan
         await page.setViewportSize(viewport);
         await settings(page);
         assert.equal(await page.locator('.ui-dialog').count(), 0);
-        await page.locator('#localCurrentEngine').focus(); await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#localThemeStyleSelect').evaluate(el => el === document.activeElement), true);
+        await page.locator('#localCurrentEngineButton').focus(); await page.keyboard.press('Tab');
+        assert.equal(await page.locator('#localThemeStyleSelectButton').evaluate(el => el === document.activeElement), true);
         await page.keyboard.press('Tab');
-        assert.equal(await page.locator('#localThemeSelect').evaluate(el => el === document.activeElement), true);
+        assert.equal(await page.locator('#localThemeSelectButton').evaluate(el => el === document.activeElement), true);
         await page.locator('#localEnginesDetails > summary').click();
         await page.locator('#localDoneBtn').scrollIntoViewIfNeeded();
         const rect = await page.locator('#localDoneBtn').boundingBox();
@@ -357,8 +358,8 @@ test('browser: ordinary settings appear below navigation only while editing; sav
     assert.equal(await page.locator('#localNavigationTools').evaluate(el => el.previousElementSibling.id), 'grid');
     assert.equal(await page.locator('#engineBtn').isDisabled(), true);
     const engine = await page.locator('#localCurrentEngine option').nth(1).getAttribute('value');
-    await page.locator('#localCurrentEngine').selectOption(engine);
-    await page.locator('#localThemeSelect').selectOption('light');
+    await localSelect(page, 'localCurrentEngine', engine);
+    await localSelect(page, 'localThemeSelect', 'light');
     await page.locator('#localIconsToggle').uncheck();
     await page.locator('#localDoneBtn').click();
     await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
@@ -370,9 +371,41 @@ test('browser: ordinary settings appear below navigation only while editing; sav
     await settings(page);
     assert.equal(await page.locator('#localCurrentEngine').inputValue(), engine);
     assert.equal(await page.locator('#localIconsToggle').isChecked(), false);
-    await page.locator('#localThemeSelect').selectOption('dark');
+    await localSelect(page, 'localThemeSelect', 'dark');
     await page.locator('#localCancelBtn').click(); await submit(page);
     await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
     await settings(page);
     assert.equal(await page.locator('#localThemeSelect').inputValue(), 'light');
+});
+
+
+test('browser: settings drawer keeps drafts, themed selects support keyboard and light dismissal', async t => {
+    const { page } = await setup(t);
+    await settings(page);
+    const select = page.locator('#localCurrentEngine');
+    const original = await select.inputValue();
+    const button = page.locator('#localCurrentEngineButton');
+    await button.click();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    const chosen = await select.inputValue();
+    assert.notEqual(chosen, original);
+    await page.locator('#localSettingsToggle').click();
+    await page.waitForFunction(() => document.querySelector('#localSettingsBody').getBoundingClientRect().height < 1);
+    assert.equal(await page.locator('#localSettingsForm').evaluate(el => el.inert), true);
+    await page.locator('#localSettingsToggle').click();
+    assert.equal(await select.inputValue(), chosen);
+    await button.click();
+    await page.keyboard.press('Escape');
+    assert.equal(await button.getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('.ui-dialog').count(), 0);
+    assert.equal(await page.locator('#localNavigationTools').isVisible(), true);
+    await button.click();
+    await page.locator('#localModulesTitle').click();
+    await page.waitForFunction(() => !document.querySelector('.local-select-menu:popover-open'));
+    await page.locator('#localDoneBtn').click();
+    await page.locator('#localNavigationTools').waitFor({ state: 'hidden' });
+    await page.reload();
+    await settings(page);
+    assert.equal(await select.inputValue(), chosen);
 });
