@@ -19,6 +19,27 @@ function blockBody(css, header) {
     throw new Error(`${header} 的块没有闭合`);
 }
 
+test('themes: 棱镜的选中态用白面加深色标记，不靠白底压白标', () => {
+    // 棱镜的 --accent 是近白色，而这两处控件的「选中」标记也是白的：
+    // 后台的模块开关（轨道 = --accent、旋钮 = 近白薄膜）与备忘待办的勾选框
+    // （底色 = --accent、勾 = #fff）。白压白 = 状态整个看不见。
+    // 棱镜里「选中」的控件一律是**白面 + 深色标记**——原生 checkbox 就是这么画的
+    // （accent 填白、勾自动取对比色），照它来；经典主题的 accent 是陶土色，不受影响。
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'themes.css'), 'utf8');
+    const knob = /\.toggle-switch input:checked \+ \.toggle-slider::before\s*\{([^}]*)\}/.exec(css);
+    assert.ok(knob, '棱镜给「开」态的旋钮单独定了样式');
+    assert.match(knob[1], /background:[^;}]*#(?:1f2932|33404a)/i, '开态旋钮是深色（白轨上的深色挖空）');
+    const track = /\.toggle-switch input:checked \+ \.toggle-slider\s*\{([^}]*)\}/.exec(css);
+    assert.ok(track, '棱镜给「开」态的轨道单独定了样式');
+    assert.match(track[1], /background:[^;}]*#ffffff/i, '开态轨道是白面');
+    const todo = /\.memo-todo-check:checked\s*\{([^}]*)\}/.exec(css);
+    assert.ok(todo, '棱镜给待办勾选框的选中态单独定了样式');
+    assert.match(todo[1], /background:[^;}]*#ffffff/i, '待办选中底是白面');
+    const mark = /\.memo-todo-check-wrap::after\s*\{([^}]*)\}/.exec(css);
+    assert.ok(mark, '棱镜给勾号单独定了颜色');
+    assert.match(mark[1], /background:\s*#1b232b/i, '勾号是深色，压在白底上才看得见');
+});
+
 test('themes: 浏览器没有背景模糊时，内容面板仍保留透明薄膜而不是退回实心板', () => {
     // 这条盯的是 Windows 上的真实故障：Firefox 123 之前在「GPU 厂商识别不出来」的
     // 机器上不提供 backdrop-filter（MDN 引 bug 1868737），Windows 的虚拟机与部分

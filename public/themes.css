@@ -204,6 +204,18 @@
 :root[data-theme-style="prism"] .admin-tab[aria-selected="true"] { background: var(--prism-pill); color: var(--text); box-shadow: var(--prism-pill-shadow); }
 :root[data-theme-style="prism"] .setting-row { padding-top: 14px; padding-bottom: 14px; }
 :root[data-theme-style="prism"] .setting-row label { font-size: 14px; }
+/* 开关的「开」态：棱镜的 --accent 是**近白色**，而旋钮本身也是一层近白的薄膜，
+   两者叠在一起旋钮就整个消失，开关只剩一块白板，状态无从分辨（经典浅色与深色
+   主题的 accent 都比旋钮深或更深，没有这个问题）。
+   棱镜下把「开」态翻过来：轨道是白色薄膜，旋钮是深色的挖空，且移到右侧——
+   轨道亮度、旋钮位置与旋钮颜色三样都在说「开着」。 */
+:root[data-theme-style="prism"] .modal .toggle-switch input:checked + .toggle-slider { border-color: #ffffffb3; background: linear-gradient(175deg,#ffffff33,#ffffff1a); }
+:root[data-theme-style="prism"] .modal .toggle-switch input:checked + .toggle-slider::before { background: linear-gradient(165deg,#33404a,#1f2932); box-shadow: inset 0 1px #ffffff24,0 1px 2px #00000059; }
+/* 备忘待办的勾选框是同一类问题：勾是 #fff，底色在棱镜下也是 --accent 的白，
+   白勾压在白底上等于没打勾。棱镜里「选中」的控件一律是**白面 + 深色标记**
+   （原生 checkbox 就是这么画的：accent 填白、勾自动取对比色），照它来。 */
+:root[data-theme-style="prism"] .memo-todo-check:checked { border-color: #ffffff; background: linear-gradient(180deg, #ffffff, var(--accent)); }
+:root[data-theme-style="prism"] .memo-todo-check-wrap::after { background: #1b232b; }
 :root[data-theme-style="prism"] :is(.modal,.fav-dialog,.ui-dialog) :is(input,textarea,select):focus { border-color: var(--focus); box-shadow: none; outline: 2px solid var(--focus); outline-offset: 2px; }
 :root[data-theme-style="prism"] :is(.modal,.fav-dialog,.ui-dialog) :is(input,textarea,select) { border-radius: 12px; }
 :root[data-theme-style="prism"] :is(.memo-card,.memo-tabs)::before { display: none; }
