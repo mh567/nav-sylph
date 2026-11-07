@@ -2,13 +2,15 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## v2.2.5 正式发布（2026-11-07，候选检查通过，待发布）
+## v2.2.5 正式发布（2026-11-07，已发布并核对实际附件）
 
 - 用户授权：提交并发布新版本，按正式版v2.2.5执行；基线main为820f133，远端正式latest为v2.2.4，已有测试预发布v2.2.5-beta.1。原未跟踪交接文件保留。
 - 范围：将青灰环境光与顶部主题快捷入口集成到main，正式版同时包含此前beta的匿名编辑分组抽屉。默认棱镜仅影响未指定视觉主题的配置，显式classic与明暗偏好保留，数据格式、权限和配置归属不变。版本JSON四处同步为2.2.5，SW为nav-v138。
 - 既有Ego验证：青灰材质、四档视口、后台/模块/分享，以及顶部入口首次默认、保存刷新、键盘、编辑禁用、管理员个人归属隔离。精简JSON随仓库保留，截图仍在T3任务工作区；不重新运行Chromium/Playwright。
 - 候选验证：主项目全量Node测试 **893通过、0跳过、0失败**；八个相关JavaScript文件、发布脚本语法、版本JSON一致性与差异检查通过。先前两项Agent版本测试命中已有beta产物，确认根因为旧构建产物后运行scripts/build-agent.sh重建2.2.5，再完整重跑通过；未修改Agent源码或测试。日志 `/tmp/sylph-release-225-tests.log` 与 `/tmp/sylph-release-225-build.log`。
-- Standards/Spec：对照本次默认主题、配置归属、明确经典保留、快捷入口与青灰打光需求复核集成差异，无阻塞发现；无新依赖。待完成：提交并推送main、scripts/release.sh正式发布、读取latest与实际附件核验。未关联独立Issue。
+- Standards/Spec：对照本次默认主题、配置归属、明确经典保留、快捷入口与青灰打光需求复核集成差异，无阻塞发现；无新依赖。实现提交 `f400b68e8821f7589412389825642fe04688d889` 已推送main；`scripts/release.sh` 创建 [v2.2.5](https://github.com/mh567/nav-sylph/releases/tag/v2.2.5)，tag解引用为该实现提交，非草稿、非预发布，`/releases/latest` 已返回v2.2.5。收尾文档另行追加提交，不移动版本tag。未关联独立Issue。
+- 实际附件：已下载 `nav-sylph-v2.2.5.tar.gz`，13,721,993字节，SHA-256 `facadbb83d59492ca4f08b09602add0f38165f058d8b71dabf22f4b8263a45d3`，与GitHub资产digest一致。包内package/lock/version/最新CHANGELOG均为2.2.5，SW为nav-v138；运行代码、顶部入口、prism默认、背景CSS及字体许可逐字节匹配main。三个Linux ELF Agent齐全，本机Agent自报2.2.5、协议v1；logs仅.gitkeep，无已知私有配置、会话数据库、依赖或QA资料。核验记录 `/tmp/sylph-release-225-verification/result.json`。
+- 下一步：目标主机可运行 `./sylph.sh update` 获取正式版，真实主机升级仍待执行。主项目原未跟踪交接文件保持原样，T3工作区同步正式版代码及发布记录。
 - 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。以下小节为此前工作记录，提交与发布状态以本节为准。
 
 ## 首页主题快捷入口与默认棱镜（2026-11-07，本地实现，未提交）
