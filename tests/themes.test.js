@@ -40,6 +40,32 @@ test('themes: 棱镜的选中态用白面加深色标记，不靠白底压白标
     assert.match(mark[1], /background:\s*#1b232b/i, '勾号是深色，压在白底上才看得见');
 });
 
+test('themes: 棱镜滚动不做经典主题没有的逐帧重绘', () => {
+    // 用户报告 Windows 上棱镜上下滚动掉帧、经典主题正常。实测一次 41 帧滚动：
+    // 棱镜 PictureLayer::Update 328 次，经典 164 次。两处棱镜独有开销：
+    // ① 分类板/模块板的 backdrop-filter 要在每帧重新采样背景；
+    // ② background-attachment: fixed 让整屏环境光逐帧重绘。
+    // 两处都去掉后棱镜为 164 次，与经典持平。
+    const css = fs.readFileSync(path.join(__dirname, '..', 'public', 'themes.css'), 'utf8');
+    // 先剥注释：下面禁止的写法在解释性注释里被原样引用，否则反例断言会匹配到自己。
+    const noComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const prismBody = /:root\[data-theme-style="prism"\] body\s*\{([^}]*)\}/.exec(noComments);
+    assert.ok(prismBody, '棱镜 body 规则存在');
+    assert.doesNotMatch(prismBody[1], /background-attachment:\s*fixed/,
+        '环境光随文档滚动，不用会逐帧重绘的固定背景');
+    assert.match(prismBody[1], /radial-gradient/, '环境光本身仍在');
+
+    const card = /:root\[data-theme-style="prism"\] :is\(\.category,\.module-widget\)\s*\{([^}]*)\}/.exec(noComments);
+    assert.ok(card, '棱镜分类板/模块板规则存在');
+    assert.doesNotMatch(card[1], /backdrop-filter/,
+        '分类板与模块板不做逐帧背景模糊');
+    assert.match(card[1], /background:\s*var\(--prism-slab\)/, '薄膜底色与光学薄边保留');
+
+    // 浮层是静止且短暂的，保留模糊的视觉收益明确，不属于滚动热路径。
+    assert.match(noComments, /\.help-content[^}]*backdrop-filter/, '浮层仍保留背景模糊');
+});
+
 test('themes: 浏览器没有背景模糊时，内容面板仍保留透明薄膜而不是退回实心板', () => {
     // 这条盯的是 Windows 上的真实故障：Firefox 123 之前在「GPU 厂商识别不出来」的
     // 机器上不提供 backdrop-filter（MDN 引 bug 1868737），Windows 的虚拟机与部分
