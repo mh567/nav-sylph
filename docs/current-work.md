@@ -2,13 +2,15 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## v2.2.6 玻璃材质修正版发布（2026-11-07，候选检查通过，待发布）
+## v2.2.6 玻璃材质修正版发布（2026-11-07，已发布并核对实际附件）
 
 - 用户授权提交并发布小版本，正式版为v2.2.6。基线main为c626cb5、远端latest为v2.2.5；玻璃材质修正与精简Ego证据集成至main，截图保留在T3任务工作区。
 - 范围为棱镜透明度、圆角、反光、软阴影及选择器状态，经典主题、控件几何、字体、数据与保存行为保持原样。版本JSON四处同步为2.2.6，SW为nav-v139，无新增依赖。
 - 既有Ego覆盖1440/834/390/320px、玻璃计算样式、键盘切换、匿名菜单、后台/模块/分享与减少透明度回退；本轮不重跑Chromium/Playwright。
 - 候选验证：scripts/build-agent.sh重建2.2.6，三个Linux ELF产物自检通过；主项目全量Node测试 **893通过、0跳过、0失败**，相关JavaScript与发布脚本语法、版本JSON一致性和git diff --check通过。日志 `/tmp/sylph-release-226-tests.log` 与 `/tmp/sylph-release-226-build.log`。Standards/Spec复核无阻塞发现。
-- 待完成：提交推送main、scripts/release.sh发布及实际附件核验。无关联独立Issue，保留原未跟踪交接文件。
+- 提交与发布：实现提交 `233ac6f481330ef44af76c6d69c00493598c00e0` 已推送main；`scripts/release.sh`创建 [v2.2.6](https://github.com/mh567/nav-sylph/releases/tag/v2.2.6)，tag解引用为该实现提交，非草稿、非预发布，`/releases/latest`已返回v2.2.6。收尾文档单独提交，不移动版本tag。无关联独立Issue。
+- 实际附件：已下载 `nav-sylph-v2.2.6.tar.gz`，13,722,164字节，SHA-256 `89846e0d4911f295f0ce652769fafcb5fb06ed4d9eee21cd5b5db1432d141b52`，与GitHub资产digest一致。包内package/lock/version/最新CHANGELOG均为2.2.6，SW为nav-v139；运行文件、玻璃参数与字体许可逐字节匹配main，三个Linux ELF Agent齐全，本机Agent自报2.2.6、协议v1。logs仅.gitkeep，无已知私有配置、会话库、依赖或QA记录。核验文件 `/tmp/sylph-release-226-verification/result.json`。
+- 下一步：目标主机可运行 `./sylph.sh update` 获取正式版，目标升级尚未执行。主项目原未跟踪交接文件保持原样，T3工作区同步正式版源码与发布记录，保留开发截图。
 - 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。下方历史状态以本节为准。
 
 ## 棱镜圆润玻璃材质复修（2026-11-07，本地实现，未提交）
