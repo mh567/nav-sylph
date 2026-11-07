@@ -1,0 +1,69 @@
+{
+  "browser": "Ego",
+  "results": [
+    {
+      "width": 1440,
+      "overflow": false,
+      "card": {
+        "color": "rgba(19, 29, 38, 0.38)",
+        "radius": "28px",
+        "blur": "blur(18px) saturate(1.4)"
+      },
+      "bookmark": {
+        "width": "96px",
+        "height": "42px",
+        "radius": "12px",
+        "font": "12px"
+      }
+    },
+    {
+      "width": 834,
+      "overflow": false,
+      "card": {
+        "color": "rgba(19, 29, 38, 0.38)",
+        "radius": "28px",
+        "blur": "blur(18px) saturate(1.4)"
+      },
+      "bookmark": {
+        "width": "96px",
+        "height": "42px",
+        "radius": "12px",
+        "font": "12px"
+      }
+    },
+    {
+      "width": 390,
+      "overflow": false,
+      "card": {
+        "color": "rgba(19, 29, 38, 0.38)",
+        "radius": "26px",
+        "blur": "blur(18px) saturate(1.4)"
+      },
+      "bookmark": {
+        "width": "104px",
+        "height": "44px",
+        "radius": "12px",
+        "font": "12px"
+      }
+    },
+    {
+      "width": 320,
+      "overflow": false,
+      "card": {
+        "color": "rgba(19, 29, 38, 0.38)",
+        "radius": "26px",
+        "blur": "blur(18px) saturate(1.4)"
+      },
+      "bookmark": {
+        "width": "80.6641px",
+        "height": "44px",
+        "radius": "12px",
+        "font": "12px"
+      }
+    }
+  ],
+  "classicRadius": "7px",
+  "hover": "linear-gradient(175deg,#ffffff32 0%,#ffffff13 45%,#ffffff04 100%),rgba(20,31,41,.22)",
+  "panel": "rgba(25, 36, 47, 0.84)",
+  "reduced": "rgb(39, 50, 59)"
+}

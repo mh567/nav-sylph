@@ -97,7 +97,7 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
         assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 35, 43)');
         const colors = await page.locator('.module-widget').evaluateAll(nodes => nodes.map(n => getComputedStyle(n).backgroundColor));
         assert.ok(colors.length >= 2);
-        assert.ok(colors.every(c => c === 'rgba(31, 41, 49, 0.72)'), JSON.stringify(colors));
+        assert.ok(colors.every(c => c === 'rgba(19, 29, 38, 0.38)'), JSON.stringify(colors));
         await page.screenshot({ path: path.join(shots, `${name}.png`), fullPage: true });
     }
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -116,7 +116,7 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
         const style = getComputedStyle(document.querySelector(selector));
         return [selector, { background: style.backgroundColor, color: style.color }];
     })));
-    assert.equal(shareColors['.container'].background, 'rgba(32, 43, 53, 0.96)');
+    assert.equal(shareColors['.container'].background, 'rgba(25, 36, 47, 0.84)');
     assert.equal(shareColors['#content'].color, 'rgb(243, 244, 246)');
     console.log('share computed styles: ' + JSON.stringify(shareColors));
     await page.screenshot({ path: path.join(shots, 'share.png'), fullPage: true });
