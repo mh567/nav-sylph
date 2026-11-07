@@ -229,12 +229,23 @@
     :root[data-theme-style="prism"] .modal-header { padding: 14px 16px; }
     :root[data-theme-style="prism"] .modal-header h2 { font-size: 20px; }
 }
-/* 明确要求「少透明」时（macOS 的「降低透明度」，Windows 没有这个开关）：
-   表面回退为不透明卡片，薄边也一并去掉——一条亮边配一块实心板，与「少透明」
-   的诉求相冲。 */
+/* 「少透明」时（Windows 的「透明度效果」关闭、macOS 的「降低透明度」打开，Chrome
+   118 起都会报这个偏好）：换成同一套设计的**哑光版**——底色不透明，上方的冷调色偏、
+   150 度反射、光学薄边、圆角与投影全部照旧，只有「透过去」这一件事去掉。
+   ⚠️ 此前这里是把面板直接换成一整块平涂的 --bg-card（#27323b）并去掉薄边，那正是
+   v2.2.5 那种「死板生硬」的底板：Windows 上只要「透明度效果」是关的（不少机器
+   默认如此，虚拟机与部分驱动也落在这类），整页就退成另一个主题，与 macOS 差得很远。
+   做法是**改 token 而不是逐个改元素**——所有用到薄膜与胶囊的部件自动拿到哑光版。 */
 @media (prefers-reduced-transparency: reduce) {
-    :root[data-theme-style="prism"] :is(.category,.module-widget)::after { display: none; }
-    :root[data-theme-style="prism"] :is(.category,.module-widget,.search,.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container,.engine-dropdown,.fav-dropdown,.help-content,.toast) { background: var(--bg-card); backdrop-filter: none; -webkit-backdrop-filter: none; }
+    :root[data-theme-style="prism"] {
+        --prism-slab: radial-gradient(ellipse 80% 160% at 0% -70%,#e1f4ff14,transparent 72%),linear-gradient(130deg,#eef8ff08 0%,#ffffff00 42%,#a5dcf608 100%),#27323b;
+        --prism-pill: linear-gradient(175deg,#ffffff26 0%,#ffffff0b 38%,#ffffff02 65%,#ffffff08 100%),#202b34;
+        --glass-strong: #253039;
+    }
+    /* :is() 取参数里最高的特异性，:search:hover 是 0-2-0，与搜索框基础那条
+       （:root[...]:is(.search,.search:hover,.search:focus-within)）同为 0-4-0，
+       靠源码顺序取胜——少写这两个伪类变体的话，搜索框的模糊会留下来。 */
+    :root[data-theme-style="prism"] :is(.category,.module-widget,.search,.search:hover,.search:focus-within,.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container,.engine-dropdown,.fav-dropdown,.help-content,.toast) { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 /* 浏览器没有背景模糊时**不要**退回不透明卡片：那正是 v2.2.5 那种死板厚重的底板，
    用户点名的就是它。分类板与模块板保留透明薄膜与光学薄边——页面底子是一层平滑的

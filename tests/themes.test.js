@@ -35,9 +35,20 @@ test('themes: 浏览器没有背景模糊时，内容面板仍保留透明薄膜
     }
 
     // 「减少透明度」是用户明确要求的少透明，那条路必须走不透明底，且与上面的兜底分开。
+    // 但不能把面板压成一整块平涂的 --bg-card——那是 v2.2.5 那种死板底板，
+    // Windows 上「透明度效果」一关整页就退成另一个主题。正确做法是换 token：
+    // 同样的冷调色偏、反射、光学薄边、圆角与投影全部保留，只是不再透过去。
     const reduced = blockBody(css, '@media (prefers-reduced-transparency: reduce)');
-    assert.match(reduced, /\.category/, '明确要求少透明时分类板回退为不透明');
-    assert.match(reduced, /\.module-widget/, '明确要求少透明时模块卡回退为不透明');
+    // 只把**底色**换成不透明：冷调色偏与反射那几层渐变必须留着。
+    // 只断言「不透明」不够——写成纯色 #27323b 同样是「不透明」，那正是要挡掉的平涂板。
+    assert.match(reduced, /--prism-slab:[^;]*radial-gradient[^;]*#27323b/,
+        '少透明时分类板保留冷调色偏，只把底色换成不透明');
+    assert.match(reduced, /--prism-pill:[^;]*linear-gradient[^;]*#202b34/,
+        '少透明时胶囊控件保留反光渐变，只把底色换成不透明');
+    assert.match(reduced, /--glass-strong:\s*#253039/, '少透明时浮层换不透明底');
+    assert.doesNotMatch(reduced, /::after[^}]*display:\s*none/, '少透明时光学薄边要留着，它是这套材质的标识');
+    assert.doesNotMatch(reduced, /:is\([^)]*\.category[^)]*\)[^}]*background:\s*var\(--bg-card\)/,
+        '少透明时不得把分类板直接压成平涂的 --bg-card');
 });
 
 test('themes: legacy configuration stays valid; registered styles survive public projection', () => {
