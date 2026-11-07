@@ -2,14 +2,22 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## v2.2.9 少透明降级改哑光版（2026-11-07，本地实现，未提交）
+## v2.2.9 少透明降级改哑光版发布（2026-11-07，已发布并核对实际附件）
+
+- 用户授权发布，正式版为 v2.2.9。基线 main 为 392ddc5（v2.2.8 发布记录）、远端 latest 为 v2.2.8；本轮修掉「系统要求少透明时面板被压成平涂实底」的缺陷。范围只有棱镜材质在该偏好下的降级路径，数据格式、权限、默认主题与保存行为不变。版本四处同步为 2.2.9，SW 为 nav-v143，无新增依赖。
+- 候选验证：全量 Node 测试 **896 通过、0 跳过、0 失败**，日志 `/tmp/sylph-229-tests.log`；变异验证：哑光版退回纯色、隐藏光学薄边各让对应用例转红，还原后全绿。相关 JavaScript 语法、版本一致性和 git diff --check 通过。
+- 提交与发布：实现提交 `d6190e3a945543826d9aee6e49cf0edcfb54f6ed` 已推送 main；`scripts/release.sh` 创建 [v2.2.9](https://github.com/mh567/nav-sylph/releases/tag/v2.2.9)，tag 解引用为该实现提交，非草稿、非预发布，`/releases/latest` 已返回 v2.2.9。收尾文档单独提交，不移动版本 tag。无关联独立 Issue。
+- 实际附件：已下载 `nav-sylph-v2.2.9.tar.gz`，13,727,111 字节，SHA-256 `4ded73983eae12fc371dd875f0b94dd5183e5f30ff41632b9d4bb5afacdbb342`，与 GitHub 资产 digest 一致。包内 package/lock/version/最新 CHANGELOG 均为 2.2.9，SW 为 nav-v143；themes.css 的少透明块含 `--prism-slab` 与 `--prism-pill` 的哑光值且不再隐藏薄边；运行文件与 main 逐字节匹配，三个 Linux ELF Agent 齐全，本机 Agent 自报 2.2.9、协议 v1。logs 仅 .gitkeep，无已知私有配置、会话库或 QA 记录。核验目录 `/tmp/sylph-release-229-verification/`。
+- 边界：未做目标服务器升级、Safari、Firefox、真实手机或屏幕阅读器验收。**Windows 真机未实测**——Windows 上要看到与 macOS 完全一致的通透玻璃形态，需打开「设置 → 个性化 → 颜色 → 透明度效果」。
+
+## v2.2.9 少透明降级改哑光版（2026-11-07，已随 v2.2.9 发布）
 
 - 用户在 Windows 机器上跑控制台探针，结果把原因钉死：`少透明: true`，而 `有背景模糊: true`、`有遮罩合成: true`。**真正的原因是 `prefers-reduced-transparency: reduce`**——Windows 的「设置 → 个性化 → 颜色 → 透明度效果」关闭时（MDN 记的路径），Chrome 118 起就把它映射成这个媒体查询；macOS 未开该偏好所以报 no-preference。两端表现不同与浏览器能力无关。
 - 因此上一轮 v2.2.8 修的「浏览器没有背景模糊」那条路**没有命中用户的机器**（他的 Chrome 有 backdrop-filter）。那条路本身仍要留着——Firefox 123 之前在 GPU 厂商识别不出的机器上确实没有该属性，Windows 的虚拟机与部分驱动属此类。
 - 缺陷：v2.2.7 及之前对 `prefers-reduced-transparency: reduce` 的响应是「面板换平涂 --bg-card（#27323b）+ 隐藏光学薄边」，那正是用户点名要换掉的 v2.2.5 死板底板。于是 Windows 上只要「透明度效果」是关的，整页就退成另一个主题，与 macOS 差得很远。
 - 修复：改成**替换 token**而不是逐个改元素的背景——`--prism-slab` 与 `--prism-pill` 保留各自的渐变层、只把最底下那层透明底换成不透明色（#27323b / #202b34），`--glass-strong` 换成 #253039，光学薄边照画。得到的是同一套设计的哑光版，不是另一个主题。另修一处特异性：搜索框那条基础规则是 `:is(.search,.search:hover,.search:focus-within)`（0-4-0），原来的降级选择器只有 0-3-0，模糊会留下来；降级选择器补上两个伪类变体后与基础规则同级、靠源码顺序取胜。
 - 验证：全量 Node 测试 896 通过、0 跳过、0 失败（新增断言钉住哑光版的渐变层与薄边留存）；变异验证：哑光版退回纯色、隐藏薄边各让对应用例转红，还原后全绿。Ego 用 `Emulation.setEmulatedMedia` 复刻用户机的条件（reduce + devicePixelRatio 1.1），1440 与 390px 下分类板底色为不透明 #27323b、渐变层仍在、薄边 content 为 ""、pointer-events 为 none、模糊为 none，无横向溢出；截图 `.impeccable/review/matte-1440.png` 与 `matte-390.png`。
-- 边界：未提交、未推送、未发布，版本 2.2.9 待发布。要看到与 macOS 完全一致的通透玻璃形态，需在 Windows 打开「设置 → 个性化 → 颜色 → 透明度效果」；本轮未在 Windows 真机上实测。
+- 边界：已随 v2.2.9 提交与发布，发布与附件核验记录见本文件顶部 v2.2.9 一节。要看到与 macOS 完全一致的通透玻璃形态，需在 Windows 打开「设置 → 个性化 → 颜色 → 透明度效果」；本轮未在 Windows 真机上实测。
 
 ## v2.2.8 Windows 兜底修正发布（2026-11-07，已发布并核对实际附件）
 
