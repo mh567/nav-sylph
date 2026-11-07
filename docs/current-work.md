@@ -2,7 +2,7 @@
 
 核对日期：2026-11-07。本文供更换开发 Agent 或开发软件时快速接续。开始任务后，先运行 `git status --short --branch` 并检查近期提交，再更新本文件。
 
-## v2.2.4 集成与发布（2026-11-07，已通过候选检查，待提交发布）
+## v2.2.4 集成与发布（2026-11-07，已发布并核对实际附件）
 
 - 授权：用户明确要求集成到项目、提交并发布新小版本；本轮从任务工作区集成至主项目 main，基线为 `7eddfb2`，远端最新 Release 为 v2.2.3。
 - 范围：棱镜固定深色主题、共享主题注册表、全站样式与自托管字体、主题保存和分享展示，以及对应测试与设计文档。经典主题保留，书签尺寸直接继承既有 styles.css。
@@ -10,7 +10,10 @@
 - 证据：Ego 已验证四档视口与经典/棱镜按钮几何一致，精简记录随仓库保存于 `.impeccable/review/bookmark-compact-verification.json`。其余截图和运行记录保留在任务工作区 `/Users/harris/.t3/worktrees/sylph/t3-36eb9eb7/.impeccable/`，不纳入源码或发布包。
 - Standards：按仓库规范复核配置白名单、兼容行为、静态资源与字体许可；未改动存储、鉴权或分享加密协议。Spec：覆盖主题切换、全站一致、经典保留、导航标题与按钮尺寸反馈；无阻塞发现。
 - 主项目验证：`node --test tests/*.test.js` 为 **884 通过、0 跳过、0 失败**，主项目既有 Agent 本机二进制使此前跳过的八项实际执行。七个相关 JavaScript 文件语法检查与 `git diff --check` 通过。日志 `/tmp/sylph-release-224-tests.log`。
-- 待完成：main 提交与推送、运行 scripts/release.sh、读取远端 Release 并下载核对实际附件。未关联独立 Issue，本轮不执行 Issue 收尾。
+- 发布：实现提交 `ce85daf85fe5a9cae871e1baa614f5818826dfed` 已推送 main。仓库 `scripts/release.sh` 构建并发布 [v2.2.4](https://github.com/mh567/nav-sylph/releases/tag/v2.2.4)，tag 解引用为同一实现提交；GitHub `/releases/latest` 返回 v2.2.4，非草稿、非预发布。本节收尾文档以独立提交追加至 main，版本 tag 保持指向实现提交。
+- 实际附件：已从 GitHub 下载 `nav-sylph-v2.2.4.tar.gz`，13,719,419 字节，SHA-256 `e9cb1dac6bc7bc70bce5e82fbb673973eaba11ea77d850feae70ebe97b39975a`，与 GitHub 资产 digest 一致。包内版本、最新更新说明均为 2.2.4，SW 为 nav-v135；主题相关运行代码、字体与授权逐字节匹配 main；仅含三个 Linux ELF Agent，logs 仅有 .gitkeep，无已知私有配置、会话数据库、依赖或 QA 记录。本机 Agent 输出 nav-agent 2.2.4，协议 v1。
+- 打包边界：既有脚本会带入 `lib/.DS_Store` 与 `public/.DS_Store` 两个系统目录元数据文件；未更改打包流程，也未把 README 宣传图缺失纳入本轮。下载核对记录在 `/tmp/sylph-release-224-verification/result.json`。
+- 工作区：保留主项目原有未跟踪文件 `sylph-handoff-2026-10-18.md`，未纳入提交或发布；原任务工作区保留开发记录。未关联独立 Issue，本轮不执行 Issue 收尾。下一步由目标主机运行 `./sylph.sh update` 后验收。
 - 边界：目标服务器升级、Safari、Firefox 与真实手机验收未执行；本轮按用户要求使用 Ego，未重新运行 Chromium/Playwright 浏览器套件。以下小节为开发过程的历史状态，以本节为准。
 
 ## 书签尺寸对齐当前项目（2026-11-07，本地修改，未提交）
