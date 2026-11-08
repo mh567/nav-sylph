@@ -110,6 +110,9 @@
     const THEME_STORAGE_KEY = 'nav-sylph-theme';
     const LOCAL_SETTINGS_FIELDS = ['searchEngine', 'searchEngines', 'theme', 'themeStyle', 'showBookmarkIcons'];
     const APPEARANCE_ORDER = ['auto', 'light', 'dark'];
+    // 下拉菜单共享的最小宽度。实际宽度取触发控件宽度与该值的较大者。
+    // 与 pabu 对齐：120px 足以容纳最长的引擎名，窄屏再统一夹到窗口内。
+    const DROPDOWN_MIN_WIDTH = 120;
 
     class App {
         constructor() {
@@ -1673,7 +1676,7 @@
                     const label = document.querySelector(`label[for="${select.id}"]`);
                     label.id = `${select.id}Label`;
                     label.htmlFor = `${select.id}Button`;
-                    wrapper.insertAdjacentHTML('beforeend', `<button type="button" class="local-select-button" id="${select.id}Button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${select.id}Menu" aria-labelledby="${label.id} ${select.id}Value"><span id="${select.id}Value"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="local-select-menu" id="${select.id}Menu" popover="auto" role="listbox" aria-labelledby="${label.id}"></div>`);
+                    wrapper.insertAdjacentHTML('beforeend', `<button type="button" class="local-select-button" id="${select.id}Button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${select.id}Menu" aria-labelledby="${label.id} ${select.id}Value"><span id="${select.id}Value"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="local-select-menu" id="${select.id}Menu" popover="manual" role="listbox" aria-labelledby="${label.id}"></div>`);
                     select.hidden = true;
                     const button = wrapper.querySelector('button');
                     const menu = wrapper.querySelector('[role="listbox"]');
@@ -1686,7 +1689,7 @@
                     const open = () => {
                         this.closeLocalSelects();
                         const rect = button.getBoundingClientRect();
-                        const width = Math.min(Math.max(rect.width, 184), innerWidth - 24);
+                        const width = Math.min(Math.max(rect.width, DROPDOWN_MIN_WIDTH), innerWidth - 24);
                         menu.style.width = `${width}px`;
                         menu.style.left = `${Math.max(12, Math.min(rect.right - width, innerWidth - width - 12))}px`;
                         const below = innerHeight - rect.bottom - 12;
@@ -1738,7 +1741,7 @@
                 button.disabled = select.disabled;
                 wrapper.querySelector('button span').textContent = select.selectedOptions[0]?.textContent || '请选择';
                 const menu = wrapper.querySelector('[role="listbox"]');
-                menu.innerHTML = [...select.options].map((option, index) => `<button type="button" role="option" tabindex="-1" id="${select.id}Option${index}" data-index="${index}" aria-selected="${option.selected}"${option.disabled ? ' disabled' : ''}><span>${this.esc(option.textContent)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></button>`).join('');
+                menu.innerHTML = [...select.options].map((option, index) => `<button type="button" role="option" tabindex="-1" id="${select.id}Option${index}" data-index="${index}" style="--option-index:${index}" aria-selected="${option.selected}"${option.disabled ? ' disabled' : ''}><span>${this.esc(option.textContent)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></button>`).join('');
             }
         }
 
@@ -1947,6 +1950,11 @@
         bindLocalNavigation() {
             this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
             window.addEventListener('resize', () => this.closeLocalSelects());
+            // popover="manual" 不再由浏览器自动收起，点击选择器以外的地方要显式关闭。
+            // 用 pointerdown 捕获：在按钮的 click 切换之前判断，点同一按钮仍是「再次点击收起」。
+            document.addEventListener('pointerdown', event => {
+                if (!event.target.closest?.('.local-select')) this.closeLocalSelects();
+            }, true);
             window.addEventListener('scroll', event => {
                 if (!event.target.closest?.('.local-select-menu')) this.closeLocalSelects();
             }, { capture: true, passive: true });
@@ -2183,8 +2191,8 @@
             $('#engineBtn').setAttribute('aria-label', `选择搜索引擎，当前为${current.name}`);
             
             const dropdown = $('#engineDropdown');
-            dropdown.innerHTML = this.config.searchEngines.map(e => 
-                `<button type="button" role="option" aria-selected="${e.id === this.config.searchEngine}" class="engine-option${e.id === this.config.searchEngine ? ' active' : ''}" data-id="${this.esc(e.id)}">${this.esc(e.name)}</button>`
+            dropdown.innerHTML = this.config.searchEngines.map((e, i) =>
+                `<button type="button" role="option" aria-selected="${e.id === this.config.searchEngine}" class="engine-option${e.id === this.config.searchEngine ? ' active' : ''}" style="--option-index:${i}" data-id="${this.esc(e.id)}">${this.esc(e.name)}</button>`
             ).join('');
         }
 
@@ -2381,6 +2389,13 @@
             
             engineBtn.onclick = (e) => {
                 e.stopPropagation();
+                // 左缘跟随引擎按钮的实测位置，宽度取 max(按钮宽, 最小宽度)：
+                // 模式按钮显隐、窄屏收窄时都不会脱开或压出视口。
+                const rect = engineBtn.getBoundingClientRect();
+                const wrapperRect = dropdown.parentElement.getBoundingClientRect();
+                const width = Math.min(Math.max(rect.width, DROPDOWN_MIN_WIDTH), window.innerWidth - 24);
+                dropdown.style.width = `${width}px`;
+                dropdown.style.left = `${rect.left - wrapperRect.left}px`;
                 const isOpen = !dropdown.hidden;
                 dropdown.hidden = isOpen;
                 // 只用 aria-expanded 驱动展开态：此前还并行 toggle 一个 .active 类，

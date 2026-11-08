@@ -411,22 +411,37 @@ test('说明行贴搜索框、远离收藏区', () => {
     assert.match(header[1], /margin-bottom:\s*0/, '.header 的 margin-bottom 必须归零，间距交给说明行');
 });
 
-test('引擎下拉对齐到按钮下方，而不是搜索框左缘', () => {
+test('引擎下拉左缘对齐按钮，宽度取按钮与最小宽度的较大者', () => {
     const drop = /^\.engine-dropdown\s*\{([\s\S]*?)\n\}/m.exec(fullCode);
     assert.ok(drop, '存在 .engine-dropdown 基础规则');
-    assert.match(drop[1], /left:\s*58px/,
-        'left 应为 58px（1+5+48+4），对齐引擎按钮左缘；left:0 会贴到搜索框左缘，与按钮脱开');
+    assert.match(drop[1], /left:\s*6px/,
+        '兜底 left 对应搜索框内边距（1+5），打开时由 JS 用按钮实测位置覆盖');
+    assert.equal(/left:\s*58px/.test(drop[1]), false,
+        '不得再写死 58px 偏移：模式按钮显隐或窄屏收窄时会与按钮脱开');
 
-    // 窄屏块曾把 left 重置为 0，等于在大屏修好、小屏又坏掉
-    const narrow = mediaBlock(fullCode, '@media (max-width: 768px)', '.engine-dropdown');
-    assert.equal(/\.engine-dropdown\s*\{[^}]*left:\s*0/.test(narrow), false,
+    assert.match(appSource, /const DROPDOWN_MIN_WIDTH = 120;/, '下拉共享最小宽度');
+    assert.match(appSource, /dropdown\.style\.left = `\$\{rect\.left - wrapperRect\.left\}px`/,
+        '引擎下拉左缘按按钮实测位置锚定');
+    assert.match(appSource, /Math\.min\(Math\.max\(rect\.width, DROPDOWN_MIN_WIDTH\), window\.innerWidth - 24\)/,
+        '宽度统一取 max(触发控件宽, 最小宽)，并夹到窗口内');
+
+    // 窄屏块曾把 left 重置为 0，等于在大屏修好、小屏又坏掉。
+    // 现在窄屏不再声明 .engine-dropdown，改为扫描该查询下的所有块。
+    const narrowBlocks = mediaBlocks(fullCode, '@media (max-width: 768px)');
+    assert.equal(
+        narrowBlocks.some(body => /\.engine-dropdown\s*\{[^}]*left:\s*0/.test(body)),
+        false,
         '≤768px 不得把 left 重置为 0');
 });
 
-test('引擎下拉不带开合动画，与仿真一致', () => {
-    const drop = /^\.engine-dropdown\s*\{([\s\S]*?)\n\}/m.exec(fullCode);
-    assert.ok(drop, '存在 .engine-dropdown 基础规则');
-    assert.equal(/animation\s*:/.test(drop[1]), false, '引擎下拉不应有 animation');
+test('引擎与设置下拉共用入场动画，并遵循减少动态效果', () => {
+    assert.match(fullCode, /:is\(\.engine-dropdown:not\(\[hidden\]\), \.local-select-menu:popover-open\)\s*\{\s*animation:\s*dropdown-in/,
+        '引擎与编辑设置下拉共用同一条入场动画');
+    assert.match(fullCode, /animation-delay:\s*calc\(var\(--option-index, 0\) \* 16ms\)/,
+        '选项按序号错峰入场');
+    const reduced = mediaBlock(fullCode, '@media (prefers-reduced-motion: reduce)', '.engine-dropdown');
+    assert.match(reduced, /\.engine-dropdown:not\(\[hidden\]\)\s*\{\s*animation:\s*none/,
+        '减少动态效果时关闭入场动画');
 
     // @keyframes dropIn 仍被收藏下拉使用，不能跟着删掉
     const users = stylesCss.match(/animation:\s*dropIn/g) || [];
@@ -450,12 +465,13 @@ test('下拉选中项不铺底色', () => {
     assert.match(pressed[1], /box-shadow:\s*var\(--press-shadow\)/, '按下态用统一的凹陷阴影');
 });
 
-test('下拉容器与收藏下拉各自成条，不共用规则', () => {
-    // 两者材质不同（引擎 10px 圆角，收藏 13px），合写后改一处会连带改动另一处。
-    // 断言的是「分开声明」，不是具体数值——数值另有断言。
+test('引擎与设置下拉共用规范，收藏下拉仍独立成条', () => {
+    // 引擎与编辑设置下拉对齐 pabu 的同一套规范；收藏下拉材质不同
+    // （13px 圆角 + --shadow-hover），不能被合写带走。
     assert.equal(/\.engine-dropdown\s*,\s*\.fav-dropdown\s*\{/.test(code), false,
-        '.engine-dropdown 与 .fav-dropdown 不应再共用一条规则');
-    assert.match(code, /^\.engine-dropdown\s*\{/m, '引擎下拉有独立规则');
+        '.engine-dropdown 与 .fav-dropdown 不应共用一条规则');
+    assert.match(code, /:is\(\.engine-dropdown, \.local-select-menu\)\s*\{/,
+        '引擎与编辑设置下拉共用一条规则');
     assert.match(code, /^\.fav-dropdown\s*\{/m, '收藏下拉有独立规则');
 });
 
