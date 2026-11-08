@@ -274,7 +274,7 @@ test('备份产物只有清单声明的五个域 + manifest，且不含任何 AE
 
     // 5) 清单的 skipped[]：每个排除域一条，带原因
     const skipped = manifest.data.skipped;
-    for (const domain of ['admin-navigation', 'default-template', 'sync-spaces', 'passwords-sessions',
+    for (const domain of ['admin-navigation', 'default-template', 'passwords-sessions',
         'metrics-cache', 'modules.publicModules', 'modules.socialAccounts', 'modules.symbols',
         'modules._sync', 'modules.servers[].token', 'modules.servers[].pushSecretHash',
         'modules.servers[].enrollTokenHash']) {

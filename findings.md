@@ -67,3 +67,13 @@
 对 `public/` 与 `server.js` 的脚本标签、动态脚本加载、模块导入、样式引用和网络调用进行检索。首页静态脚本为本地 `app.js`、`public/lib/uFuzzy.iife.min.js` 和 `public/lib/pinyin.js`；管理页面使用同源 `admin.css`；分享接收页的脚本由 `server.js` 内联生成。未发现 CDN、第三方 JavaScript 或远程字体请求。用户配置的搜索引擎和书签网址是导航目标，由点击操作打开，不作为页面脚本资源。
 
 服务器现添加 `Content-Security-Policy: script-src 'self' 'unsafe-inline'`，保留现有同源外链和内联初始化脚本，同时拒绝浏览器执行站外脚本。服务工作线程缓存键更新为 `nav-v20`，确保客户端刷新到含新策略的页面与脚本。
+
+## 2026-11-08 拆分基线
+
+- main 5380718，v2.2.16。既有未提交改动为定位研究与 current-work，未跟踪私人交接文件保持原样。
+- 口令同步集中在 lib/sync-store.js、server.js 的 /api/sync 与 /api/admin/sync-*，但前端同步与本地导航、身份切换存在多处耦合。
+- 管理员配置同步、WebDAV 自动备份、时间线同步均需保留，不能按 sync 关键词批量删除。
+- Pabu 仅复制 Git 跟踪源码，不复制实际配置、数据库、.env、模块私人数据或原远端。
+
+- 独立审查确认无运行权限回归，部署文档残留 NAV_SYNC 额度变量已修复。旧浏览器 sync 键不做清理，按用户无需迁移的范围执行，服务端接口与数据均已移除。
+- Pabu 前端与后端已分给不同代理，public目录独占避免并发冲突；同源Cookie和存储命名需独立。

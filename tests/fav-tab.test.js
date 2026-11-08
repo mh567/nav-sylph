@@ -76,22 +76,21 @@ test('书签检索执行真实实现：中文、混合输入、拼音与英文�
     assert.deepEqual(state.results, []);
 });
 
-test('后台 tab 栏：收藏夹是第二个，「同步管理」在模块与账户之间（共五个）', () => {
+test('后台 tab 栏保留导航、收藏、模块与账户四个分区', () => {
     const tabs = [...appSource.matchAll(
         /<button type="button" class="admin-tab" role="tab" id="adminTab(\w+)" aria-controls="adminPanel\1" aria-selected="false" tabindex="-1" data-panel="(\w+)">([^<]+)/g
     )];
-    assert.equal(tabs.length, 5, '恰好五个 tab（同步管理从「首页导航」里拆出来自成一格）');
-    assert.deepEqual(tabs.map(t => t[2]), ['site', 'fav', 'modules', 'sync', 'account'], 'tab 顺序');
-    assert.deepEqual(tabs.map(t => t[3]), ['首页导航', '收藏夹', '模块', '同步管理', '账户与备份'], 'tab 文案');
+    assert.equal(tabs.length, 4, '恰好四个工作台分区');
+    assert.deepEqual(tabs.map(t => t[2]), ['site', 'fav', 'modules', 'account'], 'tab 顺序');
+    assert.deepEqual(tabs.map(t => t[3]), ['首页导航', '收藏夹', '模块', '账户与备份'], 'tab 文案');
 });
 
 test('收藏分区整区迁入收藏夹 tab，账户与备份不再持有任何收藏入口', () => {
     const favStart = appSource.indexOf('id="adminPanelFav"');
     const modulesStart = appSource.indexOf('id="adminPanelModules"');
-    const syncStart = appSource.indexOf('id="adminPanelSync"');
     const accountStart = appSource.indexOf('id="adminPanelAccount"');
-    assert.ok(favStart > 0 && modulesStart > favStart && syncStart > modulesStart && accountStart > syncStart,
-        '五个面板按 tab 顺序排列');
+    assert.ok(favStart > 0 && modulesStart > favStart && accountStart > modulesStart,
+        '四个面板按 tab 顺序排列');
 
     // 收藏夹 tab = adminPanelFav 起、adminPanelModules 止
     const favPanel = appSource.slice(favStart, modulesStart);

@@ -346,20 +346,10 @@ setInterval(() => {
     sweepRateLimitStore(todoRateLimitMap, now, TODO_LIMIT_WINDOW);
     // 模块轮询桶：按 IP 计数，不清就会随标签页数量无限增长。
     sweepRateLimitStore(modulePollLimitMap, now, MODULE_POLL_WINDOW);
-    // 口令空间的三只桶。前两只按**空间**计数（读 240/分、写 120/分，与访问者
-    // 数量无关——一个空间可以被很多台设备连），第三只按 IP 计数（连接与口令
-    // 尝试 30/分，防的是猜口令），第四只按空间计数（签发新设备令牌 30/分，
-    // 防的是「口令已经知道的人无限换设备」）。四只都只增不减，必须在这里回收。
-    sweepRateLimitStore(syncReadLimitMap, now, SYNC_READ_WINDOW);
-    sweepRateLimitStore(syncUploadLimitMap, now, SYNC_UPLOAD_WINDOW);
-    sweepRateLimitStore(syncConnectLimitMap, now, SYNC_CONNECT_WINDOW);
-    sweepRateLimitStore(syncIssueLimitMap, now, SYNC_ISSUE_WINDOW);
     // 会话同理：只增不减会随登录次数累积。
     // 回调在首次触发（60 秒后）才读取 sessionStore，而 init() 在开始监听前就已完成赋值；
     // init() 失败则进程随即 exit(1)，定时器不会触发——安全性取决于调用时机，不是代码顺序。
     sessionStore.sweep(now);
-    // 口令空间的常规清理：过期回执、陈旧邀请码记录、长期没鉴权的设备。
-    if (syncStore) syncStore.sweep();
 }, 60000).unref();
 
 const CONFIG_FILE = path.join(config.rootDir, 'config.json');
@@ -389,10 +379,6 @@ const {
 const { openDatabase } = require('./lib/db');
 const { snapshot: snapshotNavigation, createNavigation } = require('./lib/navigation');
 let navigation;
-// 普通访问者的口令云端空间。与 navigation（管理员会话鉴权）是两套凭据：
-// 这套认的是设备令牌，且**绝不能**用它换到任何管理员接口。
-let syncStore;
-const { createSyncStore } = require('./lib/sync-store');
 const { createSqliteBackend } = require('./lib/session-sqlite');
 const {
     readLocalMetrics, fetchRemoteMetrics, probeTcp, probeAgentHealth
@@ -505,7 +491,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 app.use(
-    ['/api/admin/navigation', '/api/admin/default-homepage', '/api/sync/space/create', '/api/sync/config'],
+    ['/api/admin/navigation', '/api/admin/default-homepage'],
     express.json({ limit: '1100kb' })
 );
 app.use(express.json());
@@ -1105,19 +1091,6 @@ async function init() {
     // 顺序固定：迁移必须先于 createSqliteBackend 的 prepare，否则表还不存在。
     db = openDatabase(config.paths.database);
     navigation = createNavigation(db, await readJSON(CONFIG_FILE), defaultConfig);
-    // 口令空间与 migration 同一张库：表由 MIGRATIONS[8] 建好，这里只装配。
-    // publicModuleIds 做成函数而不是快照：公开模块名单将来会变，空间里存过
-    // 的偏好要按**当下**的白名单归一化。
-    syncStore = createSyncStore(db, {
-        getPasswordHash: getPasswordHashSync,
-        publicModuleIds: () => [...PUBLIC_MODULE_IDS],
-        onIssue: syncIssueLimit,
-        limits: {
-            spaceLimit: syncLimitFromEnv('NAV_SYNC_SPACE_LIMIT'),
-            contentBytesLimit: syncLimitFromEnv('NAV_SYNC_CONTENT_BYTES_LIMIT'),
-            totalBytesLimit: syncLimitFromEnv('NAV_SYNC_TOTAL_BYTES_LIMIT')
-        }
-    });
     await recoverCredentialRotation();
     sessionStore = new SessionStore({
         cookieName: config.security.sessionCookieName,
@@ -1347,288 +1320,6 @@ for (const [route, domain] of [
         catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '保存失败，请稍后重试' }); }
     });
 }
-
-// ========== 普通访问者的口令云端空间 ==========
-//
-// 与上面 `POST /api/config`（管理员会话）的区别不在路径，而在**凭据**：
-// 这里靠访客自设口令派生出的连接证明 + 设备令牌，管理员会话在这里既不必要
-// 也不被读取；反过来设备令牌打到任何管理员接口都是 401 —— 两侧不互相升级。
-//
-// 三条规则，改代码前先读 lib/sync-store.js 的文件头：
-//   1. 口令与证明只在**请求体**，设备令牌只在 `Authorization: Bearer`。
-//      一个都不进 URL：URL 会进访问日志、Referer 和浏览器历史。
-//   2. 本段里没有一处分发口令/证明/令牌的日志。这不是洁癖——console 输出落进
-//      `logs/`，而 logs/ 会被运维读、被打包带走。
-//   3. 429 必须带 Retry-After，客户端才能区分「等一下」和「失败了」。
-
-const SYNC_CONNECT_WINDOW = 60000;
-const SYNC_CONNECT_MAX = 30;     // 每 IP：检查/创建/连接合计 30 次/分钟（防猜口令）
-const SYNC_READ_WINDOW = 60000;
-const SYNC_READ_MAX = 240;       // 每空间：读取 240 次/分钟
-const SYNC_UPLOAD_WINDOW = 60000;
-const SYNC_UPLOAD_MAX = 120;     // 每空间：写入 120 次/分钟
-const SYNC_ISSUE_WINDOW = 60000;
-const SYNC_ISSUE_MAX = 30;       // 每空间：签发新设备令牌 30 次/分钟（设计 §7 的默认值）
-
-const syncConnectLimitMap = new Map();
-const syncReadLimitMap = new Map();
-const syncUploadLimitMap = new Map();
-const syncIssueLimitMap = new Map();
-
-/**
- * 额度常量的**测试后门**，照 `NAV_AUTO_SYNC_DELAY_MS` 的手法：只在设了正整数时
- * 才覆盖，其余一律返回 `undefined`——`createSyncStore` 收到 `undefined` 就落到
- * `lib/sync-store.js` 的 `DIFFICULTY` 规格值。所以**默认值只有一处实现**，
- * 这里不重复写 1000 / 1 MiB / 1 GiB。
- *
- * ⚠️ 之所以要有一条断言把默认值与规格逐字对拍（在 `tests/sync-client.test.js`）：
- * 只测注入路径的话，有人把 `DIFFICULTY` 改小也全绿——额度这东西改小一点
- * 在测试里看不出来，在线上是「用户忽然建不了空间」。
- */
-function syncLimitFromEnv(name) {
-    const raw = process.env[name];
-    if (raw === undefined || raw === '') return undefined;
-    const value = Number(raw);
-    return Number.isInteger(value) && value > 0 ? value : undefined;
-}
-
-function syncTooMany(res, resetAt) {
-    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))));
-    return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
-}
-
-/**
- * 每空间的**签发**上限。与连接桶的分工不同：连接桶防的是猜口令（按 IP），
- * 这一只防的是「口令已经知道的人无限换设备」（按空间）。所以它由 store 在
- * 真正插入设备行之前回调——只有 store 知道 spaceId。超限时明确说「等一下」，
- * **不回退到创建新空间**（那正是设计要避免的行为）。
- */
-function syncIssueLimit(spaceId) {
-    const { allowed, resetAt } = consumeRateLimit(syncIssueLimitMap, `issue:${spaceId}`, Date.now(), SYNC_ISSUE_WINDOW, SYNC_ISSUE_MAX);
-    if (allowed) return;
-    throw Object.assign(new Error('签发过于频繁，请稍后再试'), { status: 429, code: 'issue_limited', retryAfter: resetAt });
-}
-
-// 连接类入口按 IP 计数：这是唯一能被用来猜口令的地方，所以桶最小。
-function syncConnectLimit(req, res, next) {
-    const { allowed, resetAt } = consumeRateLimit(
-        syncConnectLimitMap, resolveClientIp(req), Date.now(), SYNC_CONNECT_WINDOW, SYNC_CONNECT_MAX);
-    if (!allowed) return syncTooMany(res, resetAt);
-    next();
-}
-
-// 读写桶按**空间**计数而不是按 IP：一个空间可以被很多台设备连，按 IP 计会让
-// 设备越多越容易互相限流，与「设备数量没有固定上限」这条设计相矛盾。
-function syncSpaceLimit(spaceId, kind) {
-    const write = kind === 'write';
-    return consumeRateLimit(
-        write ? syncUploadLimitMap : syncReadLimitMap,
-        `${kind}:${spaceId}`,
-        Date.now(),
-        write ? SYNC_UPLOAD_WINDOW : SYNC_READ_WINDOW,
-        write ? SYNC_UPLOAD_MAX : SYNC_READ_MAX
-    );
-}
-
-function readDeviceToken(req) {
-    const header = req.headers.authorization;
-    const match = typeof header === 'string' ? /^Bearer\s+(\S+)$/.exec(header) : null;
-    return match ? match[1] : '';
-}
-
-// 已知的业务错误自带状态码（见 sync-store 的 fail）；其余一律 500 且不回显细节。
-// `retryAfter` 用来自 store 的签发限流——那条 429 不带它的话，客户端分不出
-// 「等一下」和「失败了」。
-function syncFailure(res, error) {
-    if (error && error.status) {
-        if (error.retryAfter) res.setHeader('Retry-After', String(Math.max(1, Math.ceil((error.retryAfter - Date.now()) / 1000))));
-        return res.status(error.status).json({ error: error.message, code: error.code });
-    }
-    console.error('[Server] 口令空间请求失败:', error && error.message);
-    return res.status(500).json({ error: '服务器内部错误' });
-}
-
-// 鉴权 → 按空间限流。顺序固定：先鉴权（没凭据的请求连「这个空间存不存在」
-// 都不该知道），后限流（要 spaceId 才能按空间计数）。
-function syncDeviceGuard(kind) {
-    return (req, res, next) => {
-        res.setHeader('Cache-Control', 'no-store');
-        try {
-            req.syncAuth = syncStore.authenticate(readDeviceToken(req));
-        } catch (error) {
-            return syncFailure(res, error);
-        }
-        const { allowed, resetAt } = syncSpaceLimit(req.syncAuth.spaceId, kind);
-        if (!allowed) return syncTooMany(res, resetAt);
-        next();
-    };
-}
-
-app.post('/api/sync/space/check', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.checkSpace(req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/sync/space/create', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.createSpace(req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/sync/space/connect', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.connectSpace(req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.get('/api/sync/config', syncDeviceGuard('read'), (req, res) => {
-    try { res.json(syncStore.readConfig(readDeviceToken(req))); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/sync/config', syncDeviceGuard('write'), (req, res) => {
-    try { res.json(syncStore.writeConfig(readDeviceToken(req), req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 删除云端空间。鉴权是**双要素**：Bearer 令牌把空间钉住，body 里的口令证明再验证
-// 一次（设计要求的「重新输入口令」）——只凭口令分不清「口令打错了」与「空间早被
-// 删了」，而这两种的下一步完全不同。挂连接桶是因为口令是这里唯一的暴力面。
-app.post('/api/sync/space/delete', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.deleteSpace(readDeviceToken(req), req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 停止同步时撤销**本设备**令牌。调用方（浏览器）已经先做完了本地断开，这里只是
-// 尽力而为：无论令牌在不在、空间删没删，都返回成功——把失败做成用户可见的错误
-// 只会让「离线也能停止」这条要求落空。
-//
-// ⚠️ 这条与下面的删除都**不受总暂停影响**（store 层就没查 `sync_paused`）：
-// 总暂停挡的是数据面，而这两条是「我要离开/我要删掉自己的东西」。挡住它们等于
-// 管理员一开总暂停就把用户锁在里面——那是这个开关最容易写错的一处。
-app.post('/api/sync/device/revoke', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.revokeDevice(readDeviceToken(req))); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 「撤销全部旧设备并重新连接」（设计 §5）。挂连接桶是因为它同样要验口令、同样
-// 会签发令牌（签发另有 store 的 per-space 桶）；**不新增桶**。
-// `operationId` 由客户端在内存里生成，同一次确认的重试复用同一个值——重放由
-// store 的 `scope='reset:' + 空间 id` 回执兜住，撤销只发生一次。
-app.post('/api/sync/device/reset', syncConnectLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.resetDevices(req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 邀请码管理。三条都走 rateLimit + requireAdmin：邀请码本身就是「能新建一个
-// 云空间」的凭据，拿到它等于拿到一次开通权。本段不读 Authorization 头，
-// 所以普通设备令牌在这里没有任何入口（tests/sync-http.test.js 有断言）。
-//
-// 三条 GET/POST 的参数一律交给 store 的白名单（`state` / `offset` / `limit`）：
-// 路由层不解释、不拼 SQL、也不替 store 兜底——判定只有一处，才不会出现
-// 「接口说 20 张、库里 30 张」这类漂移。
-app.get('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.listInvites(req.query)); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/admin/sync-invites', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(syncStore.createInvite());
-});
-
-app.post('/api/admin/sync-invites/:id/revoke', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.revokeInvite(req.params.id)); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 批量生成与批量撤销（同步管理 tab 的服务端）。
-//
-// ⚠️ 路径写成常量而不是字面量：tests/sync-client.test.js 有一条源码断言把
-// 「管理员侧邀请码路由恰好 3 条」写死了（那条用例不在本轮改动范围内），字面量
-// 形式会让它按 5 条计数而红。语义没有任何不同——中间件仍逐个写在路由上，
-// `rateLimit, requireAdmin` 一个不少，本段同样不读 Authorization 头。
-//
-// 上限（20 张 / 100 个 id）由 store 判：这里不复制一份常量——复制出来的那份
-// 迟早会和 store 里那份对不上，而对不上的症状是「界面拦了、接口没拦」。
-// 注意：路径写成字面量，别为了让某条源码守卫过得去而藏进常量——那会让守卫
-// 从此看不见这两条路由（本仓库把「守卫必须能变红」当硬要求）。守卫随新增路由一起改。
-
-// 批量生成：`{ count }` → `{ invites: [{ code, hint, createdAt, expiresAt }] }`。
-// **码只在这里出现这一次**，库里只有哈希与 4 位 hint。
-app.post('/api/admin/sync-invites/batch', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.createInvites((req.body || {}).count, (req.body || {}).note)); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 批量撤销：`{ ids: [...] }` → `{ revoked }`（只撤未使用且未过期的，计数是实际改动行数）。
-app.post('/api/admin/sync-invites/revoke', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.revokeInvites((req.body || {}).ids)); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 同步空间的治理（Issue #10）。四条都走 `rateLimit, requireAdmin`：它们是**站点级**
-// 的策略，不是某个访客的空间内容。本段同样不读 `Authorization` 头，所以普通设备
-// 令牌在这里没有任何入口（tests/sync-http.test.js 有一条对每一组的越权断言）。
-//
-// 列表**只回非敏感项**（见 `listSpaces`）：标识、状态、体积、版本、代次、活跃
-// 设备数、时间。正文、口令哈希、`deleted_proof_id`、令牌与哈希、回执一律不出现
-// ——管理员能看出「这个空间多大、什么时候动的」，但拿不到内容，也不能凭列表里
-// 的任何字段冒充某台设备。
-// 列表与策略**一次拿全**：面板每打开一次就要重画这两块，分成两个 GET 就是
-// 每次打开多打一条管理接口——管理桶只有 30 次/分钟，本仓库已经因为
-// 「渲染函数里顺手预取」撞过 429（WebDAV 那次）。写策略仍走下面的 POST。
-//
-// 分页/搜索/筛选/排序的参数原样交给 store 的白名单映射（`q` / `state` / `sort` /
-// `offset` / `limit`）：这一层不做任何解释，所以「非法值回落」只有一个落点。
-app.get('/api/admin/sync-spaces', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json({ ...syncStore.listSpaces(req.query), settings: syncStore.readSettings() }); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/admin/sync-spaces/:id/disable', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try {
-        // `disabled` 缺省为 true（按钮的语义是「停用」），显式传 false 才是启用。
-        // 用 `!== false` 而不是真值判断：传 `false` 必须能打开，否则「停用之后
-        // 恢复不了」——那是这一组里最要命的一种 bug。
-        const disabled = (req.body || {}).disabled !== false;
-        res.json(syncStore.setSpaceDisabled(req.params.id, disabled));
-    } catch (error) { syncFailure(res, error); }
-});
-
-// 管理员删除：**与用户删除共用 store 里那一份墓碑实现**（`deleteSpaceAsAdmin`
-// 内部调 `tombstoneSpace`）。管理员没有口令，所以这里不做双要素——鉴权是会话。
-app.post('/api/admin/sync-spaces/:id/delete', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.deleteSpaceAsAdmin(req.params.id)); }
-    catch (error) { syncFailure(res, error); }
-});
-
-// 总开关（`creatingPaused` 暂停新建 / `syncPaused` 总暂停）。写进 `sync_settings`
-// 单行表——**必须落盘**，只存内存的话进程重启会静默放开总暂停。
-// GET 与 POST 成对：管理面板要能读到「现在是什么状态」，只有 POST 的话那个面板
-// 会永远显示成默认值（勾选框与真实策略不一致，用户会以为没生效）。
-app.get('/api/admin/sync-settings', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json({ success: true, settings: syncStore.readSettings() }); }
-    catch (error) { syncFailure(res, error); }
-});
-
-app.post('/api/admin/sync-settings', rateLimit, requireAdmin, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    try { res.json(syncStore.updateSettings(req.body || {})); }
-    catch (error) { syncFailure(res, error); }
-});
 
 // 登录入口：三层依次是「IP 请求速率 → 失败锁定 → 全站总量」。
 // 顺序不能调换：失败锁定排在总量封顶之前，且总量阈值必须高于单 IP 锁定阈值，
@@ -1895,13 +1586,7 @@ app.post('/api/change-password', rateLimit, requirePasswordChange, async (req, r
         // 撤销全部旧会话，再为当前设备签发新的正常会话。
         authGeneration++;
         const revoked = sessionStore.destroyAll();
-        // 口令空间的签发回执是用**密码哈希**派生的密钥加密的（lib/credentials.js 的
-        // sync-receipt 用途）。密码一换，旧回执就解不开了——留着只会让「响应丢了
-        // 但事务已提交」的重试拿到一份本该作废的材料，所以直接清空。
-        // 注意这不影响已经签发的设备令牌（那存的是哈希，与密码无关），
-        // 也不影响任何已连接设备继续同步。
-        const clearedReceipts = syncStore.clearReceipts();
-        console.log(`[Server] 密码已修改，终止 ${revoked} 个会话，作废 ${clearedReceipts} 份空间签发回执`
+        console.log(`[Server] 密码已修改，终止 ${revoked} 个会话`
             + (migration.reencrypted ? `，重加密 ${migration.reencrypted} 项凭据` : ''));
         sessionStore.issueSession(res, req, false);
         res.json({ success: true, reauth: false, credentials: migration });
@@ -2412,23 +2097,7 @@ async function getPasswordHash() {
     }
 }
 
-/**
- * `getPasswordHash` 的同步版本。
- *
- * 为什么必须有第二个：口令空间的**签发回执**要用密码哈希派生的密钥加解密，
- * 而那件事发生在 better-sqlite3 的事务回调里——回调必须是同步的，中间一旦
- * `await`，「检查邀请码 / 插入空间 / 消耗邀请码」就不再是一个原子步骤了，
- * 本模块最要紧的那条竞争保证会跟着失效。所以这里同步读一次文件（几 KB，
- * 每次签发一次，不在轮询路径上）。
- */
-function getPasswordHashSync() {
-    try {
-        const parsed = JSON.parse(fsSync.readFileSync(PASSWORD_FILE, 'utf8'));
-        return parsed && typeof parsed.passwordHash === 'string' ? parsed.passwordHash : null;
-    } catch {
-        return null;
-    }
-}
+
 
 // ========== 自动同步（WebDAV）==========
 //
@@ -2484,7 +2153,7 @@ function scheduleAutoSync() {
 /**
  * 备份载荷：**只收私人数据**（收藏、备忘、待办、私人模块、时间线）。
  *
- * 管理员导航与搜索引擎、默认模板、普通口令空间、密码与会话、监控缓存、
+ * 管理员导航与搜索引擎、默认模板、密码与会话、监控缓存、
  * 公开模块项与任何凭据都不在这里——范围与排除项的单一真相源是
  * `lib/webdav-backup.js` 的 `SKIPPED_DOMAINS` 与投影函数，这里只负责取原始数据。
  * 手动与自动两条路径共用这一份。

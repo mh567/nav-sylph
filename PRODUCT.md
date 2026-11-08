@@ -8,11 +8,11 @@ web
 
 ## Product Purpose
 
-自部署的个人导航与书签管理首页，提供搜索、文本分享、模块和口令空间同步。
+自部署的个人数字工作台，集中导航、书签资料、文本分享、备忘待办、服务监控与订阅时间线。
 
 ## Users
 
-普通访客维护本机导航或连接口令空间；管理员维护个人导航、公开默认模板、收藏与私人模块。产品事实以 README.md 和 docs/architecture.md 为准。
+主要服务个人部署者，通过管理员登录使用私人工作台与多设备配置。普通访客可使用公开默认首页、本机导航和匿名文本分享。口令同步与公众工具网站已拆分至独立 Pabu 项目。产品事实以 README.md、docs/architecture.md 和 docs/product-boundaries.md 为准。
 
 ## Capabilities and Constraints
 

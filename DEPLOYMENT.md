@@ -285,4 +285,4 @@ curl -s http://127.0.0.1:4000/api/health
 
 目录与权限：`.restore-snapshot/`（0700，文件 0600，已进 `.gitignore`）只在恢复期间存在，成功后自动删除；它含私人数据与时间线凭据密文，**不要**放进任何同步/分享/发布包。
 
-额度与暂停：`NAV_SYNC_SPACE_LIMIT` / `NAV_SYNC_CONTENT_BYTES_LIMIT` / `NAV_SYNC_TOTAL_BYTES_LIMIT` 只用于测试与临时调小；默认值（1000 空间 / 每空间 1 MiB / 1 GiB）由断言钉住。运行需要 **Node ≥ 22**。
+运行需要 **Node ≥ 22**。口令同步与空间治理已拆分至 Pabu，Sylph 不再提供对应额度配置。

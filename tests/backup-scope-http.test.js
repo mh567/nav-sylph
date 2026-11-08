@@ -354,7 +354,7 @@ test('真实 HTTP：备份产物只有一个清单声明的域集合，排除项
         assert.equal(entry.sha256, sha256Bytes(bytes), `${entry.domain} 的 sha256 与真实字节一致`);
     }
     const skippedDomains = manifest.data.skipped.map(item => item.domain);
-    for (const domain of ['admin-navigation', 'default-template', 'sync-spaces', 'passwords-sessions',
+    for (const domain of ['admin-navigation', 'default-template', 'passwords-sessions',
         'metrics-cache', 'modules.publicModules', 'modules.socialAccounts', 'modules.symbols',
         'modules._sync', 'modules.servers[].token', 'modules.servers[].pushSecretHash',
         'modules.servers[].enrollTokenHash', 'timeline.credentials']) {

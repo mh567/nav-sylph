@@ -1,7 +1,7 @@
 {
   "name": "nav-sylph",
-  "version": "2.2.16",
-  "description": "A minimal personal navigation page with bookmark management",
+  "version": "2.3.0",
+  "description": "A self-hosted personal digital workspace",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
