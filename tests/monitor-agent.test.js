@@ -1277,45 +1277,37 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     // 上线（`ada60c6`）起**只改界面的字、从不发请求**：拨成「已启用」、
     // `.modules.json` 一个字没变。而当时的守卫只断言「存在一个 change 监听」，
     // 绿着就把缺陷放过了——形状成立、语义上什么也没证明。
-    // 所以这里不再是形状断言：把源码里那段真实循环体放进函数里跑一遍，
+    // 所以这里不再是形状断言：把真实处理器放进函数里跑一遍，
     // 断言它请求了什么、失败时回滚了什么。
     //
     // ⚠️ 写入路径现在是 `this.saveModulesConfig(patch)`（模块配置的唯一写路径），
-    // 所以这条用例**同时**把那个方法也跑真的：loop → saveModulesConfig → API.post
-    // 整条链都是真代码，只有 API 与 host 是假的。把 saveModulesConfig 也换成桩
-    // 的话，「开关真的发请求」这件事就又没人验了。
+    // 所以这条用例**同时**把那个方法也跑真的：handleModuleToggle → saveModulesConfig
+    // → API.post 整条链都是真代码，只有 API、DOM、host 是假的。
     const code = stripComments(appSource);
-    const method = methodBodyOf(code, 'renderModulesEditorContent');
-    assert.ok(method.length > 200, `切出模块编辑器方法体（${method.length}）`);
+    const bindBody = methodBodyOf(code, 'bindModuleBlock');
+    assert.ok(bindBody.length > 200, `切出 bindModuleBlock（${bindBody.length}）`);
+    assert.match(bindBody, /addEventListener\('change'/, 'bindModuleBlock 注册 change 监听');
+    assert.match(bindBody, /this\.handleModuleToggle\(host, block, config, box\)/, '监听转交保存处理器');
+    const toggleBody = methodBodyOf(code, 'handleModuleToggle');
+    assert.ok(toggleBody.length > 300, `切出 handleModuleToggle（${toggleBody.length}）`);
+    assert.match(toggleBody, /this\.showToast\(/, '提示经实例调用');
+    assert.doesNotMatch(toggleBody, /this\.renderModulesEditor\(\)/,
+        '启停不得整块重绘：先写「加载中...」占位会让面板跳动');
     const saveBody = methodBodyOf(code, 'saveModulesConfig');
     assert.ok(saveBody.length > 200, `切出 saveModulesConfig（${saveBody.length}）`);
 
-    const start = method.indexOf("for (const box of host.querySelectorAll('[data-module-toggle]'))");
-    assert.ok(start >= 0, '找到开关绑定循环');
-    const open = method.indexOf('{', start);
-    let depth = 0;
-    let end = -1;
-    for (let i = open; i < method.length; i++) {
-        if (method[i] === '{') depth++;
-        else if (method[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
-    }
-    assert.ok(end > open, '循环切片闭合');
-    const loop = method.slice(start, end);
-    // 切片太短说明配对提前收口，断言会在空窗口里「通过」
-    assert.ok(loop.length > 200, `循环切片长度合理（${loop.length}）`);
-
-    /** 用假 host / box / API 跑那段真实循环（含真实的 saveModulesConfig）。 */
+    /** 用假 host / block / box / DOM 跑真实处理器（含真实的 saveModulesConfig）。 */
     const runToggle = ({ checked, enabled = [], fail = false }) => {
         const calls = [];
         const toasts = [];
         const rendered = [];
-        let handler = null;
+        const replaced = [];
+        const rebound = [];
         const stateEl = { textContent: '' };
         const box = {
             dataset: { moduleToggle: 'memo' },
             checked,
-            closest: () => ({ querySelector: () => stateEl }),
-            addEventListener: (type, fn) => { if (type === 'change') handler = fn; }
+            closest: () => ({ querySelector: () => stateEl })
         };
         const config = { enabledModules: enabled.slice(), widgets: [], servers: [] };
         const API = {
@@ -1326,27 +1318,33 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
             }
         };
         const app = {
-            modulesConfig: config,          // 与循环里那个 config 必须是同一份
+            modulesConfig: config,          // 与处理器里那个 config 必须是同一份
             expandedDisabled: new Set(),
             getModule: id => ({ id, title: '备忘录' }),
             // ⚠️ showToast 挂在**假 app 上**（真代码里它就是 App 的方法）：
             // 早先把它当参数注入，等于替真代码补了一个作用域，于是
-            // 「handler 里写成裸 showToast(...)」这个真机会炸的写法在测试里全绿。
+            // 「处理器里写成裸 showToast(...)」这个真机会炸的写法在测试里全绿。
             showToast: (msg, kind) => toasts.push({ msg, kind }),
-            renderModulesEditor: async () => { rendered.push('admin'); },
+            renderModuleBlock: () => '<div class="module-block"></div>',
+            bindModuleBlock: () => rebound.push('bind'),
+            enhanceSelects: () => rebound.push('enhance'),
             renderModuleZone: async () => { rendered.push('home'); }
         };
         // 真实的 saveModulesConfig：它读 this.modulesConfig、POST、再回写
-        // methodBodyOf 返回的是**含签名**的片段，所以用对象字面量的写法抽出来
-        app.saveModulesConfig = new Function('API', 'sessionStorage', `return { ${saveBody} }.saveModulesConfig;`)(API, { setItem() {}, removeItem() {} });
-        // 循环体里写的是 this.xxx，所以按方法调用来跑：
-        // `new Function` 的函数体非严格，this 就是 .call 的接收者。
-        // ⚠️ 这里**只**注入真代码里确实存在的自由变量（host / config / API）：
-        // 多注入一个 showToast 就会把「写成裸名」这种错误掩盖掉（见上）。
-        const bind = new Function('host', 'config', 'API', loop);
-        bind.call(app, { querySelectorAll: () => [box] }, config, API);
-        assert.ok(handler, '循环注册了 change 监听');
-        return handler().then(() => ({ calls, toasts, rendered, config, box, stateEl }));
+        app.saveModulesConfig = new Function('API', 'sessionStorage',
+            `return { ${saveBody} }.saveModulesConfig;`)(API, { setItem() {}, removeItem() {} });
+        const fakeDocument = {
+            createElement: () => ({
+                innerHTML: '',
+                get firstElementChild() { return { querySelector: () => ({ focus() {} }) }; }
+            })
+        };
+        const block = { replaceWith: node => replaced.push(node) };
+        const makeToggle = new Function('document',
+            `return ({ ${toggleBody} }).handleModuleToggle;`);
+        const toggle = makeToggle(fakeDocument);
+        return toggle.call(app, {}, block, config, box)
+            .then(() => ({ calls, toasts, rendered, replaced, rebound, config, box, stateEl }));
     };
 
     const on = await runToggle({ checked: true });
@@ -1354,29 +1352,23 @@ test('后台模块开关真的落盘：跑一遍真实处理器，成功与失�
     assert.equal(on.calls[0].url, '/api/modules/config');
     assert.deepEqual([...on.calls[0].payload.enabledModules], ['memo'], '写下去的是新的启用列表');
     assert.deepEqual([...on.config.enabledModules], ['memo'], '内存里的列表同步更新');
-    // 成功路径不再**就地**改状态文字（那正是「只改字不发请求」时代的形状），
-    // 而是整块重渲染——配置区要跟着开关显隐，文字由 renderModuleBlock 的模板给出。
-    assert.equal(on.rendered.length, 2, '启用后要重渲染后台与首页：配置区跟着开关显隐，卡片也要出来');
+    assert.equal(on.replaced.length, 1, '只替换被拨动的这一块，不整块重绘');
+    assert.deepEqual(on.rebound, ['bind', 'enhance'], '新块重新绑定并增强内部下拉');
+    assert.deepEqual(on.rendered, ['home'], '首页模块区同步刷新');
     assert.match(on.toasts[0].msg, /已启用「备忘录」/, '给出反馈（用户才知道自己刚做了什么）');
 
     const off = await runToggle({ checked: false, enabled: ['memo', 'server-monitor'] });
     assert.equal(off.calls.length, 1);
     assert.deepEqual([...off.calls[0].payload.enabledModules], ['server-monitor'],
         '关闭时只移除自己，不动别的模块');
-    assert.equal(off.rendered.length, 2, '关闭同样靠重渲染（配置区收起，卡片撤掉）');
-
-    // ⚠️ 源码形状：那几处平台调用必须是 this.xxx（它们都是 App 的方法）。
-    // 真机抓到过一次裸 showToast(...) —— ReferenceError 被 catch 吞成「保存失败」，
-    // 于是开关看起来「拨了没反应、自己弹回去」。
-    const editorBody = methodBodyOf(code, 'renderModulesEditorContent');
-    assert.doesNotMatch(editorBody, /(?<![\w.])showToast\(/,
-        '不得裸调 showToast（它是 App 的方法，不是文件作用域函数）');
-    assert.match(editorBody, /this\.showToast\(/, '经 this 调用');
+    assert.equal(off.replaced.length, 1, '关闭同样只替换这一块');
+    assert.deepEqual(off.rendered, ['home'], '首页卡片撤掉');
 
     const bad = await runToggle({ checked: true, fail: true });
     assert.equal(bad.box.checked, false, '保存失败必须把开关拨回去');
     assert.equal(bad.stateEl.textContent, '未启用', '文字也要跟着拨回去');
     assert.deepEqual([...bad.config.enabledModules], [], '失败时内存里的列表不得改动');
+    assert.equal(bad.replaced.length, 0, '失败不替换区块');
     assert.equal(bad.rendered.length, 0, '失败不该重渲染出卡片');
     assert.match(bad.toasts[0].msg, /保存失败/);
 });

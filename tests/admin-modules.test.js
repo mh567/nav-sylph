@@ -233,8 +233,8 @@ test('后台服务包：模块从注入的服务里取能力，不去够平台�
     assert.deepEqual(bare, [], `服务包里的平台能力必须写成 app.xxx()：${bare.join(' / ')}`);
     assert.match(body, /app\.showToast\(/, 'toast 经实例调用');
     assert.match(body, /app\.showUiDialog\(/, 'dialog 经实例调用');
-    // 平台把整个包交给模块的后台区块
-    assert.match(stripComments(appSource), /def\.renderAdminSection\(el, this\.moduleServices\(\)\)/,
+    // 平台把整个包交给模块的后台区块（绑定在 bindModuleBlock 里）
+    assert.match(stripComments(appSource), /def\.renderAdminSection\((?:el|section), this\.moduleServices\(\)\)/,
         '调用处注入的是整个服务包');
 });
 
@@ -310,6 +310,25 @@ test('模块块的样式：块头两栏、未启用折叠条、平台块分隔�
 });
 
 // ========== ⑦ 重画保持滚动位置 ==========
+
+test('后台设置下拉与首页编辑区共用同一套自绘控件', () => {
+    const code = stripComments(appSource);
+    assert.match(code, /this\.enhanceSelects\(\$\('#modalBody'\)\)/, '打开管理面板时增强原生下拉');
+    assert.match(code, /this\.observeAdminSelects\(\)/, '模块区块自行重绘后由 DOM 监听补上');
+    const observe = methodBodyOf(code, 'observeAdminSelects');
+    assert.ok(observe.length > 200, `切出 observeAdminSelects（${observe.length}）`);
+    assert.match(observe, /MutationObserver/, '用 DOM 监听覆盖动态区块');
+    assert.match(observe, /this\.enhanceSelect\(node\)/, '新增节点逐个增强');
+    const enhance = methodBodyOf(code, 'enhanceSelect');
+    assert.ok(enhance.length > 500, `切出 enhanceSelect（${enhance.length}）`);
+    assert.match(enhance, /popover="manual"/, '下拉用 manual，外部点击由 pointerdown 关闭');
+    assert.match(enhance, /this\.syncSelectControl\(select\)/, '创建后同步当前值');
+    assert.match(enhance, /DROPDOWN_MIN_WIDTH/, '宽度沿用共享最小值');
+    const content = methodBodyOf(code, 'renderModulesEditorContent');
+    assert.match(content, /this\.enhanceSelects\(host\)/, '模块区块内的下拉也增强');
+    const ben = methodBodyOf(code, 'bindModuleBlock');
+    assert.match(ben, /this\.handleModuleToggle\(host, block, config, box\)/, '开关转交保存处理器');
+});
 
 test('拨模块开关后重画不把管理面板滚回顶部', () => {
     // 重画时先写入「加载中...」占位，内容变矮会让 .modal-body 的 scrollTop

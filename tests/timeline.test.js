@@ -1370,7 +1370,7 @@ test('后台来源区块挂点：平台调用模块的 renderAdminSection 并注
     const code = stripComments(appSource);
     // ⚠️ 注入的不再只是 `{ api }`：模块的后台区块还需要写配置、提示、对话框、
     // 重渲染等能力（监控目标整块搬进模块后尤其明显）。契约见 architecture.md。
-    assert.match(code, /def\.renderAdminSection\(el, this\.moduleServices\(\)\)/,
+    assert.match(code, /def\.renderAdminSection\((?:el|section), this\.moduleServices\(\)\)/,
         '平台按模块提供的渲染函数挂后台区块，并注入服务包');
     const services = code.slice(code.indexOf('moduleServices() {'), code.indexOf('moduleServices() {') + 1200);
     // ⚠️ 每一项都要**各自**断言：早先写成 `includes(key + ':') || includes('get config')`，

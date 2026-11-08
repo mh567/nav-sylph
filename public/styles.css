@@ -3843,6 +3843,11 @@ body { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang 
 
 /* 保留 select 作为配置源；自绘按钮与顶层选项面板统一主题、键盘和触控。 */
 .local-select { min-width: 0; width: 156px; max-width: 100%; }
+/* 后台设置行里的原生下拉同样换成自绘控件，尺寸对齐原来的行内下拉。 */
+.modal .local-select-button { min-height: 38px; }
+.special-line-source-form .local-select { width: 100%; }
+.special-line-source-form .local-select-button { min-height: 40px; font-size: 16px; }
+@media (max-width: 768px) { .modal .local-select-button { min-height: 44px; } }
 .local-select-button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background: linear-gradient(165deg,var(--control-top),var(--control-bottom)); color: var(--text); box-shadow: inset 0 1px var(--inner-light,transparent),0 2px 4px -2px var(--inner-dark,transparent); font: inherit; text-align: left; cursor: pointer; transition: border-color 150ms,background 150ms,box-shadow 150ms; }
 .local-select-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-select-button:hover:not(:disabled),.local-select-button[aria-expanded="true"] { border-color: var(--focus); background: linear-gradient(165deg,var(--control-hover-top),var(--control-hover-bottom)); }

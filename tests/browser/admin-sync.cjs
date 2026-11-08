@@ -6,6 +6,7 @@ const path = require('node:path');
 const bcrypt = require('bcrypt');
 const { chromium } = require('playwright');
 const { installation } = require('../helpers/installation');
+const localSelect = require('../helpers/local-select.cjs');
 async function setup(t, { modules } = {}) {
     const app = await installation(t);
     fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
@@ -118,7 +119,7 @@ test('browser: modules synchronize after visibility restoration; lost module res
         await route.fetch();
         await route.fulfill({ status: 200, contentType: 'application/json', body: '{' });
     });
-    await a.locator('#pollIntervalSelect').selectOption('60');
+    await localSelect(a, 'pollIntervalSelect', '60');
     await a.getByText('保存失败，请重试', { exact: true }).waitFor();
     assert.ok(submitted.operationId);
     await a.unroute('**/api/modules/config');
@@ -153,7 +154,7 @@ test('browser: pending module operation blocks logout and survives a failed relo
     await login(a);
     await a.locator('#adminBtn').click(); await a.getByRole('tab', { name: '模块', exact: true }).click();
     await a.route('**/api/modules/config', route => route.request().method() === 'POST' ? route.abort() : route.continue());
-    await a.locator('#pollIntervalSelect').selectOption('30');
+    await localSelect(a, 'pollIntervalSelect', '30');
     await a.getByText('保存失败，请重试', { exact: true }).waitFor();
     const original = await a.evaluate(() => JSON.parse(sessionStorage.getItem('nav-sylph-pending-modules')).body.operationId);
     await a.getByRole('tab', { name: '账户与备份' }).click(); await a.locator('#logoutBtn').click();
@@ -257,7 +258,7 @@ test('browser: issuing a deployment command updates the same panel module baseli
     await a.locator('.command-panel').waitFor();
     await a.locator('.command-panel-close').click();
     const response = a.waitForResponse(r => r.url().endsWith('/api/modules/config') && r.request().method() === 'POST');
-    await a.locator('#pollIntervalSelect').selectOption('60');
+    await localSelect(a, 'pollIntervalSelect', '60');
     assert.equal((await response).status(), 200);
     await a.getByText(/^更新周期已设为/).waitFor();
     assert.equal(await a.locator('#pollIntervalSelect').inputValue(), '60');

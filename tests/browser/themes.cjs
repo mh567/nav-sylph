@@ -73,9 +73,9 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     const { page, app, context, browser } = await fixture(t);
     fs.mkdirSync(shots, { recursive: true });
     await login(page);
-    await page.locator('#themeStyleSelect').selectOption('classic');
-    await page.locator('#themeModeSelect').selectOption('light');
-    await page.locator('#themeStyleSelect').selectOption('prism');
+    await localSelect(page, 'themeStyleSelect', 'classic');
+    await localSelect(page, 'themeModeSelect', 'light');
+    await localSelect(page, 'themeStyleSelect', 'prism');
     await appearance(page, 'prism', 'dark');
     assert.equal(await page.locator('#themeModeSelect').isDisabled(), true);
     assert.equal(await page.locator('#themeModeSelect').inputValue(), 'dark');
@@ -107,8 +107,8 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     await page.goto(app.base);
     await appearance(page, 'prism', 'dark');
     await page.locator('#adminBtn').click();
-    await page.locator('#themeStyleSelect').waitFor({ state: 'visible' });
-    await page.locator('#themeStyleSelect').selectOption('classic');
+    await page.locator('#themeStyleSelectButton').waitFor({ state: 'visible' });
+    await localSelect(page, 'themeStyleSelect', 'classic');
     await appearance(page, 'classic', 'light');
     await page.locator('#cancelBtn').click();
     await page.locator('.ui-dialog button[type="submit"]').click();

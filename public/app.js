@@ -1666,83 +1666,146 @@
         }
 
         syncLocalSelects() {
-            for (const select of document.querySelectorAll('#localSettingsForm select')) {
-                let wrapper = select.closest('.local-select');
-                if (!wrapper) {
-                    wrapper = document.createElement('div');
-                    wrapper.className = 'local-select';
-                    select.before(wrapper);
-                    wrapper.append(select);
-                    const label = document.querySelector(`label[for="${select.id}"]`);
-                    label.id = `${select.id}Label`;
-                    label.htmlFor = `${select.id}Button`;
-                    wrapper.insertAdjacentHTML('beforeend', `<button type="button" class="local-select-button" id="${select.id}Button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${select.id}Menu" aria-labelledby="${label.id} ${select.id}Value"><span id="${select.id}Value"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="local-select-menu" id="${select.id}Menu" popover="manual" role="listbox" aria-labelledby="${label.id}"></div>`);
-                    select.hidden = true;
-                    const button = wrapper.querySelector('button');
-                    const menu = wrapper.querySelector('[role="listbox"]');
-                    const highlight = index => {
-                        const options = [...menu.children];
-                        options.forEach((option, i) => option.classList.toggle('is-active', i === index));
-                        button.setAttribute('aria-activedescendant', options[index]?.id || '');
-                        options[index]?.scrollIntoView({ block: 'nearest' });
-                    };
-                    const open = () => {
-                        this.closeLocalSelects();
-                        const rect = button.getBoundingClientRect();
-                        const width = Math.min(Math.max(rect.width, DROPDOWN_MIN_WIDTH), innerWidth - 24);
-                        menu.style.width = `${width}px`;
-                        menu.style.left = `${Math.max(12, Math.min(rect.right - width, innerWidth - width - 12))}px`;
-                        const below = innerHeight - rect.bottom - 12;
-                        const above = rect.top - 12;
-                        const upward = below < 180 && above > below;
-                        menu.style.maxHeight = `${Math.max(44, Math.min(272, upward ? above - 8 : below - 8))}px`;
-                        menu.style.top = upward ? 'auto' : `${rect.bottom + 6}px`;
-                        menu.style.bottom = upward ? `${innerHeight - rect.top + 6}px` : 'auto';
-                        menu.showPopover();
-                        highlight(select.selectedIndex);
-                    };
-                    const choose = index => {
-                        if (!select.options[index] || select.options[index].disabled) return;
-                        select.selectedIndex = index;
-                        select.dispatchEvent(new Event('change', { bubbles: true }));
-                        menu.hidePopover();
-                        button.focus({ preventScroll: true });
-                    };
-                    button.onclick = () => menu.matches(':popover-open') ? menu.hidePopover() : open();
-                    menu.addEventListener('toggle', () => {
-                        button.setAttribute('aria-expanded', String(menu.matches(':popover-open')));
-                        if (!menu.matches(':popover-open')) button.removeAttribute('aria-activedescendant');
-                    });
-                    menu.onclick = event => {
-                        const option = event.target.closest('[role="option"]');
-                        if (option) choose(Number(option.dataset.index));
-                    };
-                    button.onkeydown = event => {
-                        const expanded = menu.matches(':popover-open');
-                        if (event.key === 'Escape' && expanded) {
-                            event.preventDefault(); event.stopPropagation(); menu.hidePopover(); return;
-                        }
-                        if (event.key === 'Tab') { if (expanded) menu.hidePopover(); return; }
-                        if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) {
-                            event.preventDefault();
-                            if (!expanded) { open(); return; }
-                            const current = [...menu.children].findIndex(option => option.classList.contains('is-active'));
-                            if (event.key === 'Enter' || event.key === ' ') choose(current);
-                            else highlight(event.key === 'Home' ? 0 : event.key === 'End' ? select.options.length - 1 : Math.max(0, Math.min(select.options.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1))));
-                        } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-                            event.preventDefault();
-                            if (!expanded) open();
-                            const index = [...select.options].findIndex(option => option.textContent.toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase()));
-                            if (index >= 0) highlight(index);
-                        }
-                    };
-                }
-                const button = wrapper.querySelector('button');
-                button.disabled = select.disabled;
-                wrapper.querySelector('button span').textContent = select.selectedOptions[0]?.textContent || '请选择';
-                const menu = wrapper.querySelector('[role="listbox"]');
-                menu.innerHTML = [...select.options].map((option, index) => `<button type="button" role="option" tabindex="-1" id="${select.id}Option${index}" data-index="${index}" style="--option-index:${index}" aria-selected="${option.selected}"${option.disabled ? ' disabled' : ''}><span>${this.esc(option.textContent)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></button>`).join('');
+            const root = $('#localSettingsForm');
+            this.enhanceSelects(root);
+            this.syncSelectControls(root);
+        }
+
+        /**
+         * 把原生 select 换成与首页编辑区同一套自绘下拉。
+         * 原生元素保留为唯一数据源（值仍是 selectedIndex），wrapper 只负责显示与交互。
+         * 后台面板会反复 innerHTML 重建，所以调用方按需对根节点增强即可。
+         */
+        enhanceSelects(root = document) {
+            if (!root) return;
+            for (const select of root.querySelectorAll('select')) this.enhanceSelect(select);
+        }
+
+        enhanceSelect(select) {
+            if (!select || select.closest('.local-select')) return;
+            if (!select.id) select.id = select.name ? `select-${select.name}` : `select-${uid()}`;
+            const wrapper = document.createElement('div');
+            wrapper.className = 'local-select';
+            select.before(wrapper);
+            wrapper.append(select);
+            const wrappingLabel = select.closest('label');
+            if (!wrappingLabel) {
+                const label = document.querySelector(`label[for="${select.id}"]`);
+                if (label) label.htmlFor = `${select.id}Button`;
             }
+            const labelText = this.selectLabelText(select);
+            const labelAttr = labelText ? ` aria-label="${this.esc(labelText)}"` : '';
+            wrapper.insertAdjacentHTML('beforeend', `<button type="button" class="local-select-button" id="${select.id}Button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${select.id}Menu"${labelAttr}><span id="${select.id}Value"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button><div class="local-select-menu" id="${select.id}Menu" popover="manual" role="listbox"${labelAttr}></div>`);
+            select.hidden = true;
+            const button = wrapper.querySelector('button');
+            const menu = wrapper.querySelector('[role="listbox"]');
+            const highlight = index => {
+                const options = [...menu.children];
+                options.forEach((option, i) => option.classList.toggle('is-active', i === index));
+                button.setAttribute('aria-activedescendant', options[index]?.id || '');
+                options[index]?.scrollIntoView({ block: 'nearest' });
+            };
+            const open = () => {
+                this.closeLocalSelects();
+                const rect = button.getBoundingClientRect();
+                const width = Math.min(Math.max(rect.width, DROPDOWN_MIN_WIDTH), innerWidth - 24);
+                menu.style.width = `${width}px`;
+                menu.style.left = `${Math.max(12, Math.min(rect.right - width, innerWidth - width - 12))}px`;
+                const below = innerHeight - rect.bottom - 12;
+                const above = rect.top - 12;
+                const upward = below < 180 && above > below;
+                menu.style.maxHeight = `${Math.max(44, Math.min(272, upward ? above - 8 : below - 8))}px`;
+                menu.style.top = upward ? 'auto' : `${rect.bottom + 6}px`;
+                menu.style.bottom = upward ? `${innerHeight - rect.top + 6}px` : 'auto';
+                menu.showPopover();
+                highlight(select.selectedIndex);
+            };
+            const choose = index => {
+                if (!select.options[index] || select.options[index].disabled) return;
+                select.selectedIndex = index;
+                this.syncSelectControl(select);
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                menu.hidePopover();
+                button.focus({ preventScroll: true });
+            };
+            button.onclick = () => menu.matches(':popover-open') ? menu.hidePopover() : open();
+            menu.addEventListener('toggle', () => {
+                button.setAttribute('aria-expanded', String(menu.matches(':popover-open')));
+                if (!menu.matches(':popover-open')) button.removeAttribute('aria-activedescendant');
+            });
+            menu.onclick = event => {
+                const option = event.target.closest('[role="option"]');
+                if (option) choose(Number(option.dataset.index));
+            };
+            button.onkeydown = event => {
+                const expanded = menu.matches(':popover-open');
+                if (event.key === 'Escape' && expanded) {
+                    event.preventDefault(); event.stopPropagation(); menu.hidePopover(); return;
+                }
+                if (event.key === 'Tab') { if (expanded) menu.hidePopover(); return; }
+                if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) {
+                    event.preventDefault();
+                    if (!expanded) { open(); return; }
+                    const current = [...menu.children].findIndex(option => option.classList.contains('is-active'));
+                    if (event.key === 'Enter' || event.key === ' ') choose(current);
+                    else highlight(event.key === 'Home' ? 0 : event.key === 'End' ? select.options.length - 1 : Math.max(0, Math.min(select.options.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1))));
+                } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+                    event.preventDefault();
+                    if (!expanded) open();
+                    const index = [...select.options].findIndex(option => option.textContent.toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase()));
+                    if (index >= 0) highlight(index);
+                }
+            };
+            this.syncSelectControl(select);
+        }
+
+        /** 取 select 的可见标签文字。标签可能包着 select，克隆后剔除控件即可。 */
+        selectLabelText(select) {
+            const label = select.closest('label') || document.querySelector(`label[for="${select.id}"]`);
+            if (!label) return '';
+            const clone = label.cloneNode(true);
+            clone.querySelectorAll('select, button, .local-select').forEach(node => node.remove());
+            return clone.textContent.replace(/\s+/g, ' ').trim();
+        }
+
+        /** 把原生 select 的当前值与禁用态同步到自绘按钮，并按需重建选项列表。 */
+        syncSelectControl(select) {
+            const wrapper = select.closest('.local-select');
+            if (!wrapper) return;
+            const button = wrapper.querySelector('.local-select-button');
+            const menu = wrapper.querySelector('[role="listbox"]');
+            if (!button || !menu) return;
+            button.querySelector('span').textContent = select.selectedOptions[0]?.textContent || '请选择';
+            button.disabled = select.disabled;
+            const html = [...select.options].map((option, index) => `<button type="button" role="option" tabindex="-1" id="${select.id}Option${index}" data-index="${index}" style="--option-index:${index}" aria-selected="${option.selected}"${option.disabled ? ' disabled' : ''}><span>${this.esc(option.textContent)}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></button>`).join('');
+            if (menu.innerHTML !== html) menu.innerHTML = html;
+        }
+
+        syncSelectControls(root = document) {
+            if (!root) return;
+            for (const select of root.querySelectorAll('select')) {
+                if (select.closest('.local-select')) this.syncSelectControl(select);
+            }
+        }
+
+        /**
+         * 后台面板的模块区块会自行重绘，平台不能逐个知道。
+         * 监听 #modal 的 DOM 变化，把新出现的 select 就地增强为同一套下拉。
+         */
+        observeAdminSelects() {
+            if (this.adminSelectObserver || !('MutationObserver' in window)) return;
+            const modal = $('#modal');
+            if (!modal) return;
+            this.adminSelectObserver = new MutationObserver(records => {
+                for (const record of records) {
+                    for (const node of record.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        if (node.matches?.('select')) this.enhanceSelect(node);
+                        else node.querySelectorAll?.('select')?.forEach(select => this.enhanceSelect(select));
+                    }
+                }
+            });
+            this.adminSelectObserver.observe(modal, { childList: true, subtree: true });
         }
 
         renderLocalSettings() {
@@ -2146,7 +2209,7 @@
             try { sessionStorage.setItem('nav-sylph-appearance', JSON.stringify(appearance)); } catch (e) {}
             const fixed = !!window.NavigationSchema.THEMES[appearance.style].mode;
             const modeSelect = $('#themeModeSelect');
-            if (modeSelect) { modeSelect.disabled = fixed; modeSelect.value = theme; }
+            if (modeSelect) { modeSelect.disabled = fixed; modeSelect.value = theme; this.syncSelectControl(modeSelect); }
             document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
                 const dark = theme === 'dark' || (theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
                 meta.content = appearance.style === 'prism' ? '#1b232b' : dark ? '#211f1c' : '#efede8';
@@ -2295,6 +2358,7 @@
 
         bind() {
             this.bindLocalNavigation();
+            this.observeAdminSelects();
             this.syncEditEntries();
             $('#modeBtn').hidden = !this.authenticated;
             $('#favSearchHint').hidden = !this.authenticated;
@@ -5129,78 +5193,86 @@
                     console.error('Save poll interval failed:', err);
                     // 失败要把下拉拨回去，否则界面显示的是一个没生效的值
                     e.target.value = String(config.pollInterval ?? 15);
+                    this.syncSelectControl(e.target);
                     this.showToast('保存失败，请重试', 'error');
                 }
             };
 
-            // 模块自己的后台区块：先把容器落进 DOM，再交给模块渲染
-            //（它要绑事件、要读自己的数据，拿字符串做不到）。
-            // 单个模块渲染失败不能让整个分区空白，所以逐个 try。
-            for (const el of host.querySelectorAll('[data-module-admin]')) {
-                const def = this.getModule(el.dataset.moduleAdmin);
-                if (!def || typeof def.renderAdminSection !== 'function') continue;
-                try {
-                    // 交付服务包：后台区块渲染时模块可能并未挂载（模块未启用），
-                    // 所以它不能指望 mountWidget 那一次注入留下的变量。
-                    def.renderAdminSection(el, this.moduleServices());
-                } catch (err) {
-                    console.error(`Render admin section ${def.id} failed:`, err);
-                    el.innerHTML = '<p class="fav-hint">该模块的后台区块渲染失败，请重开面板重试。</p>';
-                }
+            // 每块单独绑定：模块自己的后台区块渲染、展开按钮、启停开关。
+            for (const block of host.querySelectorAll('.module-block')) {
+                this.bindModuleBlock(host, block, config);
             }
+            // 模块后台区块可能自带原生 select，统一换成同一套下拉。
+            this.enhanceSelects(host);
 
-            // 未启用时收起配置，点「展开配置」就地重画这一块：
-            // 只重画不重新拉配置，也不把开关拨过去（用户只是要看一眼配置）。
-            for (const btn of host.querySelectorAll('[data-expand-module]')) {
-                btn.onclick = () => {
-                    this.expandedDisabled.add(btn.dataset.expandModule);
-                    this.renderModulesEditorContent(host, config);
-                };
-            }
-
-            // 开关与它那一行的「已启用/未启用」文字必须同步，
-            // 否则文字会与实际状态相反——它紧贴开关，反而不一致时最刺眼。
-            //
-            // ⚠️ 这里曾经**只改文字、从不发请求**（自 `ada60c6` 模块平台上线起
-            // 就如此），而下面那句注释还断言「开关有自己的即时保存路径」——
-            // 于是后台把开关拨成「已启用」、`.modules.json` 一个字没变，用户
-            // 报的就是「备忘录模块无法启用」。用户原话：「更新后，备忘录模块
-            // 无法启用」。上一轮 449→465 条测试全绿、源码形状守卫也在绿，
-            // 因为那条守卫只断言了「存在一个 change 监听」。
-            for (const box of host.querySelectorAll('[data-module-toggle]')) {
-                box.addEventListener('change', async () => {
-                    const id = box.dataset.moduleToggle;
-                    const on = box.checked;
-                    const before = (config.enabledModules || []).slice();
-                    const next = on
-                        ? [...new Set([...before, id])]
-                        : before.filter(x => x !== id);
-                    const state = box.closest('.module-setting-toggle')
-                        ?.querySelector('.module-setting-state');
-                    try {
-                        await this.saveModulesConfig({ enabledModules: next });
-                        // 配置区的显隐跟着开关走，所以这一处必须**重画**：
-                        // 早先只改文字，于是「已启用」写着、配置区却不出现。
-                        if (on) this.expandedDisabled.delete(id);
-                        const title = this.getModule(id)?.title || id;
-                        this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
-                        await this.renderModulesEditor();
-                        await this.renderModuleZone();
-                    } catch (err) {
-                        console.error('Save module toggle failed:', err);
-                        // 失败要把开关与文字一起拨回去，否则界面显示的是一个
-                        // 没落盘的状态（本轮修的就是这个形状的谎）
-                        box.checked = !on;
-                        if (state) state.textContent = !on ? '已启用' : '未启用';
-                        this.showToast('保存失败，请重试', 'error');
-                    }
-                });
-            }
-
-            // 模块开关的保存路径就在上面那个 change 处理器里，
+            // 模块开关的保存路径在 bindModuleBlock 里，
             // 所以这里**不需要**一个总的「保存模块配置」按钮。
             // 曾有过一个，而它与右上角的「保存」职责重叠、用户分不清
             // 哪个才是真的生效——实际两者写的都是同一份 .modules.json。
+        }
+
+        /** 绑定一个模块块：后台区块、展开配置、启停开关。 */
+        bindModuleBlock(host, block, config) {
+            const def = this.getModule(block.dataset.module);
+            const section = block.querySelector('[data-module-admin]');
+            if (section && def && typeof def.renderAdminSection === 'function') {
+                try {
+                    // 交付服务包：后台区块渲染时模块可能并未挂载（模块未启用），
+                    // 所以它不能指望 mountWidget 那一次注入留下的变量。
+                    def.renderAdminSection(section, this.moduleServices());
+                } catch (err) {
+                    console.error(`Render admin section ${def.id} failed:`, err);
+                    section.innerHTML = '<p class="fav-hint">该模块的后台区块渲染失败，请重开面板重试。</p>';
+                }
+            }
+            const expand = block.querySelector('[data-expand-module]');
+            if (expand) expand.onclick = () => {
+                this.expandedDisabled.add(expand.dataset.expandModule);
+                this.renderModulesEditorContent(host, config);
+            };
+            const box = block.querySelector('[data-module-toggle]');
+            if (box) box.addEventListener('change', () => this.handleModuleToggle(host, block, config, box));
+        }
+
+        /**
+         * 模块启停。保存成功后只重画这一块。
+         *
+         * 整块 renderModulesEditor 会先写入「加载中...」占位，内容瞬间变矮，
+         * 浏览器把 .modal-body 的 scrollTop 夹回 0，用户看到的就是
+         * 「点一下开关，面板刷新并跳到别的模块」。就地替换保住了滚动位置、
+         * 其他区块的现场和键盘焦点。
+         */
+        async handleModuleToggle(host, block, config, box) {
+            const id = box.dataset.moduleToggle;
+            const on = box.checked;
+            const before = (this.modulesConfig?.enabledModules || config.enabledModules || []).slice();
+            const next = on
+                ? [...new Set([...before, id])]
+                : before.filter(x => x !== id);
+            const state = box.closest('.module-setting-toggle')
+                ?.querySelector('.module-setting-state');
+            try {
+                await this.saveModulesConfig({ enabledModules: next });
+                if (on) this.expandedDisabled.delete(id);
+                const title = this.getModule(id)?.title || id;
+                this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
+                const current = this.modulesConfig || config;
+                const holder = document.createElement('div');
+                holder.innerHTML = this.renderModuleBlock(this.getModule(id), current).trim();
+                const fresh = holder.firstElementChild;
+                block.replaceWith(fresh);
+                this.bindModuleBlock(host, fresh, current);
+                this.enhanceSelects(fresh);
+                fresh.querySelector('[data-module-toggle]')?.focus({ preventScroll: true });
+                await this.renderModuleZone();
+            } catch (err) {
+                console.error('Save module toggle failed:', err);
+                // 失败要把开关与文字一起拨回去，否则界面显示的是一个
+                // 没落盘的状态（本轮修的就是这个形状的谎）
+                box.checked = !on;
+                if (state) state.textContent = !on ? '已启用' : '未启用';
+                this.showToast('保存失败，请重试', 'error');
+            }
         }
 
         /**
@@ -5444,6 +5516,10 @@
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
             // 不在此处预取——每次重渲染都多打一次请求会累积撞上限流
+
+            // 面板里的原生 select 统一换成自绘下拉。模块区块稍后自行重绘，
+            // 由 observeAdminSelects 的 DOM 监听补上。
+            this.enhanceSelects($('#modalBody'));
         }
 
         /**

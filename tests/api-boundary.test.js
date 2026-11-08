@@ -835,22 +835,25 @@ test('模块分区的说明文字紧贴它描述的那一行，不汇总在区�
 
     // 状态文字必须随开关同步，否则紧贴开关的两者会互相矛盾。
     //
-    // ⚠️ 这里原先钉的是**具体写法**（`box.checked ? '已启用' : '未启用'`）。
-    // 修「模块开关从不落盘」时处理器改成先取这次拨动的快照 `on`，
-    // 因为失败回滚要按「这次的方向」取反（`box.checked` 那时已被改动），
-    // 于是断言转红——而它想守的意图（文字跟着开关走）始终成立。
-    // 按仓库纪律放宽断言、不改代码去迎合它：现在只要求某个布尔快照
-    // 驱动这两个字、且成对出现。
-    //
-    // ⚠️ 另有一处随时间变过：成功路径**不再就地改文字**，而是整块重渲染
-    // （配置区要跟着开关显隐）。所以现在这两处是：
-    //   · 块模板里给出两个字的文案（按 on 选择）；
-    //   · 失败回滚时按这次的方向拨回去。
-    // 真正的行为验证在 `tests/monitor-agent.test.js`「后台模块开关真的落盘」
-    // ——它把真实处理器的成功与失败两条路径都跑一遍。
-    assert.match(editor, /\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换（失败回滚路径）');
+    // 开关的绑定与保存处理器现在分住两个方法：
+    //   · `bindModuleBlock` 注册 change 监听；
+    //   · `handleModuleToggle` 负责保存与失败回滚。
+    // 真正跑一遍成功与失败路径的用例在
+    // `tests/monitor-agent.test.js`「后台模块开关真的落盘」。
+    assert.match(appSource, /this\.bindModuleBlock\(host, block, config\)/, '逐块绑定');
+    assert.match(appSource, /const box = block\.querySelector\('\[data-module-toggle\]'\);\s*\n\s*if \(box\) box\.addEventListener\('change'/,
+        'change 监听在 bindModuleBlock 里注册');
+    const bindAt = appSource.indexOf('bindModuleBlock(host, block, config) {');
+    assert.ok(bindAt > 0, '找到 bindModuleBlock');
+    const bindBody = appSource.slice(bindAt, bindAt + 1400);
+    assert.match(bindBody, /this\.handleModuleToggle\(host, block, config, box\)/, '监听转交保存处理器');
     assert.match(block, /\?\s*'已启用'\s*:\s*'未启用'/, '状态文字随开关切换（块模板）');
-    assert.match(editor, /addEventListener\('change'/, 'change 事件里同步状态文字');
+    const toggleAt = appSource.indexOf('async handleModuleToggle(');
+    assert.ok(toggleAt > 0, '找到 handleModuleToggle');
+    const toggleBody = appSource.slice(toggleAt, toggleAt + 1800);
+    assert.match(toggleBody, /\?\s*'已启用'\s*:\s*'未启用'/, '失败回滚按这次的方向拨回文字');
+    assert.doesNotMatch(toggleBody, /renderModulesEditor\(\)/,
+        '启停不再整块重绘（那会先写「加载中...」占位并让面板跳动）');
 });
 
 test('模块列表行不再有「启用状态」区块标题', () => {
