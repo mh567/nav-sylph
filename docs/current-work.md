@@ -10,6 +10,7 @@
 - 服务端按需下载：`/agent/nav-agent-linux-<arch>` 在本机缺失时从同版本 Release 取回并缓存，可用 `HABU_AGENT_DOWNLOAD_BASE` 指向自建镜像。
 - 依赖：`package-lock.json` 哈希未变化时跳过 `npm install`，哈希记录在 `.habu-deps-hash`。
 - 验证：本机以本地镜像验证按需下载返回 200、ELF 头正确、缓存权限 0755；新增脚本测试覆盖精简包选择与依赖跳过。
+- 发布：实现提交 `c1219ad` 已推送 `main`，发布 v2.4.2。附件核对：完整包 13,646,161 字节；精简包 5,019,929 字节且不含 `agent/dist`；三个 agent 附件为 ELF；`latest` 指向 v2.4.2。
 
 ## 清理 Sylph 兼容代码（2026-11-08，随 v2.4.1 发布）
 
