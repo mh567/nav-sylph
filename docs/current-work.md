@@ -1,5 +1,14 @@
 # 当前工作交接
 
+## v2.3.1 升级下载失败修复（2026-11-08，已发布并核对附件）
+
+- 症状：2.2.16 执行 `./sylph.sh update`，直连 GitHub 失败后回退 `ghproxy.cn`。该域名现在对下载地址返回 200 的 HTML 落地页，`curl -f` 只看状态码把它当成成功，`tar` 报 `not in gzip format`，脚本最后提示「下载失败」并恢复旧版本与服务。
+- 根因：下载函数只判断 curl 退出码，没有校验文件内容；`download_release` 也没有检查 `tar` 的返回值。函数在 `if !` 中调用时 errexit 关闭，解压失败会继续往下执行。
+- 修复：下载到文件后用 `gzip -t` 校验，失败则删除并切换下一个源；显式检查解压结果；移除 `ghproxy.cn`，新增 `gh-proxy.com`；直连增加 `--retry 2`；所有源失败时打印手动下载命令。
+- 验证：从真实脚本截取函数并搭本地假镜像，三项通过（坏镜像在前被跳过、仅坏镜像时失败并清理、`download_release` 解压成功）；去掉校验的副本三项全部变红；真实链路经 `gh-proxy.com` 下载 v2.3.0 安装包 13 MB 并通过 `gzip -t`。
+- 发布：实现提交 `55d80af` 已推送 `main`，`scripts/release.sh` 发布 v2.3.1。附件经 `gh release download` 取回并核对：`version.json` 为 2.3.1，脚本含 `is_valid_archive` 与 `gh-proxy.com`，三份 Linux agent 齐全，未包含私人配置。
+- 注意：2.2.16 本机的旧 `sylph.sh` 仍是旧逻辑，需要先把 `main` 上的新脚本取到服务器再执行 update。核对时匿名直连与 `gh-proxy.com` 对 v2.3.1 附件均返回过 504，重试或改用带认证的下载方式可绕开。
+
 ## Sylph / Pabu 拆分（2026-11-08，已提交并发布 v2.3.0）
 
 - 用户已确认实际拆分，当前无用户，不考虑同步数据迁移。当前仓库保留为自部署个人数字工作台 Sylph，独立 Pabu 位于 `/Users/harris/work/pabu`，仓库为 `https://github.com/mh567/pabu`，从跟踪源码复制，无私人配置或数据库。
