@@ -381,7 +381,7 @@ const {
     ENV_CHANGED_CODE,
     ENV_CHANGED_MESSAGE
 } = require('./lib/session');
-const { openDatabase } = require('./lib/db');
+const { openDatabase, pendingMigrations } = require('./lib/db');
 const { snapshot: snapshotNavigation, createNavigation } = require('./lib/navigation');
 let navigation;
 const { createSqliteBackend } = require('./lib/session-sqlite');
@@ -1150,7 +1150,24 @@ async function init() {
         console.log(`Created: ${path.basename(logDir)}/`);
     }
 
-    snapshotNavigation(config.rootDir, config.paths.database, PASSWORD_FILE);
+    // 升级快照只在**确有迁移待执行**时拍。
+    //
+    // 它的含义是「升级前留一手」，因此判据应该是「这次启动会不会真的动数据库」，
+    // 而不是「是不是在启动」。早先无条件调用，每重启一次就多一份含密码哈希、
+    // 模块凭据密文与整库副本的目录（实测 500KB 一份），而绝大多数次启动
+    // user_version 已经追平，那份副本没有任何回滚价值。
+    //
+    // 探测失败不阻断启动：快照是保命手段，不是启动的前置条件。真正要跑迁移时
+    // 如果连库都读不出来，openDatabase 那一步会自己报错。
+    try {
+        const pending = pendingMigrations(config.paths.database);
+        if (pending > 0) {
+            console.log(`检测到 ${pending} 级待执行迁移，先保存升级快照`);
+            snapshotNavigation(config.rootDir, config.paths.database, PASSWORD_FILE);
+        }
+    } catch (err) {
+        console.warn('检查数据库迁移状态失败，本轮不保存升级快照:', err.message);
+    }
     await ensureFile(CONFIG_FILE, defaultConfig);
     await ensureFile(FAVORITES_FILE, defaultFavorites);
     await ensureFile(MODULES_FILE, defaultModulesConfig);

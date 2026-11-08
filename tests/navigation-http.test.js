@@ -74,16 +74,23 @@ test('HTTP: upgrade snapshot preserves all private files and database; failed in
     const invalid = structuredClone(personal); invalid.categories[0].bookmarks[0].url = 'javascript:bad';
     fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify(invalid));
     fs.writeFileSync(path.join(app.dir, '.webdav-config.json'), '{"password":"original-secret"}');
-    const { openDatabase } = require('../lib/db');
+    const { openDatabase, pendingMigrations } = require('../lib/db');
     const db = openDatabase(path.join(app.dir, 'habu.db'));
-    db.prepare('INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?)').run('one', 'Private memo', 'Keep', 1, 1, 1); db.close();
+    db.prepare('INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?)').run('one', 'Private memo', 'Keep', 1, 1, 1);
+    db.close();
+    // 快照只在**确有迁移待执行**时拍，所以这里显式制造这个前提，而不是依赖
+    // 「每次启动都拍」。直接调 snapshot() 是刻意的：判据（pendingMigrations）
+    // 与调用点（init）各有自己的用例，这里验的是快照内容本身。
+    const { snapshot } = require('../lib/navigation');
+    assert.equal(pendingMigrations(path.join(app.dir, 'habu.db')), 0, '库已是最新，无待执行迁移');
+    snapshot(app.dir, path.join(app.dir, 'habu.db'), path.join(app.dir, '.admin-password.json'));
     await assert.rejects(app.start());
-    const snapshot = path.join(app.dir, '.navigation-upgrade-snapshot');
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshot, 'config.json'))), invalid);
-    assert.equal(fs.readFileSync(path.join(snapshot, '.webdav-config.json'), 'utf8'), '{"password":"original-secret"}');
-    assert.equal(fs.statSync(path.join(snapshot, '.webdav-config.json')).mode & 0o777, 0o600);
+    const snapshotDir = path.join(app.dir, '.navigation-upgrade-snapshot');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshotDir, 'config.json'))), invalid);
+    assert.equal(fs.readFileSync(path.join(snapshotDir, '.webdav-config.json'), 'utf8'), '{"password":"original-secret"}');
+    assert.equal(fs.statSync(path.join(snapshotDir, '.webdav-config.json')).mode & 0o777, 0o600);
     const Database = require('better-sqlite3');
-    const saved = new Database(path.join(snapshot, 'habu.db'), { readonly: true });
+    const saved = new Database(path.join(snapshotDir, 'habu.db'), { readonly: true });
     assert.equal(saved.prepare('SELECT body FROM memos').get().body, 'Keep'); saved.close();
     const failed = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(failed.prepare('SELECT count(*) AS n FROM navigation_documents').get().n, 0); failed.close();
@@ -92,7 +99,7 @@ test('HTTP: upgrade snapshot preserves all private files and database; failed in
     const weak = (await app.request('/api/verify-password', { password: 'admin123', body: {} })).headers.get('set-cookie').split(';')[0];
     const cookie = (await app.request('/api/change-password', { cookie: weak, body: { currentPassword: 'admin123', newPassword: 'StrongPass123!' } })).headers.get('set-cookie').split(';')[0];
     assert.equal((await (await app.request('/api/config', { cookie })).json()).categories[0].name, 'Personal');
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshot, 'config.json'))), invalid);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshotDir, 'config.json'))), invalid);
     const restarted = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(restarted.prepare('SELECT body FROM memos').get().body, 'Keep'); restarted.close();
 });
@@ -105,8 +112,14 @@ test('HTTP: configured external database and password paths have a recoverable m
     const password = path.join(external, 'custom-password.json');
     fs.copyFileSync(path.join(app.dir, '.admin-password.json'), password);
     fs.writeFileSync(path.join(app.dir, 'server-config.json'), JSON.stringify({ paths: { database }, security: { adminPasswordFile: password } }));
-    const { openDatabase } = require('../lib/db'); const db = openDatabase(database);
-    db.prepare('INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?)').run('custom', 'Custom', 'External private data', 0, 1, 1); db.close();
+    const { openDatabase, pendingMigrations } = require('../lib/db'); const db = openDatabase(database);
+    db.prepare('INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?)').run('custom', 'Custom', 'External private data', 0, 1, 1);
+    db.close();
+    // 快照只在确有迁移待执行时拍。这条验的是「外部数据库与密码路径也被覆盖」，
+    // 所以直接调 snapshot() 制造快照，不靠启动的副作用。
+    const { snapshot: takeSnapshot } = require('../lib/navigation');
+    assert.equal(pendingMigrations(database), 0, '库已是最新，无待执行迁移');
+    takeSnapshot(app.dir, database, password);
     await app.start();
     const snapshot = path.join(app.dir, '.navigation-upgrade-snapshot');
     const manifest = JSON.parse(fs.readFileSync(path.join(snapshot, 'RESTORE.json')));
@@ -137,4 +150,23 @@ test('HTTP: factory initialization and supported legacy display defaults remain 
     assert.equal(migrated.theme, undefined); assert.equal(migrated.showBookmarkIcons, undefined);
     assert.equal(migrated.bookmarks[0].name, 'Personal');
     assert.deepEqual((await (await old.request('/api/admin/navigation', { cookie })).json()).config, legacy);
+});
+
+test('HTTP: 已是最新版本时启动不再重复拍升级快照', async t => {
+    // 快照的语义是「升级前留一手」，因此只有确有迁移待执行时才该产生。
+    // 早先 init() 每次启动都无条件调用，于是每重启一次就多一份含密码哈希、
+    // 模块凭据密文与整库副本的目录（实测 500KB 一份），绝大多数次启动都没有回滚价值。
+    const app = await installation(t);
+    fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
+    const snapshotDir = path.join(app.dir, '.navigation-upgrade-snapshot');
+
+    // 首次启动：库不存在，pendingMigrations 为 0，不该留快照（也没有旧数据可丢）。
+    await app.start();
+    assert.equal(fs.existsSync(snapshotDir), false, '全新安装不产生快照');
+    await app.stop();
+
+    // 再次启动：库已迁移到最新，同样不该留快照。
+    await app.start();
+    assert.equal(fs.existsSync(snapshotDir), false, '库已最新时不重复拍快照');
+    await app.stop();
 });
