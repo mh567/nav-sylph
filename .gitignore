@@ -26,6 +26,9 @@ favorites.json
 .modules.json
 
 # SQLite database (admin sessions today; future module data)
+habu.db
+habu.db-wal
+habu.db-shm
 nav-sylph.db
 nav-sylph.db-wal
 nav-sylph.db-shm
@@ -42,6 +45,7 @@ npm-debug.log*
 
 # Process files
 *.pid
+.habu.pid
 .nav-sylph.pid
 
 # OS files

@@ -1,15 +1,19 @@
 # 当前工作交接
 
-> 项目于 2026-11-08 更名为 Habu。GitHub 仓库仍为 `mh567/nav-sylph`，运行时文件名（`sylph.sh`、`nav-sylph.db`、`NAV_SYLPH_*` 环境变量、systemd 服务名）保持不变。历史条目中的 Sylph 为当时的项目名。
+> 项目于 2026-11-08 更名为 Habu，GitHub 仓库改为 `mh567/habu`。运行时文件名与协议标识同步改为 habu，旧 nav-sylph 标识在升级时自动迁移或继续识别。历史条目中的 Sylph 为当时的项目名。
 
-## 项目更名 Habu（2026-11-08，本地修改待提交）
+## 项目更名 Habu（2026-11-08，随 v2.4.0 发布）
 
-- 产品名由 Nav Sylph 改为 Habu，站点标题改为「数字工作台」，PWA 名称与描述同步更新，Service Worker 缓存升至 `nav-v154`。
-- 已更新 README、产品与部署文档、架构文档、产品边界、定位研究、agent 说明与安装提示、发布脚本标题、服务单元描述、启动横幅和首页说明面板。
-- 按决定保留运行时文件名与协议标识：`sylph.sh`、`nav-sylph.db`、`NAV_SYLPH_*`、`nav-sylph.service`、`X-Sylph-Request` 请求头、`DATA-SYLPH-PRIVATE` 备份标记、`Sylph Inter Tight` 字体族名。现有部署、登录会话与备份兼容。
-- 本地目录 `/Users/harris/work/sylph` 在内容修改完成后改名为 `/Users/harris/work/habu`。
-- GitHub 仓库 `mh567/nav-sylph` 不改名，安装与更新地址保持不变。
-- 历史文档与旧发布记录保留原项目名，未改写事实。
+- 产品名改为 Habu，站点标题改为「数字工作台」，PWA 名称与描述同步更新，Service Worker 缓存升至 `nav-v154`。
+- 脚本：`sylph.sh` 改为 `habu.sh`；安装目录默认 `~/habu`，可用 `HABU_DIR` 覆盖，旧 `NAV_SYLPH_DIR` 继续兼容。已有 `~/nav-sylph` 实例在未指定变量时继续沿用。
+- 服务：systemd 单元改为 `habu.service`，PID 文件改为 `.habu.pid`。脚本同时识别旧 `nav-sylph.service` 与 `.nav-sylph.pid`；更新时自动停止旧单元、删除旧文件并注册新单元，缺少 sudo 时保留旧单元并提示。
+- 数据库：默认改为 `habu.db`。启动时若新库不存在且旧 `nav-sylph.db` 存在，连同 `-wal` / `-shm` 一起改名，登录会话、备忘、待办与时间线继续可用。
+- 请求头改为 `X-Habu-Request`，过渡期服务端同时接受 `X-Sylph-Request`。备份隐私标记改为 `DATA-HABU-PRIVATE`，导入时同时识别旧 `DATA-SYLPH-PRIVATE`。
+- 字体族名改为 `Habu Inter Tight`。
+- 发布脚本改为打包 `habu.sh` 与 `habu.service`，发布包目录与附件名改为 `habu-v<版本>`。2.3.x 的旧脚本只识别 `nav-sylph-*` 顶层目录，升级到新包前必须先取用 `main` 上的 `habu.sh`。
+- 本地目录 `/Users/harris/work/sylph` 已改名为 `/Users/harris/work/habu`。
+- GitHub 仓库已改名为 `mh567/habu`，安装与更新地址同步更新；GitHub 会重定向旧地址。
+- 未改动客户端存储键（`nav-sylph-theme`、`nav-sylph-personal` 等）与 WebDAV 备份文件名，它们承载用户本机数据和远端已有备份，改名会导致偏好丢失或旧备份不可见。历史文档与旧发布记录保留原项目名。
 
 ## v2.3.1 升级下载失败修复（2026-11-08，已发布并核对附件）
 

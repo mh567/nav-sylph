@@ -121,11 +121,11 @@ function stopServer(srv) {
 
 /** 拨自签开关。默认管理密码见 server-config/defaults.js 的 defaultPassword。 */
 async function saveSelfSigned(srv) {
-    const login = await fetch(`${srv.base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'ConfigTest123!', 'X-Sylph-Request': '1' } });
+    const login = await fetch(`${srv.base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'ConfigTest123!', 'X-Habu-Request': '1' } });
     const cookie = login.headers.get('set-cookie').split(';')[0];
     return fetch(`${srv.base}/api/server-flags`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-Sylph-Request': '1' },
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-Habu-Request': '1' },
         body: JSON.stringify({ selfSignedCert: true })
     });
 }

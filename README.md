@@ -4,7 +4,7 @@
 
 可自部署的个人数字工作台，将导航、书签、文本分享、备忘待办、服务监控和订阅时间线集中到自己的入口。
 
-Habu 面向部署者个人使用，登录后可在多台设备取得个人导航与模块配置。面向公众的导航管理与口令同步已拆分为独立项目 Pabu。当前版本 2.3.1。
+Habu 面向部署者个人使用，登录后可在多台设备取得个人导航与模块配置。面向公众的导航管理与口令同步已拆分为独立项目 Pabu。当前版本 2.4.0。
 
 ## ✨ 核心功能
 
@@ -106,7 +106,7 @@ Habu 面向部署者个人使用，登录后可在多台设备取得个人导航
 
 - **恢复**：点「从备份恢复」选择备份时间点，可选「同时恢复书签与私人数据」「只恢复书签」「只恢复备忘」「只恢复待办」「只恢复模块设置」或「只恢复时间线」
 
-> 管理密码文件始终不进入备份。社交平台凭据同样不进入备份——恢复之后那些来源是「待授权」状态，重新粘贴一次 token 即可（凭据密文由管理密码派生，跨安装本就解不开）。**登录会话与监控缓存**存放在 `nav-sylph.db`，不在这份备份范围内；备忘与待办虽然也在同一个库里，但它们随对应的域一起进备份。
+> 管理密码文件始终不进入备份。社交平台凭据同样不进入备份——恢复之后那些来源是「待授权」状态，重新粘贴一次 token 即可（凭据密文由管理密码派生，跨安装本就解不开）。**登录会话与监控缓存**存放在 `habu.db`，不在这份备份范围内；备忘与待办虽然也在同一个库里，但它们随对应的域一起进备份。
 
 ### 自定义模块
 
@@ -234,10 +234,10 @@ sudo /usr/local/bin/nav-agent upgrade --server <本服务地址>
 ### 一键安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 ```
 
-支持 Linux / macOS / Windows (Git Bash, WSL)。脚本会从 [GitHub Releases](https://github.com/mh567/nav-sylph/releases) 下载最新版本，无需安装 Git；国内服务器下载失败时会自动尝试镜像加速。
+支持 Linux / macOS / Windows (Git Bash, WSL)。脚本会从 [GitHub Releases](https://github.com/mh567/habu/releases) 下载最新版本，无需安装 Git；国内服务器下载失败时会自动尝试镜像加速。
 
 ### 系统要求
 
@@ -258,42 +258,44 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 
 ### 管理脚本
 
-项目使用统一的 `sylph.sh` 脚本进行所有操作：
+项目使用统一的 `habu.sh` 脚本进行所有操作：
 
 | 命令 | 说明 |
 |------|------|
-| `./sylph.sh start` / `stop` / `restart` | 启动 / 停止 / 重启服务 |
-| `./sylph.sh status` | 查看运行状态 |
-| `./sylph.sh logs` | 查看实时日志 |
-| `./sylph.sh install` | 初始化安装 |
-| `./sylph.sh update` | 更新到最新版本（保留配置） |
-| `./sylph.sh uninstall` | 完全卸载 |
-| `sudo ./sylph.sh enable` / `disable` | 开机自启（Linux） |
+| `./habu.sh start` / `stop` / `restart` | 启动 / 停止 / 重启服务 |
+| `./habu.sh status` | 查看运行状态 |
+| `./habu.sh logs` | 查看实时日志 |
+| `./habu.sh install` | 初始化安装 |
+| `./habu.sh update` | 更新到最新版本（保留配置） |
+| `./habu.sh uninstall` | 完全卸载 |
+| `sudo ./habu.sh enable` / `disable` | 开机自启（Linux） |
 
 ### 版本更新
 
 ```bash
-./sylph.sh update
+./habu.sh update
 ```
+
+> 从 2.3.x 升级到 Habu 版本时，先取用 `main` 上的 `habu.sh` 再执行更新。新发布包的顶层目录名为 `habu-v<版本>`，旧脚本只识别 `nav-sylph-*`，直接更新会报解压失败。
 
 更新时会自动：校验 Node 版本（低于 22 直接拒绝更新）→ 备份用户配置与数据库 → 从 GitHub Release 下载最新版本 → 恢复配置并重启服务 → 显示版本变化与更新亮点。
 
-备份清单为 `config.json`、`favorites.json`、`.admin-password.json`、`.env`、`server-config.json` 与 `nav-sylph.db`，其余数据文件原地保留。登录会话在 `nav-sylph.db` 中且升级保留，因此更新后无需重新登录。
+备份清单为 `config.json`、`favorites.json`、`.admin-password.json`、`.env`、`server-config.json` 与 `habu.db`，其余数据文件原地保留。登录会话在 `habu.db` 中且升级保留，因此更新后无需重新登录。
 
 > 需要 **Node.js 22+**。低版本请先升级 Node，再执行更新——脚本会先校验并拒绝，不会改动你的文件。
 
 若从 v1.5.0 更新时遇到「服务未运行」后又提示端口 4000 被占用、且服务由 systemd 管理，请先在安装目录获取新版管理脚本，再执行更新：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh -o sylph.sh
-chmod +x sylph.sh
-./sylph.sh update
+curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh -o habu.sh
+chmod +x habu.sh
+./habu.sh update
 ```
 
 ### 自定义安装目录
 
 ```bash
-NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+HABU_DIR=/opt/habu curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 ```
 
 ## ⚙️ 配置
@@ -309,7 +311,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 | `.webdav-config.json` | WebDAV 配置 | 远程备份服务器配置（加密存储） |
 | `version.json` | 版本信息 | 当前安装版本 |
 | `.admin-password.json` | 管理密码 | 自动生成，bcrypt 加密存储 |
-| `nav-sylph.db` | SQLite 库 | 登录会话、备忘、待办与监控指标缓存，自动生成，权限 600 |
+| `habu.db` | SQLite 库 | 登录会话、备忘、待办与监控指标缓存，自动生成，权限 600 |
 
 > 除 `.env` 与 `version.json` 外，以上文件均由服务在创建/写入时收紧到 0600，并在每次启动兜底校正。版本更新只清理程序文件，数据文件均会保留。
 
@@ -330,7 +332,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 | `GEO_ENABLED` | `true` | 是否用 IP 归属地辅助判断登录环境是否变化 |
 | `GEO_SCOPE` | `province` | 地理比对粒度：`province` / `city` / `off` |
 | `GEO_DATABASE` | `lib/geo/ip2region_v4.xdb` | 离线 IP 归属库路径 |
-| `DB_FILE` | `nav-sylph.db` | SQLite 库文件路径 |
+| `DB_FILE` | `habu.db` | SQLite 库文件路径 |
 | `LOG_DIR` | `logs` | 日志目录 |
 
 > 登录 Cookie 的 `Secure` 标记是**自动判断**的：请求经 https 到达
@@ -348,7 +350,7 @@ NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/
 ## 📁 项目结构
 
 ```
-nav-sylph/
+habu/
 ├── public/          # 前端页面、样式、脚本与功能模块
 ├── lib/             # 后端模块（监控、会话、备份、凭据加密、SQLite）
 ├── agent/           # 部署在被监控主机上的 Go 采集程序
@@ -356,7 +358,7 @@ nav-sylph/
 ├── scripts/         # agent 交叉编译与版本发布脚本
 ├── tests/           # 回归测试
 ├── server.js        # 后端服务入口
-└── sylph.sh         # 安装与维护脚本
+└── habu.sh         # 安装与维护脚本
 ```
 
 前端为原生 HTML / CSS / JavaScript，后端为 Node.js + Express，数据存 JSON 与 SQLite；被监控主机上的采集程序为 Go 静态二进制，零第三方依赖。
@@ -365,7 +367,7 @@ nav-sylph/
 
 ## 🔄 更新日志
 
-查看 [CHANGELOG.json](CHANGELOG.json) 或 [Releases](https://github.com/mh567/nav-sylph/releases) 页面。
+查看 [CHANGELOG.json](CHANGELOG.json) 或 [Releases](https://github.com/mh567/habu/releases) 页面。
 
 首页更新说明使用每个版本的 `summary` 字段，只展示一句简短概述，例如“优化了界面显示效果”。具体变更继续记录在 `highlights` 和 `changes` 字段中。
 

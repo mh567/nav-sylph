@@ -205,7 +205,7 @@ async function seedInstallation(t) {
     }));
 
     // SQLite：备忘录 + 时间线（真实库文件，恢复时也写这里）。
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         const now = Date.now();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)')
@@ -336,7 +336,7 @@ test('真实 HTTP：备份产物只有一个清单声明的域集合，排除项
 
     const bookmarks = stored.get(`nav-sylph-bookmarks-${ts}.html`);
     assert.ok(bookmarks.includes(FAV_MARKER), '收藏进备份');
-    assert.match(bookmarks, /DATA-SYLPH-PRIVATE="1"/, '隐私标签进备份');
+    assert.match(bookmarks, /DATA-HABU-PRIVATE="1"/, '隐私标签进备份');
 
     const timeline = JSON.parse(stored.get(`nav-sylph-timeline-${ts}.json`));
     assert.equal(timeline.data.events[0].title, TIMELINE_MARKER, '时间线事件进备份');
@@ -526,7 +526,7 @@ test('真实 HTTP：恢复让备忘录/收藏/布局回来，而导航与配置�
 
     // 时间线回来了。⚠️ 不走列表接口：种子把这条事件标成**已归档**，而列表默认不列
     // 归档项——查库才是这个断言的意图（事件与其归档/收藏状态都真的回到库里）。
-    const dbAfter = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const dbAfter = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         const event = dbAfter.prepare('SELECT title FROM timeline_events WHERE id = ?').get('ev-1');
         assert.ok(event && event.title === TIMELINE_MARKER, '事件回位（库里）');

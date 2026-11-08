@@ -15,7 +15,7 @@
 ### 一键安装（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 ```
 
 安装脚本会自动：
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bas
 ### 自定义安装目录
 
 ```bash
-NAV_SYLPH_DIR=/opt/nav-sylph curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+HABU_DIR=/opt/habu curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 ```
 
 ## 手动部署
@@ -55,11 +55,11 @@ npm --version   # 10.x.x
 
 ```bash
 # 创建目录
-sudo mkdir -p /opt/nav-sylph
-cd /opt/nav-sylph
+sudo mkdir -p /opt/habu
+cd /opt/habu
 
 # 从 Release 下载最新版本
-LATEST_URL=$(curl -sL https://api.github.com/repos/mh567/nav-sylph/releases/latest | grep browser_download_url | cut -d'"' -f4)
+LATEST_URL=$(curl -sL https://api.github.com/repos/mh567/habu/releases/latest | grep browser_download_url | cut -d'"' -f4)
 curl -fsSL "$LATEST_URL" | tar -xz --strip-components=1
 
 # 安装依赖
@@ -86,31 +86,31 @@ SERVER_PORT=4000
 
 ```bash
 # 使用管理脚本启动
-./sylph.sh start
+./habu.sh start
 
 # 查看状态
-./sylph.sh status
+./habu.sh status
 ```
 
 ### 5. 配置开机自启（Linux systemd）
 
 ```bash
-sudo ./sylph.sh enable
+sudo ./habu.sh enable
 ```
 
 或手动配置：
 
 ```bash
 # 复制服务文件
-sudo cp nav-sylph.service /etc/systemd/system/
+sudo cp habu.service /etc/systemd/system/
 
 # 重载并启用
 sudo systemctl daemon-reload
-sudo systemctl enable nav-sylph
-sudo systemctl start nav-sylph
+sudo systemctl enable habu
+sudo systemctl start habu
 
 # 检查状态
-sudo systemctl status nav-sylph
+sudo systemctl status habu
 ```
 
 ## 配置反向代理（推荐）
@@ -122,7 +122,7 @@ sudo apt install nginx  # Ubuntu/Debian
 sudo yum install nginx  # CentOS
 ```
 
-创建配置 `/etc/nginx/sites-available/nav-sylph`：
+创建配置 `/etc/nginx/sites-available/habu`：
 
 ```nginx
 server {
@@ -145,7 +145,7 @@ server {
 
 启用配置：
 ```bash
-sudo ln -s /etc/nginx/sites-available/nav-sylph /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/habu /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -173,22 +173,22 @@ sudo certbot --nginx -d nav.example.com
 
 **前提：Node ≥ 22。** 从 1.5.27 起应用改用 SQLite 持久化登录会话，依赖的 `better-sqlite3`
 在 Node 20 及以下会**段错误退出**，而 `npm install` 阶段不会报任何错——也就是说，版本不够时
-更新会变成「文件已替换、服务起不来、且没有回滚」。因此 `./sylph.sh update` 会**先校验 Node 版本**，
+更新会变成「文件已替换、服务起不来、且没有回滚」。因此 `./habu.sh update` 会**先校验 Node 版本**，
 不满足就直接拒绝，不会停服、不会替换任何文件。
 
 ```bash
 node --version        # 必须 ≥ v22；否则先按上面「安装 Node.js」一节升级（旧版本仍在运行，升级 Node 本身安全）
-cd /opt/nav-sylph
-./sylph.sh update
+cd /opt/habu
+./habu.sh update
 ```
 
 更新时会自动：
 - 校验 Node 版本（不足则中止）
-- 备份用户配置（含 `nav-sylph.db`，仅用于更新失败时本地回滚）
+- 备份用户配置（含 `habu.db`，仅用于更新失败时本地回滚）
 - 下载最新版本
 - 恢复配置并重启
 
-> 会话库 `nav-sylph.db` 不在程序文件删除清单里，升级后仍在，因此更新不会让已登录的浏览器掉线。
+> 会话库 `habu.db` 不在程序文件删除清单里，升级后仍在，因此更新不会让已登录的浏览器掉线。
 
 ## 安全检查清单
 
@@ -199,25 +199,25 @@ cd /opt/nav-sylph
 - [ ] 配置反向代理
 - [ ] 启用 HTTPS
 - [ ] 配置防火墙
-- [ ] `.env` 权限为 600（`config.json`、`favorites.json`、`.admin-password.json`、`.webdav-config.json`、`nav-sylph.db` 由服务在创建/写入时收紧，并在每次启动兜底校正）
+- [ ] `.env` 权限为 600（`config.json`、`favorites.json`、`.admin-password.json`、`.webdav-config.json`、`habu.db` 由服务在创建/写入时收紧，并在每次启动兜底校正）
 
 ## 常用运维命令
 
 ```bash
 # 服务管理
-./sylph.sh start      # 启动
-./sylph.sh stop       # 停止
-./sylph.sh restart    # 重启
-./sylph.sh status     # 状态
-./sylph.sh logs       # 日志
+./habu.sh start      # 启动
+./habu.sh stop       # 停止
+./habu.sh restart    # 重启
+./habu.sh status     # 状态
+./habu.sh logs       # 日志
 
 # 更新
-./sylph.sh update     # 更新到最新版本
+./habu.sh update     # 更新到最新版本
 
 # systemd 方式
-sudo systemctl status nav-sylph
-sudo systemctl restart nav-sylph
-sudo journalctl -u nav-sylph -f
+sudo systemctl status habu
+sudo systemctl restart habu
+sudo journalctl -u habu -f
 ```
 
 ## 备份与恢复
@@ -229,15 +229,15 @@ tar -czf backup-$(date +%Y%m%d).tar.gz \
   config.json \
   favorites.json \
   .admin-password.json \
-  nav-sylph.db \
+  habu.db \
   .env
 ```
 
 ### 恢复
 
 ```bash
-tar -xzf backup-20240101.tar.gz -C /opt/nav-sylph/
-./sylph.sh restart
+tar -xzf backup-20240101.tar.gz -C /opt/habu/
+./habu.sh restart
 ```
 
 ## 故障排除
@@ -246,7 +246,7 @@ tar -xzf backup-20240101.tar.gz -C /opt/nav-sylph/
 
 ```bash
 # 查看详细日志
-./sylph.sh logs
+./habu.sh logs
 
 # 手动运行测试
 node server.js
@@ -260,7 +260,7 @@ sudo lsof -i:4000
 
 # 修改端口
 vim .env  # 修改 SERVER_PORT
-./sylph.sh restart
+./habu.sh restart
 ```
 
 ## 健康检查

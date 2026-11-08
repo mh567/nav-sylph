@@ -37,11 +37,11 @@ test('release: test package instructions use the attached archive; stable update
     for (const version of ['2.2.5-beta.1', '2.2.5']) {
         const result = spawnSync('bash', ['-c', `log_step() { :; }; ${notes}`], {
             encoding: 'utf8', cwd: path.join(__dirname, '..'),
-            env: { ...process.env, VERSION: version, ARCHIVE_NAME: `nav-sylph-v${version}.tar.gz` }
+            env: { ...process.env, VERSION: version, ARCHIVE_NAME: `habu-v${version}.tar.gz` }
         });
         assert.equal(result.status, 0, result.stderr);
-        assert.ok(result.stdout.includes(`nav-sylph-v${version}.tar.gz`));
-        assert.equal(result.stdout.includes('./sylph.sh update'), !version.includes('-'));
+        assert.ok(result.stdout.includes(`habu-v${version}.tar.gz`));
+        assert.equal(result.stdout.includes('./habu.sh update'), !version.includes('-'));
         assert.equal(result.stdout.includes('独立测试环境'), version.includes('-'));
     }
 });

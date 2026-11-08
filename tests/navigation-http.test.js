@@ -75,7 +75,7 @@ test('HTTP: upgrade snapshot preserves all private files and database; failed in
     fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify(invalid));
     fs.writeFileSync(path.join(app.dir, '.webdav-config.json'), '{"password":"original-secret"}');
     const { openDatabase } = require('../lib/db');
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     db.prepare('INSERT INTO memos VALUES (?, ?, ?, ?, ?, ?)').run('one', 'Private memo', 'Keep', 1, 1, 1); db.close();
     await assert.rejects(app.start());
     const snapshot = path.join(app.dir, '.navigation-upgrade-snapshot');
@@ -83,15 +83,15 @@ test('HTTP: upgrade snapshot preserves all private files and database; failed in
     assert.equal(fs.readFileSync(path.join(snapshot, '.webdav-config.json'), 'utf8'), '{"password":"original-secret"}');
     assert.equal(fs.statSync(path.join(snapshot, '.webdav-config.json')).mode & 0o777, 0o600);
     const Database = require('better-sqlite3');
-    const saved = new Database(path.join(snapshot, 'nav-sylph.db'), { readonly: true });
+    const saved = new Database(path.join(snapshot, 'habu.db'), { readonly: true });
     assert.equal(saved.prepare('SELECT body FROM memos').get().body, 'Keep'); saved.close();
-    const failed = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const failed = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(failed.prepare('SELECT count(*) AS n FROM navigation_documents').get().n, 0); failed.close();
     fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify(personal));
     await app.start();
     assert.equal((await (await app.request('/api/config')).json()).categories[0].name, 'Personal');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshot, 'config.json'))), invalid);
-    const restarted = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const restarted = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(restarted.prepare('SELECT body FROM memos').get().body, 'Keep'); restarted.close();
 });
 

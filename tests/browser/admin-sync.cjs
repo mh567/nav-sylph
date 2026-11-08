@@ -89,7 +89,7 @@ test('browser: network errors preserve identity, expiration hides private draft 
     await heading(a, 'Retained private draft').waitFor();
     await a.unroute('**/api/session');
     // Revoke this device through the actual public logout endpoint.
-    await a.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sylph-Request': '1' }, body: '{}' }); });
+    await a.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Habu-Request': '1' }, body: '{}' }); });
     await check(a);
     await a.getByText('登录已失效', { exact: true }).waitFor();
     assert.equal(await a.locator('#appearanceBtn').isDisabled(), true);

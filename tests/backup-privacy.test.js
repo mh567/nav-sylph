@@ -42,6 +42,13 @@ test('backup HTML round trip preserves private favorites', () => {
     assert.equal(restored[1].private, false);
 });
 
+test('legacy DATA-SYLPH-PRIVATE markup is still read as private', () => {
+    const html = '<DL><p>\n<DT><A HREF="https://example.test/old" DATA-SYLPH-PRIVATE="1">旧备份</A>\n</DL><p>';
+    const restored = parseBookmarkHtml(html);
+    assert.equal(restored.length, 1);
+    assert.equal(restored[0].private, true);
+});
+
 test('ordinary browser bookmark HTML stays public', () => {
     const html = '<DL><p>\n<DT><A HREF="https://example.test/public">公开入口</A>\n</DL><p>';
     const restored = parseBookmarkHtml(html);
@@ -61,7 +68,7 @@ test('an unchanged legacy backup is refreshed with privacy metadata', async () =
     const result = await backup.createBackup(payload);
     assert.equal(result.noChanges, undefined);
     const html = files.get(`/backups/${result.bookmarksFilename}`);
-    assert.match(html, /DATA-SYLPH-PRIVATE="1"/);
+    assert.match(html, /DATA-HABU-PRIVATE="1"/);
     const restored = await backup.restoreBackup({ bookmarksFile: result.bookmarksFilename });
     assert.equal(parseBookmarkHtml(restored.data.bookmarksHtml)[0].private, true);
     const repeat = await backup.createBackup(payload);
@@ -70,7 +77,7 @@ test('an unchanged legacy backup is refreshed with privacy metadata', async () =
 
 // ========== 私有文件的权限 ==========
 //
-// 修复前：这些文件由应用首次启动时创建，而 sylph.sh 的 chmod 跑在它们存在之前，
+// 修复前：这些文件由应用首次启动时创建，而 habu.sh 的 chmod 跑在它们存在之前，
 // `[ -f ... ] && chmod` 直接跳过——实测全新安装后密码哈希与私密收藏都是 644，
 // 只有本次新增的会话库是 600。这里钉住「谁负责收紧」。
 

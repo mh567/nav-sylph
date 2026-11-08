@@ -10,11 +10,11 @@
     <script>
         // no-cache：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304
         // （零传输），既省去首屏往返的响应体，又保证配置始终最新。
-        window.__navSylphConfigPromise = fetch('/api/config', { cache: 'no-cache' }).then(response => {
+        window.__habuConfigPromise = fetch('/api/config', { cache: 'no-cache' }).then(response => {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.json();
         });
-        window.__navSylphConfigPromise.catch(() => {});
+        window.__habuConfigPromise.catch(() => {});
 
         // 未登录访客在首页点过「外观」的话，选择存在本机。这里先于样式表
         // 把它应用上，否则首屏会先按系统色画一遍再跳成选区色。

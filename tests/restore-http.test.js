@@ -158,7 +158,7 @@ async function seed(t) {
         _sync: { revision: 3, receipts: {} }
     }));
 
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         const now = Date.now();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?,?,?,1,?,?)')
@@ -224,7 +224,7 @@ function snapshotDirs(dir) {
 }
 
 function readRestoreRecords(dir) {
-    const db = openDatabase(path.join(dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(dir, 'habu.db'));
     try {
         return db.prepare('SELECT * FROM restore_records ORDER BY created_at').all()
             .map(row => ({ ...row, applied: JSON.parse(row.applied_json), domains: JSON.parse(row.domains_json) }));
@@ -274,7 +274,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
         body: { favorites: [{ id: 'local-13', title: LOCAL_MARKER, url: 'https://local.test/', category: '工作' }] }
     });
     assert.equal(added.status, 200);
-    const db0 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db0 = openDatabase(path.join(app.dir, 'habu.db'));
     db0.prepare('DELETE FROM memos').run();
     db0.prepare('DELETE FROM todos').run();
     db0.close();
@@ -330,7 +330,7 @@ test('真实 HTTP：预览出清单与 planDigest，恢复成功后版本递增�
     assert.equal(records[0].snapshot_dir === null ? 0 : snapshotDirs(app.dir).length, 0, '快照被删除');
 
     // 时间线凭据：备份不带凭据 → 恢复后表是空的（来源待授权），而不是留着旧凭据
-    const db1 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db1 = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         assert.equal(db1.prepare('SELECT COUNT(*) AS n FROM timeline_credentials').get().n, 0);
         assert.equal(db1.prepare('SELECT COUNT(*) AS n FROM memos').get().n, 1);
@@ -383,7 +383,7 @@ test('真实 HTTP：故障注入（时间线写失败）→ 已应用域逆序�
     // 恢复前的现场（逐字节留证）
     const beforeFavorites = fs.readFileSync(path.join(app.dir, 'favorites.json'));
     const beforeModules = fs.readFileSync(path.join(app.dir, '.modules.json'));
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     let beforeMemos;
     let beforeTodos;
     let beforeSources;
@@ -416,7 +416,7 @@ test('真实 HTTP：故障注入（时间线写失败）→ 已应用域逆序�
     assert.deepEqual(snapshotDirs(app.dir), [], '回滚成功后快照被删除');
 
     // 库里的行也回到原样
-    const db2 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db2 = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         assert.deepEqual(db2.prepare('SELECT * FROM memos ORDER BY id').all(), beforeMemos);
         assert.deepEqual(db2.prepare('SELECT * FROM todos ORDER BY id').all(), beforeTodos);
@@ -479,7 +479,7 @@ test('真实 HTTP：旧备份（nav-sylph-backup）只恢复书签，导航/引�
     const { app, cookie, dav } = await backupOnce(t);
     const configBefore = fs.readFileSync(path.join(app.dir, 'config.json'));
 
-    const db0 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db0 = openDatabase(path.join(app.dir, 'habu.db'));
     let navBefore;
     try {
         navBefore = {
@@ -533,7 +533,7 @@ test('真实 HTTP：旧备份（nav-sylph-backup）只恢复书签，导航/引�
 
     // 导航 / 引擎 / 模板：一字未动
     assert.deepEqual(fs.readFileSync(path.join(app.dir, 'config.json')), configBefore);
-    const db1 = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db1 = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         assert.deepEqual(db1.prepare("SELECT * FROM navigation_documents WHERE id = 'admin'").get(), navBefore.admin);
         assert.deepEqual(db1.prepare("SELECT * FROM navigation_documents WHERE id = 'draft'").get(), navBefore.draft);

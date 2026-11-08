@@ -11,7 +11,7 @@ test('personal workspace removes passphrase spaces for visitors and administrato
     fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
     await app.start();
     const Database = require('better-sqlite3');
-    const db = new Database(path.join(app.dir, 'nav-sylph.db'), { readonly: true });
+    const db = new Database(path.join(app.dir, 'habu.db'), { readonly: true });
     try {
         assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'sync_*'").all(), []);
     } finally { db.close(); }

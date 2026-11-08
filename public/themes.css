@@ -1,6 +1,6 @@
 /* Inter Tight 的 Latin 子集；中文沿用明确的系统字体回落。授权见 fonts/Inter-Tight-OFL.txt。 */
 @font-face {
-    font-family: 'Sylph Inter Tight';
+    font-family: 'Habu Inter Tight';
     src: url('fonts/inter-tight-latin-variable.woff2') format('woff2');
     font-style: normal;
     font-weight: 100 900;
@@ -86,7 +86,7 @@
 }
 
 :root[data-theme-style="prism"] body {
-    font-family: 'Sylph Inter Tight','SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;
+    font-family: 'Habu Inter Tight','SF Pro Display','PingFang SC','Microsoft YaHei',sans-serif;
     /* 静态大范围环境光随文档延伸，长页面下半部仍保留青灰层次。
        这里刻意**不用** background-attachment: fixed：Windows 上固定背景
        会在每次滚动时重绘，实测棱镜滚动一次的 PictureLayer::Update 由

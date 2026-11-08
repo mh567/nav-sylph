@@ -44,14 +44,14 @@ module.exports = {
     },
     paths: {
         data: 'data.json',           // 书签数据文件
-        database: 'nav-sylph.db',    // SQLite 库（会话等落盘数据）
+        database: 'habu.db',    // SQLite 库（会话等落盘数据）
         icon: 'icon.svg',
         favicon: 'favicon.svg',
         logs: 'logs'
     },
     app: {
-        name: 'nav-sylph',
-        pidFile: '.nav-sylph.pid'
+        name: 'habu',
+        pidFile: '.habu.pid'
     },
     webdav: {
         configFile: '.webdav-config.json'

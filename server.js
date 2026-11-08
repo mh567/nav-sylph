@@ -35,7 +35,7 @@ const REQUIRED_CONFIG_SECTIONS = ['rootDir', 'server', 'paths', 'security'];
 // ⚠️ 为什么校验必须在这里，而不能放进 server-config/index.js：
 //
 // Node 解析 `require('./server-config')` 的顺序是 `.js` → `.json` → `.node`
-// → **目录**。所以 ~/nav-sylph/server-config.json 一旦存在，加载的就是它，
+// → **目录**。所以 ~/habu/server-config.json 一旦存在，加载的就是它，
 // `server-config/index.js` **一行都不会执行**——校验写在那边等于死代码。
 // 这里 require 完是全项目第一个能同时看到「配置对象」和「目录是否存在」的
 // 位置，也是唯一能在 `path.join(config.rootDir, ...)` 之前拦下来的地方。
@@ -376,7 +376,7 @@ const {
     ENV_CHANGED_CODE,
     ENV_CHANGED_MESSAGE
 } = require('./lib/session');
-const { openDatabase } = require('./lib/db');
+const { openDatabase, migrateDatabaseFile } = require('./lib/db');
 const { snapshot: snapshotNavigation, createNavigation } = require('./lib/navigation');
 let navigation;
 const { createSqliteBackend } = require('./lib/session-sqlite');
@@ -527,7 +527,7 @@ app.use((req, res, next) => {
         res.header('Access-Control-Allow-Origin', origin || '*');
     }
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Password');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Password, X-Habu-Request, X-Sylph-Request');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
@@ -537,7 +537,9 @@ app.use('/api', (req, res, next) => {
         || ['/modules/enroll', '/modules/agent-push', '/p', '/p/code'].includes(req.path) || req.path.startsWith('/p/')) return next();
     const origin = req.headers.origin;
     const expected = `${req.protocol}://${req.get('host')}`;
-    if (req.headers['x-sylph-request'] !== '1'
+    // 旧页面仍可能发送 X-Sylph-Request，过渡期两者都接受。
+    const requestMarker = req.headers['x-habu-request'] ?? req.headers['x-sylph-request'];
+    if (requestMarker !== '1'
         || (origin && origin !== expected)
         || req.headers['sec-fetch-site'] === 'cross-site') {
         return res.status(403).json({ error: '请求来源校验失败，请刷新页面后重试' });
@@ -808,7 +810,7 @@ const defaultModulesConfig = {
 /**
  * 承载用户数据或凭据的文件，权限统一收到 600。
  *
- * 不依赖 sylph.sh 的 chmod：`.admin-password.json` 等文件是**应用**在首次启动时才创建的，
+ * 不依赖 habu.sh 的 chmod：`.admin-password.json` 等文件是**应用**在首次启动时才创建的，
  * 脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，等于空操作——实测全新安装后密码哈希
  * 与私密书签都是 644，反而是本次新增的会话库为 600。
  */
@@ -1073,6 +1075,12 @@ async function init() {
     if (!fsSync.existsSync(logDir)) {
         await fs.mkdir(logDir, { recursive: true });
         console.log(`Created: ${path.basename(logDir)}/`);
+    }
+
+    // 旧版库名为 habu.db；改名必须发生在快照与打开之前。
+    const dbMigration = migrateDatabaseFile(config.paths.database);
+    if (dbMigration.migrated) {
+        console.log(`Migrated database: ${path.basename(dbMigration.from)} -> ${path.basename(dbMigration.to)}`);
     }
 
     snapshotNavigation(config.rootDir, config.paths.database, PASSWORD_FILE);
@@ -1657,7 +1665,8 @@ function parseBookmarkHtml(html) {
         if (linkMatch) {
             const url = linkMatch[1];
             const title = linkMatch[3].trim();
-            const privateMarker = /\bDATA-SYLPH-PRIVATE="([^"]*)"/i.exec(linkMatch[2]);
+            // 旧备份使用 DATA-SYLPH-PRIVATE，新导出写 DATA-HABU-PRIVATE，两者都要能识别。
+            const privateMarker = /\bDATA-(?:HABU|SYLPH)-PRIVATE="([^"]*)"/i.exec(linkMatch[2]);
 
             // 跳过无效 URL
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -1708,7 +1717,7 @@ function generateBookmarkHtml(favorites) {
         html += `    <DL><p>\n`;
         for (const item of items) {
             const addDate = Math.floor((item.createdAt || Date.now()) / 1000);
-            const privateMarker = item.private ? ' DATA-SYLPH-PRIVATE="1"' : '';
+            const privateMarker = item.private ? ' DATA-HABU-PRIVATE="1"' : '';
             html += `        <DT><A HREF="${escapeHtml(item.url)}" ADD_DATE="${addDate}"${privateMarker}>${escapeHtml(item.title)}</A>\n`;
         }
         html += `    </DL><p>\n`;

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const scriptPath = path.join(__dirname, '..', 'sylph.sh');
+const scriptPath = path.join(__dirname, '..', 'habu.sh');
 const ROOT = path.join(__dirname, '..');
 
 function runLifecycle(action, initialState = 'active', options = {}) {
@@ -16,7 +16,7 @@ function runLifecycle(action, initialState = 'active', options = {}) {
     const source = fs.readFileSync(scriptPath, 'utf8').replace(/^main "\$@"\s*$/m, '');
     const script = `${source}
         APP_DIR="$CASE_DIR"
-        PID_FILE="$CASE_DIR/.nav-sylph.pid"
+        PID_FILE="$CASE_DIR/.habu.pid"
         LOG_DIR="$CASE_DIR/logs"
         OS=linux
         has_systemd() { return 0; }
@@ -26,6 +26,14 @@ function runLifecycle(action, initialState = 'active', options = {}) {
             printf '%s\\n' "$*" >> "$CALLS_PATH"
             case "$1" in
                 show)
+                    local unit="$4"
+                    if [ -n "\${ONLY_UNIT:-}" ] && [ "$unit" != "$ONLY_UNIT" ]; then
+                        case "$2" in
+                            --property=LoadState) printf 'not-found\\n' ;;
+                            --property=WorkingDirectory) printf '\\n' ;;
+                        esac
+                        return 0
+                    fi
                     case "$2" in
                         --property=LoadState) printf 'loaded\\n' ;;
                         --property=WorkingDirectory) printf '%s\\n' "$SERVICE_DIR" ;;
@@ -49,7 +57,8 @@ function runLifecycle(action, initialState = 'active', options = {}) {
             SERVICE_DIR: options.serviceDirectory || directory,
             STATE_PATH: statePath,
             CALLS_PATH: callsPath,
-            FAIL_STOP: options.failStop ? '1' : '0'
+            FAIL_STOP: options.failStop ? '1' : '0',
+            ONLY_UNIT: options.onlyUnit || ''
         }
     });
     const state = fs.readFileSync(statePath, 'utf8');
@@ -64,6 +73,13 @@ function runLifecycle(action, initialState = 'active', options = {}) {
 test('stop handles an active systemd service without a PID file', () => {
     const result = runLifecycle('do_stop');
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${result.calls}`);
+    assert.match(result.calls, /stop habu\.service/);
+    assert.equal(result.state, 'inactive');
+});
+
+test('legacy nav-sylph.service is still detected and controlled', () => {
+    const result = runLifecycle('do_stop', 'active', { onlyUnit: 'nav-sylph.service' });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${result.calls}`);
     assert.match(result.calls, /stop nav-sylph\.service/);
     assert.equal(result.state, 'inactive');
 });
@@ -71,14 +87,14 @@ test('stop handles an active systemd service without a PID file', () => {
 test('start uses an installed systemd service when its port is occupied', () => {
     const result = runLifecycle('do_start', 'inactive');
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${result.calls}`);
-    assert.match(result.calls, /start nav-sylph\.service/);
+    assert.match(result.calls, /start habu\.service/);
     assert.equal(result.state, 'active');
 });
 
 test('stop leaves a systemd service for another installation alone', () => {
     const result = runLifecycle('do_stop', 'active', { serviceDirectory: '/other/nav-sylph' });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.doesNotMatch(result.calls, /stop nav-sylph\.service/);
+    assert.doesNotMatch(result.calls, /stop habu\.service/);
     assert.equal(result.state, 'active');
 });
 
@@ -100,7 +116,7 @@ test('failed systemd stop prevents an update from downloading or replacing files
     assert.match(result.stdout, /服务未能停止，更新已取消/);
     assert.equal(result.downloadAttempted, false);
     assert.equal(result.serverContents, 'old server');
-    assert.doesNotMatch(result.calls, /start nav-sylph\.service/);
+    assert.doesNotMatch(result.calls, /start habu\.service/);
 });
 
 // ========== 源码形状守卫：会话库的部署面 ==========
@@ -110,22 +126,22 @@ test('failed systemd stop prevents an update from downloading or replacing files
 
 test('systemd 单元把会话库及其 WAL 边车纳入可写路径', () => {
     // ProtectSystem=strict 下，未列入 ReadWritePaths 的路径一律只读，库建不出来。
-    const unit = fs.readFileSync(path.join(ROOT, 'nav-sylph.service'), 'utf8');
-    assert.match(unit, /ReadWritePaths=.*nav-sylph\.db\b/, '会话库必须可写');
-    assert.match(unit, /ReadWritePaths=.*nav-sylph\.db-wal/, 'WAL 边车也要可写');
+    const unit = fs.readFileSync(path.join(ROOT, 'habu.service'), 'utf8');
+    assert.match(unit, /ReadWritePaths=.*habu\.db\b/, '会话库必须可写');
+    assert.match(unit, /ReadWritePaths=.*habu\.db-wal/, 'WAL 边车也要可写');
 });
 
-test('sylph.sh 更新前备份会话库、替换文件后放回', () => {
+test('habu.sh 更新前备份会话库、替换文件后放回', () => {
     const sh = fs.readFileSync(scriptPath, 'utf8');
-    assert.match(sh, /\[\s*-f\s+"nav-sylph\.db"\s*\]\s*&&\s*cp\s+nav-sylph\.db\s+"\$backup_dir\/"/,
+    assert.match(sh, /\[\s*-f\s+"habu\.db"\s*\]\s*&&\s*cp\s+habu\.db\s+"\$backup_dir\/"/,
         '更新流程要先备份会话库');
-    assert.match(sh, /\[\s*-f\s+"\$backup_dir\/nav-sylph\.db"\s*\]\s*&&\s*cp\s+"\$backup_dir\/nav-sylph\.db"\s+\./,
+    assert.match(sh, /\[\s*-f\s+"\$backup_dir\/habu\.db"\s*\]\s*&&\s*cp\s+"\$backup_dir\/habu\.db"\s+\./,
         '替换程序文件后要把会话库放回，否则回滚路径状态不一致');
 });
 
 test('.gitignore 排除会话库及其 WAL 边车', () => {
     const ignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
-    for (const entry of ['nav-sylph.db', 'nav-sylph.db-wal', 'nav-sylph.db-shm']) {
+    for (const entry of ['habu.db', 'habu.db-wal', 'habu.db-shm']) {
         assert.match(ignore, new RegExp(`^${entry.replace(/\./g, '\\.')}$`, 'm'),
             `${entry} 必须被忽略，否则库会进仓库`);
     }
@@ -158,7 +174,7 @@ test('Node 版本不足时更新被拒绝，且不停服、不下载、不替换
     assert.match(result.stdout, /要求 Node 22/);
     assert.equal(result.downloadAttempted, false, '拒绝时不应发起下载');
     assert.equal(result.serverContents, 'old server', '拒绝时不应替换程序文件');
-    assert.doesNotMatch(result.calls, /stop nav-sylph\.service/, '拒绝时不应停服');
+    assert.doesNotMatch(result.calls, /stop habu\.service/, '拒绝时不应停服');
 });
 
 test('Node 版本满足时闸门放行，更新照常走后续流程', () => {

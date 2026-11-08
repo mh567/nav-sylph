@@ -37,7 +37,7 @@ async function installation(t, options = {}) {
     async function stop() { if (child && child.exitCode === null) { const done = new Promise(r => child.once('exit', r)); child.kill(); await done; } }
     t.after(async () => { await stop(); fs.rmSync(dir, { recursive: true, force: true }); });
     async function request(route, { cookie, password, body, method, headers = {} } = {}) {
-        return fetch(base + route, { method: method || (body ? 'POST' : 'GET'), headers: { 'User-Agent': 'sylph-auth-test', ...(cookie ? { Cookie: cookie } : {}), ...(password ? { 'X-Admin-Password': password } : {}), ...(body ? { 'Content-Type': 'application/json', 'X-Sylph-Request': '1', Origin: base } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+        return fetch(base + route, { method: method || (body ? 'POST' : 'GET'), headers: { 'User-Agent': 'sylph-auth-test', ...(cookie ? { Cookie: cookie } : {}), ...(password ? { 'X-Admin-Password': password } : {}), ...(body ? { 'Content-Type': 'application/json', 'X-Habu-Request': '1', Origin: base } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     }
     return { dir, base, start, stop, request };
 }

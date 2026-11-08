@@ -1,13 +1,13 @@
 [Unit]
 Description=Habu - Personal Digital Workbench
-Documentation=https://github.com/your-username/nav-sylph
+Documentation=https://github.com/mh567/habu
 After=network.target
 
 [Service]
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/nav-sylph
+WorkingDirectory=/opt/habu
 
 ExecStart=/usr/bin/node server.js
 ExecReload=/bin/kill -HUP $MAINPID
@@ -20,16 +20,16 @@ StartLimitBurst=3
 Environment=NODE_ENV=production
 Environment=SERVER_HOST=127.0.0.1
 Environment=SERVER_PORT=4000
-EnvironmentFile=-/opt/nav-sylph/.env
+EnvironmentFile=-/opt/habu/.env
 
-StandardOutput=append:/opt/nav-sylph/logs/server.log
-StandardError=append:/opt/nav-sylph/logs/server.log
+StandardOutput=append:/opt/habu/logs/server.log
+StandardError=append:/opt/habu/logs/server.log
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/nav-sylph/logs /opt/nav-sylph/config.json /opt/nav-sylph/.admin-password.json -/opt/nav-sylph/nav-sylph.db -/opt/nav-sylph/nav-sylph.db-wal -/opt/nav-sylph/nav-sylph.db-shm
+ReadWritePaths=/opt/habu/logs /opt/habu/config.json /opt/habu/.admin-password.json -/opt/habu/habu.db -/opt/habu/habu.db-wal -/opt/habu/habu.db-shm -/opt/habu/nav-sylph.db -/opt/habu/nav-sylph.db-wal -/opt/habu/nav-sylph.db-shm
 
 [Install]
 WantedBy=multi-user.target

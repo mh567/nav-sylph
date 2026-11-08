@@ -222,7 +222,7 @@ test('备份产物只有清单声明的五个域 + manifest，且不含任何 AE
         },
         appVersion: '2.0.2',
         publicModuleIds: PUBLIC_IDS,
-        renderBookmarks: () => '<DL><p><DT><A HREF="https://a.test" DATA-SYLPH-PRIVATE="1">A</A>\n</DL><p>'
+        renderBookmarks: () => '<DL><p><DT><A HREF="https://a.test" DATA-HABU-PRIVATE="1">A</A>\n</DL><p>'
     });
 
     // 1) 文件集合逐字：不再有 nav-sylph-config-*

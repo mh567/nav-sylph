@@ -214,11 +214,11 @@ test('browser: delayed administrator confirmation preserves ordinary drafts and 
     await page.locator('#localDoneBtn').click();
     // Establish the real cookie from the browser so its device fingerprint matches.
     await page.evaluate(async () => {
-        const response = await fetch('/api/verify-password', { method: 'POST', headers: { 'X-Admin-Password': 'StrongPass123!', 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
+        const response = await fetch('/api/verify-password', { method: 'POST', headers: { 'X-Admin-Password': 'StrongPass123!', 'X-Habu-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
         if (!response.ok) throw new Error('login failed');
         const data = await (await fetch('/api/admin/navigation')).json();
         data.config.categories[0].name = 'PRIVATE ADMIN NAVIGATION';
-        const result = await fetch('/api/admin/navigation', { method: 'POST', headers: { 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ config: data.config, revision: data.revision, operationId: 'browser-admin-setup' }) });
+        const result = await fetch('/api/admin/navigation', { method: 'POST', headers: { 'X-Habu-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ config: data.config, revision: data.revision, operationId: 'browser-admin-setup' }) });
         if (!result.ok) throw new Error('admin setup failed');
     });
     let release;
@@ -240,7 +240,7 @@ test('browser: delayed administrator confirmation preserves ordinary drafts and 
     await page.waitForFunction(() => document.querySelector('#localNavigationStatus').textContent.includes('无法确认管理员登录'));
     await changeTheme(page); await saved(page);
     await page.unroute('**/api/admin/navigation');
-    await page.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Sylph-Request': '1', 'Content-Type': 'application/json' }, body: '{}' }); });
+    await page.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-Habu-Request': '1', 'Content-Type': 'application/json' }, body: '{}' }); });
     await page.unroute('**/api/session');
     await page.reload();
     await page.getByRole('heading', { name: 'Ordinary kept', exact: true }).waitFor();

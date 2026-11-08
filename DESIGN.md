@@ -32,7 +32,7 @@ rounded:
   pill: "999px"
 typography:
   interface:
-    fontFamily: "'Sylph Inter Tight', 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+    fontFamily: "'Habu Inter Tight', 'SF Pro Display', 'PingFang SC', 'Microsoft YaHei', sans-serif"
   category-title:
     fontSize: "16px"
     fontWeight: 600
@@ -73,7 +73,7 @@ components:
 
 ## Typography
 
-Latin 字符使用自托管 Sylph Inter Tight Variable（字重 100 至 900）；字体文件是 Latin 子集，中文回落至 SF Pro Display、PingFang SC、Microsoft YaHei 和系统 sans-serif。
+Latin 字符使用自托管 Habu Inter Tight Variable（字重 100 至 900）；字体文件是 Latin 子集，中文回落至 SF Pro Display、PingFang SC、Microsoft YaHei 和系统 sans-serif。
 
 ### Hierarchy
 - 分类标题：600，桌面 16px、手机 15px，行高 1.25，字距 `-.01em`。

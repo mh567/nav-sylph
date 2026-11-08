@@ -746,7 +746,7 @@ test('窄屏 toast 仍避让 Home 指示条', () => {
 
 function tempDbPath() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sylph-sqlite-'));
-    return { dir, file: path.join(dir, 'nav-sylph.db') };
+    return { dir, file: path.join(dir, 'habu.db') };
 }
 
 function makeSqliteStore(file, overrides = {}) {
@@ -799,7 +799,7 @@ test('SQLite 后端：写入的会话可读回，字段语义与内存后端一�
 });
 
 test('重启后登录态仍在：关库再开，原令牌依然有效', () => {
-    // 修复前会话只在进程内 Map 里，sylph.sh update 重启进程后所有人被登出。
+    // 修复前会话只在进程内 Map 里，habu.sh update 重启进程后所有人被登出。
     withTempDb(file => {
         const first = makeSqliteStore(file);
         const token = first.store.createSession(req(MAC), true);

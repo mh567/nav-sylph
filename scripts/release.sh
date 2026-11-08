@@ -35,7 +35,7 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
-RELEASE_NAME="nav-sylph-v${VERSION}"
+RELEASE_NAME="habu-v${VERSION}"
 ARCHIVE_NAME="${RELEASE_NAME}.tar.gz"
 DIST_DIR="dist"
 
@@ -94,14 +94,14 @@ mkdir -p "$DIST_DIR/${RELEASE_NAME}"
 cp server.js "$DIST_DIR/${RELEASE_NAME}/"
 cp package.json "$DIST_DIR/${RELEASE_NAME}/"
 cp package-lock.json "$DIST_DIR/${RELEASE_NAME}/"
-cp sylph.sh "$DIST_DIR/${RELEASE_NAME}/"
+cp habu.sh "$DIST_DIR/${RELEASE_NAME}/"
 cp version.json "$DIST_DIR/${RELEASE_NAME}/"
 cp CHANGELOG.json "$DIST_DIR/${RELEASE_NAME}/"
 
 # 配置示例
 cp .env.example "$DIST_DIR/${RELEASE_NAME}/"
 cp server-config.example.json "$DIST_DIR/${RELEASE_NAME}/"
-cp nav-sylph.service "$DIST_DIR/${RELEASE_NAME}/"
+cp habu.service "$DIST_DIR/${RELEASE_NAME}/"
 
 # 文档（仅 README）
 cp README.md "$DIST_DIR/${RELEASE_NAME}/"
@@ -186,11 +186,11 @@ log_step "生成发布说明..."
 
 # 测试包由用户主动下载，常规安装和更新继续使用正式渠道。
 INSTALL_INSTRUCTIONS='```bash
-curl -fsSL https://raw.githubusercontent.com/mh567/nav-sylph/main/sylph.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 ```'
 UPDATE_INSTRUCTIONS='已安装用户可运行:
 ```bash
-./sylph.sh update
+./habu.sh update
 ```'
 if [[ "$VERSION" == *-* ]]; then
     INSTALL_INSTRUCTIONS='本版本为测试预发布，请下载本页安装包并在独立测试环境解包部署。'
@@ -284,6 +284,6 @@ rm -rf "$DIST_DIR"
 echo ""
 log_info "发布完成!"
 echo ""
-echo "  Release URL: https://github.com/mh567/nav-sylph/releases/tag/v${VERSION}"
-echo "  下载地址:    https://github.com/mh567/nav-sylph/releases/download/v${VERSION}/${ARCHIVE_NAME}"
+echo "  Release URL: https://github.com/mh567/habu/releases/tag/v${VERSION}"
+echo "  下载地址:    https://github.com/mh567/habu/releases/download/v${VERSION}/${ARCHIVE_NAME}"
 echo ""

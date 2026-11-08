@@ -15,7 +15,7 @@
   },
   "paths": {
     "data": "data.json",
-    "database": "nav-sylph.db",
+    "database": "habu.db",
     "icon": "icon.svg",
     "favicon": "favicon.svg",
     "logs": "logs"

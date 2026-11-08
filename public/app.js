@@ -117,7 +117,7 @@
                 && !ANONYMOUS_MODULE_ROUTES.test(url)
                 && !window.app?.authenticated) throw new Error('需要管理员登录');
             const epoch = window.app?.privateEpoch || 0;
-            const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Sylph-Request': '1' } });
+            const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Habu-Request': '1' } });
             if (epoch !== (window.app?.privateEpoch || 0)) throw new Error('登录状态已变化');
             if (res.status === 401 && window.app?.authenticated) {
                 window.app.expirePrivateState();
@@ -1582,7 +1582,7 @@
                 this.localError = '未能保存到本机：' + error.message;
             }
             if (!record) {
-                const config = await (window.__navSylphConfigPromise || API.get('/api/config'));
+                const config = await (window.__habuConfigPromise || API.get('/api/config'));
                 try { const legacy = localStorage.getItem(THEME_STORAGE_KEY); if (APPEARANCE_ORDER.includes(legacy)) config.theme = legacy; } catch (e) {}
                 window.NavigationSchema.validate(config);
                 if (!this.localUnavailable) {

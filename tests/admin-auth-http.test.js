@@ -41,7 +41,7 @@ async function installation(t) {
     async function stop() { if (child && child.exitCode === null) { const done = new Promise(r => child.once('exit', r)); child.kill(); await done; } }
     t.after(async () => { await stop(); fs.rmSync(dir, { recursive: true, force: true }); });
     async function request(route, { cookie, password, body, method, headers = {} } = {}) {
-        return fetch(base + route, { method: method || (body ? 'POST' : 'GET'), headers: { 'User-Agent': 'sylph-auth-test', ...(cookie ? { Cookie: cookie } : {}), ...(password ? { 'X-Admin-Password': password } : {}), ...(body ? { 'Content-Type': 'application/json', 'X-Sylph-Request': '1', Origin: base } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+        return fetch(base + route, { method: method || (body ? 'POST' : 'GET'), headers: { 'User-Agent': 'sylph-auth-test', ...(cookie ? { Cookie: cookie } : {}), ...(password ? { 'X-Admin-Password': password } : {}), ...(body ? { 'Content-Type': 'application/json', 'X-Habu-Request': '1', Origin: base } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     }
     return { dir, base, start, stop, request };
 }
@@ -71,7 +71,12 @@ test('HTTP: weak login can only change password, strong login protects every fav
     assert.equal((await res.json()).favorites.length, 2);
     assert.equal((await app.request('/api/favorites/export', { cookie: admin })).status, 200);
     assert.equal((await app.request('/api/config', { cookie: admin, body: {}, headers: { Origin: 'https://evil.example' } })).status, 403);
-    assert.equal((await app.request('/api/config', { cookie: admin, body: {}, headers: { 'X-Sylph-Request': '' } })).status, 403);
+    assert.equal((await app.request('/api/config', { cookie: admin, body: {}, headers: { 'X-Habu-Request': '' } })).status, 403);
+    const legacyMarker = await fetch(`${app.base}/api/config`, {
+        method: 'POST', body: '{}',
+        headers: { Cookie: admin, 'Content-Type': 'application/json', 'X-Sylph-Request': '1', Origin: app.base, 'User-Agent': 'sylph-auth-test' }
+    });
+    assert.notEqual(legacyMarker.status, 403, '过渡期仍接受旧请求头');
     await app.stop(); await app.start();
     assert.equal((await app.request('/api/favorites', { cookie: admin })).status, 200);
     await app.request('/api/logout', { cookie: admin, body: {} });
@@ -84,7 +89,7 @@ test('HTTP: upgrade revokes legacy sessions and restricted credentials expire wi
     const app = await installation(t);
     const Database = require('better-sqlite3');
     const { MIGRATIONS } = require('../lib/db');
-    let db = new Database(path.join(app.dir, 'nav-sylph.db'));
+    let db = new Database(path.join(app.dir, 'habu.db'));
     for (const migration of MIGRATIONS.slice(0, 6)) migration(db);
     db.pragma(`user_version = ${6}`);
     const old = 'a'.repeat(64);
@@ -95,7 +100,7 @@ test('HTTP: upgrade revokes legacy sessions and restricted credentials expire wi
     assert.equal((await app.request('/api/favorites', { cookie: `nav_session=${old}` })).status, 401);
     let res = await app.request('/api/verify-password', { password: 'admin123', body: {} });
     const weak = cookieOf(res);
-    db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    db = openDatabase(path.join(app.dir, 'habu.db'));
     const expiry = db.prepare('SELECT expires_at FROM sessions').get().expires_at;
     assert.ok(expiry <= Date.now() + 600000 && expiry > Date.now() + 590000);
     await app.request('/api/session', { cookie: weak });
@@ -144,7 +149,7 @@ test('HTTP: partial credential writes roll back, damaged JSON blocks rotation, r
     const originalDav = JSON.stringify({ password: encrypt('dav-secret', oldHash, 'webdav') });
     fs.writeFileSync(webdavPath, originalDav);
     await app.start();
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     const now = Date.now();
     db.prepare(`INSERT INTO timeline_sources (id, provider_type, name, created_at, updated_at) VALUES ('broken-write', 'weibo', 'test', ?, ?)`).run(now, now);
     const originalEnvelope = JSON.stringify(encrypt('token', oldHash, 'timeline'));
@@ -178,7 +183,7 @@ test('HTTP: partial credential writes roll back, damaged JSON blocks rotation, r
     const rotated = await app.request('/api/change-password', { cookie: recoveredCookie, body: { currentPassword: 'admin123', newPassword: 'StrongPass123!' } });
     assert.equal(rotated.status, 200);
     const hash = JSON.parse(fs.readFileSync(passwordPath)).passwordHash;
-    const verifiedDb = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const verifiedDb = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(decrypt(JSON.parse(verifiedDb.prepare('SELECT envelope_json FROM timeline_credentials').get().envelope_json), hash, 'timeline'), 'token');
     verifiedDb.close();
     assert.equal((await app.request('/api/favorites', { cookie: recoveredCookie })).status, 401);

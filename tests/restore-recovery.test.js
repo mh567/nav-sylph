@@ -46,7 +46,7 @@ function makeInstallation(t) {
         pollInterval: 15
     });
 
-    const db = openDatabase(path.join(dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(dir, 'habu.db'));
     t.after(() => { try { db.close(); } catch { /* 已关 */ } });
     // 时间线/备忘录的现场（恢复会整表替换它们）
     const now = Date.now();

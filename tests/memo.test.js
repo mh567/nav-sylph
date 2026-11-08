@@ -665,7 +665,7 @@ test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查
     assert.equal(tar.status, 0, `复制项目失败：${tar.stderr}`);
 
     // 私有文件一个都不能跟进副本：漏进去等于把管理员密码带进 /tmp
-    for (const leak of ['.admin-password.json', '.modules.json', 'config.json', 'favorites.json', 'nav-sylph.db']) {
+    for (const leak of ['.admin-password.json', '.modules.json', 'config.json', 'favorites.json', 'habu.db']) {
         assert.equal(fs.existsSync(path.join(tmp, leak)), false, `${leak} 不应出现在临时副本里`);
     }
     assert.ok(fs.existsSync(path.join(tmp, 'server.js')), '副本必须完整');
@@ -680,7 +680,7 @@ test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查
         env: {
             ...process.env,
             PORT: String(port),
-            DB_FILE: path.join(tmp, 'nav-sylph.db'),
+            DB_FILE: path.join(tmp, 'habu.db'),
             DATA_FILE: path.join(tmp, 'config.json'),
             LOG_DIR: path.join(tmp, 'logs'),
             ADMIN_PASSWORD_FILE: path.join(tmp, '.admin-password.json')
@@ -692,11 +692,11 @@ test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查
 
     assert.ok(await waitForServer(base, 20000), `服务未在 20 秒内就绪；stderr:\n${stderr}`);
 
-    const login = await fetch(`${base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'admin123', 'X-Sylph-Request': '1' } });
+    const login = await fetch(`${base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'admin123', 'X-Habu-Request': '1' } });
     const weak = login.headers.get('set-cookie').split(';')[0];
-    const changed = await fetch(`${base}/api/change-password`, { method: 'POST', headers: { Cookie: weak, 'Content-Type': 'application/json', 'X-Sylph-Request': '1' }, body: JSON.stringify({ currentPassword: 'admin123', newPassword: 'MemoTest12345!' }) });
+    const changed = await fetch(`${base}/api/change-password`, { method: 'POST', headers: { Cookie: weak, 'Content-Type': 'application/json', 'X-Habu-Request': '1' }, body: JSON.stringify({ currentPassword: 'admin123', newPassword: 'MemoTest12345!' }) });
     assert.equal(changed.status, 200);
-    const auth = { Cookie: changed.headers.get('set-cookie').split(';')[0], 'X-Sylph-Request': '1' };
+    const auth = { Cookie: changed.headers.get('set-cookie').split(';')[0], 'X-Habu-Request': '1' };
     const json = { ...auth, 'Content-Type': 'application/json' };
 
     // 未登录：401，且不泄露任何条目
@@ -753,8 +753,8 @@ test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查
     data = await res.json();
     assert.deepEqual(data.memos, []);
 
-    // 实测落盘的库文件名对得上（备份/升级面）：nav-sylph.db 在副本里生成
-    assert.ok(fs.existsSync(path.join(tmp, 'nav-sylph.db')), '备忘录与会话共用同一个库文件');
+    // 实测落盘的库文件名对得上（备份/升级面）：habu.db 在副本里生成
+    assert.ok(fs.existsSync(path.join(tmp, 'habu.db')), '备忘录与会话共用同一个库文件');
 });
 
 // ========== 轮询开销 ==========

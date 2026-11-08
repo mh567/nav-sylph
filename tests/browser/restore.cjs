@@ -151,7 +151,7 @@ async function setup(t) {
 
     // 备忘录与时间线：四域都在备份里，「将恢复」才能一次列全。
     // 时间线来源是 provider_type='x'（外部来源）→ 恢复后「待授权」。
-    const db = openDatabase(path.join(app.dir, 'nav-sylph.db'));
+    const db = openDatabase(path.join(app.dir, 'habu.db'));
     try {
         const now = Date.now();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?,?,?,1,?,?)')

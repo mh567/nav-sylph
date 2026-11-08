@@ -17,7 +17,7 @@ Habu 是面向自部署用户的个人数字工作台，集中导航、收藏、
 Issue #2 的兼容变化：收藏库包含原非私密条目，读取、分类、计数、搜索与导出统一限于正常管理员会话。公开导航链接和匿名文本分享保持原协议。口令空间已从本产品移除，私人接口只接受管理员会话。
 
 - 密码至少12个字符，大写、小写、数字、符号至少三类，且最多72字节。SQLite 尾部迁移撤销旧会话并追加 `purpose`。弱密码只签发10分钟、不滑动续期的 `password-change` 凭据；仅可改密、退出和查询自身改密状态，不能访问私人或管理接口。取消改密即退出。
-- `requireAdmin` 与配置软鉴权只认可正常会话。`X-Admin-Password` 仅用于限流登录入口，敏感改密另需当前密码。管理写操作要求同源自定义请求头 `X-Sylph-Request: 1`，校验 Origin 及 Fetch Metadata；已打开的旧客户端缺少请求头时提示刷新。agent 注册、推送和匿名分享沿用各自鉴权协议。
+- `requireAdmin` 与配置软鉴权只认可正常会话。`X-Admin-Password` 仅用于限流登录入口，敏感改密另需当前密码。管理写操作要求同源自定义请求头 `X-Habu-Request: 1`，校验 Origin 及 Fetch Metadata；已打开的旧客户端缺少请求头时提示刷新。agent 注册、推送和匿名分享沿用各自鉴权协议。
 - 重加密先验证所有旧密文，再将三份 JSON 和时间线凭据的旧值写入0600的 `.credential-rotation.json` 恢复记录。写入失败回滚，进程中断后启动先恢复；配置损坏及读取失败均阻断改密。新密码写入、旧会话撤销完成后才删除恢复记录，再签发当前设备正常会话。改密与管理写操作互斥。恢复记录不进 Git 或 WebDAV，尚未验收断电持久性。
 - 收藏响应带 `no-store`。前端只在确认正常会话后取回收藏，身份代次使迟到响应失效；模块渲染在异步边界检查同一代次。退出、401、会话检查失效会清空收藏、索引、拼音词库与私人界面，并重载以释放闭包。退出成功后通知其他标签页清理重载；每30秒及恢复可见时校验会话。网络校验失败先清理私人展示。
 - Service Worker 静态缓存升级为 `nav-v107`，激活时删除旧缓存；动态接口继续不进入缓存。现有客户端未使用 IndexedDB 存储收藏，不迁移个人导航或外观偏好。
@@ -136,7 +136,7 @@ SQLite 保留已发布迁移原文，并在 v15 追加删除 `sync_spaces`、`sy
 | `agent/` | 部署在**被监控目标机**上的只读采集程序。**Go 静态二进制，零第三方依赖**（`go.mod` 无 `require`）：`main.go`（协议、HTTPS、注册、推送、`upgrade`）+ 平台桩（`mem_darwin.go` / `mem_other.go` / `readcpu_darwin.go` / `readcpu_other.go` / `disk_other.go` / `disk_unsupported.go`）、`install.sh`（一键 `curl \| bash`）、`README.md` |
 | `scripts/build-agent.sh` | agent 交叉编译（linux/amd64、linux/arm64、linux/armv7）+ ELF 自检 |
 | `public/modules/` | 按需加载的模块脚本，每个模块一个文件（`server-monitor.js`、`memo.js`、`special-line.js`、`weibo-hot.js`）。每个文件在 `registerModule()` 里声明自己的分类（`admin` / `public`）、可选的后台区块与公开模块的用户侧配置白名单 |
-| `sylph.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
+| `habu.sh`、`scripts/release.sh` | 安装管理与版本发布脚本（后者会先构建 agent 产物） |
 | `tests/` | 备份隐私、移动书签、对话框、接口数据边界、模块平台和服务生命周期回归测试 |
 
 服务使用 Node.js、Express 和原生浏览器代码。`package.json` 的 `start` 命令运行 `server.js`，`dev` 命令使用 nodemon。测试目前通过 `node --test tests/*.test.js` 运行。
@@ -497,8 +497,8 @@ selfSigned / version                **函数**，读实时值
 写入 SQLite 新表 `agent_metrics`（`server_id` 主键 + `payload` + `received_at`），**与 `module_cache` 分开**：
 
 - `module_cache` 是单键 `'local'`，存「本次聚合采集的结果」（含聚合后的 `servers` 数组）；`agent_metrics` 按 `server_id` 一行一行存「某台机器的单份上报」。两者生命周期不同，**共用一个 key 会让一次推送覆写掉本机和其它拉取机器的结果**。
-- 进 SQLite 而非 JSON：`nav-sylph.db` 已在 `PRIVATE_FILES` 里、已是 0600、随发布包打包，且**在 `sylph.sh` 的升级备份里**（更新前整库拷走、替换文件后放回）。复用它意味着不需要新的文件权限管理、新的备份条目，也不需要改 `sylph.sh` 的备份/恢复列表。
-  - ⚠️ **`nav-sylph.db` 里的用户数据并不都在备份集内，也不都不在**：登录会话与监控缓存（`sessions` / `module_cache` / `agent_metrics`）不在；备忘（`memos`）与待办（`todos`）在——它们分别由 `projectMemosForBackup` / `projectTodosForBackup` 投影成独立文件，随 #12 的 WebDAV 备份与 #13 的恢复一起走。早先这段写成「数据库整体不在备份集内、memos 跨设备靠服务器本身」，与代码不符，已按实际改写。
+- 进 SQLite 而非 JSON：`habu.db` 已在 `PRIVATE_FILES` 里、已是 0600、随发布包打包，且**在 `habu.sh` 的升级备份里**（更新前整库拷走、替换文件后放回）。复用它意味着不需要新的文件权限管理、新的备份条目，也不需要改 `habu.sh` 的备份/恢复列表。
+  - ⚠️ **`habu.db` 里的用户数据并不都在备份集内，也不都不在**：登录会话与监控缓存（`sessions` / `module_cache` / `agent_metrics`）不在；备忘（`memos`）与待办（`todos`）在——它们分别由 `projectMemosForBackup` / `projectTodosForBackup` 投影成独立文件，随 #12 的 WebDAV 备份与 #13 的恢复一起走。早先这段写成「数据库整体不在备份集内、memos 跨设备靠服务器本身」，与代码不符，已按实际改写。
 - **必须入库而不是只驻内存**：服务器重启后 agent 下一次推送（≤ pollInterval）即可自愈。
 
 ### agent 侧
@@ -576,7 +576,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 - **`.modules.json` 纳入 WebDAV 备份（范围见 Issue #12）。** #12 起备份产出的是 `nav-sylph-bookmarks-{ts}.html`、`nav-sylph-memos-{ts}.json`、`nav-sylph-todos-{ts}.json`、`nav-sylph-modules-{ts}.json`、`nav-sylph-timeline-{ts}.json` 与一份 `nav-sylph-manifest-{ts}.json`（版本化清单：`included[]` 带**文件字节 sha256** 与 counts、`skipped[]` 带域与原因），按时间戳归为同一组；**不再产出** `nav-sylph-config-{ts}.json`（管理员导航/引擎/主题出范围）。模块配置参与「有无变化」判定——只改监控目标却判成 noChanges，远端会留一份旧布局。
 - ⚠️ **凭据不进备份**：`servers[].token`、`pushSecretHash`、`enrollTokenHash` 全部剔除，恢复后显示「待授权/重新部署」。原因是密钥派生自**管理员密码哈希**，而 bcrypt 带盐 ⇒ 换一台机器用同一口令得到的是**不同的**哈希 ⇒ 密文**解不开**（旧文档里「换机器后用同一密码即可解开」是**失实**的，已改）。`certPem`/`certFingerprint`/`enrolledAt`/`deployState` 是公钥与注册信息，保留。**`.admin-password.json` 始终不进备份**——把密码哈希交出去等于把账号交出去。
 - 导出侧用**白名单投影**（不是 delete）：将来新增的凭据字段默认不进备份；投影按**固定键顺序**构造——`calculateChecksum` 是 `JSON.stringify` 摘要，键序一变摘要就变，`noChanges` 会失效（每轮都上传）。清理旧备份时同一组的六个文件（书签 / 备忘 / 待办 / 模块 / 时间线 / 清单）一并删除，否则会出孤儿：清理按分组算，孤儿既不被计入也不会被清走。`SCOPE_VERSION` 在范围变化时 +1（v3 即加入待办），否则「各域内容没变」会让远端长期留一份旧范围的清单。
-- **一键部署命令在后台生成，不在 `sylph.sh`。** `sylph.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。上一版是六步手工说明（下载、手动改配置、自检、systemd、防火墙…），现在合并成**一条可复制命令**——每一个由系统能自己生成的步骤（协议前缀、端口、令牌、证书指纹）都不该让用户填。
+- **一键部署命令在后台生成，不在 `habu.sh`。** `habu.sh` 管的是**主服务**的安装与升级，agent 部署在**别的机器**上，混进去会让两个角色互相干扰。上一版是六步手工说明（下载、手动改配置、自检、systemd、防火墙…），现在合并成**一条可复制命令**——每一个由系统能自己生成的步骤（协议前缀、端口、令牌、证书指纹）都不该让用户填。
 - **命令里的凭据是占位符，明文不进页面 DOM。** 令牌明文只在「签发」那一次响应里出现一次；为了让命令可复制而不泄露，页面上的令牌位是 `<占位符>`，由 `agent/install.sh` 在目标机上自己填进 0600 的配置。
 - **二进制按架构分发**（`GET /agent/nav-agent-linux-<arch>`，白名单 amd64/arm64/armv7），路径穿越有防护。**失败必须分因**：文件缺失与架构不在白名单是两种原因，塌缩成一个 404 会让用户以为是网络问题。分发用 `fs.createReadStream`（从 `require('fs')` 拿，不是 `require('fs').promises`——后者没有流式 API），多 MB 产物不要 `readFile` 再 `send`。**不进 Service Worker 预缓存**（预缓存一个从不加载的文件只会在每次更新时多下载一次），并且 `Cache-Control: no-cache`——URL 稳定而内容随版本变，否则照旧命令执行的用户拿到的是旧版。404 的响应体必须是 **shell 注释**而不是 HTML 错误页，因为它会被 `bash -s` 执行。
 - **`hasEnrollToken` 是「能不能直接复制命令」的判据**（令牌已签发且未过期 vs 没有/已过期），卡片据此在「复制命令」与「部署」之间切换。这个字段曾长期算了却没人读，而它的注释声称驱动着两个并不存在的按钮——一个假承诺。
@@ -733,7 +733,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ⚠️ **`server-config.json` 会遮蔽 `server-config/` 目录**，这不是本项目的选择而是 Node 的解析顺序（`.js` → `.json` → `.node` → 目录）：该文件一旦存在于安装目录根下，`require('./server-config')` 返回的就是它的原文，`server-config/index.js` 一行都不执行，defaults 与 `rootDir` 全部落空。**因此 `server.js` 必须写成显式路径 `require('./server-config/index.js')`** —— 这是唯一让遮蔽不发生的方式；`rootDir` 不在 `defaults.js` 里（由 `index.js` 用 `__dirname` 推导后赋值），所以「把配置写全」补不出它。用户那份文件由后台「自签证书」开关写出（`POST /api/server-flags`，首次保存只写 `security` 一段），因此这条路径不是边缘情况。`server.js` 另在 `require` 之后调用 `assertConfigUsable(config)` 兜底：缺 `rootDir`/`server`/`paths`/`security` 或 `validate` 时直接报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 `ERR_INVALID_ARG_TYPE`。`tests/config-shadowing.test.js` 用真实启动钉住「残片存在时服务照常起来、且残片仍被应用」，另有一条钉住显式路径与 Node 的解析顺序。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载书签及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，保存管理端会话、备忘、待办与监控缓存**；其中会话与监控缓存不参与 WebDAV 跨设备备份（会话令牌与派生缓存不是用户内容），备忘与待办则随各自的数据域进备份。`sylph.sh` 只把库文件加进更新失败的本地回滚清单。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Habu 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `habu.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`habu.db` 是 SQLite 库，保存管理端会话、备忘、待办与监控缓存**；其中会话与监控缓存不参与 WebDAV 跨设备备份（会话令牌与派生缓存不是用户内容），备忘与待办则随各自的数据域进备份。`habu.sh` 只把库文件加进更新失败的本地回滚清单。书签 HTML 的 `DATA-HABU-PRIVATE` 标记承载 Habu 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
 `GET /api/config` 在没有正常管理会话时返回剔除 `privacyMode` 的公开导航视图，正常管理会话可读取完整配置。`GET /api/favorites` 及导出接口仅接受正常管理会话，匿名及改密凭据均返回401。写入继续按 id 合并，缺席的既有私密条目保留；配置保存以现有文件为基底，不因客户端缺少字段而抹掉 `privacyMode`。
 

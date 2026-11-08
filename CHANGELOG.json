@@ -1,6 +1,24 @@
 {
   "versions": [
     {
+      "version": "2.4.0",
+      "date": "2026-11-08",
+      "summary": "项目更名为 Habu，运行时标识同步迁移。",
+      "highlights": [
+        "项目更名为 Habu，站点标题改为数字工作台。",
+        "脚本、服务、数据库与请求标识改用 habu，旧数据自动迁移。"
+      ],
+      "changes": {
+        "improve": [
+          "管理脚本改为 habu.sh，安装目录默认 ~/habu，HABU_DIR 可覆盖，旧 NAV_SYLPH_DIR 继续兼容。",
+          "systemd 单元改为 habu.service，PID 文件改为 .habu.pid，升级时自动迁移旧单元。",
+          "数据库改为 habu.db，启动时自动改名旧库及其 WAL 边车。",
+          "请求头改为 X-Habu-Request，备份隐私标记改为 DATA-HABU-PRIVATE，过渡期兼容旧值。",
+          "字体族名改为 Habu Inter Tight，仓库改为 mh567/habu。"
+        ]
+      }
+    },
+    {
       "version": "2.3.1",
       "date": "2026-11-08",
       "summary": "修复镜像返回网页导致的升级失败。",
