@@ -4922,7 +4922,7 @@
                 <div class="help-overlay" id="helpOverlay" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
                     <div class="help-content">
                         <button class="help-close" type="button">关闭</button>
-                        <h3 id="helpTitle">Nav Sylph${versionStr}</h3>
+                        <h3 id="helpTitle">Habu${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
                             <strong>文本分享</strong>

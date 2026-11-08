@@ -1,10 +1,10 @@
-# Nav Sylph 架构与开发背景
+# Habu 架构与开发背景
 
 更新日期：2026-11-08。本文描述当前仓库代码。开始新任务时，应核对实际代码与版本。
 
 ## 产品方向
 
-Sylph 是面向自部署用户的个人数字工作台，集中导航、收藏、临时文本分享、备忘待办、服务监控与订阅时间线。公开导航与口令同步工具已拆分至同级独立项目 Pabu。Sylph 移除口令空间和管理接口，管理员登录后的多设备配置协调继续保留。访客本地导航与显式发布的默认首页仍可使用。后续 AI 与智能体能力属于规划，本轮未实现。
+Habu 是面向自部署用户的个人数字工作台，集中导航、收藏、临时文本分享、备忘待办、服务监控与订阅时间线。公开导航与口令同步工具已拆分至同级独立项目 Pabu。Habu 移除口令空间和管理接口，管理员登录后的多设备配置协调继续保留。访客本地导航与显式发布的默认首页仍可使用。后续 AI 与智能体能力属于规划，本轮未实现。
 
 用户主要在国内访问海外部署的服务器。页面运行时资源由本服务提供。用户主动点击的搜索、书签和 WebDAV 地址属于外部目标，不属于页面运行时依赖。
 
@@ -64,7 +64,7 @@ WebDAV 范围尚沿用现有行为，当前从 SQLite 读取实际管理员配�
 
 ## 产品拆分与身份边界（2026-11-08）
 
-Pabu 独立维护普通用户口令空间；Sylph 不注册 `/api/sync/*` 或 `/api/admin/sync-*` 接口，不加载同步存储，也不保存普通同步连接。前端登录/退出仍由 `privateEpoch` 隔离私人请求。普通本地导航、管理员个人导航与站点默认模板保持独立。
+Pabu 独立维护普通用户口令空间；Habu 不注册 `/api/sync/*` 或 `/api/admin/sync-*` 接口，不加载同步存储，也不保存普通同步连接。前端登录/退出仍由 `privateEpoch` 隔离私人请求。普通本地导航、管理员个人导航与站点默认模板保持独立。
 
 SQLite 保留已发布迁移原文，并在 v15 追加删除 `sync_spaces`、`sync_devices`、`sync_invites`、`sync_receipts` 和 `sync_settings`。按用户确认无现有用户，不提供空间迁移。该清理会在首次启动新程序时删除旧库内这些表，工作台的导航、会话、备忘、待办与时间线表保留。
 
@@ -733,7 +733,7 @@ agent 是 **Go 静态二进制**（`agent/main.go` + 四个平台桩文件），
 
 ⚠️ **`server-config.json` 会遮蔽 `server-config/` 目录**，这不是本项目的选择而是 Node 的解析顺序（`.js` → `.json` → `.node` → 目录）：该文件一旦存在于安装目录根下，`require('./server-config')` 返回的就是它的原文，`server-config/index.js` 一行都不执行，defaults 与 `rootDir` 全部落空。**因此 `server.js` 必须写成显式路径 `require('./server-config/index.js')`** —— 这是唯一让遮蔽不发生的方式；`rootDir` 不在 `defaults.js` 里（由 `index.js` 用 `__dirname` 推导后赋值），所以「把配置写全」补不出它。用户那份文件由后台「自签证书」开关写出（`POST /api/server-flags`，首次保存只写 `security` 一段），因此这条路径不是边缘情况。`server.js` 另在 `require` 之后调用 `assertConfigUsable(config)` 兜底：缺 `rootDir`/`server`/`paths`/`security` 或 `validate` 时直接报出文件名、遮蔽原因与两条修复命令，取代原先指不到真因的 `ERR_INVALID_ARG_TYPE`。`tests/config-shadowing.test.js` 用真实启动钉住「残片存在时服务照常起来、且残片仍被应用」，另有一条钉住显式路径与 Node 的解析顺序。首页在 `public/index.html` 中提前请求 `/api/config`（`cache: 'no-cache'`，服务端回 `Cache-Control: no-cache` + ETag）：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304（零响应体），既省去首屏往返的传输量，又保证配置始终最新——配置按认证态生成不同表示（公开视图不含 `privacyMode`），ETag 随之不同，登录态变化必得新 200，不会拿到旧的完整配置。`public/app.js` 复用该请求，渲染首页后再加载书签及版本信息。服务端使用 compression 处理中等及较大的可压缩响应。Service Worker 仅缓存列出的同源静态资源。
 
-运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，保存管理端会话、备忘、待办与监控缓存**；其中会话与监控缓存不参与 WebDAV 跨设备备份（会话令牌与派生缓存不是用户内容），备忘与待办则随各自的数据域进备份。`sylph.sh` 只把库文件加进更新失败的本地回滚清单。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Sylph 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
+运行时的 `config.json` 保存页面设置和分类，`favorites.json` 保存书签，`.admin-password.json` 保存管理密码哈希，`.webdav-config.json` 保存 WebDAV 配置。这四个文件与会话库都承载私有数据，**由服务在创建/写入时收紧到 0600，并在每次启动兜底校正**（`server.js` 的 `writeJSON()` 与 `restrictPrivateFileModes()`；WebDAV 配置另在 `lib/webdav-backup.js` 的保存路径收紧）。不要把它们交给 `sylph.sh` 的 chmod 兜底：那几个文件是**应用首次启动时**才创建的，脚本里的 `[ -f ... ] && chmod` 跑在它们存在之前，对全新安装等于空操作（实测此前为 644）。这些文件由 `.gitignore` 排除，不能作为跨工具交接附件提交。**`nav-sylph.db` 是 SQLite 库，保存管理端会话、备忘、待办与监控缓存**；其中会话与监控缓存不参与 WebDAV 跨设备备份（会话令牌与派生缓存不是用户内容），备忘与待办则随各自的数据域进备份。`sylph.sh` 只把库文件加进更新失败的本地回滚清单。书签 HTML 的 `DATA-SYLPH-PRIVATE` 标记承载 Habu 私密属性；修改导出、解析、恢复或备份版本时，应完整检查往返路径。
 
 `GET /api/config` 在没有正常管理会话时返回剔除 `privacyMode` 的公开导航视图，正常管理会话可读取完整配置。`GET /api/favorites` 及导出接口仅接受正常管理会话，匿名及改密凭据均返回401。写入继续按 id 合并，缺席的既有私密条目保留；配置保存以现有文件为基底，不因客户端缺少字段而抹掉 `privacyMode`。
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Nav Sylph 发布脚本
+# Habu 发布脚本
 # 用于打包和发布新版本到 GitHub Release
 #
 
@@ -41,7 +41,7 @@ DIST_DIR="dist"
 
 echo ""
 echo -e "${BLUE}════════════════════════════════════════${NC}"
-echo -e "${BLUE}       Nav Sylph 发布脚本               ${NC}"
+echo -e "${BLUE}       Habu 发布脚本               ${NC}"
 echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo ""
 log_info "版本: ${VERSION}"
@@ -199,7 +199,7 @@ fi
 
 # 从 CHANGELOG.json 提取最新版本的信息
 RELEASE_NOTES=$(cat <<EOF
-## Nav Sylph v${VERSION}
+## Habu v${VERSION}
 
 ### 安装方式
 
@@ -272,7 +272,7 @@ if [[ "$VERSION" == *-* ]]; then
     RELEASE_FLAGS=(--prerelease --latest=false)
 fi
 gh release create "v${VERSION}" \
-    --title "Nav Sylph v${VERSION}" \
+    --title "Habu v${VERSION}" \
     --notes "$RELEASE_NOTES" \
     "${RELEASE_FLAGS[@]}" \
     "$ARCHIVE_PATH"

@@ -1,6 +1,7 @@
+// nav-v154：项目更名 Habu，站点标题改为数字工作台。
 // nav-v153：清理拆分后遗留的多端同步说明，改为管理员多设备。
 // nav-v152：Sylph 定位个人数字工作台，移除口令同步。
-const CACHE = 'nav-v153';
+const CACHE = 'nav-v154';
 const ASSETS = [
     '/',
     '/index.html',

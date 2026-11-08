@@ -1,7 +1,7 @@
 {
-  "name": "导航",
-  "short_name": "导航",
-  "description": "个人导航页",
+  "name": "数字工作台",
+  "short_name": "工作台",
+  "description": "个人数字工作台",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#efede8",

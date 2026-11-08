@@ -1,6 +1,6 @@
-// Nav Sylph 监控 agent
+// Habu 监控 agent
 //
-// 部署在**被监控的目标机**上，让 Nav Sylph 服务能读到这台机器的 CPU、内存与负载。
+// 部署在**被监控的目标机**上，让 Habu 服务能读到这台机器的 CPU、内存与负载。
 // 本服务只能读到运行它自己的那台主机；要读别的机器，目标机上就得有一个东西去读
 // 系统计数器并把结果吐出来——这就是 agent 的全部职责。
 //
@@ -136,7 +136,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`nav-agent — Nav Sylph 监控 agent
+	fmt.Print(`nav-agent — Habu 监控 agent
 
 用法：
   nav-agent enroll --server <本服务地址> --token <一次性令牌> [--server-ca <PEM>]
@@ -484,7 +484,7 @@ func selfSign(hostname string) (certPEM, keyPEM []byte, fp string, err error) {
 	now := time.Now()
 	tmpl := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: hostname, Organization: []string{"Nav Sylph agent"}},
+		Subject:               pkix.Name{CommonName: hostname, Organization: []string{"Habu agent"}},
 		NotBefore:             now.Add(-time.Hour), // 容忍一点时钟偏差
 		NotAfter:              now.AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
@@ -892,7 +892,7 @@ func cmdServe(args options) error {
 	if err != nil {
 		return fmt.Errorf("监听 %s 失败：%w", srv.Addr, err)
 	}
-	fmt.Printf("Nav Sylph agent %s\n", agentVersion())
+	fmt.Printf("Habu agent %s\n", agentVersion())
 	fmt.Printf("  主机名 %s\n", sysHostname())
 	fmt.Printf("  监听 %s://%s\n", scheme, srv.Addr)
 	if host == "127.0.0.1" {
@@ -982,7 +982,7 @@ func cmdPush(args options) error {
 	}
 	interval = resolveInterval(interval)
 
-	fmt.Printf("Nav Sylph agent %s\n", agentVersion())
+	fmt.Printf("Habu agent %s\n", agentVersion())
 	fmt.Printf("  主机名 %s\n", sysHostname())
 	fmt.Printf("  推送目标 %s/api/modules/agent-push\n", server)
 	fmt.Printf("  上报间隔 %ds\n", interval)

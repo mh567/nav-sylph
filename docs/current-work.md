@@ -1,5 +1,16 @@
 # 当前工作交接
 
+> 项目于 2026-11-08 更名为 Habu。GitHub 仓库仍为 `mh567/nav-sylph`，运行时文件名（`sylph.sh`、`nav-sylph.db`、`NAV_SYLPH_*` 环境变量、systemd 服务名）保持不变。历史条目中的 Sylph 为当时的项目名。
+
+## 项目更名 Habu（2026-11-08，本地修改待提交）
+
+- 产品名由 Nav Sylph 改为 Habu，站点标题改为「数字工作台」，PWA 名称与描述同步更新，Service Worker 缓存升至 `nav-v154`。
+- 已更新 README、产品与部署文档、架构文档、产品边界、定位研究、agent 说明与安装提示、发布脚本标题、服务单元描述、启动横幅和首页说明面板。
+- 按决定保留运行时文件名与协议标识：`sylph.sh`、`nav-sylph.db`、`NAV_SYLPH_*`、`nav-sylph.service`、`X-Sylph-Request` 请求头、`DATA-SYLPH-PRIVATE` 备份标记、`Sylph Inter Tight` 字体族名。现有部署、登录会话与备份兼容。
+- 本地目录 `/Users/harris/work/sylph` 在内容修改完成后改名为 `/Users/harris/work/habu`。
+- GitHub 仓库 `mh567/nav-sylph` 不改名，安装与更新地址保持不变。
+- 历史文档与旧发布记录保留原项目名，未改写事实。
+
 ## v2.3.1 升级下载失败修复（2026-11-08，已发布并核对附件）
 
 - 症状：2.2.16 执行 `./sylph.sh update`，直连 GitHub 失败后回退 `ghproxy.cn`。该域名现在对下载地址返回 200 的 HTML 落地页，`curl -f` 只看状态码把它当成成功，`tar` 报 `not in gzip format`，脚本最后提示「下载失败」并恢复旧版本与服务。

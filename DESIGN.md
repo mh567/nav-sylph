@@ -1,5 +1,5 @@
 ---
-name: Nav Sylph
+name: Habu
 description: 自托管导航工作区，提供经典浅深色与暗玻璃主题。
 colors:
   classic-light-bg: "#efede8"
@@ -52,7 +52,7 @@ components:
     rounded: "{rounded.pill}"
 ---
 
-# 设计系统：Nav Sylph
+# 设计系统：Habu
 
 ## Overview
 

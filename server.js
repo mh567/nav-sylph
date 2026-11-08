@@ -5004,7 +5004,7 @@ init().then(() => {
     server.listen(PORT, HOST, () => {
         console.log(`
 ┌─────────────────────────────────────────┐
-│           Nav Sylph Server              │
+│           Habu Server              │
 ├─────────────────────────────────────────┤
 │  URL:      ${protocol}://${HOST}:${PORT}`.padEnd(43) + `│
 │  HTTPS:    ${config.server.https.enabled ? 'Enabled' : 'Disabled'}`.padEnd(43) + `│

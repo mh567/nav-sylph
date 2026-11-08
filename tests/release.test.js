@@ -23,12 +23,12 @@ function releaseArguments(version) {
 
 test('release: test versions are prereleases and never replace latest', () => {
     const args = releaseArguments('2.2.5-beta.1');
-    assert.deepEqual(args, ['release', 'create', 'v2.2.5-beta.1', '--title', 'Nav Sylph v2.2.5-beta.1', '--notes', 'line one\nline two', '--prerelease', '--latest=false', '/tmp/release files/nav.tar.gz']);
+    assert.deepEqual(args, ['release', 'create', 'v2.2.5-beta.1', '--title', 'Habu v2.2.5-beta.1', '--notes', 'line one\nline two', '--prerelease', '--latest=false', '/tmp/release files/nav.tar.gz']);
 });
 
 test('release: stable versions retain the existing release command', () => {
     const args = releaseArguments('2.2.5');
-    assert.deepEqual(args, ['release', 'create', 'v2.2.5', '--title', 'Nav Sylph v2.2.5', '--notes', 'line one\nline two', '/tmp/release files/nav.tar.gz']);
+    assert.deepEqual(args, ['release', 'create', 'v2.2.5', '--title', 'Habu v2.2.5', '--notes', 'line one\nline two', '/tmp/release files/nav.tar.gz']);
 });
 
 

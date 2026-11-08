@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Nav Sylph 监控 agent 一键安装。
+# Habu 监控 agent 一键安装。
 #
 # 用法（后台「部署」面板会生成这一行）：
 #   curl -fsSL <本服务>/agent/install.sh | sudo bash -s -- \
@@ -89,7 +89,7 @@ ARCH="$(detect_arch)"
 BIN_PATH="/usr/local/bin/nav-agent"
 BIN_URL="${BIN_URL_OVERRIDE:-${SERVER}/agent/nav-agent-linux-${ARCH}}"
 
-log "Nav Sylph agent 安装"
+log "Habu agent 安装"
 echo "  本服务 $SERVER"
 echo "  架构   $ARCH ($(uname -m))"
 echo ""
@@ -209,7 +209,7 @@ else
 
     umask 077
     {
-        echo "# Nav Sylph agent 凭据。此文件含凭据，不要贴进 issue。"
+        echo "# Habu agent 凭据。此文件含凭据，不要贴进 issue。"
         echo "NAV_AGENT_SERVER=$SERVER"
         if [ "$MODE" = "push" ]; then
             # 推送模式：凭据是推送凭据 + 目标机器 id，没有 Bearer token。
@@ -242,7 +242,7 @@ else
 
     cat > "$UNIT" <<EOF
 [Unit]
-Description=Nav Sylph 监控 agent
+Description=Habu 监控 agent
 After=network-online.target
 Wants=network-online.target
 
@@ -315,5 +315,5 @@ cat <<EOF
   卸载     systemctl disable --now nav-agent
            rm -f $BIN_PATH $UNIT /etc/nav-agent/env /etc/nav-agent/config.json
 
-回到 Nav Sylph 后台点「刷新状态」，这台机器就会显示「已就绪」。
+回到 Habu 后台点「刷新状态」，这台机器就会显示「已就绪」。
 EOF

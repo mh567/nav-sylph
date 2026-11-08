@@ -1,5 +1,5 @@
 [Unit]
-Description=Nav Sylph - Personal Navigation Page
+Description=Habu - Personal Digital Workbench
 Documentation=https://github.com/your-username/nav-sylph
 After=network.target
 

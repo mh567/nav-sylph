@@ -103,7 +103,7 @@ async function startServer(dir) {
         if (proc.exitCode !== null) {
             throw new Error(`服务提前退出（code=${proc.exitCode}）：\n${output}`);
         }
-        if (output.includes('Nav Sylph Server')) {
+        if (output.includes('Habu Server')) {
             return { proc, port, base: `http://127.0.0.1:${port}`, get output() { return output; } };
         }
         await new Promise((r) => setTimeout(r, 60));
