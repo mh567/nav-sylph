@@ -110,9 +110,6 @@
     const THEME_STORAGE_KEY = 'nav-sylph-theme';
     const LOCAL_SETTINGS_FIELDS = ['searchEngine', 'searchEngines', 'theme', 'themeStyle', 'showBookmarkIcons'];
     const APPEARANCE_ORDER = ['auto', 'light', 'dark'];
-    const APPEARANCE_TEXT = { auto: '自动（跟随系统）', light: '浅色模式', dark: '深色模式' };
-    /** 三态循环的下一格（深色之后回绕到自动）。 */
-    const nextTheme = current => APPEARANCE_ORDER[(APPEARANCE_ORDER.indexOf(current) + 1) % APPEARANCE_ORDER.length];
 
     class App {
         constructor() {
@@ -1289,15 +1286,6 @@
             }
         }
 
-        /** 外观入口只给管理员，它的分隔符必须跟着一起显隐，否则剩下一个悬空「·」。 */
-        syncAppearanceEntry(hidden) {
-            const btn = $('#appearanceBtn');
-            const sep = $('#appearanceSep');
-            if (btn) btn.hidden = hidden;
-            if (sep) sep.hidden = hidden;
-
-        }
-
         syncEditLayoutUI() {
             const zone = $('#moduleZone');
             const grid = $('#grid');
@@ -1312,7 +1300,6 @@
                 engine.disabled = editing || !!this.suspendedAdministrator;
                 engine.title = editing ? '在下方设置默认搜索引擎' : '切换搜索引擎';
             }
-            this.syncAppearanceEntry(!this.authenticated);
             if (zone) zone.classList.toggle('is-editing', editing);
             if (grid) grid.classList.toggle('is-editing', editing);
             // 网格的增删控件（＋卡片、分类删除把手）由模板分支生成，
@@ -2074,7 +2061,6 @@
          * 当前生效的外观。优先级：本会话内存覆盖 → 本机 localStorage →
          * 服务端站点主题 → auto。
          *
-         * 第一级只在 localStorage 写不进去时才有值（见 setTheme）；
          * 第二级在登录成功时会被清掉（见 adoptServerTheme），所以已登录
          * 时读到的一定是服务端值，两处不会各说各话。
          */
@@ -2163,19 +2149,7 @@
                 // 强制指定主题
                 root.setAttribute('data-theme', theme);
             }
-            this.renderAppearanceButton(theme);
             this.renderHomeThemeSwitcher();
-        }
-
-        /** 底栏外观入口的当前态只走无障碍文案（入口本身是纯文字）。 */
-        renderAppearanceButton(theme) {
-            const btn = $('#appearanceBtn');
-            if (!btn) return;
-            const style = window.NavigationSchema.appearance(this.config).style;
-            const fixed = window.NavigationSchema.THEMES[style].mode;
-            const label = fixed ? `外观：${window.NavigationSchema.THEMES[style].name}，固定${APPEARANCE_TEXT[fixed]}，点击打开主题设置` : `外观：${APPEARANCE_TEXT[theme]}，点击切换到${APPEARANCE_TEXT[nextTheme(theme)]}`;
-            btn.title = label;
-            btn.setAttribute('aria-label', label);
         }
 
         /**
@@ -2191,60 +2165,6 @@
                 localStorage.removeItem(THEME_STORAGE_KEY);
             } catch (e) {}
             this.applyTheme();
-        }
-
-        async cycleTheme() {
-            if (window.NavigationSchema.THEMES[window.NavigationSchema.appearance(this.config).style].mode) {
-                await this.openAdmin();
-                $('#adminTabSite')?.click();
-                $('#themeStyleSelect')?.focus();
-                return;
-            }
-            return this.setTheme(nextTheme(this.resolveTheme()));
-        }
-
-        /**
-         * 首页的「外观」按钮。未登录访客只能改本机——写站点主题要管理员，
-         * 写 localStorage 不需要；登录后点它就等同于改站点主题，
-         * 与后台「主题模式」下拉框是同一份状态。
-         */
-        async setTheme(theme) {
-            if (!this.authenticated) {
-                this.config.theme = theme;
-                this.themeOverride = null;
-                try { localStorage.removeItem(THEME_STORAGE_KEY); } catch (e) {}
-                this.applyTheme();
-                await this.saveLocalNavigation();
-                return;
-            }
-
-            // 登录态下这次调用会**整份**提交 config，等于替用户按下「保存编辑」：
-            // 编辑中未保存的布局草稿会一起写进服务器，而按下的那个按钮只说
-            // 「外观」。不可逆的动作不能藏在一个附带控件后面，所以先问一句。
-            if (this.editLayout) {
-                const ok = await this.confirmAction(
-                    '正在编辑首页导航，切换外观会连同未保存的改动一起保存到服务器。',
-                    '保存并切换'
-                );
-                if (!ok) return;
-            }
-
-            const previous = this.config.theme;
-            this.config.theme = theme;
-            // 复用登录收尾：清本机覆盖 + 应用外观（removeItem 只此一处）
-            this.adoptServerTheme();
-            // 管理面板若开着，让下拉框跟上——两处是同一份状态
-            const select = $('#themeModeSelect');
-            if (select) select.value = theme;
-            try {
-                const res = await this.saveNavigation();
-                if (!res.success) throw new Error(res.error || '保存失败');
-            } catch (e) {
-                this.config.theme = previous;
-                this.applyTheme();
-                if (select) select.value = previous;
-                this.showToast('外观保存失败，已还原', 'error');
-            }
         }
 
         render() {
@@ -2400,8 +2320,6 @@
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
-            // 外观切换不需要登录：未登录时写本机，登录后写服务端（见 setTheme）
-            $('#appearanceBtn').onclick = () => this.cycleTheme();
             const themeSwitcher = $('#homeThemeSwitcher');
             if (themeSwitcher) themeSwitcher.onclick = event => {
                 const button = event.target.closest('[data-home-theme]');
@@ -3171,7 +3089,6 @@
             this.clearPrivateState();
             if (!draft) { location.replace('/login.html'); return; }
             this.suspendedAdministrator = draft;
-            $('#appearanceBtn').disabled = true;
             $('#engineBtn').disabled = true;
             $('#localNavigationTools').hidden = true;
             // 三条编辑入口一起收起：此刻页面已被清空，任何一条留着都会指向不存在的内容。
@@ -3185,7 +3102,6 @@
                 if (discard) { this.suspendedAdministrator = null; location.replace('/login.html'); }
             }
             if (!this.suspendedAdministrator) {
-                $('#appearanceBtn').disabled = false;
                 $('#engineBtn').disabled = false;
                 $('#localNavigationTools').hidden = true;
                 this.syncEditEntries();
@@ -3197,7 +3113,6 @@
             $('#app').hidden = true;
             $('#localNavigationTools').hidden = true;
             $('#localNavigationStatus').hidden = !this.localError;
-            this.syncAppearanceEntry(true);
             this.localSettingsDraft = null;
             if (this.publicNavigation) {
                 this.config = structuredClone(this.publicNavigation);
@@ -3712,11 +3627,9 @@
                 this.showToast('管理员草稿已恢复，保存时将校验原始版本');
             }
             this.personalNavigationLoaded = true;
-            $('#appearanceBtn').disabled = false;
             $('#engineBtn').disabled = false;
             $('#localNavigationTools').hidden = true;
             $('#localNavigationStatus').hidden = true;
-            this.syncAppearanceEntry(false);
             this.migrateConfig();
             this.adoptServerTheme();
             this.render();

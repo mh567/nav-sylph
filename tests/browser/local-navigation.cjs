@@ -352,7 +352,6 @@ test('browser: ordinary settings appear below navigation only while editing; sav
     const { page } = await setup(t);
     assert.equal(await page.locator('#localNavigationTools').isVisible(), false);
     assert.equal(await page.locator('#localNavigationStatus').isVisible(), false);
-    assert.equal(await page.locator('#appearanceBtn').isVisible(), false);
     for (const id of ['localUndoBtn', 'localExportBtn', 'localImportBtn', 'localResetBtn']) assert.equal(await page.locator('#' + id).isVisible(), false);
     await settings(page);
     assert.equal(await page.locator('#localEnginesDetails').getAttribute('open'), null);

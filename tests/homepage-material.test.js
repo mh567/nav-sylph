@@ -1579,11 +1579,7 @@ test('首页第一屏没有因为编辑模式变重', () => {
         '预缓存清单里没有新增的编辑模式文件');
 });
 
-// ========== 右下角「外观」三态按钮 ==========
-//
-// 把后台的「主题模式」搬到前台，未登录也可见。未登录访客写不了服务端配置
-// （POST /api/config 要管理员），所以选择只能存本机 localStorage；
-// 登录后点它则等同于改站点主题，与后台下拉框是同一份状态。
+// ========== 主题与底栏入口 ==========
 
 const appCode = stripComments(appSource);
 const indexCode = stripComments(indexHtml);
@@ -1605,23 +1601,16 @@ function methodBodyOf(src, signature) {
     throw new Error(`${signature} 方法体未闭合`);
 }
 
-test('底栏入口顺序固定，外观只给管理员', () => {
+test('底栏仅保留说明、编辑与管理，不再提供外观入口', () => {
     const footerStart = indexCode.indexOf('class="site-footer"');
-    assert.ok(footerStart > 0, '首页仍有页面操作栏');
+    assert.ok(footerStart > 0);
     const footer = indexCode.slice(footerStart, indexCode.indexOf('</footer>', footerStart));
-    assert.ok(footer.length > 100, '取到操作栏区块');
-
-    const order = ['id="helpBtn"', 'id="appearanceBtn"', 'id="layoutBtn"', 'id="adminBtn"']
-        .map(id => footer.indexOf(id));
-    assert.ok(order.every(i => i >= 0), '四个入口都在操作栏内');
-    assert.deepEqual(order, [...order].sort((a, b) => a - b), '顺序：说明 → 外观 → 编辑 → 管理');
-
-    // 外观入口带上 hidden，未登录就看不到，普通访客的外观在编辑区里设置。
-    const btnTag = indexCode.match(/<button[^>]*id="appearanceBtn"[^>]*>/)[0];
-    assert.match(btnTag, /\bhidden\b/, '普通外观入口默认收起，设置位于编辑区域');
-    assert.match(appCode, /syncAppearanceEntry\(!this\.authenticated\)/, '编辑状态同步时仅显示管理员外观快捷入口');
-    // 分隔符必须跟入口同显隐，否则会剩下一个悬空的「·」
-    assert.match(appCode, /if \(sep\) sep\.hidden = hidden/, '外观分隔符跟随外观入口');
+    const order = ['id="helpBtn"', 'id="layoutBtn"', 'id="adminBtn"'].map(id => footer.indexOf(id));
+    assert.ok(order.every(i => i >= 0));
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    assert.doesNotMatch(indexCode, /appearanceBtn|appearanceSep/);
+    assert.doesNotMatch(appCode, /appearanceBtn|appearanceSep|syncAppearanceEntry/);
+    assert.match(appCode, /id="themeStyleSelect"/);
 });
 
 test('本机主题的键名在 index.html 与 app.js 两处一致', () => {
@@ -1664,50 +1653,6 @@ test('resolveTheme：本机覆盖优先，其次服务端站点主题，最后�
     assert.equal(resolveTheme.call(ctx), 'light', '非法值忽略，回落到服务端值');
 });
 
-test('三态循环：自动 → 浅色 → 深色 → 自动（取模回绕）', () => {
-    const order = appCode.match(/const APPEARANCE_ORDER = \[([^\]]+)\]/);
-    assert.ok(order, '定义了循环顺序');
-    assert.deepEqual(
-        order[1].split(',').map(s => s.trim().replace(/'/g, '')),
-        ['auto', 'light', 'dark']
-    );
-    // 取模回绕只在 nextTheme 里写一次（循环与按钮文案共用它）
-    assert.match(appCode,
-        /const nextTheme = current => APPEARANCE_ORDER\[\(APPEARANCE_ORDER\.indexOf\(current\) \+ 1\) % APPEARANCE_ORDER\.length\]/,
-        'nextTheme 取模回绕——少了它深色之后就不再变（或越界成 undefined）');
-    const cycle = methodBodyOf(appCode, 'cycleTheme() {');
-    assert.match(cycle, /this\.setTheme\(nextTheme\(this\.resolveTheme\(\)\)\)/,
-        '循环走共用的那格计算，不自己再算一遍');
-});
-
-test('管理员个人主题保存继续使用独立接口并在失败后还原', () => {
-    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
-    const guestStart = body.indexOf('if (!this.authenticated) {');
-    // 登录分支：先走登录收尾（清本机覆盖）再写服务端 —— 顺序反了的话，
-    // 本机旧值会一直压过刚写下的值。
-    const clearAt = body.indexOf('this.adoptServerTheme()');
-    const saveAt = body.indexOf("this.saveNavigation()");
-    assert.ok(clearAt > guestStart && saveAt > clearAt, '先交回服务端（清本机覆盖），再保存');
-    assert.match(body, /this\.config\.theme = previous[\s\S]*?this\.applyTheme\(\)/,
-        '保存失败要还原，不能把界面停在一个没存住的档位上');
-});
-
-test('编辑态下切换外观要先确认——它会连同未保存的草稿一起提交', () => {
-    // setTheme 的登录分支是整份 POST config，而编辑模式里有未保存的布局草稿
-    // （editSession 是深拷贝快照）。不拦一下，一个只写着「外观」的按钮
-    // 就替用户按下了「保存编辑」，而且不可逆。
-    const body = methodBodyOf(appCode, 'async setTheme(theme) {');
-    const confirmAt = body.indexOf('this.editLayout');
-    const mutateAt = body.lastIndexOf('this.config.theme = theme');
-    const saveAt = body.indexOf("this.saveNavigation()");
-    assert.ok(confirmAt > 0 && confirmAt < mutateAt && mutateAt < saveAt,
-        '确认必须排在改内存与提交之前，否则拦不住');
-    assert.match(body, /await this\.confirmAction\(/);
-    assert.match(body, /if \(!ok\) return;/, '用户取消就什么都不做');
-});
-
-// 普通主题的 IndexedDB 失败与刷新回访由 tests/browser/local-navigation.cjs 验证。
-
 test('applyTheme 排在 server-flags 之前——服务端主题不该多等一个往返', () => {
     const init = methodBodyOf(appCode, 'async init() {');
     const themeAt = init.indexOf('this.applyTheme()');
@@ -1724,20 +1669,6 @@ test('架构文档记录了外观三态的优先级与首屏那条顺序约束',
     assert.match(arch, /adoptServerTheme/, '记下登录后要清本机覆盖');
     assert.match(arch, /applyTheme`\(\) 必须排在 `server-flags`|applyTheme\(\)` 必须排在 `server-flags/,
         '记下首屏那条顺序约束');
-});
-
-test('外观入口的无障碍文案跟着当前态走', () => {
-    const fn = methodBodyOf(appCode, 'renderAppearanceButton(theme) {');
-    // 入口本轮改成纯文字，当前态只走 title / aria-label 两条通道——
-    // 读屏用户拿到的唯一信息就是这里写的，必须与可见语义同源。
-    assert.match(fn, /btn\.title = label/, 'title 同步更新');
-    assert.match(fn, /btn\.setAttribute\('aria-label', label\)/, 'aria-label 同步更新');
-    assert.match(fn, /APPEARANCE_TEXT\[theme\]/, '文案取自同一张文本表');
-    assert.ok(!/innerHTML/.test(fn), '纯文字入口不再往按钮里写图标');
-    const texts = appCode.match(/const APPEARANCE_TEXT = \{([^}]*)\}/);
-    assert.ok(texts, '文本表存在');
-    ['auto', 'light', 'dark'].forEach(k =>
-        assert.ok(new RegExp(`(^|\\s)${k}:`).test(texts[1]), `${k} 态有文案`));
 });
 
 test('底栏入口的排版与窄屏触控下限', () => {

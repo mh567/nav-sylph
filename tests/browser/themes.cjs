@@ -106,7 +106,7 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     await page.screenshot({ path: path.join(shots, 'memo.png'), fullPage: true });
     await page.goto(app.base);
     await appearance(page, 'prism', 'dark');
-    await page.locator('#appearanceBtn').click();
+    await page.locator('#adminBtn').click();
     await page.locator('#themeStyleSelect').waitFor({ state: 'visible' });
     await page.locator('#themeStyleSelect').selectOption('classic');
     await appearance(page, 'classic', 'light');

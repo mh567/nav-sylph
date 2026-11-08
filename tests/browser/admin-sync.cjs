@@ -92,7 +92,6 @@ test('browser: network errors preserve identity, expiration hides private draft 
     await a.evaluate(async () => { await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Habu-Request': '1' }, body: '{}' }); });
     await check(a);
     await a.getByText('登录已失效', { exact: true }).waitFor();
-    assert.equal(await a.locator('#appearanceBtn').isDisabled(), true);
     assert.equal(await a.locator('#engineBtn').isDisabled(), true);
     assert.equal(await heading(a, 'Retained private draft').count(), 0);
     assert.equal(await a.locator('#modeBtn').isVisible(), false);
