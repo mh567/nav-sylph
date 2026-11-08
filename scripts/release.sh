@@ -71,6 +71,46 @@ if [ -n "$(git status --porcelain)" ]; then
     fi
 fi
 
+# 预检：改了 public/ 却没升 sw.js 的 CACHE。
+#
+# 遗漏的后果有两层：版本账对不上；回访用户在 stale-while-revalidate 窗口里先
+# 拿到旧 bundle（`install` 事件会让 addAll 刷新同名缓存，所以最终仍会更新）。
+# 历史上漏过多次，所以这里做成硬门禁，不只是一句提示。
+#
+# 判据取「CACHE 常量的值有没有变」，不取「sw.js 有没有 diff」：后者会被版本
+# 注释之类的无关改动骗过，看起来改了，实际 CACHE 没动。
+#
+# ⚠️ 变更集要分两路取：`git diff <tag>..HEAD` 只看已提交内容，工作树里未提交的
+# 改动不在其中。只取前者会让「改了 public/ 还没提交就发布」静默通过，而那正是
+# 最容易漏升 CACHE 的时刻。
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+if [ -n "$LAST_TAG" ]; then
+    CHANGED_FILES=$(
+        {
+            git diff --name-only "${LAST_TAG}..HEAD" 2>/dev/null || true
+            git diff --name-only HEAD 2>/dev/null || true
+            git ls-files --others --exclude-standard 2>/dev/null || true
+        } | sort -u
+    )
+
+    if echo "$CHANGED_FILES" | grep -q '^public/'; then
+        CURRENT_CACHE=$(grep -o "const CACHE = '[^']*'" public/sw.js 2>/dev/null | head -1 || true)
+        LAST_CACHE=$(git show "${LAST_TAG}:public/sw.js" 2>/dev/null \
+            | grep -o "const CACHE = '[^']*'" | head -1 || true)
+
+        if [ -z "$CURRENT_CACHE" ] || [ -z "$LAST_CACHE" ]; then
+            log_warn "无法比对 sw.js 的 CACHE（${LAST_TAG} 里可能没有该文件），跳过这项预检"
+        elif [ "$CURRENT_CACHE" = "$LAST_CACHE" ]; then
+            log_error "public/ 有变更，但 public/sw.js 的 CACHE 未提升"
+            log_error "  当前: ${CURRENT_CACHE}（与 ${LAST_TAG} 相同）"
+            log_error "  回访用户会继续拿到旧 bundle。请先把 CACHE 改成新的 nav-vNN，再发布。"
+            exit 1
+        else
+            log_info "缓存版本预检通过：${LAST_CACHE} → ${CURRENT_CACHE}"
+        fi
+    fi
+fi
+
 # 检查该版本是否已发布
 if gh release view "v${VERSION}" &> /dev/null; then
     log_warn "版本 v${VERSION} 已存在"
