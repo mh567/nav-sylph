@@ -308,3 +308,19 @@ test('模块块的样式：块头两栏、未启用折叠条、平台块分隔�
     assert.doesNotMatch(cssCode, /navDeployPulse/, '呼吸圆点的死规则已删');
     assert.doesNotMatch(cssCode, /#saveModulesBtn/, '保存按钮的死规则已删');
 });
+
+// ========== ⑦ 重画保持滚动位置 ==========
+
+test('拨模块开关后重画不把管理面板滚回顶部', () => {
+    // 重画时先写入「加载中...」占位，内容变矮会让 .modal-body 的 scrollTop
+    // 被浏览器夹到 0，用户看到的就是「拨一下开关，面板跳到顶部」。
+    const body = methodBodyOf(stripComments(appSource), 'renderModulesEditor');
+    assert.ok(body.length > 300, `切出 renderModulesEditor（${body.length}）`);
+    assert.match(body, /\$\('#modalBody'\)/, '滚动容器是 #modalBody');
+    assert.match(body, /const scrollTop = scroller \? scroller\.scrollTop : 0;/, '重画前记住滚动位置');
+    assert.match(body, /scroller\.scrollTop = scrollTop/, '重画后还原滚动位置');
+    const failAt = body.indexOf('模块配置加载失败');
+    assert.ok(failAt > 0, '找到加载失败分支');
+    const failBranch = body.slice(failAt, body.indexOf('return;', failAt));
+    assert.match(failBranch, /restoreScroll\(\)/, '加载失败分支同样还原滚动位置');
+});

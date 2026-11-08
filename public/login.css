@@ -81,8 +81,6 @@ button:hover:not(:disabled) .enter-icon { transform: translateX(3px); }
 body.changing main { padding-top: 24px; padding-bottom: 24px; }
 body.changing #intro { margin-bottom: 24px; }
 body.changing .portal { opacity: .4; }
-footer { position: relative; padding: 24px; text-align: center; color: var(--muted); font-size: 11px; letter-spacing: .04em; }
-.privacy-mark { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin: 0 8px 2px 0; background: #a8c4c4; }
 body.entering .entrance { opacity: 0; transform: translateY(-8px); }
 body.entering .portal { transform: translate(-50%, -50%) scale(1.16); opacity: 0; }
 @media (max-width: 600px) {
@@ -96,7 +94,6 @@ body.entering .portal { transform: translate(-50%, -50%) scale(1.16); opacity: 0
     .portal { height: 90vh; }
     .masthead { padding-top: 20px; padding-bottom: 20px; }
     main { padding-top: 20px; padding-bottom: 20px; }
-    footer { padding: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; }

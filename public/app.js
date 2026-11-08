@@ -1463,6 +1463,11 @@
         async syncModuleVisibility() {
             // 身份或策略一变就作废在飞的模块区渲染
             this.moduleGeneration++;
+            // 首页底栏的「退出」只在登录后出现，与模块区同一时机同步。
+            const homeLogoutBtn = $('#homeLogoutBtn');
+            const homeLogoutSep = $('#homeLogoutSep');
+            if (homeLogoutBtn) homeLogoutBtn.hidden = !this.authenticated;
+            if (homeLogoutSep) homeLogoutSep.hidden = !this.authenticated;
             const btn = $('#layoutBtn');
             if (!this.authenticated) {
                 // 会话已失效，无可保存，也不该弹确认框：直接丢弃草稿。
@@ -2318,6 +2323,7 @@
             });
             $('#searchInput').oninput = event => this.handleSearchInput(event);
             $('#adminBtn').onclick = () => this.openAdmin();
+            $('#homeLogoutBtn').onclick = () => this.logout();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
             const themeSwitcher = $('#homeThemeSwitcher');
@@ -4854,12 +4860,19 @@
         async renderModulesEditor() {
             const host = $('#modulesEditor');
             if (!host) return;
+            // 重画前先把「加载中...」写进去，内容会瞬间变矮，浏览器随即把
+            // .modal-body 的 scrollTop 夹到 0——表现为「拨一下模块开关，面板
+            // 跳回顶部」。记住并还原位置，重画对用户就应该像原地发生。
+            const scroller = $('#modalBody');
+            const scrollTop = scroller ? scroller.scrollTop : 0;
+            const restoreScroll = () => { if (scroller) scroller.scrollTop = scrollTop; };
             this.modulesEditorRendered = false;
             host.innerHTML = '<div class="webdav-loading">加载中...</div>';
             const config = await this.loadModulesConfig();
             if (!config) {
                 // 失败也要 render：静默失败过一次（WebDAV 分区的 429）
                 host.innerHTML = '<p class="fav-hint">模块配置加载失败，请关闭面板后重试。</p>';
+                restoreScroll();
                 return;
             }
             // 配置就绪不等于模块脚本已加载：首次进入时两者都不是，
@@ -4867,6 +4880,7 @@
             await this.ensureModulesLoaded();
             this.renderModulesEditorContent(host, config);
             this.modulesEditorRendered = true;
+            restoreScroll();
             // 「未就绪的机器要持续探测」这件事归 server-monitor 自己的后台区块
             // （它的 renderAdminSection 里起定时器、onAdminSectionClose 里收）：
             // 平台不认识「探测」这个概念，也不该替某个模块起定时器。
@@ -5409,31 +5423,38 @@
             };
             this.updateTrustDeviceHint();
 
-            // 登出按钮
-            $('#logoutBtn').onclick = async () => {
-                if (this.navigationSaving || this.modulesSaving || this.configSaving) { this.showToast('正在保存，请等待结果后退出', 'error'); return; }
-                if (this.pendingModules || this.pendingNavigation) {
-                    this.showToast('上次保存结果尚未确认，请重试保存或刷新协调后再退出', 'error', 8000);
-                    return;
-                }
-                if (this.editLayout) {
-                    const save = await this.showUiDialog({ title: '退出登录', message: '先保存管理员首页草稿？取消后可继续编辑或按 Esc 放弃草稿。', confirmText: '保存草稿', cancelText: '取消退出' });
-                    if (!save) return;
-                    await this.saveEditSession();
-                    if (this.editLayout) return;
-                }
-                if (!await this.closeAdmin()) return;
-                try { const result = await API.post('/api/logout', {}); if (!result.success) throw new Error('退出结果尚未确认'); } catch (e) {
-                    this.showToast('退出请求失败，请检查网络后重试', 'error');
-                    return;
-                }
-                this.clearPrivateState();
-                this.notifyIdentityChanged();
-                location.replace('/login.html');
-            };
+            // 登出按钮：与首页底栏的「退出」共用 logout()，
+            // 两个入口必须是同一套时序（先存草稿、再关面板、后清状态）。
+            $('#logoutBtn').onclick = () => this.logout();
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
             // 不在此处预取——每次重渲染都多打一次请求会累积撞上限流
+        }
+
+        /**
+         * 退出登录。后台「账户与备份」与首页底栏的「退出」都走这里，
+         * 避免两个入口各自维护一套保存草稿与关闭面板的时序。
+         */
+        async logout() {
+            if (this.navigationSaving || this.modulesSaving || this.configSaving) { this.showToast('正在保存，请等待结果后退出', 'error'); return; }
+            if (this.pendingModules || this.pendingNavigation) {
+                this.showToast('上次保存结果尚未确认，请重试保存或刷新协调后再退出', 'error', 8000);
+                return;
+            }
+            if (this.editLayout) {
+                const save = await this.showUiDialog({ title: '退出登录', message: '先保存管理员首页草稿？取消后可继续编辑或按 Esc 放弃草稿。', confirmText: '保存草稿', cancelText: '取消退出' });
+                if (!save) return;
+                await this.saveEditSession();
+                if (this.editLayout) return;
+            }
+            if (!await this.closeAdmin()) return;
+            try { const result = await API.post('/api/logout', {}); if (!result.success) throw new Error('退出结果尚未确认'); } catch (e) {
+                this.showToast('退出请求失败，请检查网络后重试', 'error');
+                return;
+            }
+            this.clearPrivateState();
+            this.notifyIdentityChanged();
+            location.replace('/login.html');
         }
 
         // ========== WebDAV 远程备份 ==========

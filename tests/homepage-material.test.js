@@ -1601,16 +1601,33 @@ function methodBodyOf(src, signature) {
     throw new Error(`${signature} 方法体未闭合`);
 }
 
-test('底栏仅保留说明、编辑与管理，不再提供外观入口', () => {
+test('底栏按说明、编辑、管理、退出的顺序排列，不再提供外观入口', () => {
     const footerStart = indexCode.indexOf('class="site-footer"');
     assert.ok(footerStart > 0);
     const footer = indexCode.slice(footerStart, indexCode.indexOf('</footer>', footerStart));
-    const order = ['id="helpBtn"', 'id="layoutBtn"', 'id="adminBtn"'].map(id => footer.indexOf(id));
+    const order = ['id="helpBtn"', 'id="layoutBtn"', 'id="adminBtn"', 'id="homeLogoutBtn"'].map(id => footer.indexOf(id));
     assert.ok(order.every(i => i >= 0));
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.doesNotMatch(indexCode, /appearanceBtn|appearanceSep/);
     assert.doesNotMatch(appCode, /appearanceBtn|appearanceSep|syncAppearanceEntry/);
     assert.match(appCode, /id="themeStyleSelect"/);
+});
+
+test('退出登录在首页底栏有入口，且登录后才出现', () => {
+    assert.match(indexCode, /id="homeLogoutBtn" hidden>退出</, '底栏退出入口默认隐藏');
+    assert.match(appCode, /\$\('#homeLogoutBtn'\)\.onclick = \(\) => this\.logout\(\)/,
+        '首页退出按钮接到共用的 logout()');
+    assert.match(appCode, /homeLogoutBtn\.hidden = !this\.authenticated/,
+        '登录态同步时才显示退出入口');
+    assert.match(appCode, /async logout\(\)/, '退出逻辑抽成方法，两个入口共用');
+    assert.match(appCode, /\$\('#logoutBtn'\)\.onclick = \(\) => this\.logout\(\)/,
+        '后台退出按钮复用同一个方法');
+});
+
+test('登录页底部不再标注「私人空间 · 仅向你开放」', () => {
+    const loginHtml = fs.readFileSync(path.join(__dirname, '..', 'public/login.html'), 'utf8');
+    assert.doesNotMatch(loginHtml, /私人空间|仅向你开放/);
+    assert.doesNotMatch(loginHtml, /<footer/);
 });
 
 test('本机主题的键名在 index.html 与 app.js 两处一致', () => {
