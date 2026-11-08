@@ -14,6 +14,7 @@
 - 本地目录 `/Users/harris/work/sylph` 已改名为 `/Users/harris/work/habu`。
 - GitHub 仓库已改名为 `mh567/habu`，安装与更新地址同步更新；GitHub 会重定向旧地址。
 - 未改动客户端存储键（`nav-sylph-theme`、`nav-sylph-personal` 等）与 WebDAV 备份文件名，它们承载用户本机数据和远端已有备份，改名会导致偏好丢失或旧备份不可见。历史文档与旧发布记录保留原项目名。
+- 发布：实现提交 `8d779fb` 已推送 `main`，`scripts/release.sh` 发布 v2.4.0。附件 `habu-v2.4.0.tar.gz` 经 `gh release download` 取回并核对：顶层目录 `habu-v2.4.0`、版本 2.4.0、脚本含旧库与旧服务迁移逻辑、缓存 `nav-v155`、三份 Linux agent 齐全、无私人配置与数据库。
 
 ## v2.3.1 升级下载失败修复（2026-11-08，已发布并核对附件）
 
