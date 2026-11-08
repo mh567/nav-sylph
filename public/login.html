@@ -4,36 +4,39 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow">
-    <title>登录 · Habu</title>
+    <meta name="theme-color" content="#151b20">
+    <meta name="color-scheme" content="dark">
+    <title>进入你的空间 · Habu</title>
     <link rel="icon" href="/favicon.svg">
-    <link rel="stylesheet" href="/styles.css">
-    <link rel="stylesheet" href="/admin.css">
-    <style>
-        body{display:grid;place-items:center;min-height:100dvh;padding:24px}
-        main{width:100%;max-width:360px}h1{margin-bottom:12px}p{margin-bottom:24px}
-        label{display:block;margin:16px 0 8px}input{width:100%;padding:12px;font:inherit}
-        button{margin-top:24px;width:100%}#message{margin-top:16px} [hidden]{display:none!important}
-    </style>
+    <link rel="stylesheet" href="/login.css">
     <script src="/login.js" defer></script>
 </head>
 <body>
+    <header class="masthead"><span class="wordmark">Habu<span aria-hidden="true">.</span></span><span>个人数字工作台</span></header>
+    <div class="space" aria-hidden="true"><div class="portal"></div></div>
     <main>
-        <h1>Habu</h1>
-        <p>个人数字工作台，登录后使用。</p>
-        <form id="loginForm">
-            <label for="password">密码</label>
-            <input id="password" type="password" autocomplete="current-password" required autofocus>
-            <div id="changeFields" hidden>
-                <p>请先设置强密码，再进入工作台。</p>
-                <label for="newPassword">新密码</label>
-                <input id="newPassword" type="password" autocomplete="new-password" minlength="12">
-                <label for="repeatPassword">确认新密码</label>
-                <input id="repeatPassword" type="password" autocomplete="new-password" minlength="12">
-                <p>至少12个字符，包含大写、小写、数字、符号中至少三类，且不超过72字节。</p>
-            </div>
-            <button class="btn btn-primary" id="submitBtn" type="submit">登录</button>
-            <p id="message" role="status" aria-live="polite"></p>
-        </form>
+        <div class="entrance">
+            <h1 id="heading">回到你的空间。</h1>
+            <p id="intro">熟悉的一切，在这里继续。</p>
+            <form id="loginForm" aria-labelledby="heading" aria-busy="true">
+                <fieldset id="controls" disabled>
+                    <label for="password" id="passwordLabel">访问密码</label>
+                    <input id="password" name="password" type="password" autocomplete="current-password" placeholder="输入密码" aria-describedby="message" required>
+                    <div id="changeFields" hidden>
+                        <p class="change-intro">首次进入，请先为你的空间设置强密码。</p>
+                        <label for="newPassword">新密码</label>
+                        <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="12" aria-describedby="passwordHint message">
+                        <label for="repeatPassword">确认新密码</label>
+                        <input id="repeatPassword" name="repeatPassword" type="password" autocomplete="new-password" minlength="12" aria-describedby="message">
+                        <p id="passwordHint">至少12个字符，包含大写、小写、数字、符号中至少三类，且不超过72字节。</p>
+                    </div>
+                    <button id="submitBtn" type="submit"><span id="buttonLabel">正在连接</span><svg class="enter-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6"/></svg></button>
+                </fieldset>
+                <p id="message" role="status" aria-live="polite" aria-atomic="true"></p>
+            </form>
+            <noscript>请启用 JavaScript 后登录工作台。</noscript>
+        </div>
     </main>
+    <footer><span class="privacy-mark" aria-hidden="true"></span>私人空间 · 仅向你开放</footer>
 </body>
 </html>

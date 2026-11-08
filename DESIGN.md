@@ -166,3 +166,14 @@ v2.2.6 的分类板虽然半透明，但仍是一块带完整描边的深色板�
 换行只允许在词与标点处断；`overflow-wrap: break-word; word-break: normal`，只有链接、哈希这类超长不可断的 token 才强制折断。接收页对纯文本使用界面字体 15px / 1.75 行高，识别为代码后回到等宽字体；正文上限 `min(60dvh, 460px)`，内部滚动并保留 `tab-size: 2` 的缩进。
 
 分享结果面板在「复制链接」下方以 11px 等宽弱化色展示完整链接（手机 12px），`overflow-wrap: anywhere` 让它在放不下时折行；单击即整段选中，方便手动复制或核对。
+
+
+## 登录入口：静谧空间
+
+2026-11-08 用户确认的独立入口设计，适用于 `public/login.html`、`public/login.css`、`public/login.js`，工作台既有主题保持不变。深石墨背景 `#151b20`、白灰正文 `#edf1f3`、次级文字 `#a3b0ba`、浅冷白操作面 `#dce7eb` 与深色按钮文字 `#1c2a33`；错误使用柔和暖色 `#f0b9ae`。复用自托管 Inter Tight Latin 字体和中文系统字体。
+
+全屏留白中的微光门廊包围单列表单，品牌与产品定位留在页顶。输入和按钮圆角10px、高度54/52px；标题28至36px、正文14px、标签12px、提示13px、页脚11px。手机保留单列，改密表单可纵向滚动。键盘焦点有外侧描边，错误有文字与字段标记。
+
+认证成功是唯一场景过渡：表单淡出，门廊在380毫秒内扩展并淡出。已有会话直接进入；系统要求减少动态效果时取消动效与等待。没有循环动画、声音、粒子、额外依赖或外部字体请求。登录壳不读取私人配置。
+
+设计参考：[Microsoft Xbox 的简洁几何与沉浸理念](https://microsoft.design/articles/behind-the-design-xbox-series-x-and-xbox-series-s/)、[Fluent 2 的短时自然动效与减少动画要求](https://fluent2.microsoft.design/motion)。本页采用上述原则，不复制品牌资产。

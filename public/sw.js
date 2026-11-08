@@ -1,3 +1,4 @@
+// nav-v159：静谧空间登录入口。
 // nav-v158：移除底部外观快捷入口。
 // nav-v157：移除文本分享及专属资源。
 // nav-v156：个人工作台登录门禁，首页与私人页面不进入静态缓存。
@@ -5,10 +6,11 @@
 // nav-v154：项目更名 Habu，站点标题改为数字工作台。
 // nav-v153：清理拆分后遗留的多端同步说明，改为管理员多设备。
 // nav-v152：Sylph 定位个人数字工作台，移除口令同步。
-const CACHE = 'nav-v158';
+const CACHE = 'nav-v159';
 const ASSETS = [
     '/login.html',
     '/login.js',
+    '/login.css',
     '/styles.css',
     '/admin.css',
     '/themes.css',
