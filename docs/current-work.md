@@ -1,5 +1,16 @@
 # 当前工作交接
 
+## 配置排查、公开演示页与首屏并发（2026-11-08，v2.6.0）
+
+- 新增 `node server.js config:validate`（只校验、不监听端口，配置有问题以非零码退出并说明原因）与 `config:print`（打印「默认值 < server-config.json < .env < 环境变量」合并后的最终配置，凭据类字段只显示是否存在）。安装目录根下的 `server-config.json` 会被 Node 的扩展名补全抢先加载、遮蔽 `server-config/` 目录，这两个命令正是为排查这类问题而加。
+- 修正 `server-config` 的 `https.enabled`：`HTTPS_ENABLED` 未设置时原写法会得到 `false`，而 deepMerge 只跳过 undefined 与空串，于是用户 `server-config.json` 里写的 `"enabled": true` 被静默压回关闭。现在区分「未设置」与「设为 false」。
+- 首页 `init()` 中 `/api/server-flags` 与 `/api/session` 并发发出，`applyTheme()` 不再排在 await 之后，首屏不再为这趟无关请求白等一个完整往返（架构文档记录 200ms RTT 下约 206ms）。
+- 新增公开演示页 `public/demo/`（链接 `/demo/`）：纯静态单文件，内容全为虚构示例（待办、备忘、订阅时间线、服务器指标），不连接后台、不发起网络请求。源与生成脚本在仓库根 `demo/`，由 `demo/build.js` 从产品样式表生成，随 `public/` 一起分发。静态文件不经过登录门禁（门禁只拦 `/` 与 `/api/*`），因此对外可直接访问。
+- Service Worker 升为 `nav-v165`。实现提交 `1d65867`，版本提交紧随其后。
+- 本次实现提交同时收进了上一会话遗留的两项未提交改动（配置排查命令与首屏并发优化）：发布脚本打包的是工作目录，两者不一起提交会造成标签与发布包内容不一致，故一并验证后提交。
+- 验证：全量 722 项通过；`node --check` 覆盖 server.js、public/app.js、server-config/index.js、demo/build.js；`git diff --check` 无空白错误。用临时副本起真实 habu 服务实测：`/demo/` 与 `/demo/index.html` 返回 200，`/` 仍 302 到 login；浏览器实测演示页渲染零报错、零 CSP 违规，默认棱镜主题，网络请求仅文档本身一条。`config:validate` 与 `config:print` 实跑通过，`defaultPassword` 打印为 `<已脱敏，长度 8>`。
+- 三处版本统一为 2.6.0；用户已授权提交并发布，使用 `scripts/release.sh` 发布 v2.6.0 并推送 main。
+
 ## README 宣传图与说明（2026-11-08，v2.5.6）
 
 - 用 ego 浏览器打开已登录的线上站点，按当前首页生成 2000×1125 宣传图：左侧产品文案与功能标签，右侧线上界面。替换 `docs/assets/readme-hero.png`。

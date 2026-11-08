@@ -1,6 +1,6 @@
 {
   "name": "habu",
-  "version": "2.5.6",
+  "version": "2.6.0",
   "description": "A self-hosted personal digital workspace",
   "main": "server.js",
   "scripts": {
