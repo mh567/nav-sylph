@@ -566,7 +566,7 @@ func envOr(key, def string) string {
 // ⚠️ 默认的 http.DefaultClient 只认系统根证书池，而 Go 在 macOS 上**不读**
 // SSL_CERT_FILE / SSL_CERT_DIR（那是 Linux 行为，macOS 走系统 Keychain），
 // GODEBUG=x509usefallbackroots=1 实测也无效。
-// 于是自托管用户（用自签证书跑 nav-sylph，而不是 certbot）会让 agent
+// 于是自托管用户（用自签证书跑 habu，而不是 certbot）会让 agent
 // 在 enroll 这一步就握手失败，报「certificate signed by unknown authority」——
 // 而这不是「明文不可用」那条安全要求想要的结果，只是让自签部署完全不可用。
 //
@@ -859,7 +859,7 @@ func cmdServe(args options) error {
 		}
 		if !tokenMatches(r.Header.Get("Authorization"), token) {
 			// 不回显 token 的一部分——401 里带上任何提示都会帮攻击者
-			w.Header().Set("WWW-Authenticate", `Bearer realm="nav-sylph"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="habu"`)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}

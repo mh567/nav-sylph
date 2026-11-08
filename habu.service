@@ -29,7 +29,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/habu/logs /opt/habu/config.json /opt/habu/.admin-password.json -/opt/habu/habu.db -/opt/habu/habu.db-wal -/opt/habu/habu.db-shm -/opt/habu/nav-sylph.db -/opt/habu/nav-sylph.db-wal -/opt/habu/nav-sylph.db-shm
+ReadWritePaths=/opt/habu/logs /opt/habu/config.json /opt/habu/.admin-password.json -/opt/habu/habu.db -/opt/habu/habu.db-wal -/opt/habu/habu.db-shm
 
 [Install]
 WantedBy=multi-user.target

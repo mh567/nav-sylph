@@ -72,11 +72,6 @@ test('HTTP: weak login can only change password, strong login protects every fav
     assert.equal((await app.request('/api/favorites/export', { cookie: admin })).status, 200);
     assert.equal((await app.request('/api/config', { cookie: admin, body: {}, headers: { Origin: 'https://evil.example' } })).status, 403);
     assert.equal((await app.request('/api/config', { cookie: admin, body: {}, headers: { 'X-Habu-Request': '' } })).status, 403);
-    const legacyMarker = await fetch(`${app.base}/api/config`, {
-        method: 'POST', body: '{}',
-        headers: { Cookie: admin, 'Content-Type': 'application/json', 'X-Sylph-Request': '1', Origin: app.base, 'User-Agent': 'sylph-auth-test' }
-    });
-    assert.notEqual(legacyMarker.status, 403, '过渡期仍接受旧请求头');
     await app.stop(); await app.start();
     assert.equal((await app.request('/api/favorites', { cookie: admin })).status, 200);
     await app.request('/api/logout', { cookie: admin, body: {} });

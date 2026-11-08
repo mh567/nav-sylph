@@ -42,13 +42,6 @@ test('backup HTML round trip preserves private favorites', () => {
     assert.equal(restored[1].private, false);
 });
 
-test('legacy DATA-SYLPH-PRIVATE markup is still read as private', () => {
-    const html = '<DL><p>\n<DT><A HREF="https://example.test/old" DATA-SYLPH-PRIVATE="1">旧备份</A>\n</DL><p>';
-    const restored = parseBookmarkHtml(html);
-    assert.equal(restored.length, 1);
-    assert.equal(restored[0].private, true);
-});
-
 test('ordinary browser bookmark HTML stays public', () => {
     const html = '<DL><p>\n<DT><A HREF="https://example.test/public">公开入口</A>\n</DL><p>';
     const restored = parseBookmarkHtml(html);

@@ -26,14 +26,6 @@ function runLifecycle(action, initialState = 'active', options = {}) {
             printf '%s\\n' "$*" >> "$CALLS_PATH"
             case "$1" in
                 show)
-                    local unit="$4"
-                    if [ -n "\${ONLY_UNIT:-}" ] && [ "$unit" != "$ONLY_UNIT" ]; then
-                        case "$2" in
-                            --property=LoadState) printf 'not-found\\n' ;;
-                            --property=WorkingDirectory) printf '\\n' ;;
-                        esac
-                        return 0
-                    fi
                     case "$2" in
                         --property=LoadState) printf 'loaded\\n' ;;
                         --property=WorkingDirectory) printf '%s\\n' "$SERVICE_DIR" ;;
@@ -57,8 +49,7 @@ function runLifecycle(action, initialState = 'active', options = {}) {
             SERVICE_DIR: options.serviceDirectory || directory,
             STATE_PATH: statePath,
             CALLS_PATH: callsPath,
-            FAIL_STOP: options.failStop ? '1' : '0',
-            ONLY_UNIT: options.onlyUnit || ''
+            FAIL_STOP: options.failStop ? '1' : '0'
         }
     });
     const state = fs.readFileSync(statePath, 'utf8');
@@ -74,13 +65,6 @@ test('stop handles an active systemd service without a PID file', () => {
     const result = runLifecycle('do_stop');
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${result.calls}`);
     assert.match(result.calls, /stop habu\.service/);
-    assert.equal(result.state, 'inactive');
-});
-
-test('legacy nav-sylph.service is still detected and controlled', () => {
-    const result = runLifecycle('do_stop', 'active', { onlyUnit: 'nav-sylph.service' });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${result.calls}`);
-    assert.match(result.calls, /stop nav-sylph\.service/);
     assert.equal(result.state, 'inactive');
 });
 

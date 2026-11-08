@@ -6,15 +6,11 @@
 # 远程安装: curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/habu.sh | bash
 # 本地使用: ./habu.sh [command]
 #
-# 旧名兼容：安装目录、systemd 单元、PID 文件与数据库的 nav-sylph 旧标识仍会被识别，
-# 升级时自动迁移到 habu 对应名称。
-#
 
 set -e
 
 # ===== 配置 =====
 APP_NAME="habu"
-LEGACY_APP_NAME="nav-sylph"
 REPO_OWNER="mh567"
 REPO_NAME="habu"
 GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
@@ -41,21 +37,11 @@ if [ -f "$(dirname "$0")/server.js" ] 2>/dev/null; then
     MODE="local"
 else
     # 远程模式：通过 curl 执行
-    if [ -n "${HABU_DIR:-}" ]; then
-        APP_DIR="$HABU_DIR"
-    elif [ -n "${NAV_SYLPH_DIR:-}" ]; then
-        APP_DIR="$NAV_SYLPH_DIR"
-    elif [ -d "$HOME/nav-sylph" ] && [ ! -d "$HOME/habu" ]; then
-        # 旧默认安装目录，升级时继续用它，避免把已有实例当成未安装。
-        APP_DIR="$HOME/nav-sylph"
-    else
-        APP_DIR="$HOME/habu"
-    fi
+    APP_DIR="${HABU_DIR:-$HOME/habu}"
     MODE="remote"
 fi
 
 PID_FILE="${APP_DIR}/.habu.pid"
-LEGACY_PID_FILE="${APP_DIR}/.nav-sylph.pid"
 LOG_DIR="${APP_DIR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
 NODE_BIN="${NODE_BIN:-node}"
@@ -232,30 +218,20 @@ has_systemd() {
 }
 
 # 只管理指向当前安装目录的 systemd 服务。
-# 旧版本的 nav-sylph.service 仍会被识别，ACTIVE_SERVICE_NAME 记录命中的那个。
-ACTIVE_SERVICE_NAME=""
 has_app_systemd_service() {
     has_systemd || return 1
-    ACTIVE_SERVICE_NAME=""
-    local name unit load_state work_dir
-    for name in "$APP_NAME" "$LEGACY_APP_NAME"; do
-        unit="${name}.service"
-        load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null) || continue
-        [ "$load_state" = "loaded" ] || continue
-        work_dir=$(systemctl show --property=WorkingDirectory --value "$unit" 2>/dev/null) || continue
-        if [ "${work_dir%/}" = "${APP_DIR%/}" ]; then
-            ACTIVE_SERVICE_NAME="$name"
-            return 0
-        fi
-    done
-    return 1
+    local unit="${APP_NAME}.service"
+    local load_state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null) || return 1
+    [ "$load_state" = "loaded" ] || return 1
+    local work_dir=$(systemctl show --property=WorkingDirectory --value "$unit" 2>/dev/null) || return 1
+    [ "${work_dir%/}" = "${APP_DIR%/}" ]
 }
 
 control_systemd_service() {
     if [ "$(id -u)" = "0" ]; then
-        systemctl "$1" "${ACTIVE_SERVICE_NAME}.service"
+        systemctl "$1" "${APP_NAME}.service"
     elif check_command sudo; then
-        sudo systemctl "$1" "${ACTIVE_SERVICE_NAME}.service"
+        sudo systemctl "$1" "${APP_NAME}.service"
     else
         log_error "管理 systemd 服务需要 sudo 权限"
         return 1
@@ -292,20 +268,14 @@ get_config() {
 }
 
 # 检查服务是否运行
-# 返回当前有效的 PID 文件路径（新名优先，旧名回退）。
-active_pid_file() {
-    local file
-    for file in "${PID_FILE}" "${LEGACY_PID_FILE}"; do
-        if [ -f "$file" ] && ps -p "$(cat "$file")" > /dev/null 2>&1; then
-            echo "$file"
+is_running() {
+    if [ -f "${PID_FILE}" ]; then
+        local pid=$(cat "${PID_FILE}")
+        if ps -p ${pid} > /dev/null 2>&1; then
             return 0
         fi
-    done
+    fi
     return 1
-}
-
-is_running() {
-    active_pid_file > /dev/null
 }
 
 # 检查端口占用
@@ -457,9 +427,8 @@ download_release() {
         return 1
     fi
 
-    # 找到解压后的目录（新包为 habu-vX.X.X，旧包为 nav-sylph-vX.X.X）。
-    # 使用 mindepth 1 排除 temp_dir 本身。
-    local extracted_dir=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d \( -name "habu-*" -o -name "nav-sylph-*" \) | head -1)
+    # 找到解压后的目录（habu-vX.X.X）；mindepth 1 排除 temp_dir 本身。
+    local extracted_dir=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d -name "habu-*" | head -1)
 
     if [ -z "$extracted_dir" ]; then
         log_error "解压失败：未找到目录"
@@ -510,8 +479,6 @@ do_install() {
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 if [ -f "$APP_DIR/habu.sh" ]; then
                     cd "$APP_DIR" && ./habu.sh stop 2>/dev/null || true
-                elif [ -f "$APP_DIR/sylph.sh" ]; then
-                    cd "$APP_DIR" && ./sylph.sh stop 2>/dev/null || true
                 fi
                 rm -rf "$APP_DIR"
             else
@@ -622,7 +589,7 @@ do_start() {
     get_config
 
     if has_app_systemd_service; then
-        if systemctl is-active --quiet "${ACTIVE_SERVICE_NAME}.service"; then
+        if systemctl is-active --quiet "${APP_NAME}.service"; then
             log_warn "systemd 服务已在运行"
             return 0
         fi
@@ -631,7 +598,7 @@ do_start() {
             log_error "systemd 服务启动失败"
             return 1
         fi
-        if ! systemctl is-active --quiet "${ACTIVE_SERVICE_NAME}.service"; then
+        if ! systemctl is-active --quiet "${APP_NAME}.service"; then
             log_error "systemd 服务启动后未进入运行状态"
             return 1
         fi
@@ -640,7 +607,7 @@ do_start() {
     fi
 
     if is_running; then
-        log_warn "服务已在运行 (PID: $(cat $(active_pid_file)))"
+        log_warn "服务已在运行 (PID: $(cat ${PID_FILE}))"
         return 0
     fi
 
@@ -673,7 +640,7 @@ do_start() {
 # 停止服务
 do_stop() {
     if has_app_systemd_service; then
-        if ! systemctl is-active --quiet "${ACTIVE_SERVICE_NAME}.service"; then
+        if ! systemctl is-active --quiet "${APP_NAME}.service"; then
             log_warn "systemd 服务未运行"
             return 0
         fi
@@ -682,7 +649,7 @@ do_stop() {
             log_error "systemd 服务停止失败"
             return 1
         fi
-        if systemctl is-active --quiet "${ACTIVE_SERVICE_NAME}.service"; then
+        if systemctl is-active --quiet "${APP_NAME}.service"; then
             log_error "systemd 服务仍在运行，更新已取消"
             return 1
         fi
@@ -692,11 +659,11 @@ do_stop() {
 
     if ! is_running; then
         log_warn "服务未运行"
-        rm -f "${PID_FILE}" "${LEGACY_PID_FILE}"
+        rm -f "${PID_FILE}"
         return 0
     fi
 
-    local pid_file=$(active_pid_file)
+    local pid_file=${PID_FILE}
     local pid=$(cat "$pid_file")
     log_step "停止服务 (PID: ${pid})..."
 
@@ -716,7 +683,7 @@ do_stop() {
         sleep 1
     fi
 
-    rm -f "${PID_FILE}" "${LEGACY_PID_FILE}"
+    rm -f "${PID_FILE}"
     log_info "服务已停止"
 }
 
@@ -738,13 +705,13 @@ do_status() {
     echo ""
 
     # 检查 systemd 服务
-    if has_app_systemd_service && systemctl is-active --quiet "${ACTIVE_SERVICE_NAME}.service" 2>/dev/null; then
-        echo -e "  运行模式: ${GREEN}systemd${NC} (${ACTIVE_SERVICE_NAME})"
+    if has_app_systemd_service && systemctl is-active --quiet "${APP_NAME}.service" 2>/dev/null; then
+        echo -e "  运行模式: ${GREEN}systemd${NC} (${APP_NAME})"
         echo -e "  状态:     ${GREEN}运行中${NC}"
         echo ""
-        systemctl status "${ACTIVE_SERVICE_NAME}" --no-pager -l 2>/dev/null | head -10
+        systemctl status "${APP_NAME}" --no-pager -l 2>/dev/null | head -10
     elif is_running; then
-        local pid=$(cat "$(active_pid_file)")
+        local pid=$(cat "${PID_FILE}")
         echo -e "  运行模式: 手动"
         echo -e "  状态:     ${GREEN}运行中${NC}"
         echo "  PID:      ${pid}"
@@ -767,7 +734,7 @@ do_status() {
         ps -p ${pid} -o pid,ppid,%cpu,%mem,etime 2>/dev/null | head -2
     else
         echo -e "  状态: ${RED}未运行${NC}"
-        if [ -f "${PID_FILE}" ] || [ -f "${LEGACY_PID_FILE}" ]; then
+        if [ -f "${PID_FILE}" ]; then
             echo -e "  ${YELLOW}警告: 存在残留 PID 文件${NC}"
         fi
     fi
@@ -839,7 +806,6 @@ do_update() {
     # SQLite 库（会话等落盘数据）：更新失败回滚时一并恢复，保证与配置一致。
     # 仅本地回滚用，不参与 WebDAV 跨设备备份。
     [ -f "habu.db" ] && cp habu.db "$backup_dir/"
-    [ -f "nav-sylph.db" ] && cp nav-sylph.db "$backup_dir/"
 
     # 下载新版本
     log_step "下载新版本..."
@@ -867,8 +833,8 @@ do_update() {
     # （ERR_INVALID_ARG_TYPE），完全不提配置文件、不提遮蔽，排查绕了三层。
     # server.js 的 assertConfigUsable() 现在会直接说人话，但根因仍是这个遮蔽。
     rm -rf public server-config
-    rm -f server.js package.json package-lock.json habu.sh sylph.sh version.json CHANGELOG.json
-    rm -f .env.example server-config.example.json habu.service nav-sylph.service
+    rm -f server.js package.json package-lock.json habu.sh version.json CHANGELOG.json
+    rm -f .env.example server-config.example.json habu.service
     rm -f README.md DEPLOYMENT.md
     rm -rf docs
     rm -rf node_modules
@@ -885,15 +851,11 @@ do_update() {
     [ -f "$backup_dir/server-config.json" ] && cp "$backup_dir/server-config.json" .
     [ -f "$backup_dir/favorites.json" ] && cp "$backup_dir/favorites.json" .
     [ -f "$backup_dir/habu.db" ] && cp "$backup_dir/habu.db" .
-    [ -f "$backup_dir/nav-sylph.db" ] && cp "$backup_dir/nav-sylph.db" .
     rm -rf "$backup_dir"
 
     # 更新依赖
     log_step "更新依赖..."
     install_dependencies
-
-    # 旧服务名迁移：升级前注册的是 nav-sylph.service，不改会留下旧单元。
-    migrate_systemd_unit || true
 
     # 设置权限
     chmod +x habu.sh
@@ -958,26 +920,22 @@ do_uninstall() {
 
     # ===== 1. 停止 systemd 服务（新旧单元都处理）=====
     if has_systemd; then
-        local name unit
-        for name in "$APP_NAME" "$LEGACY_APP_NAME"; do
-            unit="${name}.service"
-            if systemctl is-active --quiet "$name" 2>/dev/null; then
-                log_step "停止 systemd 服务 ${unit}..."
-                sudo systemctl stop "$name"
-                log_info "systemd 服务已停止"
-            fi
-            if systemctl is-enabled --quiet "$name" 2>/dev/null; then
-                log_step "禁用开机自启 ${unit}..."
-                sudo systemctl disable "$name"
-                log_info "已禁用开机自启"
-            fi
-            if [ -f "${SYSTEMD_DIR}/${unit}" ]; then
-                log_step "移除 systemd 服务文件 ${unit}..."
-                sudo rm -f "${SYSTEMD_DIR}/${unit}"
-                sudo systemctl daemon-reload
-                log_info "已移除服务文件"
-            fi
-        done
+        if systemctl is-active --quiet ${APP_NAME} 2>/dev/null; then
+            log_step "停止 systemd 服务..."
+            sudo systemctl stop ${APP_NAME}
+            log_info "systemd 服务已停止"
+        fi
+        if systemctl is-enabled --quiet ${APP_NAME} 2>/dev/null; then
+            log_step "禁用开机自启..."
+            sudo systemctl disable ${APP_NAME}
+            log_info "已禁用开机自启"
+        fi
+        if [ -f "${SYSTEMD_DIR}/${APP_NAME}.service" ]; then
+            log_step "移除 systemd 服务文件..."
+            sudo rm -f "${SYSTEMD_DIR}/${APP_NAME}.service"
+            sudo systemctl daemon-reload
+            log_info "已移除服务文件"
+        fi
     fi
 
     # ===== 2. 停止手动启动的进程 =====
@@ -991,15 +949,13 @@ do_uninstall() {
 
     # ===== 3. macOS: 检查 launchd =====
     if [ "$OS" = "macos" ]; then
-        local plist_file
-        for plist_file in "$HOME/Library/LaunchAgents/com.habu.plist" "$HOME/Library/LaunchAgents/com.nav-sylph.plist"; do
-            if [ -f "$plist_file" ]; then
-                log_step "检测到 launchd 服务，正在移除..."
-                launchctl unload "$plist_file" 2>/dev/null || true
-                rm -f "$plist_file"
-                log_info "已移除 launchd 服务"
-            fi
-        done
+        local plist_file="$HOME/Library/LaunchAgents/com.habu.plist"
+        if [ -f "$plist_file" ]; then
+            log_step "检测到 launchd 服务，正在移除..."
+            launchctl unload "$plist_file" 2>/dev/null || true
+            rm -f "$plist_file"
+            log_info "已移除 launchd 服务"
+        fi
     fi
 
     # ===== 4. 删除安装目录 =====
@@ -1056,58 +1012,6 @@ EOF
     rm -f "$tmp_unit"
 }
 
-# 删除指向当前安装目录的旧 nav-sylph 单元，避免两个单元同时开机启动。
-remove_legacy_systemd_unit() {
-    has_systemd || return 0
-    local old="${LEGACY_APP_NAME}.service"
-    [ -f "${SYSTEMD_DIR}/${old}" ] || return 0
-    local work_dir=$(systemctl show --property=WorkingDirectory --value "$old" 2>/dev/null) || return 0
-    [ "${work_dir%/}" = "${APP_DIR%/}" ] || return 0
-    log_step "移除旧服务名 ${old}..."
-    if [ "$(id -u)" = "0" ]; then
-        systemctl stop "$old" 2>/dev/null || true
-        systemctl disable "$old" 2>/dev/null || true
-        rm -f "${SYSTEMD_DIR}/${old}"
-    else
-        sudo systemctl stop "$old" 2>/dev/null || true
-        sudo systemctl disable "$old" 2>/dev/null || true
-        sudo rm -f "${SYSTEMD_DIR}/${old}"
-    fi
-    log_info "旧服务名已移除"
-}
-
-# 升级时把旧单元改名为 habu.service；失败保留旧单元，服务仍可启动。
-migrate_systemd_unit() {
-    has_systemd || return 0
-    local old="${LEGACY_APP_NAME}.service"
-    [ -f "${SYSTEMD_DIR}/${old}" ] || return 0
-    local work_dir=$(systemctl show --property=WorkingDirectory --value "$old" 2>/dev/null) || return 0
-    [ "${work_dir%/}" = "${APP_DIR%/}" ] || return 0
-    if [ "$(id -u)" != "0" ] && ! check_command sudo; then
-        log_warn "缺少 sudo，保留旧服务名 ${old}；下次执行 sudo ./habu.sh enable 时迁移"
-        return 1
-    fi
-    log_step "迁移 systemd 服务名..."
-    if [ "$(id -u)" = "0" ]; then
-        systemctl stop "$old" 2>/dev/null || true
-        systemctl disable "$old" 2>/dev/null || true
-        rm -f "${SYSTEMD_DIR}/${old}"
-    else
-        sudo systemctl stop "$old" 2>/dev/null || true
-        sudo systemctl disable "$old" 2>/dev/null || true
-        sudo rm -f "${SYSTEMD_DIR}/${old}"
-    fi
-    write_systemd_unit
-    if [ "$(id -u)" = "0" ]; then
-        systemctl daemon-reload
-        systemctl enable "${APP_NAME}.service"
-    else
-        sudo systemctl daemon-reload
-        sudo systemctl enable "${APP_NAME}.service"
-    fi
-    log_info "系统服务已迁移为 ${APP_NAME}.service"
-}
-
 # 启用 systemd 服务
 do_enable() {
     if ! has_systemd; then
@@ -1138,7 +1042,6 @@ do_enable() {
 
     log_step "安装 systemd 服务..."
 
-    remove_legacy_systemd_unit
     write_systemd_unit
 
     # 停止手动进程
@@ -1228,7 +1131,6 @@ show_help() {
     fi
     echo "环境变量:"
     echo "  HABU_DIR          安装目录 (默认: ~/habu)"
-    echo "  NAV_SYLPH_DIR     旧变量名，仍兼容"
     echo ""
     echo "示例:"
     echo "  # 一键安装"

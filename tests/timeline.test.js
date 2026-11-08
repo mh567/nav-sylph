@@ -45,7 +45,7 @@ function stripComments(src) {
 }
 
 function tempDb() {
-    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-timeline-db-'));
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'habu-timeline-db-'));
     return { dir, file: path.join(dir, 'timeline.db') };
 }
 

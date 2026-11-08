@@ -376,7 +376,7 @@ const {
     ENV_CHANGED_CODE,
     ENV_CHANGED_MESSAGE
 } = require('./lib/session');
-const { openDatabase, migrateDatabaseFile } = require('./lib/db');
+const { openDatabase } = require('./lib/db');
 const { snapshot: snapshotNavigation, createNavigation } = require('./lib/navigation');
 let navigation;
 const { createSqliteBackend } = require('./lib/session-sqlite');
@@ -527,7 +527,7 @@ app.use((req, res, next) => {
         res.header('Access-Control-Allow-Origin', origin || '*');
     }
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Password, X-Habu-Request, X-Sylph-Request');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Password, X-Habu-Request');
     if (req.method === 'OPTIONS') return res.sendStatus(200);
     next();
 });
@@ -537,9 +537,7 @@ app.use('/api', (req, res, next) => {
         || ['/modules/enroll', '/modules/agent-push', '/p', '/p/code'].includes(req.path) || req.path.startsWith('/p/')) return next();
     const origin = req.headers.origin;
     const expected = `${req.protocol}://${req.get('host')}`;
-    // 旧页面仍可能发送 X-Sylph-Request，过渡期两者都接受。
-    const requestMarker = req.headers['x-habu-request'] ?? req.headers['x-sylph-request'];
-    if (requestMarker !== '1'
+    if (req.headers['x-habu-request'] !== '1'
         || (origin && origin !== expected)
         || req.headers['sec-fetch-site'] === 'cross-site') {
         return res.status(403).json({ error: '请求来源校验失败，请刷新页面后重试' });
@@ -1075,12 +1073,6 @@ async function init() {
     if (!fsSync.existsSync(logDir)) {
         await fs.mkdir(logDir, { recursive: true });
         console.log(`Created: ${path.basename(logDir)}/`);
-    }
-
-    // 旧版库名为 habu.db；改名必须发生在快照与打开之前。
-    const dbMigration = migrateDatabaseFile(config.paths.database);
-    if (dbMigration.migrated) {
-        console.log(`Migrated database: ${path.basename(dbMigration.from)} -> ${path.basename(dbMigration.to)}`);
     }
 
     snapshotNavigation(config.rootDir, config.paths.database, PASSWORD_FILE);
@@ -1665,8 +1657,7 @@ function parseBookmarkHtml(html) {
         if (linkMatch) {
             const url = linkMatch[1];
             const title = linkMatch[3].trim();
-            // 旧备份使用 DATA-SYLPH-PRIVATE，新导出写 DATA-HABU-PRIVATE，两者都要能识别。
-            const privateMarker = /\bDATA-(?:HABU|SYLPH)-PRIVATE="([^"]*)"/i.exec(linkMatch[2]);
+            const privateMarker = /\bDATA-HABU-PRIVATE="([^"]*)"/i.exec(linkMatch[2]);
 
             // 跳过无效 URL
             if (!url.startsWith('http://') && !url.startsWith('https://')) {

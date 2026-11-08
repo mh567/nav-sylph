@@ -24,7 +24,7 @@ function stripComments(src) {
 }
 
 function tempDbPath() {
-    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-memo-db-'));
+    const dir = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'habu-memo-db-'));
     return path.join(dir, 'memos.db');
 }
 
@@ -645,7 +645,7 @@ async function waitForServer(base, deadlineMs) {
 }
 
 test('HTTP 边界：未登录及密码头被拒绝，正常会话可增删改查', { timeout: 60000 }, async t => {
-    const tmp = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'sylph-memo-e2e-'));
+    const tmp = fs.mkdtempSync(path.join(process.env.COMMANDCODE_SCRATCHPAD || os.tmpdir(), 'habu-memo-e2e-'));
     let child = null;
     t.after(() => {
         if (child) child.kill('SIGKILL');
