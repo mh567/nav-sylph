@@ -6,6 +6,7 @@
       "summary": "新增配置排查命令，优化首页首屏加载，并修正 HTTPS 配置项。",
       "highlights": [
         "新增配置排查命令：一条命令校验配置，一条命令打印最终生效的配置，密码一类字段自动脱敏。",
+        "新增公开演示页：/demo/ 提供不含真实数据的功能演示页面。",
         "修正 HTTPS 配置项：未设置该环境变量时不再被静默改为关闭。",
         "优化首页首屏加载：外观设置不再等待服务器标志请求。"
       ],
@@ -16,6 +17,7 @@
         "improve": [
           "新增 node server.js config:validate 与 config:print 两个子命令：前者只校验不监听端口，配置有问题时以非零码退出并说明原因；后者打印「默认值 < server-config.json < .env < 环境变量」合并后的最终配置，凭据类字段只显示是否存在。",
           "首页 init() 中 /api/server-flags 与 /api/session 并发发出，applyTheme 不再排在 await 之后；实测 200ms RTT 下首屏少等约 206ms。",
+          "新增公开演示页 public/demo/index.html：纯静态单文件，内容全部为虚构示例，不连接后台、不发起网络请求；由 demo/build.js 从产品样式表生成，随 public/ 一起分发。",
           "新增 docs/troubleshooting.md，记录用户侧常见故障的排查路径。"
         ]
       }

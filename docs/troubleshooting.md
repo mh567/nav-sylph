@@ -86,9 +86,9 @@ node server.js config:print
 
 ### HTTPS 只在环境变量里能开
 
-**已修复**（本次改动）。旧版本 `loadFromEnv()` 里 `https.enabled` 未做「未设置」的区分，未设 `HTTPS_ENABLED` 时也会返回 `false`，把文件里的 `true` 压掉。现在写成 `env.HTTPS_ENABLED === undefined ? undefined : ...`，与 `cookieSecure`、`geoEnabled` 保持一致。
+**原因**：`server-config/index.js` 的 `loadFromEnv()` 曾经把 `https.enabled` 写成 `env.HTTPS_ENABLED === 'true'`，未设该变量时也返回 `false`，而 `deepMerge` 只跳过 `undefined` 与空串，于是 `server-config.json` 里的 `true` 被静默压回 `false`。
 
-如果你还在旧版本上，只能用环境变量开 HTTPS。
+**解法**：升级到 2.6.0 或更高版本后，文件与变量两层都能生效，`HTTPS_ENABLED` 只在确实要覆盖文件时设置。旧版本上只能用环境变量开 HTTPS。
 
 ---
 
