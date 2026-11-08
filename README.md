@@ -266,6 +266,19 @@ HABU_DIR=/opt/habu curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/
 
 > 除 `.env` 与 `version.json` 外，以上文件均由服务在创建/写入时收紧到 0600，并在每次启动兜底校正。版本更新只清理程序文件，数据文件均会保留。
 
+### 配置检查命令
+
+配置哪里不对、最终生效的是什么，不用猜，直接跑：
+
+```bash
+node server.js config:validate   # 只校验，不开端口；配置有误时以非零码退出
+node server.js config:print      # 打印合并后的最终配置，密码一类字段已脱敏
+```
+
+合并顺序是「默认值 < `server-config.json` < `.env` < 环境变量」，`config:print` 打出的就是这一层合并后的结果。`config:validate` 也会报出正常启动时会静默忽略的问题，例如 `server-config.json` 写坏了 JSON。
+
+用户侧常见故障（起不来、掉登录、资源不更新、机器显示离线等）见仓库内的 `docs/troubleshooting.md`（不随发布包分发，在 GitHub 仓库里查阅）。
+
 ### 环境变量
 
 复制 `.env.example` 为 `.env` 进行配置：

@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<!--
+  Habu 演示页 · 源模板
+
+  这是给人看的**演示**：所有内容都是虚构示例，不含任何真实账号、服务器地址、
+  凭据或私人数据；页面不与后台通信，是一个纯静态文件（零网络请求、零 CPU）。
+
+  本文件是「源」，成品是 public/demo/index.html —— 由 demo/build.js 把产品真实
+  的样式表内联进来后生成，它随 public/ 一起发版，服务器上直接以
+  https://<你的域名>/demo/ 对外提供（静态文件不经过登录门禁）。
+
+  改样式请改 public/styles.css，改完跑 `node demo/build.js` 重新生成。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="Habu 演示页面：导航、备忘待办、服务器监控与订阅时间线的演示示例，全部内容为虚构数据。">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#211f1c">
+<title>Habu 演示 · 个人数字工作台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23211f1c'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23c28d70' stroke-width='2.5'/%3E%3C/svg%3E">
+<style>
+/*__PRODUCT_CSS__*/
+
+/* ================= 演示页自有样式（不依赖后台） ================= */
+
+/* 备忘模块在产品里是「平台壳 + 模块自己的卡面」两层叠着：壳有 --glass 底，
+   .memo-card 又画一层 --bookmark-face（再加一道 inset 阴影），而服务器卡是
+   单元素、只有一层——三张卡并排时备忘卡明显多一层底。
+
+   这里只把内层那层多余的面去掉，底色、边框、阴影一律由外层平台壳承担：
+   材质仍跟着主题走（棱镜是 prism-slab，经典是 --glass），不需要复制主题内部值。 */
+.module-widget[data-widget="memo"] > .memo-card {
+    background: none;
+    box-shadow: none;
+}
+.module-widget[data-widget="memo"] > .memo-card::before { display: none; }
+
+/* 时间线卡片沿用产品的紧凑内边距（产品里靠 data-module-id 命中这条规则）。 */
+.module-widget[data-module-id="special-line"] { padding-inline: 9px; }
+
+/* 小标签：只标在订阅时间线卡头上（那是唯一引用真实账号名的地方）。 */
+.demo-tag {
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+/* 说明弹窗：产品里的对话框样式在 admin.css（后台专用），演示页自己带一套。 */
+.demo-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(24, 19, 16, .46);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+.demo-modal-overlay[hidden] { display: none; }
+.demo-modal {
+    width: min(520px, 100%);
+    max-height: 82vh;
+    overflow: auto;
+    padding: 22px 24px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--glass-strong);
+    box-shadow: var(--shadow-lg);
+    color: var(--text);
+}
+.demo-modal h2 { margin-bottom: 12px; font-size: 15px; font-weight: 600; }
+.demo-modal p { margin-bottom: 10px; color: var(--text-secondary); font-size: 13px; line-height: 1.75; }
+.demo-modal ul { margin: 0 0 14px 18px; color: var(--text-secondary); font-size: 13px; line-height: 1.9; }
+.demo-modal-foot { display: flex; justify-content: flex-end; margin-top: 16px; }
+
+/* 演示页的明暗开关：与右上角的主题样式开关同族，只是多一组。 */
+.demo-toolbar-group { display: flex; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+    <div class="backboard">
+        <!-- 右上角：视觉主题样式（经典 / 棱镜）+ 明暗。演示页两者都可切。 -->
+        <div class="home-theme-toolbar">
+            <div class="demo-toolbar-group">
+                <div id="homeThemeSwitcher" class="home-theme-switcher" role="group" aria-label="视觉主题">
+                    <button type="button" data-home-theme="classic" aria-label="经典主题" aria-pressed="true">经典</button>
+                    <button type="button" data-home-theme="prism" aria-label="棱镜主题" aria-pressed="false">棱镜</button>
+                </div>
+                <div id="demoModeSwitcher" class="home-theme-switcher" role="group" aria-label="明暗模式">
+                    <button type="button" data-demo-mode="dark" aria-pressed="true">深色</button>
+                    <button type="button" data-demo-mode="light" aria-pressed="false">浅色</button>
+                </div>
+            </div>
+        </div>
+
+        <header class="header">
+            <div class="search-wrapper">
+                <form class="search" id="searchForm">
+                    <button type="button" class="search-mode" id="modeBtn" aria-label="切换搜索模式，当前为网页" aria-pressed="false">
+                        <span class="mode-label" data-label="web">网页</span>
+                        <span class="mode-label" data-label="fav" hidden>书签</span>
+                    </button>
+                    <button type="button" class="search-engine" id="engineBtn" title="切换搜索引擎" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineDropdown">
+                        <span class="engine-name" id="engineName">Google</span>
+                        <svg class="engine-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <textarea class="search-input" id="searchInput" rows="1" placeholder="搜索网页" aria-label="搜索网页" autocomplete="off" spellcheck="false"></textarea>
+                    <button type="submit" class="search-btn" title="搜索">搜索</button>
+                </form>
+                <div class="engine-dropdown" id="engineDropdown" role="listbox" aria-label="搜索引擎" hidden></div>
+            </div>
+        </header>
+
+        <div class="search-caption">
+            <span id="favSearchHint"><kbd>/</kbd> 查书签</span>
+            <span id="demoSearchCount" hidden></span>
+        </div>
+
+        <main class="grid" id="grid"></main>
+
+        <footer class="site-footer" aria-label="页面操作">
+            <nav class="site-footer-links">
+                <button type="button" class="site-footer-link" id="helpBtn" title="说明">说明</button>
+                <span class="site-footer-sep" aria-hidden="true">·</span>
+                <span class="site-footer-link" style="cursor:default">演示页面 · 内容为虚构示例 · 无需登录</span>
+            </nav>
+        </footer>
+    </div>
+
+    <!-- 模块区：宽屏停靠在背板左右两侧，窄屏回到文档流横排（与产品一致）。 -->
+    <section class="module-zone" id="moduleZone" aria-label="模块" data-dock="outside">
+        <div class="module-zone-inner" id="moduleZoneInner"></div>
+    </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<div class="demo-modal-overlay" id="demoModalOverlay" hidden>
+    <div class="demo-modal" role="dialog" aria-modal="true" aria-labelledby="demoModalTitle">
+        <h2 id="demoModalTitle">说明</h2>
+        <div id="demoModalBody"></div>
+        <div class="demo-modal-foot">
+            <button type="button" class="btn" id="demoModalClose">知道了</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ================= 演示数据（全部虚构） ================= */
+
+const CATEGORIES = [
+    { name: '资讯', items: [
+        ['少数派', 'https://sspai.com'],
+        ['Hacker News', 'https://news.ycombinator.com'],
+        ['36氪', 'https://36kr.com'],
+        ['虎嗅', 'https://www.huxiu.com'],
+        ['机器之心', 'https://www.jiqizhixin.com']
+    ]},
+    { name: '论坛', items: [
+        ['V2EX', 'https://v2ex.com'],
+        ['Linux.do', 'https://linux.do'],
+        ['NodeSeek', 'https://nodeseek.com'],
+        ['Hostloc', 'https://hostloc.com'],
+        ['Reddit', 'https://reddit.com']
+    ]},
+    { name: '开发', items: [
+        ['GitHub', 'https://github.com'],
+        ['MDN Web Docs', 'https://developer.mozilla.org'],
+        ['Stack Overflow', 'https://stackoverflow.com'],
+        ['npm', 'https://npmjs.com'],
+        ['Docker Hub', 'https://hub.docker.com']
+    ]},
+    { name: '工具', items: [
+        ['ChatGPT', 'https://chat.openai.com'],
+        ['Claude', 'https://claude.ai'],
+        ['Gemini', 'https://gemini.google.com'],
+        ['Figma', 'https://figma.com'],
+        ['Excalidraw', 'https://excalidraw.com'],
+        ['Notion', 'https://notion.so']
+    ]},
+    { name: '娱乐', items: [
+        ['Bilibili', 'https://bilibili.com'],
+        ['YouTube', 'https://youtube.com'],
+        ['网易云音乐', 'https://music.163.com'],
+        ['豆瓣', 'https://douban.com'],
+        ['Netflix', 'https://netflix.com']
+    ]},
+    { name: '效率', items: [
+        ['Obsidian', 'https://obsidian.md'],
+        ['Todoist', 'https://todoist.com'],
+        ['Google 日历', 'https://calendar.google.com'],
+        ['Gmail', 'https://mail.google.com'],
+        ['Dropbox', 'https://dropbox.com']
+    ]}
+];
+
+const MEMOS = [
+    { title: '周五前把季度总结的提纲写完', time: '12 分钟前' },
+    { title: '整理这周的监控告警截图', time: '2 小时前' },
+    { title: '给新同事写一版上手文档', time: '昨天' }
+];
+
+const TODOS = [
+    { text: '把演示站点的截图补齐', done: true },
+    { text: '读完《数据密集型应用设计》第 5 章', done: false },
+    { text: '预约下周体检', done: false },
+    { text: '给家里换一套新的网络设备', done: false }
+];
+
+const SERVERS = [
+    {
+        name: '本机', host: 'demo-host', status: 'ready', statusText: '在线',
+        cpu: 5, mem: 27, diskUsed: '8.9 GB', diskTotal: '19.6 GB', diskPct: 45,
+        hint: '', cores: '4', uptime: '11 天 4 小时'
+    },
+    {
+        name: '演示 VPS', host: '198.51.100.24', status: 'ready', statusText: '在线',
+        cpu: 1, mem: 30, diskUsed: '15.8 GB', diskTotal: '49.1 GB', diskPct: 32,
+        hint: '最后更新 不到 1 分钟前', cores: '2', uptime: '38 天 19 小时'
+    }
+];
+
+/* 订阅时间线：内容全部虚构。页面上只标一次（卡头的「演示」小标签），
+   条目正文不再逐条加前缀——满屏「示例」反而像在掩饰什么。 */
+const EVENTS = [
+    {
+        id: 'e1', day: '今天', hm: '20:27', channel: 'twitter',
+        author: 'Elon Musk', handle: 'elonmusk', type: '推文', translated: true,
+        title: '把复杂的东西做简单，往往比讲清楚道理更难。',
+        body: '这是一条用于演示排版的虚构内容，真实使用时这里会是订阅源的原文或译文摘要。'
+    },
+    {
+        id: 'e2', day: '今天', hm: '13:45', channel: 'twitter',
+        author: 'Donald Trump', handle: 'realDonaldTrump', type: '推文', translated: true,
+        title: '今天的演示主题：让每个人都能有自己的工作台。',
+        body: '这是一条用于演示排版的虚构内容。'
+    },
+    {
+        id: 'e3', day: '今天', hm: '08:12', channel: 'rss',
+        author: '阮一峰', handle: 'ruanyf', type: '订阅', translated: false,
+        title: '科技爱好者周刊：把导航、待办和监控收进同一个入口',
+        body: '这是一条用于演示排版的虚构内容，展示的是订阅源文章的标题与摘要样式。'
+    },
+    {
+        id: 'e4', day: '昨天', hm: '22:30', channel: 'rss',
+        author: 'Hacker News', handle: 'news_ycombinator', type: '订阅', translated: false,
+        title: 'Show HN: 一个纯静态的个人工作台首页',
+        body: '这是一条用于演示排版的虚构内容，展示的是订阅源文章的标题与摘要样式。'
+    },
+    {
+        id: 'e5', day: '昨天', hm: '19:05', channel: 'manual',
+        author: '', handle: '', type: '手动保存', translated: false,
+        title: '稍后阅读：自托管服务的备份与恢复实践',
+        body: '这是一条用于演示「稍后阅读」渠道的虚构内容。'
+    }
+];
+
+const ENGINES = [
+    { name: 'Google', url: 'https://www.google.com/search?q=' },
+    { name: '百度', url: 'https://www.baidu.com/s?wd=' },
+    { name: 'Bing', url: 'https://www.bing.com/search?q=' },
+    { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=' }
+];
+
+/* ================= 工具 ================= */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+const esc = (value) => String(value).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+));
+
+let toastTimer = null;
+function toast(message) {
+    const el = $('#toast');
+    el.textContent = message;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
+}
+
+/* ================= 导航网格 ================= */
+
+function renderGrid() {
+    $('#grid').innerHTML = CATEGORIES.map(cat => `
+        <section class="category">
+            <div class="category-header">
+                <h2 class="category-title">${esc(cat.name)}</h2>
+            </div>
+            <div class="bookmarks">
+                ${cat.items.map(([title, url]) => `
+                    <a class="bookmark bookmark-text-only" href="${esc(url)}" target="_blank" rel="noopener" title="${esc(title)}">
+                        <span class="bookmark-title">${esc(title)}</span>
+                    </a>`).join('')}
+            </div>
+        </section>`).join('');
+}
+
+/* ================= 模块卡片 ================= */
+
+function memoCardHTML() {
+    const rows = MEMOS.map(m => `
+        <div class="memo-row">
+            <span class="memo-row-title">${esc(m.title)}</span>
+            <span class="memo-row-time">${esc(m.time)}</span>
+        </div>`).join('');
+    return `<div class="memo-rows" tabindex="0" role="region" aria-label="备忘列表">${rows}</div>`;
+}
+
+function todoCardHTML() {
+    const rows = TODOS.map((t, i) => `
+        <div class="memo-row memo-todo-row">
+            <label class="memo-todo-check-wrap" title="标记完成">
+                <input class="memo-todo-check" type="checkbox" data-todo="${i}" ${t.done ? 'checked' : ''} aria-label="切换完成状态">
+            </label>
+            <span class="memo-todo-text" data-todo="${i}">${esc(t.text)}</span>
+        </div>`).join('');
+    return `<div class="memo-rows memo-todo-rows" tabindex="0" role="region" aria-label="待办列表">${rows}</div>`;
+}
+
+function metricRow(label, value, pct) {
+    const bar = Number.isFinite(pct)
+        ? `<span class="module-metric-bar" style="--pct:${pct}%"><span class="module-metric-fill"></span></span>`
+        : `<span class="module-metric-bar"><span class="module-metric-fill"></span></span>`;
+    return `<div class="module-metric">
+        <span class="module-metric-label">${esc(label)}</span>
+        <span class="module-metric-value">${esc(value)}</span>
+        ${bar}
+    </div>`;
+}
+
+function serverCardHTML(s) {
+    return `
+        <div class="module-widget-head">
+            <span class="module-widget-title">${esc(s.name)}</span>
+            <span class="module-card-status" data-kind="${s.status}" title="演示状态位">${esc(s.statusText)}</span>
+            <button class="module-widget-expand" type="button" data-detail="${esc(s.name)}" title="查看详情">详情</button>
+        </div>
+        <div class="module-widget-body">
+            ${metricRow('CPU', s.cpu + '%', s.cpu)}
+            ${metricRow('内存', s.mem + '%', s.mem)}
+            ${metricRow('存储', `${s.diskUsed} / ${s.diskTotal}`, s.diskPct)}
+            ${s.hint ? `<div class="module-card-hint">${esc(s.hint)}</div>` : ''}
+        </div>`;
+}
+
+function eventHTML(e) {
+    const author = e.channel === 'manual'
+        ? `<span class="special-line-mark"><span class="special-line-icon" aria-hidden="true">★</span>稍后阅读</span>`
+        : `<span class="special-line-mark special-line-author">
+               <span class="special-line-avatar" aria-hidden="true">${esc(e.author.slice(0, 1).toUpperCase())}</span>
+               <span class="special-line-author-name">${esc(e.author)}</span>
+               <span class="special-line-handle">@${esc(e.handle)}</span>
+             </span>`;
+    return `
+        <li class="special-line-item" data-channel="${esc(e.channel)}">
+            <time class="special-line-time"><strong>${esc(e.day)}</strong>${esc(e.hm)}</time>
+            <article class="special-line-event">
+                <div class="special-line-meta">
+                    ${author}
+                    <span class="special-line-type">${esc(e.type)}${e.translated ? '<span class="special-line-badge">译</span>' : ''}</span>
+                </div>
+                <span class="special-line-title">${esc(e.title)}</span>
+                <p class="special-line-body">${esc(e.body)}</p>
+                <div class="special-line-item-foot">
+                    <div class="special-line-row-actions">
+                        <button class="special-line-ghost" type="button" data-star="${esc(e.id)}">收藏</button>
+                    </div>
+                </div>
+            </article>
+        </li>`;
+}
+
+function renderModules() {
+    $('#moduleZoneInner').innerHTML = `
+        <section class="module-widget" data-side="left" data-widget="memo">
+            <section class="module-card memo-card">
+                <div class="module-widget-head">
+                    <div class="memo-tabs" role="tablist" aria-label="备忘与待办">
+                        <button class="memo-tab" type="button" role="tab" data-tab="memo" aria-selected="true">备忘</button>
+                        <button class="memo-tab" type="button" role="tab" data-tab="todo" aria-selected="false">待办</button>
+                    </div>
+                </div>
+                <div class="module-widget-body" id="memoBody">${memoCardHTML()}</div>
+                <div class="memo-card-footer module-card-hint">
+                    <span class="memo-card-count" id="memoCount">共 ${MEMOS.length} 条</span>
+                    <div class="memo-card-tools">
+                        <span class="memo-sync-part">21:43 同步</span>
+                        <button class="memo-card-manage" type="button" id="memoManage">管理</button>
+                    </div>
+                </div>
+            </section>
+        </section>
+
+        ${SERVERS.map(s => `
+            <section class="module-widget module-card" data-side="left" data-widget="server">
+                ${serverCardHTML(s)}
+            </section>`).join('')}
+
+        <section class="module-widget" data-side="right" data-widget="timeline" data-module-id="special-line">
+            <section class="module-card special-line-card">
+                <div class="module-widget-head special-line-head">
+                    <span class="module-widget-title">Special Line</span>
+                    <span class="demo-tag">演示</span>
+                    <span class="special-line-status"><span class="special-line-time-note">21:43 同步</span></span>
+                    <button class="special-line-iconbtn" type="button" id="syncBtn" title="演示：立即同步">↻</button>
+                    <button class="special-line-iconbtn special-line-save" type="button" id="saveBtn" title="演示：保存文章">＋ 保存</button>
+                </div>
+                <nav class="special-line-filters" aria-label="时间线筛选">
+                    <button class="special-line-chip" type="button" data-channel="" aria-pressed="true">全部渠道</button>
+                    <button class="special-line-chip" type="button" data-channel="manual" aria-pressed="false">稍后阅读</button>
+                    <div class="special-line-views">
+                        <button class="special-line-chip" type="button" data-view="all" aria-pressed="true">全部</button>
+                        <button class="special-line-chip" type="button" data-view="favorited" aria-pressed="false">收藏</button>
+                        <button class="special-line-chip" type="button" data-view="archived" aria-pressed="false">已归档</button>
+                    </div>
+                </nav>
+                <div class="special-line-listwrap" tabindex="0" role="region" aria-label="时间线事件列表">
+                    <ol class="special-line-list" id="eventList">${EVENTS.map(eventHTML).join('')}</ol>
+                </div>
+                <div class="special-line-foot">
+                    <div class="special-line-footnote">已到最早一条</div>
+                </div>
+            </section>
+        </section>`;
+}
+
+/* ================= 模块区排布（移植产品平台的同一套判据） ================= */
+
+/**
+ * 三列宽度的连续解：左侧普通模块列、时间线宽列、中间导航背板。
+ * 与 app.js 的 railLayoutFor() 同源——Special Line 声明了 wideRail，
+ * 需要一条真宽度的列，放不下就整体退回「模块在下方横排」。
+ */
+function railLayoutFor(content) {
+    const GAP = 20;
+    const SIDE_MIN = 280, SIDE_MAX = 320;
+    const BOARD_MIN = 600, BOARD_MAX = 936;
+    const RAIL_MIN = 400, RAIL_MAX = 440;
+
+    let side = SIDE_MAX;
+    let rail = RAIL_MAX;
+    let board = content - 2 * GAP - side - rail;
+
+    if (board > BOARD_MAX) {
+        board = BOARD_MAX;
+        rail = Math.min(RAIL_MAX, content - 2 * GAP - side - board);
+    }
+    if (board < BOARD_MIN) {
+        rail = Math.max(RAIL_MIN, content - 2 * GAP - side - BOARD_MIN);
+        board = content - 2 * GAP - side - rail;
+    }
+    if (board < BOARD_MIN) {
+        side = Math.max(SIDE_MIN, content - 2 * GAP - BOARD_MIN - rail);
+        board = content - 2 * GAP - side - rail;
+    }
+    if (board < BOARD_MIN || rail < RAIL_MIN) return null;
+    return { side, board, rail };
+}
+
+function syncRail() {
+    const app = $('#app');
+    const content = app.getBoundingClientRect().width - 22 * 2;
+    const layout = railLayoutFor(content);
+    app.dataset.rail = layout ? 'wide' : 'narrow';
+    const vars = {
+        '--rail-w': layout && layout.rail,
+        '--side-w': layout && layout.side,
+        '--board-max': layout && layout.board
+    };
+    for (const key of Object.keys(vars)) {
+        if (vars[key]) app.style.setProperty(key, vars[key] + 'px');
+        else app.style.removeProperty(key);
+    }
+    return layout;
+}
+
+function sideDockAvailable(boardWidth) {
+    const MIN_SIDE = 280;
+    const GAP = 20;
+    const board = $('.backboard');
+    const app = $('#app');
+    if (!board || !app) return false;
+    const measured = Number.isFinite(boardWidth) ? boardWidth : board.getBoundingClientRect().width;
+    const appWidth = app.getBoundingClientRect().width;
+    const side = (appWidth - 22 * 2 - measured) / 2;
+    return side >= MIN_SIDE + GAP;
+}
+
+/** 模块列顶端对齐搜索框，而不是钉在页面最上沿（数值实测，不写死）。 */
+function alignModuleTop() {
+    const app = $('#app');
+    const zone = $('#moduleZone');
+    if (!app || !zone) return;
+    if (zone.dataset.dock !== 'outside') {
+        app.style.removeProperty('--module-top');
+        return;
+    }
+    const header = $('.header');
+    if (!header) return;
+    const top = Math.round(header.getBoundingClientRect().top - app.getBoundingClientRect().top);
+    app.style.setProperty('--module-top', top + 'px');
+}
+
+function applyDock() {
+    const layout = syncRail();
+    const zone = $('#moduleZone');
+    zone.dataset.dock = sideDockAvailable(layout && layout.board) ? 'outside' : 'below';
+    alignModuleTop();
+    stackCards();
+}
+
+function stackCards() {
+    const zone = $('#moduleZone');
+    if (!zone || zone.dataset.dock !== 'outside') return;
+    const GAP = 14;
+    for (const side of ['left', 'right']) {
+        const nodes = [...zone.querySelectorAll(`.module-widget[data-side="${side}"]`)];
+        for (const node of nodes) node.style.removeProperty('--stack-top');
+        let cursor = 0;
+        for (const node of nodes) {
+            node.style.setProperty('--stack-top', cursor + 'px');
+            cursor += node.getBoundingClientRect().height + GAP;
+        }
+    }
+}
+
+/* ================= 外观 ================= */
+
+let modePref = 'dark';   // 明暗偏好；棱镜只有深色一档，切到经典时恢复
+
+function applyThemeStyle(style) {
+    const root = document.documentElement;
+    root.setAttribute('data-theme-style', style);
+    // 棱镜固定深色（与产品一致：THEMES.prism.mode = 'dark'），
+    // 所以这一档下浅色按钮不可用。
+    const fixedDark = style === 'prism';
+    const lightBtn = $('#demoModeSwitcher button[data-demo-mode="light"]');
+    lightBtn.disabled = fixedDark;
+    lightBtn.title = fixedDark ? '棱镜只有深色一档' : '切换为浅色';
+    $$('#homeThemeSwitcher button').forEach(btn =>
+        btn.setAttribute('aria-pressed', String(btn.dataset.homeTheme === style)));
+    applyMode(fixedDark ? 'dark' : modePref);
+    applyDock();
+}
+
+function applyMode(mode) {
+    if (mode === 'light' && document.documentElement.getAttribute('data-theme-style') === 'prism') return;
+    modePref = mode;
+    document.documentElement.setAttribute('data-theme', mode);
+    $$('#demoModeSwitcher button').forEach(btn =>
+        btn.setAttribute('aria-pressed', String(btn.dataset.demoMode === mode)));
+    requestAnimationFrame(stackCards);
+}
+
+/* ================= 搜索 ================= */
+
+let favMode = false;
+let engine = ENGINES[0];
+let filterText = '';
+
+function setMode(next) {
+    favMode = next;
+    const btn = $('#modeBtn');
+    btn.querySelector('[data-label="web"]').hidden = favMode;
+    btn.querySelector('[data-label="fav"]').hidden = !favMode;
+    btn.setAttribute('aria-pressed', String(favMode));
+    btn.setAttribute('aria-label', favMode ? '切换搜索模式，当前为书签' : '切换搜索模式，当前为网页');
+    const input = $('#searchInput');
+    input.setAttribute('aria-label', favMode ? '搜索书签' : '搜索网页');
+    input.placeholder = favMode ? '查书签' : '搜索网页';
+    input.value = favMode ? input.value.replace(/^[\/、]{1,2}/, '') : `/${input.value}`;
+    applyFilter(input.value);
+}
+
+function applyFilter(value) {
+    filterText = (favMode ? value : value.replace(/^[\/、]{1,2}/, '')).trim().toLowerCase();
+    let hits = 0;
+    $$('#grid .bookmark').forEach(el => {
+        const title = el.querySelector('.bookmark-title').textContent.toLowerCase();
+        const match = !filterText || title.includes(filterText);
+        el.hidden = !match;
+        if (match) hits++;
+    });
+    $$('#grid .category').forEach(cat => {
+        const visible = $$('.bookmark', cat).some(el => !el.hidden);
+        cat.hidden = !visible;
+    });
+    const count = $('#demoSearchCount');
+    if (filterText) {
+        count.hidden = false;
+        count.textContent = `${hits} 个匹配`;
+    } else {
+        count.hidden = true;
+    }
+}
+
+function submitSearch() {
+    const input = $('#searchInput');
+    const raw = input.value.trim();
+    if (favMode) {
+        const hit = $$('#grid .bookmark').find(el => !el.hidden);
+        if (hit) window.open(hit.href, '_blank', 'noopener');
+        else toast('没有匹配的导航');
+        return;
+    }
+    const query = raw.replace(/^[\/、]{1,2}/, '');
+    if (!query) { toast('先输入关键词'); return; }
+    window.open(engine.url + encodeURIComponent(query), '_blank', 'noopener');
+}
+
+/* ================= 说明弹窗 ================= */
+
+function openModal(title, html) {
+    $('#demoModalTitle').textContent = title;
+    $('#demoModalBody').innerHTML = html;
+    $('#demoModalOverlay').hidden = false;
+    $('#demoModalClose').focus();
+}
+
+function closeModal() {
+    $('#demoModalOverlay').hidden = true;
+}
+
+/* ================= 绑定 ================= */
+
+function bind() {
+    // 搜索
+    $('#searchForm').addEventListener('submit', (e) => { e.preventDefault(); submitSearch(); });
+    $('#searchInput').addEventListener('input', (e) => applyFilter(e.target.value));
+    $('#searchInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitSearch(); }
+    });
+    $('#modeBtn').addEventListener('click', () => setMode(!favMode));
+    document.addEventListener('keydown', (e) => {
+        if (e.key === '/' && document.activeElement !== $('#searchInput')) {
+            e.preventDefault();
+            $('#searchInput').focus();
+        }
+    });
+
+    // 搜索引擎下拉
+    const dropdown = $('#engineDropdown');
+    dropdown.innerHTML = ENGINES.map((e, i) =>
+        `<button type="button" role="option" data-engine="${i}" aria-selected="${i === 0}">${esc(e.name)}</button>`).join('');
+    $('#engineBtn').addEventListener('click', () => {
+        const open = dropdown.hidden;
+        dropdown.hidden = !open;
+        $('#engineBtn').setAttribute('aria-expanded', String(open));
+    });
+    dropdown.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-engine]');
+        if (!btn) return;
+        engine = ENGINES[Number(btn.dataset.engine)];
+        $('#engineName').textContent = engine.name;
+        dropdown.hidden = true;
+        $('#engineBtn').setAttribute('aria-expanded', 'false');
+    });
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-wrapper')) {
+            dropdown.hidden = true;
+            $('#engineBtn').setAttribute('aria-expanded', 'false');
+        }
+    });
+
+    // 主题
+    $('#homeThemeSwitcher').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-home-theme]');
+        if (btn) applyThemeStyle(btn.dataset.homeTheme);
+    });
+    $('#demoModeSwitcher').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-demo-mode]');
+        if (btn) applyMode(btn.dataset.demoMode);
+    });
+
+    // 模块区：备忘 / 待办切换、勾选待办、时间线筛选、收藏、详情
+    const zone = $('#moduleZone');
+    zone.addEventListener('click', (e) => {
+        const tab = e.target.closest('[data-tab]');
+        if (tab) {
+            $$('.memo-tab').forEach(b => b.setAttribute('aria-selected', String(b === tab)));
+            const isTodo = tab.dataset.tab === 'todo';
+            $('#memoBody').innerHTML = isTodo ? todoCardHTML() : memoCardHTML();
+            $('#memoCount').textContent = isTodo
+                ? `共 ${TODOS.length} 项 · ${TODOS.filter(t => !t.done).length} 未完成`
+                : `共 ${MEMOS.length} 条`;
+            requestAnimationFrame(stackCards);
+            return;
+        }
+        const star = e.target.closest('[data-star]');
+        if (star) {
+            const item = star.closest('.special-line-item');
+            item.dataset.favorited = item.dataset.favorited === '1' ? '0' : '1';
+            star.textContent = item.dataset.favorited === '1' ? '已收藏' : '收藏';
+            toast(item.dataset.favorited === '1' ? '已加入收藏（演示）' : '已取消收藏（演示）');
+            return;
+        }
+        const detail = e.target.closest('[data-detail]');
+        if (detail) {
+            const s = SERVERS.find(x => x.name === detail.dataset.detail);
+            openModal(`${s.name} · 监控详情`, `
+                <p>演示指标。</p>
+                <ul>
+                    <li>地址：${esc(s.host)}（示例地址）</li>
+                    <li>CPU：${s.cpu}%　内存：${s.mem}%</li>
+                    <li>存储：${esc(s.diskUsed)} / ${esc(s.diskTotal)}</li>
+                    <li>CPU 核心：${esc(s.cores)}</li>
+                    <li>运行时长：${esc(s.uptime)}</li>
+                </ul>`);
+        }
+    });
+    zone.addEventListener('change', (e) => {
+        const box = e.target.closest('.memo-todo-check');
+        if (!box) return;
+        const todo = TODOS[Number(box.dataset.todo)];
+        todo.done = box.checked;
+        const count = $('#memoCount');
+        count.textContent = `共 ${TODOS.length} 项 · ${TODOS.filter(t => !t.done).length} 未完成`;
+        requestAnimationFrame(stackCards);
+    });
+
+    // 时间线筛选
+    $$('.special-line-chip').forEach(chip => chip.addEventListener('click', () => {
+        const isView = chip.hasAttribute('data-view');
+        const group = isView ? '[data-view]' : '[data-channel]';
+        $$(group).forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
+        applyTimelineFilter();
+    }));
+    $('#syncBtn').addEventListener('click', () => toast('演示页面：没有真实订阅可同步'));
+    $('#saveBtn').addEventListener('click', () => toast('演示页面：保存功能未接入'));
+    $('#memoManage').addEventListener('click', () => toast('演示页面：管理面板未接入'));
+
+    // 说明
+    $('#helpBtn').addEventListener('click', () => openModal('关于这个演示', `
+        <p>Habu（个人数字工作台）的对外演示页。待办、备忘、订阅时间线与服务器指标都是虚构示例。</p>
+        <p>整页是纯静态文件：不连接后台、不发起网络请求、不保存任何数据。</p>
+        <p>导航分类指向公开网站，可直接点开体验。</p>`));
+    $('#demoModalClose').addEventListener('click', closeModal);
+    $('#demoModalOverlay').addEventListener('click', (e) => {
+        if (e.target === $('#demoModalOverlay')) closeModal();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !$('#demoModalOverlay').hidden) closeModal();
+    });
+
+    window.addEventListener('resize', () => {
+        clearTimeout(window.__demoDockTimer);
+        window.__demoDockTimer = setTimeout(applyDock, 120);
+    });
+}
+
+function applyTimelineFilter() {
+    const channel = $('.special-line-chip[data-channel][aria-pressed="true"]')?.dataset.channel ?? '';
+    const view = $('.special-line-chip[data-view][aria-pressed="true"]')?.dataset.view ?? 'all';
+    let visible = 0;
+    $$('#eventList .special-line-item').forEach(item => {
+        const inChannel = !channel || item.dataset.channel === channel;
+        const favorited = item.dataset.favorited === '1';
+        const inView = view === 'all' || (view === 'favorited' && favorited) || (view === 'archived' && item.dataset.archived === '1');
+        const show = inChannel && inView;
+        item.hidden = !show;
+        if (show) visible++;
+    });
+    let empty = $('#eventEmpty');
+    if (!visible) {
+        if (!empty) {
+            empty = document.createElement('div');
+            empty.id = 'eventEmpty';
+            empty.className = 'special-line-empty';
+            empty.innerHTML = '<p>当前筛选下没有内容。演示数据里只有几条示例。</p>';
+            $('#eventList').after(empty);
+        }
+        empty.hidden = false;
+    } else if (empty) {
+        empty.hidden = true;
+    }
+}
+
+/* ================= 启动 ================= */
+
+renderGrid();
+renderModules();
+bind();
+applyThemeStyle('prism');
+applyMode('dark');
+requestAnimationFrame(applyDock);
+})();
+</script>
+</body>
+</html>

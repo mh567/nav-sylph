@@ -6,6 +6,22 @@ const path = require('path');
 const http = require('http');
 const bcrypt = require('bcrypt');
 
+// ========== CLI 子命令 ==========
+//
+// 必须在 `require('./server-config/index.js')` 与 `assertConfigUsable()` 之前拦截。
+// 那两处一旦执行，配置坏掉时进程会带着启动路径的错误信息退出，用户看不到
+// 我们专门为这个场景准备的文案；而 `config:validate` 的全部价值就在于
+// 「配置坏了也跑得起来，并说清是哪坏了」。
+//
+// `config:print` 解决的是另一次事故：安装目录根下的 server-config.json 会被
+// Node 的扩展名补全抢先加载，遮蔽 server-config/ 目录。那时「默认值 + 用户 json
+// + 环境变量」的合并结果是什么，没有任何地方能直接看到。这里把它打出来，
+// 并标明每个配置源是否存在。
+const CLI_CONFIG_COMMANDS = new Set(['config:validate', 'config:print']);
+if (CLI_CONFIG_COMMANDS.has(process.argv[2])) {
+    process.exit(runConfigCommand(process.argv[2]));
+}
+
 // ⚠️ 必须写成 './server-config/index.js'（显式带 index.js），不能写 './server-config'。
 //
 // Node 解析 `require('./server-config')` 的顺序是 `.js` → `.json` → `.node` → **目录**，
@@ -97,6 +113,129 @@ function assertConfigUsable(loaded) {
             : 'server-config/ 目录缺失或无法加载，请重新安装程序文件'
         )
     );
+}
+
+/**
+ * 就地脱敏：凭据类字段只保留「有没有配」，不打印值。
+ *
+ * `config:print` 的输出会被贴进 issue 或截图里，所以不能照抄 defaults 里的
+ * defaultPassword 一类的字段。这条与「凭据只进不出」是同一套约定。
+ */
+function redactConfigForPrint(value) {
+    const SECRET_KEY_PATTERN = /password|secret|token|key|credential/i;
+    // 路径类键名常常也含 password / key（`adminPasswordFile`、`https.keyPath`），
+    // 但它们的值是路径，不是凭据本身，打印出来正是排查要看的。
+    const PATH_KEY_PATTERN = /(path|file|dir|url)$/i;
+
+    const walk = (node, keyName) => {
+        if (Array.isArray(node)) return node.map(item => walk(item, keyName));
+
+        if (node && typeof node === 'object') {
+            const out = {};
+            for (const [key, child] of Object.entries(node)) {
+                out[key] = walk(child, key);
+            }
+            return out;
+        }
+
+        if (typeof node !== 'string' || node === '') return node;
+        if (PATH_KEY_PATTERN.test(keyName || '')) return node;
+
+        // 只拦字符串。数字与布尔不是凭据（`cookieSecure: true` 这种要如实打印）。
+        if (SECRET_KEY_PATTERN.test(keyName || '')) {
+            return `<已脱敏，长度 ${node.length}>`;
+        }
+
+        return node;
+    };
+
+    return walk(value, '');
+}
+
+/**
+ * `config:validate` / `config:print` 的实现。返回进程退出码。
+ *
+ * 两个命令都先尝试加载模块并做遮蔽判定，把失败原因直接说出来，那正是
+ * 用户跑这两个命令时最想知道的。加载成功后才分别体检与打印。
+ */
+function runConfigCommand(command) {
+    const rootDir = __dirname;
+    const userConfigPath = path.join(rootDir, 'server-config.json');
+    const examplePath = path.join(rootDir, 'server-config.example.json');
+    const userConfigExists = fsSync.existsSync(userConfigPath);
+
+    console.log('Habu 配置检查');
+    console.log(`  项目根目录: ${rootDir}`);
+    console.log(`  server-config.json: ${userConfigExists ? '存在' : '不存在（使用默认值）'}`);
+    console.log(`  .env: ${fsSync.existsSync(path.join(rootDir, '.env')) ? '存在' : '不存在'}`);
+    console.log('');
+
+    let loaded;
+    try {
+        // 显式路径：与文件顶部 require 的写法保持一致，避免扩展名补全再次遮蔽目录。
+        loaded = require('./server-config/index.js');
+        assertConfigUsable(loaded);
+    } catch (err) {
+        console.error('配置加载失败：');
+        console.error(String(err && err.message ? err.message : err).split('\n').map(l => '  ' + l).join('\n'));
+        return 1;
+    }
+
+    if (command === 'config:validate') {
+        const errors = [];
+
+        try {
+            loaded.validate();
+        } catch (err) {
+            errors.push(String(err && err.message ? err.message : err));
+        }
+
+        // 与启动路径同样的判定：模块被遮蔽时 rootDir 拿不到，validate 也挂不上。
+        // assertConfigUsable 已经覆盖，这里只补充「用户 json 是否只是个残片」。
+        if (userConfigExists) {
+            try {
+                const raw = fsSync.readFileSync(userConfigPath, 'utf8');
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    errors.push('server-config.json 的顶层必须是一个对象');
+                }
+            } catch (err) {
+                errors.push(`server-config.json 无法解析：${err.message}`);
+            }
+        }
+
+        const https = loaded.server && loaded.server.https;
+
+        if (errors.length) {
+            console.error('配置不合法：');
+            for (const line of errors.join('\n').split('\n')) {
+                console.error(`  ${line}`);
+            }
+            return 1;
+        }
+
+        console.log('配置有效。');
+        console.log(`  监听地址: ${loaded.server.host}:${loaded.server.port}`);
+        console.log(`  数据库: ${loaded.paths.database}`);
+        console.log(`  HTTPS: ${https && https.enabled ? '已启用' : '未启用'}`);
+        return 0;
+    }
+
+    // config:print
+    const printed = {};
+    for (const [key, value] of Object.entries(loaded)) {
+        // validate 是挂上去的方法，不是配置项。
+        if (typeof value === 'function') continue;
+        printed[key] = redactConfigForPrint(value);
+    }
+
+    if (userConfigExists && !fsSync.existsSync(examplePath)) {
+        console.warn('提示：找不到 server-config.example.json，无法对照模板。');
+    }
+
+    console.log('合并后的最终配置（默认值 < server-config.json < .env < 环境变量）：');
+    console.log(JSON.stringify(printed, null, 2));
+    return 0;
 }
 
 // 纯函数形式：store 与 now 由调用方传入，便于注入时钟做确定性测试

@@ -2059,6 +2059,21 @@
 
         async init() {
             try {
+                // 自签标记住在**服务配置**里（server-config.json），而 this.config 是
+                // **用户公开配置**（config.json），两个文件、两套字段，所以必须单独取。
+                // 早先从 `this.config?.security?.selfSignedCert` 读，而那个路径上永远
+                // 是 undefined（浏览器实测发现，单元测试全绿：没有任何一条断言它真被下发过）。
+                //
+                // ⚠️ 它与会话无关，所以在**第一个 await 之前**就发出去，与会话并行。
+                // 它只喂给后台生成部署命令的那段文案，首屏渲染完全用不到；早先串行
+                // await 在 render() 之前，等于让首屏白等一个完整往返。200ms RTT 下
+                // 实测多 206ms（`/api/session` 814ms 结束，它 1027ms 才开始）。
+                // 失败不影响首屏：按「否」处理，后台那段命令会少一个 --server-ca。
+                const flagsPromise = API.get('/api/server-flags').catch(e => {
+                    console.warn('读取服务配置标志失败，自签标记按「否」处理:', e);
+                    return null;
+                });
+
                 const session = await this.loadSession();
                 if (!session.authenticated) {
                     location.replace('/login.html');
@@ -2068,27 +2083,23 @@
                 this.sessionTrusted = !!session.trusted;
                 await this.loadPersonalNavigation();
                 this.migrateConfig();
-                // 用户配置一到就先把外观定下来，**不等**下面那趟 server-flags：
+                // 用户配置一到就先把外观定下来，**不等** server-flags：
                 // 服务端强制了主题（theme 不是 auto）时，全靠这一步把首屏的
                 // 系统色纠正过来，多压一个往返就多闪一帧。
                 this.applyTheme();
-                // 自签标记住在**服务配置**里（server-config.json），
-                // 而 this.config 是**用户公开配置**（config.json）——
-                // 两个文件、两套字段，所以它必须单独取。
-                // 早先从 `this.config?.security?.selfSignedCert` 读，
-                // 而那个路径上永远是 undefined（浏览器实测发现，
-                // 单元测试全绿：没有任何一条断言它真的被下发过）。
-                try {
-                    const flags = await API.get('/api/server-flags');
-                    this.selfSignedCert = flags?.selfSignedCert === true;
-                } catch (e) {
-                    console.warn('读取服务配置标志失败，自签标记按「否」处理:', e);
-                    this.selfSignedCert = false;
-                }
+                // 到这里渲染所需的一切都齐了，先出首屏。flags 若已返回就同步取值，
+                // 否则等它在后台落地，它不挡渲染。
                 this.render();
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
+                flagsPromise.then(flags => {
+                    this.selfSignedCert = flags?.selfSignedCert === true;
+                }).catch(() => {
+                    // 读失败时显式落到「否」，不留 undefined。后台据此决定
+                    // 部署命令要不要带 --server-ca。
+                    this.selfSignedCert = false;
+                });
                 // 会话与个人导航已确认，收藏索引和模块随后加载。
                 requestAnimationFrame(() => {
                     $('#modeBtn').hidden = false;
@@ -4055,12 +4066,14 @@
 
         async checkVersionUpdate() {
             try {
-                // 获取当前版本信息
-                const versionData = await API.get('/api/version');
+                // 两个请求互不依赖，并行发出。它不在首屏关键路径上（render 之后才跑），
+                // 但串行 await 会让「帮助按钮上那个更新圆点」晚一个完整往返才出现，
+                // 200ms RTT 下实测多 206ms（version 1044→1257，changelog 1260→1466）。
+                const [versionData, changelogData] = await Promise.all([
+                    API.get('/api/version'),
+                    API.get('/api/changelog')
+                ]);
                 this.currentVersion = versionData.version;
-
-                // 获取更新日志
-                const changelogData = await API.get('/api/changelog');
                 this.changelog = changelogData.versions || [];
 
                 // 检查用户已查看的版本

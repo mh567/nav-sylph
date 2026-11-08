@@ -166,11 +166,14 @@
         </div>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-    <script src="lib/uFuzzy.iife.min.js"></script>
+    <!-- 全部 defer：脚本下载期间 HTML 解析不被打断，四个文件按文档顺序执行，
+         app.js 仍能在 navigation-schema.js / local-navigation.js 之后跑。
+         uFuzzy 是 app.js 搜索路径的依赖，同样不能在它之后执行。 -->
+    <script defer src="lib/uFuzzy.iife.min.js"></script>
     <!-- pinyin.js（拼音搜索）改为按需加载，
          见 app.js loadScript；仍在 sw.js 的 ASSETS 预缓存清单里 -->
-    <script src="navigation-schema.js"></script>
-    <script src="local-navigation.js"></script>
-    <script src="app.js"></script>
+    <script defer src="navigation-schema.js"></script>
+    <script defer src="local-navigation.js"></script>
+    <script defer src="app.js"></script>
 </body>
 </html>

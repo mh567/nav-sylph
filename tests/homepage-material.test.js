@@ -1686,13 +1686,24 @@ test('resolveTheme：本机覆盖优先，其次服务端站点主题，最后�
     assert.equal(resolveTheme.call(ctx), 'light', '非法值忽略，回落到服务端值');
 });
 
-test('applyTheme 排在 server-flags 之前——服务端主题不该多等一个往返', () => {
+test('applyTheme 不等待 server-flags，服务端主题不该多等一个往返', () => {
     const init = methodBodyOf(appCode, 'async init() {');
     const themeAt = init.indexOf('this.applyTheme()');
-    const flagsAt = init.indexOf("API.get('/api/server-flags')");
-    assert.ok(themeAt > 0 && flagsAt > 0, '两处都能定位');
-    assert.ok(themeAt < flagsAt,
-        'config 一到就应用外观；排在 server-flags 之后等于白白多闪一帧');
+    const renderAt = init.indexOf('this.render()');
+    // 请求本身提前发（与会话并行），但**求值**必须排在 applyTheme 之后，
+    // 也就是渲染路径上没有 `await` 它。
+    const awaitAt = init.indexOf('await flagsPromise');
+    const thenAt = init.indexOf('flagsPromise.then');
+
+    assert.ok(themeAt > 0 && renderAt > 0, '两处都能定位');
+    assert.ok(themeAt < renderAt, 'config 一到就应用外观，不能被别的请求压后');
+
+    // 旧的失败形态有两种，都要挡住：
+    //   1. 把 `await API.get('/api/server-flags')` 放在 render 之前（白等一个 RTT）
+    //   2. 把 flagsPromise 在 render 之前 await 掉（等于又串行了）
+    assert.equal(awaitAt, -1, 'flags 不能在首屏路径上被 await');
+    assert.ok(thenAt > 0, 'flags 结果在后台落地');
+    assert.ok(thenAt > renderAt, '落地回调必须排在首屏渲染之后');
 });
 
 test('架构文档记录了外观三态的优先级与首屏那条顺序约束', () => {
@@ -1700,8 +1711,8 @@ test('架构文档记录了外观三态的优先级与首屏那条顺序约束',
     const arch = fs.readFileSync(path.join(__dirname, '..', 'docs/architecture.md'), 'utf8');
     assert.match(arch, /nav-sylph-theme/, '记下本机键名');
     assert.match(arch, /adoptServerTheme/, '记下登录后要清本机覆盖');
-    assert.match(arch, /applyTheme`\(\) 必须排在 `server-flags`|applyTheme\(\)` 必须排在 `server-flags/,
-        '记下首屏那条顺序约束');
+    assert.match(arch, /不要在 `render\(\)` 之前 `await` 它/,
+        '记下首屏那条顺序约束（flags 不得阻塞渲染）');
 });
 
 test('底栏入口的排版与窄屏触控下限', () => {

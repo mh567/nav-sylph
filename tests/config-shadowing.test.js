@@ -202,6 +202,100 @@ test('拨自签开关后重启不再崩溃（用户报告的原始路径）', as
     assert.equal(flags.selfSignedCert, true, '重启后开关设置必须仍然生效');
 });
 
+// ========== 配置来源合并：json 里的 https.enabled 不能被环境变量层压掉 ==========
+//
+// 实测故障：loadFromEnv() 里写的是 `enabled: env.HTTPS_ENABLED === 'true'`，
+// 未设置该变量时它也返回 false，而 deepMerge 只跳过 undefined 与空串。
+// 于是 server-config.json 里写的 `"enabled": true` 被静默压回 false，
+// HTTPS 只能靠环境变量开启。同函数的 cookieSecure / geoEnabled 都有守卫，唯独这项漏了。
+test('server-config.json 的 https.enabled 不会被未设置的环境变量压回 false', async (t) => {
+    const dir = stage({ server: { https: { enabled: true, keyPath: 'k.pem', certPath: 'c.pem' } } });
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const probe = spawnSync(process.execPath, ['-e', [
+        "const c = require('./server-config/index.js');",
+        "console.log(JSON.stringify(c.server.https));"
+    ].join('')], {
+        cwd: dir,
+        encoding: 'utf8',
+        // 显式删掉，模拟「用户只写了 json、没动环境变量」
+        env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'HTTPS_ENABLED'))
+    });
+
+    assert.equal(probe.status, 0, probe.stderr);
+    assert.equal(JSON.parse(probe.stdout).enabled, true, 'json 里的 true 必须生效');
+});
+
+test('HTTPS_ENABLED=false 仍能显式关掉 json 里的 true', async (t) => {
+    const dir = stage({ server: { https: { enabled: true } } });
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const probe = spawnSync(process.execPath, ['-e',
+        "console.log(JSON.stringify(require('./server-config/index.js').server.https))"
+    ], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: { ...process.env, HTTPS_ENABLED: 'false' }
+    });
+
+    assert.equal(probe.status, 0, probe.stderr);
+    assert.equal(JSON.parse(probe.stdout).enabled, false, '显式设置必须能覆盖文件');
+});
+
+// ========== config:validate / config:print ==========
+
+/** 在临时安装目录里跑一个 CLI 子命令。 */
+function runCli(dir, command) {
+    return spawnSync(process.execPath, ['server.js', command], {
+        cwd: dir,
+        encoding: 'utf8',
+        env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'HTTPS_ENABLED'))
+    });
+}
+
+test('config:validate 在配置正常时退出 0，且不开端口', async (t) => {
+    const dir = stage(null);
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const res = runCli(dir, 'config:validate');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /配置有效/);
+    // 不开端口：这命令的用途是发布前自检，不该留下运行中的服务
+    assert.doesNotMatch(res.stdout, /Habu Server/);
+});
+
+test('config:validate 能抓到正常启动会静默吞掉的畸形 json', async (t) => {
+    const dir = stage(null);
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    // loadFromConfigFile() 对解析失败只 console.warn 然后返回 {}，
+    // 所以正常启动看不出问题，用户以为配置生效了。
+    fs.writeFileSync(path.join(dir, 'server-config.json'), '{ 这不是 json');
+
+    const res = runCli(dir, 'config:validate');
+    assert.notEqual(res.status, 0, '畸形 json 必须让命令失败');
+    assert.match(res.stdout + res.stderr, /无法解析/);
+});
+
+test('config:print 不打印凭据值，但保留路径类字段', async (t) => {
+    const dir = stage(null);
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    const res = runCli(dir, 'config:print');
+    assert.equal(res.status, 0, res.stderr);
+
+    const printed = JSON.parse(res.stdout.slice(res.stdout.indexOf('{')));
+    // 默认管理密码（defaults.js 的 defaultPassword）不能出现在输出里：
+    // 这份输出会被贴进 issue。
+    assert.doesNotMatch(res.stdout, /admin123/, '默认密码不能原样打印');
+    // 路径类字段要如实打印，它们正是排查要看的
+    assert.match(printed.security.adminPasswordFile, /\.admin-password\.json$/,
+        'adminPasswordFile 是路径，必须原样打印');
+    // macOS 上 os.tmpdir() 走的是 /var → /private/var 符号链接，而 subprocess 里
+    // __dirname 已是 realpath。两边都取 realpath 再比，否则这条只在 mac 上恒假。
+    assert.equal(fs.realpathSync(printed.rootDir), fs.realpathSync(dir),
+        'rootDir 必须能直接看到');
+});
+
 // ========== 兜底守卫（require 若被改回隐式形式，上面几条会先逮住） ==========
 
 function loadGuard(userFileExists) {

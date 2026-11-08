@@ -45,7 +45,11 @@ function loadFromEnv() {
             host: env.SERVER_HOST || env.HOST,
             port: env.SERVER_PORT || env.PORT ? parseInt(env.SERVER_PORT || env.PORT) : undefined,
             https: {
-                enabled: env.HTTPS_ENABLED === 'true',
+                // ⚠️ 必须区分「没设」与「设成 false」。写成 `env.HTTPS_ENABLED === 'true'`
+                // 时，未设置该变量也会得到 false，而 deepMerge 只跳过 undefined 与空串，
+                // 于是 server-config.json 里写的 `"enabled": true` 会被静默压回 false，
+                // HTTPS 只能靠环境变量开启。同函数的 cookieSecure / geoEnabled 都有这层守卫。
+                enabled: env.HTTPS_ENABLED === undefined ? undefined : env.HTTPS_ENABLED === 'true',
                 keyPath: env.HTTPS_KEY_PATH,
                 certPath: env.HTTPS_CERT_PATH,
                 caPath: env.HTTPS_CA_PATH
