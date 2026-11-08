@@ -2,11 +2,16 @@
 
 > 项目于 2026-11-08 更名为 Habu，GitHub 仓库为 `mh567/habu`，nav-sylph 兼容分支已移除。历史条目中的 Sylph 为当时的项目名。
 
-## v2.5.1 发布准备（2026-11-08）
+## v2.5.1 已发布（2026-11-08）
 
 - 用户授权本次提交、推送和发布。版本统一为2.5.1，包含底部外观入口清理；更新说明只保留一项用户可感知变化。
 - 发布候选检查：全量708项通过、0失败、0跳过，日志 `/tmp/habu-v2.5.1-tests.log`；六份变更JavaScript语法、发布脚本语法与差异检查通过。版本JSON解析通过，package.json、version.json、CHANGELOG.json与lockfile均为2.5.1。沿用上一条浏览器验证及Standards / Spec人工复核，运行代码未再改动。本任务无关联Issue。
-- 原有未跟踪交接文件 `sylph-handoff-2026-10-18.md` 不进入提交或打包。发布完成后补记远端与附件校验；本次不部署目标服务器。
+- 原有未跟踪交接文件 `sylph-handoff-2026-10-18.md` 不进入提交或打包。本次未部署目标服务器。
+
+- 实现提交 `a22f69c79578c493bd174742120f2dbabc2fd33b` 已推送main；使用 `scripts/release.sh` 完成发布，脚本日志 `/tmp/habu-v2.5.1-release.log`。正式Release：https://github.com/mh567/habu/releases/tag/v2.5.1 。latest已指向v2.5.1，远端tag解析为实现提交a22f69c。
+- 五个附件已通过 `gh release download` 下载，其大小与SHA-256均与GitHub记录一致。完整包13,566,851字节，精简包4,940,244字节；关键源码与发布提交一致，底部外观按钮及引用已移除，缓存为nav-v158，无私人配置或数据库。完整包包含三个Linux agent，精简包不含agent二进制；三个独立agent附件均为正确架构的ELF。
+- 完整包SHA-256：`790f3f23ad9be631808e7bde3d6d8dc3444ec6b86958f4df416183508f7d5611`；精简包：`7b2420044e4d3183da298c46f7aec93b21a8df61824799db03d8063953790c49`。核验目录 `/tmp/habu-v2.5.1-verify-n11qw2it`。
+- 下方本地阶段的「未提交或发布」状态由本条取代。目标服务器升级与真实手机验证仍未执行。
 
 
 ## 移除底部外观入口（2026-11-08，本地完成，未提交或发布）
