@@ -11,6 +11,7 @@ set -e
 
 # ===== 配置 =====
 APP_NAME="habu"
+PREFER_UPDATE_PACKAGE=0
 REPO_OWNER="mh567"
 REPO_NAME="habu"
 GITHUB_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
@@ -141,6 +142,12 @@ download_with_fallback() {
     for mirror in "${GITHUB_MIRRORS[@]}"; do
         local try_url="$url"
         local source_label="GitHub"
+        # 直连 GitHub 的安装包要么很快，要么卡住/504。给它一次短超时，不重试；
+        # 镜像保留一次重试。慢速连接用 --speed-limit 提前放弃，避免占满 max-time。
+        local connect_timeout=10
+        local max_time=120
+        local retries=1
+        local retry_delay=1
         if [ -n "$mirror" ]; then
             # 仅对 github.com 原始链接添加镜像前缀，避免重复
             case "$url" in
@@ -154,32 +161,44 @@ download_with_fallback() {
                     ;;
             esac
             log_info "尝试镜像: ${mirror}"
+        else
+            connect_timeout=5
+            max_time=40
+            retries=0
+            retry_delay=0
         fi
+        local started=$(date +%s)
+        local downloaded=0
         if check_command curl; then
-            if curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 "$try_url" "$@" 2>/dev/null; then
-                # 下载到文件时校验内容，镜像返回 HTML 时继续尝试下一个源，
-                # 不要把坏文件带到解压阶段。
-                if [ -n "$out_file" ] && ! is_valid_archive "$out_file"; then
-                    log_warn "${source_label} 返回的内容不是有效压缩包，换下一个下载源"
-                    rm -f "$out_file"
-                    continue
-                fi
-                return 0
+            if curl -fsSL --connect-timeout "$connect_timeout" --max-time "$max_time" \
+                --retry "$retries" --retry-delay "$retry_delay" \
+                --speed-limit 20480 --speed-time 10 "$try_url" "$@" 2>/dev/null; then
+                downloaded=1
             fi
         elif check_command wget; then
             if [ "$1" = "-o" ]; then
-                if wget -q --connect-timeout=10 --timeout=120 "$try_url" -O "$2" 2>/dev/null; then
-                    if [ -n "$out_file" ] && ! is_valid_archive "$out_file"; then
-                        log_warn "${source_label} 返回的内容不是有效压缩包，换下一个下载源"
-                        rm -f "$out_file"
-                        continue
-                    fi
-                    return 0
+                if wget -q --connect-timeout="$connect_timeout" --timeout="$max_time" "$try_url" -O "$2" 2>/dev/null; then
+                    downloaded=1
                 fi
             else
-                if wget -qO- --connect-timeout=10 --timeout=120 "$try_url" 2>/dev/null; then return 0; fi
+                if wget -qO- --connect-timeout="$connect_timeout" --timeout="$max_time" "$try_url" 2>/dev/null; then
+                    downloaded=1
+                fi
             fi
         fi
+        local elapsed=$(( $(date +%s) - started ))
+        if [ "$downloaded" = "1" ]; then
+            # 下载到文件时校验内容，镜像返回 HTML 时继续尝试下一个源，
+            # 不要把坏文件带到解压阶段。
+            if [ -n "$out_file" ] && ! is_valid_archive "$out_file"; then
+                log_warn "${source_label} 返回的内容不是有效压缩包（${elapsed}s），换下一个下载源"
+                rm -f "$out_file"
+                continue
+            fi
+            log_info "${source_label} 下载成功（${elapsed}s）"
+            return 0
+        fi
+        log_warn "${source_label} 失败（${elapsed}s），换下一个下载源"
     done
 
     log_error "所有下载源均失败"
@@ -241,6 +260,19 @@ control_systemd_service() {
 # 检查命令是否存在
 check_command() {
     command -v "$1" > /dev/null 2>&1
+}
+
+# 计算文件 sha256（Linux 用 sha256sum，macOS 用 shasum）。
+file_hash() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    if check_command sha256sum; then
+        sha256sum "$file" | awk '{print $1}'
+    elif check_command shasum; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif check_command openssl; then
+        openssl dgst -sha256 "$file" 2>/dev/null | awk '{print $NF}'
+    fi
 }
 
 # 检查 root 权限
@@ -381,8 +413,20 @@ get_latest_release() {
     LATEST_TAG=$(echo "$response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
     LATEST_VERSION="${LATEST_TAG#v}"
 
-    # 获取下载链接
-    DOWNLOAD_URL=$(echo "$response" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*\.tar\.gz"' | head -1 | cut -d'"' -f4)
+    # 获取下载链接。更新优先用不含 agent 二进制的精简包：
+    # 那部分约 8.5 MB，而更新时本机已有这些文件。
+    local urls
+    urls=$(echo "$response" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*\.tar\.gz"' | cut -d'"' -f4)
+    DOWNLOAD_URL=""
+    if [ "$PREFER_UPDATE_PACKAGE" = "1" ]; then
+        DOWNLOAD_URL=$(echo "$urls" | grep -- '-update\.tar\.gz$' | head -1)
+    fi
+    if [ -z "$DOWNLOAD_URL" ]; then
+        DOWNLOAD_URL=$(echo "$urls" | grep -v -- '-update\.tar\.gz$' | head -1)
+    fi
+    if [ -z "$DOWNLOAD_URL" ]; then
+        DOWNLOAD_URL=$(echo "$urls" | head -1)
+    fi
 
     if [ -z "$LATEST_TAG" ] || [ -z "$DOWNLOAD_URL" ]; then
         log_error "无法解析版本信息"
@@ -504,6 +548,8 @@ do_install() {
     # 安装依赖
     log_step "安装依赖..."
     install_dependencies
+    deps_hash=$(file_hash "${APP_DIR}/package-lock.json")
+    [ -n "$deps_hash" ] && echo "$deps_hash" > "${APP_DIR}/.habu-deps-hash"
 
     # 创建 .env
     if [ ! -f "${APP_DIR}/.env" ] && [ -f "${APP_DIR}/.env.example" ]; then
@@ -774,7 +820,8 @@ do_update() {
     fi
     log_info "当前版本: ${old_version:-未知}"
 
-    # 获取最新版本
+    # 获取最新版本。更新优先用精简包，跳过本机已有的 agent 二进制。
+    PREFER_UPDATE_PACKAGE=1
     log_step "检查最新版本..."
     if ! get_latest_release; then
         exit 1
@@ -837,7 +884,6 @@ do_update() {
     rm -f .env.example server-config.example.json habu.service
     rm -f README.md DEPLOYMENT.md
     rm -rf docs
-    rm -rf node_modules
 
     # 复制新文件
     cp -r "$temp_dir"/* "$APP_DIR/"
@@ -853,9 +899,18 @@ do_update() {
     [ -f "$backup_dir/habu.db" ] && cp "$backup_dir/habu.db" .
     rm -rf "$backup_dir"
 
-    # 更新依赖
-    log_step "更新依赖..."
-    install_dependencies
+    # 更新依赖：lockfile 没变时保留现有 node_modules，避免每次更新都重装。
+    local new_deps_hash=$(file_hash package-lock.json)
+    local old_deps_hash=""
+    [ -f .habu-deps-hash ] && old_deps_hash=$(cat .habu-deps-hash)
+    if [ -d node_modules ] && [ -n "$new_deps_hash" ] && [ "$old_deps_hash" = "$new_deps_hash" ]; then
+        log_info "依赖未变化，跳过安装"
+    else
+        log_step "更新依赖..."
+        rm -rf node_modules
+        install_dependencies
+        [ -n "$new_deps_hash" ] && echo "$new_deps_hash" > .habu-deps-hash
+    fi
 
     # 设置权限
     chmod +x habu.sh

@@ -37,6 +37,8 @@ fi
 
 RELEASE_NAME="habu-v${VERSION}"
 ARCHIVE_NAME="${RELEASE_NAME}.tar.gz"
+UPDATE_RELEASE_NAME="${RELEASE_NAME}-update"
+UPDATE_ARCHIVE_NAME="${UPDATE_RELEASE_NAME}.tar.gz"
 DIST_DIR="dist"
 
 echo ""
@@ -175,11 +177,32 @@ fi
 
 # 使用 ustar 格式避免 macOS 扩展属性（pax 格式会包含 xattr）
 COPYFILE_DISABLE=1 tar --format ustar -czvf "$ARCHIVE_NAME" "${RELEASE_NAME}"
+
+# 更新包：去掉 agent 二进制。更新时目标机目录里已有这些文件，
+# 没必要每次重下约 8.5 MB；缺失时服务端会按需下载。
+cp -a "${RELEASE_NAME}" "${UPDATE_RELEASE_NAME}"
+rm -rf "${UPDATE_RELEASE_NAME}/agent/dist"
+if command -v xattr &> /dev/null; then
+    xattr -cr "${UPDATE_RELEASE_NAME}" 2>/dev/null || true
+fi
+COPYFILE_DISABLE=1 tar --format ustar -czvf "$UPDATE_ARCHIVE_NAME" "${UPDATE_RELEASE_NAME}"
 cd "$PROJECT_DIR"
 
 ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
 ARCHIVE_SIZE=$(ls -lh "$ARCHIVE_PATH" | awk '{print $5}')
 log_info "压缩包: $ARCHIVE_PATH ($ARCHIVE_SIZE)"
+
+UPDATE_ARCHIVE_PATH="$DIST_DIR/$UPDATE_ARCHIVE_NAME"
+UPDATE_ARCHIVE_SIZE=$(ls -lh "$UPDATE_ARCHIVE_PATH" | awk '{print $5}')
+log_info "更新包: $UPDATE_ARCHIVE_PATH ($UPDATE_ARCHIVE_SIZE)"
+
+# agent 二进制单独作为 Release 附件，供服务端在部署新机器时按需下载。
+AGENT_ASSET_PATHS=()
+for arch in amd64 arm64 armv7; do
+    cp "agent/dist/nav-agent-linux-${arch}" "$DIST_DIR/"
+    AGENT_ASSET_PATHS+=("$DIST_DIR/nav-agent-linux-${arch}")
+done
+log_info "agent 附件: ${AGENT_ASSET_PATHS[*]}"
 
 # 生成发布说明
 log_step "生成发布说明..."
@@ -271,11 +294,17 @@ RELEASE_FLAGS=()
 if [[ "$VERSION" == *-* ]]; then
     RELEASE_FLAGS=(--prerelease --latest=false)
 fi
+RELEASE_ASSETS=("$ARCHIVE_PATH")
+[ -f "$UPDATE_ARCHIVE_PATH" ] && RELEASE_ASSETS+=("$UPDATE_ARCHIVE_PATH")
+for asset in "${AGENT_ASSET_PATHS[@]:-}"; do
+    [ -f "$asset" ] && RELEASE_ASSETS+=("$asset")
+done
+
 gh release create "v${VERSION}" \
     --title "Habu v${VERSION}" \
     --notes "$RELEASE_NOTES" \
     "${RELEASE_FLAGS[@]}" \
-    "$ARCHIVE_PATH"
+    "${RELEASE_ASSETS[@]}"
 
 # 清理
 log_step "清理临时文件..."

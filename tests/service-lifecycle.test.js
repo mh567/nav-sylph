@@ -179,3 +179,61 @@ test('Node 版本闸门排在停服与下载之前', () => {
     assert.ok(gate < body.indexOf('download_release'),
         '闸门必须在下载之前');
 });
+
+// ========== 更新包选择与依赖跳过 ==========
+
+test('update prefers the slim package, install uses the full package', () => {
+    const action = `
+        printf '%s' '{"tag_name":"v9.9.9","assets":[{"browser_download_url":"https://github.com/mh567/habu/releases/download/v9.9.9/habu-v9.9.9.tar.gz"},{"browser_download_url":"https://github.com/mh567/habu/releases/download/v9.9.9/habu-v9.9.9-update.tar.gz"}]}' > "$CASE_DIR/release.json"
+        download_with_fallback() { cat "$CASE_DIR/release.json"; }
+        PREFER_UPDATE_PACKAGE=1
+        get_latest_release > /dev/null
+        printf 'UPDATE=%s\\n' "$DOWNLOAD_URL"
+        PREFER_UPDATE_PACKAGE=0
+        get_latest_release > /dev/null
+        printf 'FULL=%s\\n' "$DOWNLOAD_URL"
+    `;
+    const result = runLifecycle(action);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /UPDATE=.*habu-v9\.9\.9-update\.tar\.gz/);
+    assert.match(result.stdout, /FULL=.*habu-v9\.9\.9\.tar\.gz/);
+});
+
+function updateDepsAction(hashLine) {
+    return `
+        cd "$CASE_DIR"
+        NODE_BIN="$CASE_DIR/fake-node"
+        { echo '#!/bin/bash'; echo 'echo v22.11.0'; } > "$NODE_BIN"
+        chmod +x "$NODE_BIN"
+        printf 'old server' > "$CASE_DIR/server.js"
+        printf '{"version":"1.0.0"}' > "$CASE_DIR/version.json"
+        printf '{"name":"x","lockfileVersion":3}' > "$CASE_DIR/package-lock.json"
+        mkdir -p "$CASE_DIR/node_modules"
+        ${hashLine}
+        get_latest_release() { LATEST_VERSION=2.0.0; DOWNLOAD_URL="http://example.test/x.tar.gz"; }
+        download_release() {
+            mkdir -p "$2"
+            printf '{"version":"2.0.0"}' > "$2/version.json"
+            cp "$CASE_DIR/package-lock.json" "$2/package-lock.json"
+            touch "$2/habu.sh" "$2/server.js"
+            return 0
+        }
+        install_dependencies() { printf 'install-deps\\n' >> "$CALLS_PATH"; }
+        do_stop() { :; }
+        do_start() { :; }
+        do_update
+    `;
+}
+
+test('update keeps node_modules when the lockfile hash is unchanged', () => {
+    const result = runLifecycle(updateDepsAction('h=$(file_hash "$CASE_DIR/package-lock.json"); echo "$h" > "$CASE_DIR/.habu-deps-hash"'));
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.doesNotMatch(result.calls, /install-deps/);
+    assert.match(result.stdout, /依赖未变化/);
+});
+
+test('update reinstalls dependencies when the lockfile hash changed', () => {
+    const result = runLifecycle(updateDepsAction('echo deadbeef > "$CASE_DIR/.habu-deps-hash"'));
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.calls, /install-deps/);
+});

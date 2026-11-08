@@ -1,6 +1,22 @@
 {
   "versions": [
     {
+      "version": "2.4.2",
+      "date": "2026-11-08",
+      "summary": "加快更新下载与依赖安装。",
+      "highlights": [
+        "更新只下载必要文件，并跳过未变化的依赖安装。"
+      ],
+      "changes": {
+        "improve": [
+          "更新包不再包含 agent 二进制，更新时改取精简包。",
+          "直连 GitHub 使用短超时且不重试，镜像保留一次重试，并提前放弃低速连接。",
+          "服务端在缺少 agent 二进制时按需下载并缓存，可用 HABU_AGENT_DOWNLOAD_BASE 指向自建镜像。",
+          "package-lock.json 未变化时跳过 npm install。"
+        ]
+      }
+    },
+    {
       "version": "2.4.1",
       "date": "2026-11-08",
       "summary": "清理旧版项目名的兼容代码。",

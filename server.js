@@ -562,6 +562,64 @@ app.use(express.static(path.join(config.rootDir, 'public'), {
  * `bash -s` 执行，回 HTML 会变成一堆莫名其妙的语法错误。
  */
 const AGENT_ARCHES = new Set(['amd64', 'arm64', 'armv7']);
+const AGENT_REPO_OWNER = 'mh567';
+const AGENT_REPO_NAME = 'habu';
+const AGENT_MIRRORS = ['', 'https://gh-proxy.com', 'https://ghfast.top'];
+// 可选：改用自建镜像。设置为一个目录前缀，按 `<前缀>/nav-agent-linux-<arch>` 取。
+const AGENT_DOWNLOAD_BASE = (process.env.HABU_AGENT_DOWNLOAD_BASE || '').replace(/\/+$/, '');
+
+/** 当前安装版本；用于拼 release 附件地址。 */
+function installedVersion() {
+    try {
+        const data = JSON.parse(fsSync.readFileSync(path.join(config.rootDir, 'version.json'), 'utf8'));
+        return typeof data.version === 'string' ? data.version : '';
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * 按需取得 agent 二进制。
+ *
+ * 更新包不再包含这三个约 6.7 MB 的文件，节省更新下载体积；
+ * 本机已有产物时直接复用，缺失时才从同版本的 Release 附件取回并落盘缓存。
+ */
+async function ensureAgentBinary(arch) {
+    const dir = path.join(config.rootDir, 'agent', 'dist');
+    const file = path.join(dir, `nav-agent-linux-${arch}`);
+    if (fsSync.existsSync(file)) return file;
+
+    const version = installedVersion();
+    if (!version) throw new Error('缺少 version.json，无法定位 agent 版本');
+    const asset = `nav-agent-linux-${arch}`;
+    const base = `https://github.com/${AGENT_REPO_OWNER}/${AGENT_REPO_NAME}/releases/download/v${version}/${asset}`;
+    const sources = AGENT_DOWNLOAD_BASE
+        ? [`${AGENT_DOWNLOAD_BASE}/${asset}`]
+        : AGENT_MIRRORS.map(mirror => mirror ? `${mirror}/${base}` : base);
+    let lastError;
+
+    for (const url of sources) {
+        try {
+            const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(120000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            if (buffer.length < 4 || buffer[0] !== 0x7f || buffer[1] !== 0x45 || buffer[2] !== 0x4c || buffer[3] !== 0x46) {
+                throw new Error('下载内容不是 ELF 可执行文件');
+            }
+            await fs.mkdir(dir, { recursive: true });
+            const temp = `${file}.tmp-${process.pid}`;
+            await fs.writeFile(temp, buffer, { mode: 0o755 });
+            await fs.rename(temp, file);
+            console.log(`Fetched agent binary: ${asset} (${buffer.length} bytes)`);
+            return file;
+        } catch (err) {
+            lastError = err;
+            console.warn(`agent 二进制下载失败（${url}）: ${err.message}`);
+        }
+    }
+    throw lastError || new Error('agent 二进制下载失败');
+}
+
 app.get('/agent/nav-agent-linux-:arch', async (req, res) => {
     const arch = req.params.arch;
     if (!AGENT_ARCHES.has(arch)) {
@@ -571,6 +629,7 @@ app.get('/agent/nav-agent-linux-:arch', async (req, res) => {
     }
     try {
         const file = path.join(config.rootDir, 'agent', 'dist', `nav-agent-linux-${arch}`);
+        if (!fsSync.existsSync(file)) await ensureAgentBinary(arch);
         const stat = await fs.stat(file);
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Length', stat.size);

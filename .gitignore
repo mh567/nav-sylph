@@ -35,6 +35,9 @@ CLAUDE.md
 .claude/
 .commandcode/
 
+# Dependency install marker
+.habu-deps-hash
+
 # Logs
 logs/
 *.log

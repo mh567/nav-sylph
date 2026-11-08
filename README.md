@@ -333,6 +333,7 @@ HABU_DIR=/opt/habu curl -fsSL https://raw.githubusercontent.com/mh567/habu/main/
 | `GEO_DATABASE` | `lib/geo/ip2region_v4.xdb` | 离线 IP 归属库路径 |
 | `DB_FILE` | `habu.db` | SQLite 库文件路径 |
 | `LOG_DIR` | `logs` | 日志目录 |
+| `HABU_AGENT_DOWNLOAD_BASE` | - | 自建镜像前缀，按需下载 agent 二进制时使用 |
 
 > 登录 Cookie 的 `Secure` 标记是**自动判断**的：请求经 https 到达
 > （`HTTPS_ENABLED=true`，或反代回填 `X-Forwarded-Proto: https`）才加，
