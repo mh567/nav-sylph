@@ -2,11 +2,16 @@
 
 > 项目于 2026-11-08 更名为 Habu，GitHub 仓库为 `mh567/habu`，nav-sylph 兼容分支已移除。历史条目中的 Sylph 为当时的项目名。
 
-## v2.5.0 发布准备（2026-11-08）
+## v2.5.0 已发布（2026-11-08）
 
 - 用户已授权提交、推送与发布。版本统一为2.5.0，包含个人工作台登录门禁与文本分享移除；更新说明保持一句概述及一项用户可感知变化。
-- 发布候选检查：全量712项通过、0失败、0跳过，日志 `/tmp/habu-v2.5.0-tests.log`；23份 JavaScript 语法、发布脚本语法及差异检查通过。版本 JSON 重新解析通过，package.json、version.json、CHANGELOG.json 与 lockfile 均为2.5.0。Standards / Spec 人工复核沿用前两条记录，无新增运行代码。随后推送main并使用 `scripts/release.sh` 构建发布，远端及附件校验结果在发布后补记。
+- 发布候选检查：全量712项通过、0失败、0跳过，日志 `/tmp/habu-v2.5.0-tests.log`；23份 JavaScript 语法、发布脚本语法及差异检查通过。版本 JSON 重新解析通过，package.json、version.json、CHANGELOG.json 与 lockfile 均为2.5.0。Standards / Spec 人工复核沿用前两条记录，无新增运行代码。实现提交 `ef446f2d43468bbd710e66101b875a15b47da718` 已推送main，并用 `scripts/release.sh` 完成构建与正式发布。
 - 原有未跟踪 `sylph-handoff-2026-10-18.md` 不进入提交或打包。本任务无关联 Issue；目标服务器部署和真实手机验收仍未执行。
+
+- Release：https://github.com/mh567/habu/releases/tag/v2.5.0 。远端tag解析为实现提交 `ef446f2`，发布为正式版本，latest指向v2.5.0；脚本日志 `/tmp/habu-v2.5.0-release.log`。
+- 通过 `gh release download` 下载全部五个附件，与GitHub记录的大小和SHA-256逐项一致。完整包13,567,911字节、精简更新包4,940,980字节；两包关键运行源码均与提交一致，含独立登录页及nav-v157，已移除二维码与代码高亮库，无私人配置、数据库或原有未跟踪交接文件。完整包包含三个Linux agent，更新包不含agent二进制，三个独立附件的ELF架构均正确。
+- 完整包SHA-256：`b463504bae964a86921476d476638b485adaf1d10fc305da3e46e484b5a8fbfb`；精简包：`489043322698644c0ef1149b298fb9e3c92179fa85eb208ae7960b96c4adcd66`。下载核验目录 `/tmp/habu-v2.5.0-verify-6_fg0q_u`。
+- 发布与附件核验完成，以下两条记录中的「未提交或发布」为此前本地阶段状态，已由本条取代。未执行目标服务器升级，发布成功不代表目标环境部署验收。
 
 
 ## 移除文本分享（2026-11-08，本地完成，未提交或发布）
