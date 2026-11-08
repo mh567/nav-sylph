@@ -18,10 +18,16 @@ GITHUB_RELEASES="${GITHUB_API}/releases"
 RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
 
 # GitHub 镜像加速（下载失败时自动尝试）
+#
+# ghproxy.cn 已停止提供下载，对任意路径返回 200 的 HTML 落地页。curl -f 只看
+# 状态码，会把它当成成功，随后在解压阶段报 "not in gzip format"，用户看到的是
+# 一句和真实原因无关的「下载失败」。该域名不再作为候选，同时下载到文件时必须
+# 校验内容（见 is_valid_archive）。
 GITHUB_MIRRORS=(
     ""                      # 直连 GitHub（优先）
-    "https://ghproxy.cn"
+    "https://gh-proxy.com"
     "https://ghfast.top"
+    "https://ghproxy.net"
 )
 
 # 检测脚本运行模式（远程安装 or 本地管理）
@@ -114,19 +120,33 @@ install_dependencies() {
     return 1
 }
 
+# 判断下载到文件的内容是不是真正的 gzip 包。
+# 镜像站可能用 200 返回 HTML 落地页或错误页，只看状态码会把它们当成功。
+is_valid_archive() {
+    local file="$1"
+    [ -s "$file" ] || return 1
+    gzip -t "$file" 2>/dev/null
+}
+
 # 带镜像回退的下载
 # 用法: download_with_fallback <url> [curl额外参数...]
 download_with_fallback() {
     local url="$1"
     shift
+    local out_file=""
+    if [ "${1:-}" = "-o" ]; then
+        out_file="${2:-}"
+    fi
 
     for mirror in "${GITHUB_MIRRORS[@]}"; do
         local try_url="$url"
+        local source_label="GitHub"
         if [ -n "$mirror" ]; then
             # 仅对 github.com 原始链接添加镜像前缀，避免重复
             case "$url" in
                 https://github.com/*|https://api.github.com/*|https://raw.githubusercontent.com/*)
                     try_url="${mirror}/${url}"
+                    source_label="$mirror"
                     ;;
                 *)
                     # 非 GitHub 链接或已带镜像前缀，跳过此镜像
@@ -136,12 +156,26 @@ download_with_fallback() {
             log_info "尝试镜像: ${mirror}"
         fi
         if check_command curl; then
-            if curl -fsSL --connect-timeout 10 --max-time 120 "$try_url" "$@" 2>/dev/null; then
+            if curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 "$try_url" "$@" 2>/dev/null; then
+                # 下载到文件时校验内容，镜像返回 HTML 时继续尝试下一个源，
+                # 不要把坏文件带到解压阶段。
+                if [ -n "$out_file" ] && ! is_valid_archive "$out_file"; then
+                    log_warn "${source_label} 返回的内容不是有效压缩包，换下一个下载源"
+                    rm -f "$out_file"
+                    continue
+                fi
                 return 0
             fi
         elif check_command wget; then
             if [ "$1" = "-o" ]; then
-                if wget -q --connect-timeout=10 --timeout=120 "$try_url" -O "$2" 2>/dev/null; then return 0; fi
+                if wget -q --connect-timeout=10 --timeout=120 "$try_url" -O "$2" 2>/dev/null; then
+                    if [ -n "$out_file" ] && ! is_valid_archive "$out_file"; then
+                        log_warn "${source_label} 返回的内容不是有效压缩包，换下一个下载源"
+                        rm -f "$out_file"
+                        continue
+                    fi
+                    return 0
+                fi
             else
                 if wget -qO- --connect-timeout=10 --timeout=120 "$try_url" 2>/dev/null; then return 0; fi
             fi
@@ -369,18 +403,29 @@ download_release() {
 
     if ! download_with_fallback "$url" -o "$temp_file"; then
         log_error "下载失败"
+        log_info "可手动下载后重试："
+        log_info "  curl -fL -o /tmp/nav-sylph.tar.gz ${url}"
+        log_info "  curl -fL -o /tmp/nav-sylph.tar.gz https://gh-proxy.com/${url}"
         return 1
     fi
 
-    if [ ! -f "$temp_file" ]; then
-        log_error "下载失败"
+    if [ ! -f "$temp_file" ] || ! is_valid_archive "$temp_file"; then
+        log_error "下载内容不是有效的压缩包"
+        rm -f "$temp_file"
         return 1
     fi
 
     log_step "解压文件..."
     rm -rf "$temp_dir"
     mkdir -p "$temp_dir"
-    tar -xzf "$temp_file" -C "$temp_dir"
+    # 调用方用 `if ! download_release ...` 的形式，函数体内的 errexit 处于关闭
+    # 状态，所以 tar 的返回值必须显式判断，否则解压失败会继续往下走。
+    if ! tar -xzf "$temp_file" -C "$temp_dir"; then
+        log_error "解压失败"
+        rm -f "$temp_file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
 
     # 找到解压后的目录（应该是 nav-sylph-vX.X.X）
     # 使用 mindepth 1 排除 temp_dir 本身
