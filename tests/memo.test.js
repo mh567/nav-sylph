@@ -636,7 +636,7 @@ async function waitForServer(base, deadlineMs) {
     const until = Date.now() + deadlineMs;
     while (Date.now() < until) {
         try {
-            const res = await fetch(`${base}/api/server-flags`);
+            const res = await fetch(`${base}/api/health`);
             if (res.ok) return true;
         } catch { /* 还没起来 */ }
         await new Promise(r => setTimeout(r, 100));

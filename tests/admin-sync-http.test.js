@@ -13,7 +13,6 @@ test('HTTP: independent administrator devices version modules and navigation, re
     const login = async () => (await app.request('/api/verify-password', { password: 'StrongPass123!', body: {} })).headers.get('set-cookie').split(';')[0];
     const a = await login(), b = await login();
     const get = async (route, cookie = a) => (await app.request(route, { cookie })).json();
-    const initial = await get('/api/config');
     const base = await get('/api/modules/config');
     assert.ok(Number.isSafeInteger(base.revision));
     const body = { revision: base.revision, operationId: 'modules-one', enabledModules: ['memo'], pollInterval: 30 };
@@ -25,7 +24,7 @@ test('HTTP: independent administrator devices version modules and navigation, re
     const nav = await get('/api/admin/navigation', b);
     nav.config.searchEngines = [{ id: 'custom', name: 'Custom', url: 'https://example.com/?q=' }]; nav.config.searchEngine = 'custom';
     assert.equal((await app.request('/api/admin/navigation', { cookie: b, body: { ...nav, operationId: 'nav-one' } })).status, 200);
-    assert.deepEqual(await get('/api/config'), initial);
+    assert.equal((await get('/api/config')).searchEngine, 'custom');
     assert.equal((await get('/api/admin/navigation')).config.searchEngine, 'custom');
     await app.stop(); await app.start();
     assert.deepEqual(await (await app.request('/api/modules/config', { cookie: a, body: winner })).json(), saved);

@@ -176,7 +176,6 @@
 
 
 :root[data-theme-style="prism"] .search:focus-within { border-color: #ffffff50; }
-:root[data-theme-style="prism"] .search.paste-mode { min-height: 128px; padding: 14px; border-radius: 24px; }
 :root[data-theme-style="prism"] .search-caption { margin: 14px 0 32px; font-size: 12px; }
 :root[data-theme-style="prism"] :is(.search-mode,.search-engine,.btn:not(.btn-danger),.special-line-iconbtn,.special-line-btn,.memo-card-manage) {
     border-color: #ffffff12;
@@ -198,8 +197,7 @@
 :root[data-theme-style="prism"] :is(.search-btn:hover,.btn-primary:hover:not(:disabled),.special-line-save:hover,.special-line-btn--primary:hover) { background: linear-gradient(165deg,#42535f,#2d3b46) padding-box,var(--prism-edge) border-box; }
 :root[data-theme-style="prism"] :is(.search-mode,.search-engine,.search-btn,.btn,.special-line-iconbtn,.special-line-btn):active:not(:disabled) { transform: translateY(1px) scale(.985); box-shadow: var(--press-shadow); }
 :root[data-theme-style="prism"] :is(.engine-option:hover,.fav-item:hover,.fav-item.selected) { background: var(--bg-hover); }
-
-:root[data-theme-style="prism"] :is(.engine-dropdown,.fav-dropdown,.help-content,.toast,.paste-result,.special-line-channel-menu) { background: var(--glass-strong); border-color: var(--border); box-shadow: inset 0 1px #ffffff12,var(--shadow-lg); backdrop-filter: blur(24px) saturate(150%); -webkit-backdrop-filter: blur(24px) saturate(150%); }
+:root[data-theme-style="prism"] :is(.engine-dropdown,.fav-dropdown,.help-content,.toast,.special-line-channel-menu) { background: var(--glass-strong); border-color: var(--border); box-shadow: inset 0 1px #ffffff12,var(--shadow-lg); backdrop-filter: blur(24px) saturate(150%); -webkit-backdrop-filter: blur(24px) saturate(150%); }
 :root[data-theme-style="prism"] :is(.modal-content,.fav-dialog,.ui-dialog,.module-panel,.container) { background: var(--prism-reflection),var(--glass-strong); border-color: #ffffff18; border-radius: 28px; box-shadow: var(--prism-slab-shadow); backdrop-filter: blur(24px) saturate(160%); -webkit-backdrop-filter: blur(24px) saturate(160%); }
 :root[data-theme-style="prism"] :is(.modal-backdrop,.help-overlay,.ui-dialog-overlay,.fav-dialog-overlay,.module-overlay) { background: #02030580; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 :root[data-theme-style="prism"] .modal-header { background: none; border-bottom: 1px solid var(--border); padding: 20px 26px; }

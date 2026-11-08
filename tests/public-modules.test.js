@@ -88,107 +88,31 @@ const anon = (app, route) => app.request(route);
 
 // ===================== ① 真实 HTTP =====================
 
-test('HTTP：未开放时匿名被拒，匿名策略清单为空', async t => {
-    const { app } = await adminSession(t);
-
-    const policy = await anon(app, '/api/modules/public');
-    assert.equal(policy.status, 200, '策略接口匿名可读');
-    assert.deepEqual((await policy.json()).modules, [], '默认一个都没开放——新公开模块默认关闭');
-
-    const denied = await anon(app, '/api/weibo-hot');
-    assert.equal(denied.status, 403, '未开放时匿名直读模块数据接口被拒');
-    assert.match((await denied.json()).error, /未对外开放/);
-});
-
-test('HTTP：管理员的「启用」不等于「开放」——启用后匿名仍然被拒', async t => {
-    const { app, cookie } = await adminSession(t);
-
-    // 管理员把自己首页上的微博热搜打开（enabledModules），但**不**对外开放。
-    const base = await (await app.request('/api/modules/config', { cookie })).json();
-    const saved = await app.request('/api/modules/config', {
-        cookie,
-        body: { enabledModules: ['weibo-hot'], revision: base.revision, operationId: 'admin-enables' }
-    });
-    assert.equal(saved.status, 200);
-
-    assert.deepEqual((await (await anon(app, '/api/modules/public')).json()).modules, [],
-        '管理员自己启用不构成开放');
-    assert.equal((await anon(app, '/api/weibo-hot')).status, 403, '匿名仍然被拒');
-    // 但管理员自己能用（下面单独一条也验，这里顺带确认未开放不影响自己）
-    assert.equal((await app.request('/api/weibo-hot', { cookie })).status, 200);
-});
-
-test('HTTP：开放后匿名可读，撤回后立刻 403，重启仍生效', async t => {
+test('HTTP：旧开放策略不会授权匿名访问，重启后仍需登录', async t => {
     const { app, cookie } = await adminSession(t);
     await setOpen(app, cookie, ['weibo-hot']);
-
-    const policy = await (await anon(app, '/api/modules/public')).json();
-    assert.deepEqual(policy.modules, ['weibo-hot']);
-
-    const first = await anon(app, '/api/weibo-hot');
-    assert.equal(first.status, 200, '开放后匿名可读');
-    const list = (await first.json()).list;
-    assert.equal(list.length, 2);
-    assert.equal(list[0].title, '榜一');
-    // 服务端 href 白名单的第一道：第三方数据里的 javascript: 被清成空串
-    assert.equal(list[1].url, '', 'javascript: 不进 href（服务端先滤一道）');
-
-    // 撤回：立刻生效，不需要等任何缓存过期
-    await setOpen(app, cookie, []);
-    assert.equal((await anon(app, '/api/weibo-hot')).status, 403, '撤回后匿名立刻被拒');
-    assert.deepEqual((await (await anon(app, '/api/modules/public')).json()).modules, []);
-
-    // 重新开放后重启，策略与数据都还在（落盘的是真实文件）
-    await setOpen(app, cookie, ['weibo-hot'], 'reopen');
-    await app.stop();
-    await app.start();
-    assert.deepEqual((await (await anon(app, '/api/modules/public')).json()).modules, ['weibo-hot'],
-        '策略是持久化的，重启不丢');
-    assert.equal((await anon(app, '/api/weibo-hot')).status, 200);
-});
-
-test('HTTP：管理员可用自己尚未对外开放的公开模块', async t => {
-    const { app, cookie } = await adminSession(t);
-    const res = await app.request('/api/weibo-hot', { cookie }); // 一次都没开放过
-    assert.equal(res.status, 200, '管理员不受「对外开放」限制');
-    assert.equal((await res.json()).list.length, 2);
-});
-
-test('HTTP：私人模块提交进开放名单被丢弃，其数据接口对匿名仍是 401', async t => {
-    const { app, cookie } = await adminSession(t);
-    await setOpen(app, cookie, ['server-monitor', 'memo', 'weibo-hot', 'special-line']);
-
-    const config = await (await app.request('/api/modules/config', { cookie })).json();
-    assert.deepEqual(config.publicModules, ['weibo-hot'], '只有服务端白名单里的 id 落盘');
-    assert.deepEqual((await (await anon(app, '/api/modules/public')).json()).modules, ['weibo-hot']);
-
-    for (const route of ['/api/memos', '/api/timeline/events', '/api/modules/config', '/api/modules/metrics']) {
-        assert.equal((await anon(app, route)).status, 401, `${route} 对匿名仍是 401`);
+    for (let i = 0; i < 2; i++) {
+        assert.equal((await anon(app, '/api/modules/public')).status, 401);
+        assert.equal((await anon(app, '/api/weibo-hot')).status, 401);
+        assert.deepEqual((await (await app.request('/api/modules/public', { cookie })).json()).modules, []);
+        for (const route of ['/api/memos', '/api/timeline/events', '/api/modules/config', '/api/modules/metrics']) {
+            assert.equal((await anon(app, route)).status, 401, route);
+        }
+        assert.equal((await app.request('/api/weibo-hot', { cookie })).status, 200);
+        if (!i) { await app.stop(); await app.start(); }
     }
 });
 
-test('HTTP：冷缓存下 8 个并发请求只打一趟上游（共享缓存 + 并发合并）', async t => {
+test('HTTP：登录后并发读取热搜共享缓存，上游网址仍按白名单过滤', async t => {
     const { app, cookie, stub } = await adminSession(t);
-    await setOpen(app, cookie, ['weibo-hot']);
-
-    const responses = await Promise.all(Array.from({ length: 8 }, () => anon(app, '/api/weibo-hot')));
+    const responses = await Promise.all(Array.from({ length: 8 }, () => app.request('/api/weibo-hot', { cookie })));
     for (const res of responses) {
         assert.equal(res.status, 200);
-        assert.equal((await res.json()).list.length, 2);
+        const list = (await res.json()).list;
+        assert.equal(list.length, 2);
+        assert.equal(list[1].url, '');
     }
-    assert.equal(stub.hits(), 1, `冷缓存下并发请求只应打一趟上游，实际 ${stub.hits()}`);
-});
-
-test('HTTP：开放不启动私人采集——匿名路径只有它自己那条数据接口', async t => {
-    const { app, cookie } = await adminSession(t);
-    await setOpen(app, cookie, ['weibo-hot']);
-    // 匿名走一遍公开模块的两条请求
-    assert.equal((await anon(app, '/api/modules/public')).status, 200);
-    assert.equal((await anon(app, '/api/weibo-hot')).status, 200);
-    // 其他模块仍是管理员域：普通访客不该因为公开模块而被拉进私人采集
-    for (const route of ['/api/timeline/events', '/api/memos', '/api/timeline/sources']) {
-        assert.equal((await anon(app, route)).status, 401, `${route} 匿名 401（未触发私人采集）`);
-    }
+    assert.equal(stub.hits(), 1);
 });
 
 // ===================== ② 客户端契约（执行真实方法体） =====================

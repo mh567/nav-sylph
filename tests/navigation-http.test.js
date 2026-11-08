@@ -16,8 +16,8 @@ test('HTTP: public template is independent from personal navigation, draft and p
     fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify(personal));
     fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
     await app.start(); const cookie = await login(app);
-    const initial = await (await app.request('/api/config')).json();
-    assert.equal(initial.legacyPrivate, undefined); assert.equal(initial.privacyMode, undefined);
+    const initial = await (await app.request('/api/config', { cookie })).json();
+    assert.equal(initial.legacyPrivate, 'retain-me'); assert.equal(initial.privacyMode, true);
     assert.deepEqual(await (await app.request('/api/config', { cookie })).json(), initial);
     assert.equal((await app.request('/api/admin/navigation')).status, 401);
     const admin = await (await app.request('/api/admin/navigation', { cookie })).json();
@@ -26,16 +26,16 @@ test('HTTP: public template is independent from personal navigation, draft and p
     const changed = structuredClone(admin.config); changed.categories[0].name = 'Private edit';
     let res = await app.request('/api/admin/navigation', { cookie, body: { config: changed, revision: admin.revision, operationId: 'personal-save-1' } });
     assert.equal(res.status, 200);
-    assert.deepEqual(await (await app.request('/api/config')).json(), initial);
+    assert.equal((await (await app.request('/api/config', { cookie })).json()).categories[0].name, 'Private edit');
     const template = await (await app.request('/api/admin/default-homepage', { cookie })).json();
     const draft = structuredClone(template.config); draft.categories[0].name = 'Public edit';
     res = await app.request('/api/admin/default-homepage/draft', { cookie, body: { config: draft, revision: template.revision, operationId: 'draft-save-1' } });
     assert.equal(res.status, 200); const saved = await res.json();
-    assert.deepEqual(await (await app.request('/api/config')).json(), initial);
+    assert.equal((await (await app.request('/api/config', { cookie })).json()).categories[0].name, 'Private edit');
     const publish = { revision: saved.revision, publishedRevision: template.publishedRevision, operationId: 'publish-1' };
     res = await app.request('/api/admin/default-homepage/publish', { cookie, body: publish }); assert.equal(res.status, 200);
     const published = await res.json();
-    assert.equal((await (await app.request('/api/config')).json()).categories[0].name, 'Public edit');
+    assert.equal((await (await app.request('/api/config', { cookie })).json()).categories[0].name, 'Private edit');
     assert.equal((await (await app.request('/api/admin/navigation', { cookie })).json()).config.categories[0].name, 'Private edit');
     await app.stop(); await app.start();
     assert.deepEqual(await (await app.request('/api/admin/default-homepage/publish', { cookie, body: publish })).json(), published);
@@ -89,7 +89,9 @@ test('HTTP: upgrade snapshot preserves all private files and database; failed in
     assert.equal(failed.prepare('SELECT count(*) AS n FROM navigation_documents').get().n, 0); failed.close();
     fs.writeFileSync(path.join(app.dir, 'config.json'), JSON.stringify(personal));
     await app.start();
-    assert.equal((await (await app.request('/api/config')).json()).categories[0].name, 'Personal');
+    const weak = (await app.request('/api/verify-password', { password: 'admin123', body: {} })).headers.get('set-cookie').split(';')[0];
+    const cookie = (await app.request('/api/change-password', { cookie: weak, body: { currentPassword: 'admin123', newPassword: 'StrongPass123!' } })).headers.get('set-cookie').split(';')[0];
+    assert.equal((await (await app.request('/api/config', { cookie })).json()).categories[0].name, 'Personal');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(snapshot, 'config.json'))), invalid);
     const restarted = openDatabase(path.join(app.dir, 'habu.db'));
     assert.equal(restarted.prepare('SELECT body FROM memos').get().body, 'Keep'); restarted.close();
@@ -117,8 +119,10 @@ test('HTTP: configured external database and password paths have a recoverable m
 
 test('HTTP: factory initialization and supported legacy display defaults remain independent', async t => {
     const app = await installation(t);
+    fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
     await app.start();
-    const initial = await (await app.request('/api/config')).json();
+    const factoryCookie = await login(app);
+    const initial = await (await app.request('/api/config', { cookie: factoryCookie })).json();
     assert.equal(initial.theme, 'auto');
     assert.equal(initial.searchEngine, 'google');
     await app.stop();
@@ -129,8 +133,8 @@ test('HTTP: factory initialization and supported legacy display defaults remain 
     fs.writeFileSync(path.join(old.dir, 'config.json'), JSON.stringify(legacy));
     fs.writeFileSync(path.join(old.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
     await old.start(); const cookie = await login(old);
-    const migrated = await (await old.request('/api/config')).json();
-    assert.equal(migrated.theme, 'auto'); assert.equal(migrated.showBookmarkIcons, true);
-    assert.equal(migrated.categories[0].name, 'Personal');
+    const migrated = await (await old.request('/api/config', { cookie })).json();
+    assert.equal(migrated.theme, undefined); assert.equal(migrated.showBookmarkIcons, undefined);
+    assert.equal(migrated.bookmarks[0].name, 'Personal');
     assert.deepEqual((await (await old.request('/api/admin/navigation', { cookie })).json()).config, legacy);
 });

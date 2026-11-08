@@ -76,8 +76,8 @@ test('HTTP: weak login can only change password, strong login protects every fav
     assert.equal((await app.request('/api/favorites', { cookie: admin })).status, 200);
     await app.request('/api/logout', { cookie: admin, body: {} });
     assert.equal((await app.request('/api/favorites', { cookie: admin })).status, 401);
-    assert.equal((await app.request('/api/config')).status, 200);
-    assert.equal((await app.request('/api/p/code', { method: 'POST' })).status, 200);
+    assert.equal((await app.request('/api/config')).status, 401);
+    assert.equal((await app.request('/api/p/code', { body: {} })).status, 401);
 });
 
 test('HTTP: upgrade revokes legacy sessions and restricted credentials expire without renewal', async t => {

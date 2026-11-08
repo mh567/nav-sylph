@@ -106,22 +106,6 @@ test('browser: 管理员主题覆盖模块、后台及对话框，跨会话保�
     await page.screenshot({ path: path.join(shots, 'memo.png'), fullPage: true });
     await page.goto(app.base);
     await appearance(page, 'prism', 'dark');
-    await page.evaluate(() => window.app.createPaste('用于验证主题的分享内容。'));
-    const shareCode = await page.locator('.paste-code').textContent();
-    await page.goto(app.base + '/p/' + shareCode);
-    await appearance(page, 'prism', 'dark');
-    assert.equal(await page.locator('body').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(27, 35, 43)');
-    await page.locator('#content').filter({ hasText: '用于验证主题的分享内容。' }).waitFor();
-    const shareColors = await page.evaluate(() => Object.fromEntries(['body', '.container', '#content', '#copyBtn'].map(selector => {
-        const style = getComputedStyle(document.querySelector(selector));
-        return [selector, { background: style.backgroundColor, color: style.color }];
-    })));
-    assert.equal(shareColors['.container'].background, 'rgba(25, 36, 47, 0.84)');
-    assert.equal(shareColors['#content'].color, 'rgb(243, 244, 246)');
-    console.log('share computed styles: ' + JSON.stringify(shareColors));
-    await page.screenshot({ path: path.join(shots, 'share.png'), fullPage: true });
-    await page.goto(app.base);
-    await appearance(page, 'prism', 'dark');
     await page.locator('#appearanceBtn').click();
     await page.locator('#themeStyleSelect').waitFor({ state: 'visible' });
     await page.locator('#themeStyleSelect').selectOption('classic');

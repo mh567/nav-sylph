@@ -25,7 +25,7 @@ test('personal workspace removes passphrase spaces for visitors and administrato
             ['/api/sync/device/reset', {}], ['/api/sync/device/revoke', {}],
             ['/api/admin/sync-invites', undefined], ['/api/admin/sync-invites/batch', {}],
             ['/api/admin/sync-spaces', undefined], ['/api/admin/sync-settings', {}]
-        ]) assert.equal((await app.request(route, { ...auth, body })).status, 404, route);
+        ]) assert.equal((await app.request(route, { ...auth, body })).status, auth.cookie ? 404 : 401, route);
     }
     const page = await (await app.request('/')).text();
     assert.doesNotMatch(page, /id="sync(?:Btn|Sep)"/);

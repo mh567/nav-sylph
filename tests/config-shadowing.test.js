@@ -119,6 +119,11 @@ function stopServer(srv) {
     }
 }
 
+async function readFlags(srv) {
+    const login = await fetch(`${srv.base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'ConfigTest123!', 'X-Habu-Request': '1' } });
+    return fetch(`${srv.base}/api/server-flags`, { headers: { Cookie: login.headers.get('set-cookie').split(';')[0] } });
+}
+
 /** 拨自签开关。默认管理密码见 server-config/defaults.js 的 defaultPassword。 */
 async function saveSelfSigned(srv) {
     const login = await fetch(`${srv.base}/api/verify-password`, { method: 'POST', headers: { 'X-Admin-Password': 'ConfigTest123!', 'X-Habu-Request': '1' } });
@@ -141,7 +146,7 @@ test('残片 server-config.json 不再让服务起不来，且其中设置确实
     t.after(() => stopServer(srv));
 
     // 不但要能起，还要证明那份 json 真被读了——否则「忽略它」也能通过上面这步。
-    const res = await fetch(`${srv.base}/api/server-flags`);
+    const res = await readFlags(srv);
     const body = await res.json();
     assert.equal(res.status, 200);
     assert.equal(body.selfSignedCert, true,
@@ -193,7 +198,7 @@ test('拨自签开关后重启不再崩溃（用户报告的原始路径）', as
     // 关键一步：用这份文件重启。这正是用户手动重启后崩掉的场景。
     const second = await startServer(dir);
     t.after(() => stopServer(second));
-    const flags = await (await fetch(`${second.base}/api/server-flags`)).json();
+    const flags = await (await readFlags(second)).json();
     assert.equal(flags.selfSignedCert, true, '重启后开关设置必须仍然生效');
 });
 

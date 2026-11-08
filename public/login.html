@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>登录 · Habu</title>
+    <link rel="icon" href="/favicon.svg">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/admin.css">
+    <style>
+        body{display:grid;place-items:center;min-height:100dvh;padding:24px}
+        main{width:100%;max-width:360px}h1{margin-bottom:12px}p{margin-bottom:24px}
+        label{display:block;margin:16px 0 8px}input{width:100%;padding:12px;font:inherit}
+        button{margin-top:24px;width:100%}#message{margin-top:16px} [hidden]{display:none!important}
+    </style>
+    <script src="/login.js" defer></script>
+</head>
+<body>
+    <main>
+        <h1>Habu</h1>
+        <p>个人数字工作台，登录后使用。</p>
+        <form id="loginForm">
+            <label for="password">密码</label>
+            <input id="password" type="password" autocomplete="current-password" required autofocus>
+            <div id="changeFields" hidden>
+                <p>请先设置强密码，再进入工作台。</p>
+                <label for="newPassword">新密码</label>
+                <input id="newPassword" type="password" autocomplete="new-password" minlength="12">
+                <label for="repeatPassword">确认新密码</label>
+                <input id="repeatPassword" type="password" autocomplete="new-password" minlength="12">
+                <p>至少12个字符，包含大写、小写、数字、符号中至少三类，且不超过72字节。</p>
+            </div>
+            <button class="btn btn-primary" id="submitBtn" type="submit">登录</button>
+            <p id="message" role="status" aria-live="polite"></p>
+        </form>
+    </main>
+</body>
+</html>

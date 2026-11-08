@@ -8,14 +8,6 @@
     <meta name="theme-color" content="#211f1c" media="(prefers-color-scheme: dark)">
     <title>数字工作台</title>
     <script>
-        // no-cache：浏览器缓存配置但每次用 ETag 校验，未变时服务端返 304
-        // （零传输），既省去首屏往返的响应体，又保证配置始终最新。
-        window.__habuConfigPromise = fetch('/api/config', { cache: 'no-cache' }).then(response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.json();
-        });
-        window.__habuConfigPromise.catch(() => {});
-
         // 未登录访客在首页点过「外观」的话，选择存在本机。这里先于样式表
         // 把它应用上，否则首屏会先按系统色画一遍再跳成选区色。
         // 键名必须与 app.js 的 THEME_STORAGE_KEY 一致（有测试钉住这一点）。
@@ -62,7 +54,6 @@
                     <button type="button" class="search-mode" id="modeBtn" hidden aria-label="切换搜索模式，当前为网页" aria-pressed="false">
                         <span class="mode-label" data-label="web">网页</span>
                         <span class="mode-label" data-label="fav" hidden>书签</span>
-                        <span class="mode-label" data-label="exit" hidden>退出</span>
                     </button>
                     <button type="button" class="search-engine" id="engineBtn" title="切换搜索引擎" aria-haspopup="listbox" aria-expanded="false" aria-controls="engineDropdown">
                         <span class="engine-name" id="engineName">Google</span>
@@ -76,8 +67,6 @@
         </header>
         <div class="search-caption" aria-hidden="true">
             <span id="favSearchHint" hidden><kbd>/</kbd> 查书签</span>
-            <span><kbd>&gt;</kbd> 分享文本</span>
-            <span><kbd>取件码</kbd> 取回分享</span>
         </div>
         <main class="grid" id="grid"></main>
         <section id="localNavigationTools" class="local-navigation-tools" aria-label="首页配置" data-open="true" hidden>
@@ -178,7 +167,7 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="lib/uFuzzy.iife.min.js"></script>
-    <!-- pinyin.js（拼音搜索）与 qrcode.js（分享二维码）改为按需加载，
+    <!-- pinyin.js（拼音搜索）改为按需加载，
          见 app.js loadScript；仍在 sw.js 的 ASSETS 预缓存清单里 -->
     <script src="navigation-schema.js"></script>
     <script src="local-navigation.js"></script>

@@ -7,59 +7,6 @@
     const html = (str) => { const t = document.createElement('template'); t.innerHTML = str.trim(); return t.content.firstChild; };
     const uid = () => 'id_' + Math.random().toString(36).slice(2, 9);
 
-    // ========== 端到端加密工具 ==========
-    const Crypto = {
-        // 从分享码派生 AES 密钥（用户无感知）
-        async deriveKey(code) {
-            const enc = new TextEncoder();
-            const keyMaterial = await crypto.subtle.importKey(
-                'raw', enc.encode(code + '-nav-sylph-e2e'), 'PBKDF2', false, ['deriveKey']
-            );
-            return crypto.subtle.deriveKey(
-                { name: 'PBKDF2', salt: enc.encode('nav-sylph-paste-v2'), iterations: 100000, hash: 'SHA-256' },
-                keyMaterial,
-                { name: 'AES-GCM', length: 256 },
-                false,
-                ['encrypt', 'decrypt']
-            );
-        },
-
-        // 加密文本
-        async encrypt(text, code) {
-            const key = await this.deriveKey(code);
-            const enc = new TextEncoder();
-            const iv = crypto.getRandomValues(new Uint8Array(12));
-            const encrypted = await crypto.subtle.encrypt(
-                { name: 'AES-GCM', iv },
-                key,
-                enc.encode(text)
-            );
-            // 合并 iv + 密文，转 base64
-            const combined = new Uint8Array(iv.length + encrypted.byteLength);
-            combined.set(iv);
-            combined.set(new Uint8Array(encrypted), iv.length);
-            return btoa(String.fromCharCode(...combined));
-        },
-
-        // 解密文本
-        async decrypt(encryptedBase64, code) {
-            try {
-                const key = await this.deriveKey(code);
-                const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
-                const iv = combined.slice(0, 12);
-                const data = combined.slice(12);
-                const decrypted = await crypto.subtle.decrypt(
-                    { name: 'AES-GCM', iv },
-                    key,
-                    data
-                );
-                return new TextDecoder().decode(decrypted);
-            } catch {
-                throw new Error('解密失败');
-            }
-        }
-    };
-
     // 匿名可达的模块接口白名单：公开模块的**策略**读接口本身要匿名可读。
     // 公开模块的数据接口（如 /api/weibo-hot）不在下面那条特权限定里，
     // 本来就不拦——它们的授权在服务端（publicModuleAccess），客户端这层只防
@@ -178,12 +125,6 @@
             // 当前会话是否被信任（可信=30 天，否则 24 小时）
             this.sessionTrusted = false;
             this.dragData = null;
-            this.pasteMode = false;
-            this.pasteUserResized = false;
-            // 首页取件码识别：记住被 Esc 取消过的**归一化后的码**（不是原始输入）。
-            // 记码而不是记一个布尔，换一个码就自动重新生效，不需要在登录、
-            // 模式切换这些事件上「重新武装」，也就不会留下永久失效的一次性标志。
-            this.pickupDismissedCode = null;
             // 书签检索
             this.favorites = [];
             this.favoritesLoading = true;
@@ -2055,9 +1996,14 @@
 
         async init() {
             try {
-                this.initialSession = this.loadSession();
-                this.initialSession.catch(() => {});
-                await this.loadLocalNavigation();
+                const session = await this.loadSession();
+                if (!session.authenticated) {
+                    location.replace('/login.html');
+                    return;
+                }
+                this.authenticated = true;
+                this.sessionTrusted = !!session.trusted;
+                await this.loadPersonalNavigation();
                 this.migrateConfig();
                 // 用户配置一到就先把外观定下来，**不等**下面那趟 server-flags：
                 // 服务端强制了主题（theme 不是 auto）时，全靠这一步把首屏的
@@ -2080,10 +2026,12 @@
                 this.bind();
                 $('#loader').remove();
                 $('#app').hidden = false;
-                // 首页先显示，书签索引、版本信息与会话状态随后加载。
-                // 会话状态放在首屏之后查，不为它增加首屏的往返等待。
+                // 会话与个人导航已确认，收藏索引和模块随后加载。
                 requestAnimationFrame(() => {
-                    this.restoreSession();
+                    $('#modeBtn').hidden = false;
+                    $('#favSearchHint').hidden = false;
+                    this.loadFavorites();
+                    this.syncModuleVisibility();
                     this.checkVersionUpdate();
                 });
                 const registerServiceWorker = () => {
@@ -2432,14 +2380,9 @@
             $('#modeBtn').onclick = () => {
                 const input = $('#searchInput');
                 const value = input.value;
-                if (this.pasteMode) {
-                    // 分享态下该按钮是「退出」：只回到搜索态并清空，不跳去书签检索
-                    this.exitPasteMode();
-                    return;
-                }
                 input.value = this.favSearchMode
                     ? value.replace(/^[\/、]{1,2}/, '')
-                    : `/${this.isPasteTrigger(value[0]) ? value.slice(1) : value}`;
+                    : `/${value}`;
                 this.handleSearchInput(input);
                 input.focus();
             };
@@ -2447,65 +2390,13 @@
             this.bindKeyboardViewport();
             this.bindBookmarkPress();
             $('#searchForm').onsubmit = (e) => { e.preventDefault(); this.handleSearch(); };
-            // textarea 的回车默认只换行，不会提交表单，因此两种模式都要自己接管：
-            // 分享态回车发送、Shift/ Ctrl / Cmd+回车换行；搜索态回车搜索。
             $('#searchInput').addEventListener('keydown', event => {
-                if (event.key !== 'Enter') return;
-                if (this.pasteMode) {
-                    if (event.shiftKey || event.ctrlKey || event.metaKey) return;
-                    event.preventDefault();
-                }
-                // 搜索态不能放行：裸回车会插入换行而不是提交表单
-                if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+                if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
                     event.preventDefault();
                     this.handleSearch();
                 }
             });
-            $('#searchInput').oninput = (e) => {
-                this.handleSearchInput(e);
-                this.autoGrowPasteInput();
-            };
-            // 粘贴分享链接时只留取件码：识别本身并不依赖这一步，但 44px 高的
-            // 输入框里一条长链接会折成三行，码就看不清了。分享态粘的是正文、
-            // 书签态粘的是查询词，都不接管；取不到 clipboardData 时也不接管
-            // （部分 WebView 的 paste 事件不带数据，退化为普通粘贴，识别仍生效）。
-            $('#searchInput').addEventListener('paste', event => {
-                if (this.pasteMode || this.favSearchMode) return;
-                const text = event.clipboardData?.getData('text') || '';
-                const code = this.parsePickupCode(text);
-                if (!code) return;
-                event.preventDefault();
-                // 粘贴是一次明确的新意图：清掉 Esc 留下的「这个码不取件」，
-                // 否则把同一个码粘回来会被静默跳过。
-                this.pickupDismissedCode = null;
-                const field = $('#searchInput');
-                field.value = code;
-                this.handleSearchInput(field);
-            });
-            // 拖拽把手在右下角；按下它即视为用户接管高度，之后不再自动跟随。
-            // 撞上 min-height 的空拖会留下一个永不生效的小高度并锁死自增高，
-            // 因此拖拽结束时按实际渲染高度回退：没真的变高就交还给自动增高。
-            // 监听挂在 window 上：拖到元素外松手也能收到，否则标志会永久卡住。
-            const input = $('#searchInput');
-            const settleDrag = () => {
-                window.removeEventListener('pointerup', settleDrag);
-                window.removeEventListener('pointercancel', settleDrag);
-                if (!this.pasteUserResized) return;
-                const minHeight = parseFloat(getComputedStyle(input).minHeight) || 0;
-                if (input.getBoundingClientRect().height > minHeight + 1) return;
-                this.pasteUserResized = false;
-                input.style.height = '';
-                this.autoGrowPasteInput();
-            };
-            input.addEventListener('pointerdown', event => {
-                if (!this.pasteMode) return;
-                const rect = event.currentTarget.getBoundingClientRect();
-                const onHandle = event.clientX > rect.right - 18 && event.clientY > rect.bottom - 18;
-                if (!onHandle) return;
-                this.pasteUserResized = true;
-                window.addEventListener('pointerup', settleDrag);
-                window.addEventListener('pointercancel', settleDrag);
-            });
+            $('#searchInput').oninput = event => this.handleSearchInput(event);
             $('#adminBtn').onclick = () => this.openAdmin();
             $('#helpBtn').onclick = () => this.showHelp();
             $('#layoutBtn').onclick = () => this.toggleEditLayout();
@@ -2624,17 +2515,6 @@
                         engineBtn.focus();
                     } else if (!$('#modal').hidden) {
                         this.closeAdmin();
-                    } else if (this.pasteMode) {
-                        // 分享态退出。移动端没有 Esc 键，主路径是左侧「退出」按钮
-                        this.exitPasteMode();
-                    } else {
-                        // 取消取件识别：同一个输入不该因为「长得像码」就悄悄
-                        // 改变回车的含义。记下归一化后的码，换成别的码即恢复。
-                        const pickup = this.resolvePickup($('#searchInput').value);
-                        if (pickup.code) {
-                            this.pickupDismissedCode = pickup.code;
-                            this.syncSearchSubmitLabel(false);
-                        }
                     }
                 }
             };
@@ -2653,9 +2533,6 @@
                     frame = 0;
                     const covered = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
                     document.documentElement.style.setProperty('--kb-inset', `${covered}px`);
-                    // 编辑区的 max-height 依赖这个变量，键盘弹出/收起后要重新算高度，
-                    // 否则会停在键盘弹出前算出的值上
-                    this.autoGrowPasteInput();
                 });
             };
             viewport.addEventListener('resize', sync);
@@ -3292,7 +3169,7 @@
                 pendingNavigation: this.pendingNavigation, pendingModules: this.pendingModules
             } : null;
             this.clearPrivateState();
-            if (!draft) { this.showToast('登录已失效，请重新登录', 'error'); return; }
+            if (!draft) { location.replace('/login.html'); return; }
             this.suspendedAdministrator = draft;
             $('#appearanceBtn').disabled = true;
             $('#engineBtn').disabled = true;
@@ -3301,11 +3178,11 @@
             $('#layoutBtn').hidden = true;
             $('#localCancelBtn').hidden = true;
             $('#localDoneBtn').hidden = true;
-            const login = await this.showUiDialog({ title: '登录已失效', message: '私人内容已隐藏，未保存草稿仅保留在当前标签页。重新登录后恢复草稿，或放弃草稿恢复普通首页。', confirmText: '重新登录', cancelText: '放弃草稿' });
+            const login = await this.showUiDialog({ title: '登录已失效', message: '私人内容已隐藏，未保存草稿仅保留在当前标签页。重新登录后恢复草稿，或放弃草稿返回登录页。', confirmText: '重新登录', cancelText: '放弃草稿' });
             if (login) await this.openAdmin();
             if (!this.authenticated && this.suspendedAdministrator) {
-                const discard = await this.confirmAction('放弃管理员草稿并恢复普通首页？', '放弃草稿', true);
-                if (discard) this.suspendedAdministrator = null;
+                const discard = await this.confirmAction('放弃管理员草稿并返回登录页？', '放弃草稿', true);
+                if (discard) { this.suspendedAdministrator = null; location.replace('/login.html'); }
             }
             if (!this.suspendedAdministrator) {
                 $('#appearanceBtn').disabled = false;
@@ -3317,6 +3194,7 @@
 
         clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
+            $('#app').hidden = true;
             $('#localNavigationTools').hidden = true;
             $('#localNavigationStatus').hidden = !this.localError;
             this.syncAppearanceEntry(true);
@@ -4523,51 +4401,11 @@
             items[this.favSelectedIdx]?.scrollIntoView({ block: 'nearest' });
         }
 
-        // ========== Paste 分享功能 ==========
-
-        // 检查是否为分享模式触发字符
-        isPasteTrigger(char) {
-            return char === '>' || char === '》';
-        }
-
-        // 取件码识别：整串必须就是码本身，或指向 /p/<code> 的**绝对**链接。
-        // - 整串锚定：正文里夹着 tiger-482、或粘贴多行文本，都不算取件；
-        // - 只认绝对链接：相对路径 /p/<code> 会和书签模式的触发符 `/` 抢同一串
-        //   输入，而分享结果里复制出来的链接一定是绝对的，覆盖真实场景已经够了；
-        // - 码的字符集必须与服务端 isPasteCodeFormat 一致（tests 里有跨端断言）。
-        parsePickupCode(text) {
-            const raw = String(text ?? '').trim();
-            if (!raw) return null;
-            const bare = /^[a-z]{2,6}-\d{3}$/i.exec(raw);
-            if (bare) return bare[0].toLowerCase();
-            const link = /^https?:\/\/[^\s/]+\/p\/([a-z]{2,6}-\d{3})\/?(?:[?#].*)?$/i.exec(raw);
-            return link ? link[1].toLowerCase() : null;
-        }
-
-        // 「识别到码」和「这次输入确实要取件」是两个问题：Esc 取消后前者仍成立。
-        // 按钮文案与回车分发都从这里取值，避免各判一次而漂移。
-        resolvePickup(value) {
-            const code = this.parsePickupCode(value);
-            return { code, active: !!code && code !== this.pickupDismissedCode };
-        }
-
-        // 普通搜索态的主按钮文案：只写「取件 / 搜索」这两个。
-        // 分享态（发送）与书签态（打开）仍由各自的 toggle* 负责——同一个节点
-        // 被多处写会互相覆盖，modeBtn 历史上正是这样坏过一次。
-        syncSearchSubmitLabel(pickupActive) {
-            const searchBtn = $('.search-btn');
-            if (!searchBtn) return;
-            searchBtn.textContent = pickupActive ? '取件' : '搜索';
-            searchBtn.title = pickupActive ? '回车取回共享文本（Esc 改为搜索）' : '搜索';
-        }
+        // ========== 搜索输入 ==========
 
         // 接收 input 元素；也兼容直接传入事件对象
         handleSearchInput(e) {
             const value = (e.target ?? e).value;
-
-            // 清空输入等于重新开始：Esc 留下的「这个码不取件」到此为止，
-            // 否则同一个码在这一页里再也取不了。
-            if (!value.trim()) this.pickupDismissedCode = null;
 
             // 检查书签检索模式（/ 或 //）
             const isFavMode = this.authenticated && value.length > 0 && this.isFavSearchTrigger(value[0]);
@@ -4582,11 +4420,6 @@
                 e.preventDefault?.();
                 this.waitForSession().then(() => this.handleSearchInput(e));
                 return;
-            }
-
-            if (isFavMode && this.pasteMode) {
-                this.pasteMode = false;
-                this.togglePasteMode(false);
             }
 
             if (isFavMode !== this.favSearchMode) {
@@ -4623,84 +4456,6 @@
                 return;
             }
 
-            // 原有的 Paste 模式检测
-            const isPasteMode = value.length > 0 && this.isPasteTrigger(value[0]);
-
-            if (isPasteMode !== this.pasteMode) {
-                this.pasteMode = isPasteMode;
-                this.togglePasteMode(isPasteMode);
-            }
-
-            // 取件码只在普通搜索态生效：书签态在上面已 early return，分享态下
-            // 输入的是正文，按钮文案与回车都不能被取件劫持。
-            if (!this.pasteMode && !this.favSearchMode) {
-                this.syncSearchSubmitLabel(this.resolvePickup(value).active);
-            }
-        }
-
-        // 退出分享态：清标志、收起编辑器、清空草稿、还焦点。
-        // 「退出」按钮与 Esc 两条路径共用，复位逻辑只此一处。
-        exitPasteMode() {
-            const input = $('#searchInput');
-            this.pasteMode = false;
-            this.togglePasteMode(false);
-            input.value = '';
-            this.handleSearchInput(input);
-            input.focus();
-        }
-
-        // textarea 只写 min-height 时高度会锁死，需按内容撑开。
-        // 用户手动拖拽过的框不再自动跟随，否则会把刚拖出来的大小冲掉。
-        autoGrowPasteInput() {
-            const input = $('#searchInput');
-            if (!this.pasteMode || this.pasteUserResized) return;
-            // 先归零再量，否则上一次的 inline height 会成为新的测量基准
-            input.style.height = 'auto';
-            // clamp 到 CSS 的 max-height，避免把一个永远不生效的大值留在
-            // inline 样式里（max-height:none 时 computed 会返回 "none"）
-            const declared = parseFloat(getComputedStyle(input).maxHeight);
-            const max = Number.isFinite(declared) ? declared : Infinity;
-            input.style.height = `${Math.min(input.scrollHeight, max)}px`;
-        }
-
-        togglePasteMode(enabled) {
-            const form = $('#searchForm');
-            const input = $('#searchInput');
-            const searchBtn = $('.search-btn');
-            const engineBtn = $('#engineBtn');
-
-            form.classList.toggle('paste-mode', enabled);
-
-            // 搜索引擎按钮的显隐交给 CSS（.search.paste-mode #engineBtn），
-            // 不用内联 display，否则无法参与过渡且会盖过样式表
-            const dropdown = $('#engineDropdown');
-            dropdown.hidden = true;
-            engineBtn.setAttribute('aria-expanded', 'false');
-
-            // 左侧按钮在分享态下变为「退出」，与书签模式共用同一套标签切换
-            const modeBtn = $('#modeBtn');
-            modeBtn.hidden = !enabled && !this.authenticated;
-            this.showModeLabel(enabled ? 'exit' : 'web');
-            modeBtn.setAttribute('aria-label', enabled ? '退出文本分享' : '切换搜索模式，当前为网页');
-
-            if (enabled) {
-                input.placeholder = '输入要分享的文本，回车发送，Shift+回车换行...';
-                // aria-label 优先于 placeholder 播报，不同步的话读屏用户会
-                // 听到「搜索网页或书签」却在里面写分享文本
-                input.setAttribute('aria-label', '要分享的文本');
-                // 重置上次拖拽留下的大小，否则会以旧高度进入
-                input.style.height = '';
-                this.pasteUserResized = false;
-                searchBtn.textContent = '发送';
-                searchBtn.title = '发送分享';
-            } else {
-                input.placeholder = this.authenticated ? '搜索网页或书签' : '搜索网页';
-                input.setAttribute('aria-label', '搜索网页或书签');
-                input.style.height = '';
-                this.pasteUserResized = false;
-                searchBtn.textContent = '搜索';
-                searchBtn.title = '搜索';
-            }
         }
 
         async handleSearch() {
@@ -4718,186 +4473,8 @@
                 return;
             }
 
-            if (value.length > 0 && this.isPasteTrigger(value[0])) {
-                const text = value.slice(1).trim();
-
-                if (!text) return;
-
-                // 直接作为分享内容
-                await this.showPasteOptions(text);
-                return;
-            }
-
-            // 取件码：直接交给 /p/<code> 页面。PIN 校验、过期判断与阅后即删
-            // 都在那边，首页不解密、也不预检存在性（那要多一次请求并吃掉
-            // 30 次/小时的读取额度）。
-            const pickup = this.resolvePickup(value);
-            if (pickup.active) {
-                this.openPickup(pickup.code);
-                return;
-            }
-
             // 正常搜索
             this.search();
-        }
-
-        // 取件码导航。码已由 parsePickupCode 限定为 [a-z]{2,6}-\d{3}，
-        // encodeURIComponent 只是双保险。与点击分享链接一致，走当前标签页。
-        // 不锁按钮：回到首页时 bfcache 会把 disabled 一并恢复，搜索按钮就死了；
-        // 连按两次只是对同一个地址 assign 两次，没有副作用。
-        openPickup(code) {
-            const dropdown = $('#engineDropdown');
-            if (dropdown) dropdown.hidden = true;
-            location.assign('/p/' + encodeURIComponent(code));
-        }
-
-        async showPasteOptions(content) {
-            const PASTE_TTL_LABELS = { 5: '5 分钟', 30: '30 分钟', 1440: '1 天', 10080: '7 天' };
-
-            const result = await this.showUiDialog({
-                title: '分享保护',
-                options: [
-                    { kind: 'checkbox', name: 'pin', value: 'on', label: '设置 PIN 码保护', hint: '接收方需输入 PIN 才能查看内容', reveal: true }
-                ],
-                // 四档有效期排成 2×2：单行「30 分钟」不折行，触摸目标也够大
-                groups: [
-                    {
-                        label: '有效期',
-                        options: Object.entries(PASTE_TTL_LABELS).map(([minutes, label], index) => ({
-                            kind: 'radio',
-                            name: 'ttl',
-                            value: minutes,
-                            label,
-                            checked: index === 0
-                        }))
-                    }
-                ],
-                confirmText: '分享',
-                closeOnBackdrop: false,
-                reveal: { label: '4 位数字 PIN 码', maxlength: 4 },
-                validate: (values, choices) => choices.pin && !/^\d{4}$/.test(values[0] || '') ? 'PIN 码必须是 4 位数字' : ''
-            });
-
-            // 取消或遮罩关闭：返回 null，不创建分享
-            if (!result) return;
-
-            const usePin = !!result.choices.pin;
-            const pin = usePin ? result.values[0] : null;
-            const ttlMinutes = PASTE_TTL_LABELS[result.choices.ttl] ? Number(result.choices.ttl) : 5;
-
-            // 默认档位不传额外参数，保持既有 createPaste 两参数契约
-            if (!pin && ttlMinutes === 5) {
-                await this.createPaste(content, null);
-            } else {
-                await this.createPaste(content, pin, { ttlMinutes });
-            }
-        }
-
-        async createPaste(content, pin = null, options = {}) {
-            try {
-                // 先请求生成分享码
-                const codeRes = await fetch('/api/p/code', { method: 'POST' });
-                const codeData = await codeRes.json();
-
-                if (!codeData.code) {
-                    this.showToast(codeData.error || '创建分享失败', 'error');
-                    return;
-                }
-
-                const code = codeData.code;
-
-                // 使用分享码进行端到端加密
-                const encryptedContent = await Crypto.encrypt(content, code);
-
-                const body = { code, content: encryptedContent };
-                if (pin) body.pin = pin;
-                if (options.ttlMinutes) body.ttl = options.ttlMinutes;
-
-                const res = await fetch('/api/p', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                const data = await res.json();
-
-                if (data.success) {
-                    $('#searchInput').value = '';
-                    this.pasteMode = false;
-                    this.togglePasteMode(false);
-                    this.showPasteResult(code, !!pin, data.expiresAt);
-                } else {
-                    this.showToast(data.error || '创建分享失败', 'error');
-                }
-            } catch (e) {
-                this.showToast('创建分享失败: ' + e.message, 'error');
-            }
-        }
-
-        showPasteResult(code, hasPin = false, expiresAt = null) {
-            this.hidePasteResult();
-
-            const url = `${location.origin}/p/${code}`;
-            const pinInfo = hasPin ? '<div class="paste-pin-info">已设置 PIN 保护</div>' : '';
-            const result = html(`
-                <div class="paste-result" id="pasteResult">
-                    <button class="paste-close" type="button" aria-label="关闭分享结果">×</button>
-                    <div class="paste-code">${this.esc(code)}</div>
-                    ${pinInfo}
-                    <div class="paste-qr"><img alt="分享链接二维码"></div>
-                    <button class="paste-link" type="button" data-url="${this.esc(url)}">复制链接</button>
-                    <div class="paste-url">${this.esc(url)}</div>
-                    <div class="paste-expiry">${this.esc(this.pasteExpiryText(expiresAt))}</div>
-                </div>
-            `);
-
-            result.querySelector('.paste-close').onclick = () => this.hidePasteResult();
-
-            // 二维码：使用本地图库生成 data URL，失败时静默隐藏，不影响复制链接。
-            // qrcode.js 经 loadScript 按需加载，加载完成后再生成，
-            // 不阻塞分享结果的展示。
-            const qrImg = result.querySelector('.paste-qr img');
-            this.loadScript('lib/qrcode.js')
-                .then(() => {
-                    try {
-                        const qr = qrcode(0, 'M');
-                        qr.addData(url);
-                        qr.make();
-                        qrImg.src = qr.createDataURL(6, 2);
-                    } catch {
-                        qrImg.closest('.paste-qr')?.remove();
-                    }
-                })
-                .catch(() => {
-                    qrImg.closest('.paste-qr')?.remove();
-                });
-
-            result.querySelector('.paste-link').onclick = async (e) => {
-                const link = e.target;
-                const copyUrl = link.dataset.url;
-                try {
-                    await navigator.clipboard.writeText(copyUrl);
-                    link.textContent = '已复制';
-                    setTimeout(() => { link.textContent = '复制链接'; }, 2000);
-                } catch {
-                    await this.promptValue('复制链接', '分享链接', { value: copyUrl, readonly: true, confirmText: '关闭' });
-                }
-            };
-
-            $('#searchForm').after(result);
-        }
-
-        pasteExpiryText(expiresAt) {
-            if (!expiresAt) return '5分钟后过期';
-            const minutes = Math.round((expiresAt - Date.now()) / 60000);
-            if (minutes <= 0) return '已过期';
-            if (minutes < 60) return `${minutes}分钟后过期`;
-            if (minutes < 1440) return `${Math.round(minutes / 60)}小时后过期`;
-            return `${Math.round(minutes / 1440)}天后过期`;
-        }
-
-        hidePasteResult() {
-            const existing = $('#pasteResult');
-            if (existing) existing.remove();
         }
 
         showHelp() {
@@ -4925,20 +4502,14 @@
                         <h3 id="helpTitle">Habu${versionStr}</h3>
                         ${newFeaturesHtml}
                         <div class="help-section">
-                            <strong>文本分享</strong>
-                            <p>临时传递文字，无需登录，阅后即删。</p>
-                            <p>搜索框输入 <code>&gt;</code> 编写并发送；对方打开链接或在首页输入取件码即可查看。</p>
-                            <p class="help-tip"><code>Shift</code>+Enter 换行，文本输入框可拖右下角调高</p>
-                        </div>
-                        <div class="help-section">
                             <strong>管理员多设备</strong>
                             <p>在任意设备登录管理账号，即可取得同一份个人导航与模块设置。</p>
-                            <p>访客导航只保存在本机浏览器，不跨设备同步。</p>
+                            <p>所有功能均需登录后使用。</p>
                         </div>
                         <div class="help-section">
                             <strong>可定制模块</strong>
                             <p>在首页添加热搜、监控、备忘等模块。</p>
-                            <p>访客在「编辑 → 模块配置」启用，管理员在「管理 → 模块」配置；首页编辑时可拖动排版。</p>
+                            <p>在「管理 → 模块」启用和配置；首页编辑时可拖动排版。</p>
                         </div>
                     </div>
                 </div>
@@ -5045,6 +4616,7 @@
 
             }
             if (!this.personalNavigationLoaded) await this.loadPersonalNavigation();
+            $('#app').hidden = false;
             if (!this.editLayout) this.beginConfigEdit();
             // 两个请求互不依赖，仍并发发出。会话 Cookie 命中时服务端不再跑
             // bcrypt，但两个请求的串行等待仍是两倍往返。
@@ -5505,11 +5077,6 @@
                     <button type="button" data-expand-module="${this.esc(def.id)}">展开配置</button>
                 </div>`;
 
-            // 公开模块多一个「对外开放」开关。它**不随启用态收起**：开放与否
-            // 决定访客能不能用，与管理员自己用不用它是两件事，所以渲染在
-            // 折叠区之外（禁用态的模块也要能开放）。
-            const openRow = def.category === 'public' ? this.renderModuleOpenRow(def, config) : '';
-
             return `
                 <div class="module-block" data-module="${this.esc(def.id)}" data-enabled="${on ? 1 : 0}">
                     <div class="module-block-head">
@@ -5529,32 +5096,7 @@
                             <span class="module-setting-state">${on ? '已启用' : '未启用'}</span>
                         </label>
                     </div>
-                    ${openRow}
                     ${body}
-                </div>`;
-        }
-
-        /**
-         * 公开模块的第二个开关：**对普通访客开放**。
-         *
-         * 「启用」与「开放」是两件事：
-         *   · 启用 = 管理员自己首页上用它，配置存在服务端个人配置里；
-         *   · 开放 = 允许普通访客自行启用它，其数据接口从此对匿名请求放行。
-         * 管理员可以用一个尚未开放的公开模块——「开放」不是「启用」的前置条件。
-         */
-        renderModuleOpenRow(def, config) {
-            const open = (config.publicModules || []).includes(def.id);
-            return `
-                <div class="module-open-row">
-                    <label class="module-open-label">
-                        <span class="module-open-name">对普通访客开放</span>
-                        <span class="module-open-toggle">
-                            <input type="checkbox" data-module-open="${this.esc(def.id)}" ${open ? 'checked' : ''}>
-                            <span class="module-open-state">${open ? '已开放' : '未开放'}</span>
-                        </span>
-                    </label>
-                    <p class="module-open-hint">开放后访客可在自己的首页设置里启用它，数据接口对匿名请求放行；
-                        撤回开放立即拒绝匿名请求。</p>
                 </div>`;
         }
 
@@ -5713,33 +5255,6 @@
                 });
             }
 
-            // 公开模块的「对外开放」开关。与「启用」共用同一个写路径
-            // （saveModulesConfig），服务端再按 PUBLIC_MODULE_IDS 过滤一次——
-            // 就算前端提交了私人模块的 id，也进不了 publicModules。
-            for (const box of host.querySelectorAll('[data-module-open]')) {
-                box.addEventListener('change', async () => {
-                    const id = box.dataset.moduleOpen;
-                    const open = box.checked;
-                    const before = (config.publicModules || []).slice();
-                    const next = open
-                        ? [...new Set([...before, id])]
-                        : before.filter(x => x !== id);
-                    const state = box.closest('.module-open-label')
-                        ?.querySelector('.module-open-state');
-                    try {
-                        await this.saveModulesConfig({ publicModules: next });
-                        const title = this.getModule(id)?.title || id;
-                        this.showToast(open ? `已对访客开放「${title}」` : `已撤回「${title}」的开放`);
-                    } catch (err) {
-                        console.error('Save module open failed:', err);
-                        // 与启用开关同理：失败要把开关和文字一起拨回去
-                        box.checked = !open;
-                        if (state) state.textContent = !open ? '已开放' : '未开放';
-                        this.showToast('保存失败，请重试', 'error');
-                    }
-                });
-            }
-
             // 模块开关的保存路径就在上面那个 change 处理器里，
             // 所以这里**不需要**一个总的「保存模块配置」按钮。
             // 曾有过一个，而它与右上角的「保存」职责重叠、用户分不清
@@ -5829,30 +5344,6 @@
                                 <span class="toggle-slider"></span>
                             </div>
                         </label>
-                    </div>
-                </div>
-                <div class="section template-section">
-                    <div class="section-title">站点默认首页<span class="template-badge" id="templateBadge"></span></div>
-                    <p class="fav-hint">草稿与个人导航独立保存。发布后供首次访问和主动重置使用。</p>
-                    <div class="template-editor" id="templateEditor" data-mode="readonly">
-                        <div class="template-editor-bar">
-                            <span class="template-editor-note" id="templateNote">正在读取默认首页草稿…</span>
-                            <button type="button" class="btn btn-sm" id="templateEditBtn" hidden>编辑</button>
-                        </div>
-                        <div class="template-canvas" id="templateCanvas" hidden>
-                            <div class="backboard">
-                                <header class="header" id="templateHeader"></header>
-                                <main class="grid" id="templateGrid"></main>
-                            </div>
-                        </div>
-                        <div class="template-editor-actions" id="templateActions">
-                            <span class="template-state" id="templateState"></span>
-                            <div>
-                                <button type="button" class="btn btn-sm" id="templateCancelBtn" hidden>取消</button>
-                                <button type="button" class="btn btn-sm" id="templateSaveBtn" hidden>保存草稿</button>
-                                <button type="button" class="btn btn-sm btn-primary" id="templatePublishBtn" disabled>发布默认首页</button>
-                            </div>
-                        </div>
                     </div>
                 </div>
                 <div class="section section-collapsible">
@@ -5946,14 +5437,6 @@
             // 分区切换由 tab 栏负责，不再整块替换 #modalBody。
             this.selectAdminTab(this.adminTab || 'site');
 
-            // 站点默认首页：面板每次重渲染都会换掉画布节点，所以要重新挂一次；
-            // 只有第一次进入才发请求（否则每开一次面板就多一个往返，还会撞匿名读限流）。
-            if (!this.template) this.loadTemplateEditor();
-            else this.mountTemplateEditor();
-            $('#templateEditBtn').onclick = () => this.templateSetMode('edit');
-            $('#templateCancelBtn').onclick = () => this.templateCancel();
-            $('#templateSaveBtn').onclick = () => this.templateSubmit(false);
-            $('#templatePublishBtn').onclick = () => this.templateSubmit(true);
             this.renderThemeStyleSelect($('#themeStyleSelect'), this.config);
             $('#themeModeSelect').disabled = !!window.NavigationSchema.THEMES[window.NavigationSchema.appearance(this.config).style].mode;
             $('#themeModeSelect').value = window.NavigationSchema.appearance(this.config).mode;
@@ -6033,7 +5516,7 @@
                 }
                 this.clearPrivateState();
                 this.notifyIdentityChanged();
-                await this.refreshLocalNavigation();
+                location.replace('/login.html');
             };
 
             // WebDAV 配置改为「首次展开时」在 toggleSection 里加载，
@@ -7689,7 +7172,7 @@
             if (targets.length === 0) return;
 
             // 混选时默认预选「设为私密」：批量操作里收紧可见性比放宽更安全，
-            // 全部已私密才预选「设为公开」。
+            // 全部已私密才预选「设为普通」。
             const allPrivate = targets.every(f => f.private);
             const result = await this.showUiDialog({
                 title: '批量设置隐私状态',
@@ -7697,10 +7180,8 @@
                 options: [
                     { name: 'privacy', kind: 'radio', value: 'private', label: '设为私密', checked: !allPrivate },
                     {
-                        name: 'privacy', kind: 'radio', value: 'public', label: '设为公开', checked: allPrivate,
-                        // 两个方向的风险不对称：设为私密只是收紧可见性，
-                        // 设为公开等于对未登录访客披露。只在同一弹窗里给披露方向加提示。
-                        hint: '公开后，未登录的访客也能看到这些书签'
+                        name: 'privacy', kind: 'radio', value: 'public', label: '设为普通', checked: allPrivate,
+                        hint: '普通书签会进入常规检索，仍需登录后查看'
                     }
                 ],
                 confirmText: '应用'

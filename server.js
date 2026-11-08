@@ -99,123 +99,6 @@ function assertConfigUsable(loaded) {
     );
 }
 
-// ========== Paste 分享功能 ==========
-const pasteStorage = new Map();
-// 结构: { code: { content, pin, expiresAt, attempts } }
-
-// 有效期白名单：键为分钟数，值为毫秒。只接受这些档位，未知值回落到 5 分钟。
-// 用 Object.create(null) 断开原型链，避免 ttl="constructor" 之类取到原型属性，
-// 把 expiresAt 变成 NaN 或字符串，导致条目永不过期、永不被清理。
-const PASTE_TTL_OPTIONS = Object.assign(Object.create(null), {
-    5: 5 * 60 * 1000,
-    30: 30 * 60 * 1000,
-    1440: 24 * 60 * 60 * 1000,
-    10080: 7 * 24 * 60 * 60 * 1000
-});
-const PASTE_DEFAULT_TTL_MINUTES = 5;
-
-// 只接受白名单自身的键；数字以外的键（如 "5"）也视为非法，避免类型混淆
-function resolvePasteTtlMinutes(ttl) {
-    if (typeof ttl !== 'number' || !Number.isInteger(ttl)) return PASTE_DEFAULT_TTL_MINUTES;
-    return Object.hasOwn(PASTE_TTL_OPTIONS, ttl) ? ttl : PASTE_DEFAULT_TTL_MINUTES;
-}
-
-// 词表用于生成易记的分享码
-const ADJECTIVES = [
-    'happy', 'sunny', 'cool', 'swift', 'brave', 'calm', 'eager', 'fair', 'gentle', 'kind',
-    'lively', 'merry', 'nice', 'proud', 'quick', 'smart', 'warm', 'wise', 'bold', 'bright',
-    'clean', 'clear', 'crisp', 'deep', 'fine', 'fresh', 'glad', 'good', 'grand', 'great',
-    'keen', 'light', 'neat', 'pure', 'rich', 'safe', 'sharp', 'soft', 'strong', 'sweet',
-    'tall', 'true', 'vast', 'vivid', 'wild', 'young', 'zesty', 'agile', 'fancy', 'golden',
-    'handy', 'ideal', 'jolly', 'lucky', 'magic', 'noble', 'peaceful', 'rapid', 'royal', 'silent',
-    'simple', 'smooth', 'solid', 'stable', 'steady', 'super', 'tender', 'tiny', 'ultra', 'unique',
-    'useful', 'valid', 'vital', 'witty', 'zealous', 'azure', 'cosmic', 'divine', 'epic', 'fiery',
-    'frozen', 'humble', 'lunar', 'mighty', 'mystic', 'polar', 'primal', 'radiant', 'rustic', 'serene',
-    'silver', 'sonic', 'stellar', 'stormy', 'sunset', 'thunder', 'timber', 'turbo', 'velvet', 'vintage'
-];
-
-const NOUNS = [
-    'tiger', 'eagle', 'wolf', 'bear', 'fox', 'hawk', 'lion', 'deer', 'swan', 'dove',
-    'oak', 'pine', 'maple', 'cedar', 'birch', 'willow', 'palm', 'fern', 'rose', 'lily',
-    'river', 'lake', 'ocean', 'stream', 'wave', 'cloud', 'rain', 'snow', 'wind', 'storm',
-    'star', 'moon', 'sun', 'sky', 'dawn', 'dusk', 'night', 'day', 'light', 'shadow',
-    'stone', 'rock', 'hill', 'peak', 'cliff', 'cave', 'sand', 'dust', 'flame', 'spark',
-    'dragon', 'phoenix', 'griffin', 'raven', 'falcon', 'owl', 'crane', 'heron', 'finch', 'lark',
-    'coral', 'pearl', 'jade', 'ruby', 'amber', 'crystal', 'diamond', 'emerald', 'onyx', 'opal',
-    'bridge', 'tower', 'castle', 'temple', 'garden', 'forest', 'meadow', 'valley', 'island', 'harbor',
-    'arrow', 'blade', 'crown', 'drum', 'flute', 'harp', 'horn', 'lyre', 'shield', 'sword',
-    'atlas', 'bolt', 'comet', 'delta', 'echo', 'frost', 'glow', 'haze', 'iris', 'jazz',
-    'karma', 'lotus', 'metro', 'nexus', 'orbit', 'pulse', 'quest', 'ridge', 'surge', 'tide',
-    'unity', 'vortex', 'whisper', 'zenith', 'zephyr', 'anchor', 'beacon', 'cipher', 'drift', 'ember',
-    'flare', 'glider', 'horizon', 'ignite', 'jungle', 'kindle', 'lagoon', 'mirage', 'nebula', 'oasis',
-    'prism', 'quartz', 'rapids', 'sage', 'terra', 'umbra', 'vertex', 'wraith', 'yacht', 'zero',
-    'alpha', 'beta', 'gamma', 'sigma', 'omega', 'nova', 'pixel', 'quasar', 'realm', 'spirit',
-    'thunder', 'titan', 'vapor', 'vector', 'voyage', 'wander', 'wonder', 'xerox', 'yonder', 'zodiac',
-    'breeze', 'canyon', 'delta', 'epoch', 'fiber', 'grain', 'haven', 'inlet', 'jewel', 'knot',
-    'ledge', 'manor', 'night', 'olive', 'petal', 'quill', 'reef', 'shell', 'thorn', 'bloom',
-    'coast', 'dune', 'field', 'grove', 'marsh', 'plain', 'shore', 'trail', 'woods', 'brook'
-];
-
-function generatePasteCode() {
-    // 中国人常见的简短英文单词
-    const words = [
-        // 动物
-        'cat', 'dog', 'bird', 'fish', 'bear', 'lion', 'tiger', 'panda', 'fox', 'wolf',
-        'duck', 'frog', 'deer', 'rabbit', 'mouse', 'horse', 'sheep', 'pig', 'cow', 'bee',
-        // 自然
-        'sun', 'moon', 'star', 'sky', 'rain', 'snow', 'wind', 'fire', 'ice', 'sea',
-        'lake', 'river', 'hill', 'rock', 'tree', 'leaf', 'rose', 'lily', 'grass', 'cloud',
-        // 食物
-        'apple', 'orange', 'grape', 'peach', 'mango', 'lemon', 'berry', 'candy', 'cake', 'pizza',
-        'bread', 'rice', 'noodle', 'milk', 'juice', 'tea', 'coffee', 'honey', 'sugar', 'salt',
-        // 颜色
-        'red', 'blue', 'green', 'pink', 'gold', 'silver', 'black', 'white', 'gray', 'purple',
-        // 形容词
-        'happy', 'lucky', 'cool', 'nice', 'good', 'sweet', 'smart', 'fast', 'big', 'little',
-        'hot', 'cold', 'new', 'old', 'soft', 'warm', 'bright', 'fresh', 'quiet', 'calm',
-        // 名词
-        'love', 'game', 'music', 'book', 'king', 'queen', 'baby', 'angel', 'dream', 'hope',
-        'time', 'day', 'night', 'home', 'door', 'key', 'box', 'gift', 'card', 'note',
-        'phone', 'photo', 'video', 'song', 'dance', 'smile', 'heart', 'magic', 'power', 'peace'
-    ];
-    const word = words[Math.floor(Math.random() * words.length)];
-    const num = Math.floor(Math.random() * 900) + 100; // 100-999
-    const code = `${word}-${num}`;
-
-    // 确保唯一性
-    if (pasteStorage.has(code)) {
-        return generatePasteCode();
-    }
-    return code;
-}
-
-function isPasteCodeFormat(str) {
-    // 匹配 单词-3位数字 格式 (7-10位)
-    return /^[a-z]{2,6}-\d{3}$/.test(str);
-}
-
-// 清理过期分享
-function cleanExpiredPastes() {
-    const now = Date.now();
-    for (const [code, data] of pasteStorage.entries()) {
-        if (now > data.expiresAt) {
-            pasteStorage.delete(code);
-        }
-    }
-}
-
-// 分享限流：取码与创建是两个独立入口，用不同 key 分别计数，
-// 避免互相消耗配额
-const pasteRateLimitMap = new Map();
-const PASTE_CODE_LIMIT = 10;     // 每小时取码次数
-const PASTE_CREATE_LIMIT = 20;   // 每小时创建次数
-const PASTE_GET_LIMIT = 30;      // 每小时读取次数
-const PASTE_RATE_WINDOW = 3600000; // 1小时
-
-// 分享全局容量上限：限流按 IP 计数，多个 IP 仍可能共同堆高内存
-const PASTE_MAX_ENTRIES = 500;
-const PASTE_MAX_BYTES = 50 * 1024 * 1024;
-
 // 纯函数形式：store 与 now 由调用方传入，便于注入时钟做确定性测试
 function consumeRateLimit(store, key, now, windowMs, limit) {
     const record = store.get(key);
@@ -296,26 +179,13 @@ function modulePollLimit(req, res, next) {
     next();
 }
 
-function isOverPasteCapacity(count, totalBytes) {
-    return count >= PASTE_MAX_ENTRIES || totalBytes >= PASTE_MAX_BYTES;
-}
-
 // 限流用的客户端标识。已开启 trust proxy，req.ip 即为反代回填的真实地址；
 // 兜底取 socket 地址仅用于完全没有 req.ip 的极端情况。
 function resolveClientIp(req) {
     return req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
 }
 
-// 当前已占用的字节数：内容均为密文 base64，字符数即可近似
-function pasteStorageBytes() {
-    let total = 0;
-    for (const data of pasteStorage.values()) {
-        total += data.content.length;
-    }
-    return total;
-}
-
-// 每60秒清理过期分享与过期限流记录。
+// 每60秒清理过期限流记录。
 // 限流记录不清理会随 IP 数量无限增长；开启 trust proxy 后 key 等于访问者数量。
 // unref 避免该定时器阻止进程自然退出。
 // 推送端点的限流桶定义在下方「推送接收」小节里。这个定时器 60 秒后才触发，
@@ -325,8 +195,6 @@ const pushLimitMap = new Map();
 
 setInterval(() => {
     const now = Date.now();
-    cleanExpiredPastes();
-    sweepRateLimitStore(pasteRateLimitMap, now, PASTE_RATE_WINDOW);
     sweepRateLimitStore(rateLimitMap, now, RATE_LIMIT_WINDOW);
     sweepRateLimitStore(publicReadLimitMap, now, PUBLIC_READ_WINDOW);
     sweepRateLimitStore(globalLoginMap, now, 60000);
@@ -367,8 +235,6 @@ const { WebDAVBackup, mergePrivateModules } = require('./lib/webdav-backup');
 const { encrypt, decrypt, isEnvelope } = require('./lib/credentials');
 
 // 管理端会话：设备指纹 + 地理绑定
-// 注意：本文件另有粘贴相关的 globalThis.crypto（WebCrypto）用法，
-// 故这里不 require('crypto')，令牌随机数由 lib/session 内部生成。
 const {
     SessionStore,
     readCookie,
@@ -393,11 +259,6 @@ const { createRestore, SNAPSHOT_ROOT } = require('./lib/restore');
 // 微博热搜代理复用时间线的取数工具（AbortSignal 超时 + 响应体大小上限）。
 const { getJson: fetchJson } = require('./lib/timeline/http');
 
-// 推送凭据的随机数与哈希需要 Node 的 crypto。
-// **必须用别名**：本文件的 `crypto` 是 globalThis.crypto（WebCrypto），
-// 粘贴功能的 AES-GCM 加解密依赖它（见下方 require 与 server.js:222 的警告）。
-// 写成 `const crypto = require('crypto')` 会遮蔽 WebCrypto，
-// 那个 bug 的表现是登录/解密时才炸，不会在启动时。
 const nodeCrypto = require('crypto');
 
 // ========== 推送凭据 ==========
@@ -534,13 +395,29 @@ app.use((req, res, next) => {
 
 app.use('/api', (req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)
-        || ['/modules/enroll', '/modules/agent-push', '/p', '/p/code'].includes(req.path) || req.path.startsWith('/p/')) return next();
+        || ['/modules/enroll', '/modules/agent-push'].includes(req.path)) return next();
     const origin = req.headers.origin;
     const expected = `${req.protocol}://${req.get('host')}`;
     if (req.headers['x-habu-request'] !== '1'
         || (origin && origin !== expected)
         || req.headers['sec-fetch-site'] === 'cross-site') {
         return res.status(403).json({ error: '请求来源校验失败，请刷新页面后重试' });
+    }
+    next();
+});
+
+// 个人工作台统一门禁，agent 继续使用部署令牌和推送签名。
+app.use((req, res, next) => {
+    const authRoutes = ['/api/verify-password', '/api/session', '/api/logout', '/api/change-password', '/api/health', '/api/modules/enroll', '/api/modules/agent-push'];
+    const pathname = req.path.toLowerCase();
+    const page = ['/', '/index', '/index.html', '/index.htm'].includes(pathname);
+    if (!page && (!pathname.startsWith('/api/') || authRoutes.includes(pathname))) return next();
+    setSessionHeaders(res);
+    const reason = {};
+    const found = sessionStore.getSession(req, reason);
+    if (!found || found.session.purpose === 'password-change') {
+        if (page) return res.redirect('/login.html');
+        return unauthorized(res, reason);
     }
     next();
 });
@@ -1348,8 +1225,8 @@ app.post('/api/server-flags', rateLimit, requireAdmin, async (req, res) => {
 });
 
 app.get('/api/config', publicReadLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-cache');
-    res.json(navigation.read('published').config);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(navigation.read('admin').config);
 });
 
 app.post('/api/config', rateLimit, requireAdmin, (req, res) => {
@@ -2842,78 +2719,10 @@ function moduleMutation(req, res, next) {
 }
 
 /** 某个公开模块当前是否对外开放。每次读配置，撤回即刻生效（不缓存判定）。 */
-async function isPublicModuleOpen(id) {
-    // 非公开分类的模块永远不开放——这条与服务端白名单重复也无妨：
-    // 授权判定宁可多问一次，也不要依赖上游调用方记得过滤。
-    if (!PUBLIC_MODULE_IDS.has(id)) return false;
-    try {
-        const config = await readJSON(MODULES_FILE);
-        return Array.isArray(config?.publicModules) && config.publicModules.includes(id);
-    } catch {
-        // 配置读不出来按「未开放」处理：授权判定不能因为文件损坏而放行。
-        return false;
-    }
-}
-
-/**
- * 公开模块的数据入口守卫。
- *
- * 管理员会话可直接用（管理员能用自己**未**对外开放的公开模块——开放与否
- * 只决定普通访客能不能用）；匿名请求则必须该模块当前对外开放。
- *
- * 撤回开放后这里立刻 403。客户端那份「卸下卡片、停掉轮询」是体验，
- * 服务端这份才是授权——两者都要有，且不能只留前者。
- */
-function publicModuleAccess(id) {
-    return async (req, res, next) => {
-        setSessionHeaders(res);
-        if (fsSync.existsSync(CREDENTIAL_ROTATION_FILE)) {
-            return res.status(503).json({ error: '凭据恢复未完成，请重启服务后重试' });
-        }
-        const reason = {};
-        const found = sessionStore.getSession(req, reason);
-        if (found && found.session.purpose !== 'password-change') {
-            req.adminSession = found;
-            sessionStore.refreshSessionCookie(res, found, req);
-            return next();
-        }
-        if (!await isPublicModuleOpen(id)) {
-            return res.status(403).json({ error: '该模块未对外开放' });
-        }
-        // 软门：匿名也要能收到「环境变化已登出」的信号，否则用户带着失效
-        // 会话看公开模块，界面不会告诉他需要重新登录。
-        noteEnvChanged(res, reason);
-        next();
-    };
-}
-
-/**
- * 公开模块策略：匿名可读，只回「哪些公开模块当前对外开放」。
- * 客户端据此决定是否加载公开模块脚本——未知策略时它一个都不加载。
- *
- * 走 publicReadLimit（匿名桶）而不是管理桶：混进 rateLimit 会让普通访问
- * 把登录的防爆破预算耗掉（同 /api/config）。
- * ⚠️ 这条是**周期请求**，不是一次性的：匿名访客每 30 秒（前台可见时）会通过
- * checkAdministratorSync → checkPublicModules 确认一次策略，切回前台与联网时
- * 各再确认一次。所以匿名桶的账要按这个周期算，不是按页面加载次数：
- * 每个标签页每分钟约 2 次策略 + 2 次 /api/session，120 次/分钟的桶
- * 因此够 ~30 个同 IP 标签页——本工具是单管理员自建，这个余量足够。
- */
-app.get('/api/modules/public', publicReadLimit, async (req, res) => {
-    try {
-        res.setHeader('Cache-Control', 'no-store');
-        const config = await readJSON(MODULES_FILE);
-        // 响应只带客户端真正消费的字段（modules）：版本号没有任何读取方，
-        // 与 /api/weibo-hot 同一条纪律——不出现在界面上的数据不必发出去。
-        res.json({
-            // 这里再过滤一次：配置被改坏（或旧版本写入了别的 id）时，
-            // 也不把私人模块的 id 发到匿名响应里。
-            modules: (Array.isArray(config?.publicModules) ? config.publicModules : [])
-                .filter(id => PUBLIC_MODULE_IDS.has(id))
-        });
-    } catch {
-        res.status(500).json({ error: '模块策略读取失败' });
-    }
+// 旧版模块策略接口仅供已登录旧客户端兼容，不再开放任何模块。
+app.get('/api/modules/public', publicReadLimit, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ modules: [] });
 });
 
 app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
@@ -4076,8 +3885,6 @@ app.post('/api/memos', rateLimit, requireAdmin, memoLimit, (req, res) => {
             return res.status(400).json({ error: `最多 ${MEMO_MAX_ENTRIES} 条备忘录` });
         }
         const now = Date.now();
-        // WebCrypto 的 randomUUID：本文件不 require('crypto')，
-        // 以免 shadow 粘贴代码用的全局 WebCrypto（见上方说明）。
         const id = crypto.randomUUID();
         db.prepare('INSERT INTO memos (id, title, body, pinned, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)')
             .run(id, title, text, now, now);
@@ -4369,9 +4176,8 @@ async function fetchWeiboHotList() {
     return { list };
 }
 
-// 守卫由 requireAdmin 换成 publicModuleAccess：管理员照旧，匿名访客在该模块
-// 对外开放时可读。撤回开放后立刻 403（见该守卫的注释）。
-app.get('/api/weibo-hot', modulePollLimit, publicModuleAccess('weibo-hot'), async (req, res) => {
+// 热搜与其他工作台模块一样，需要正常个人会话。
+app.get('/api/weibo-hot', modulePollLimit, requireAdmin, async (req, res) => {
     const now = Date.now();
     if (weiboHotCache.data && now - weiboHotCache.at < WEIBO_HOT_TTL) {
         return res.json(weiboHotCache.data);
@@ -4537,465 +4343,7 @@ app.post('/api/timeline/sources/:id/sync', rateLimit, requireAdmin, async (req, 
         timelineError(res, err);
     }
 });
-// ========== Paste API ==========
-
-// 生成分享码（用于客户端加密）
-app.post('/api/p/code', (req, res) => {
-    const ip = resolveClientIp(req);
-
-    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:code`, Date.now(), PASTE_RATE_WINDOW, PASTE_CODE_LIMIT).allowed) {
-        return res.status(429).json({ error: '创建过于频繁，请稍后再试' });
-    }
-
-    const code = generatePasteCode();
-    res.json({ code });
-});
-
-// 创建分享
-app.post('/api/p', (req, res) => {
-    const ip = resolveClientIp(req);
-
-    // 创建入口必须独立限流：否则可绕开 /api/p/code 直接自造分享码创建
-    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:create`, Date.now(), PASTE_RATE_WINDOW, PASTE_CREATE_LIMIT).allowed) {
-        return res.status(429).json({ error: '创建过于频繁，请稍后再试' });
-    }
-
-    const { code, content, pin, ttl } = req.body;
-
-    // 验证分享码格式
-    if (!code || !isPasteCodeFormat(code)) {
-        return res.status(400).json({ error: '无效的分享码' });
-    }
-
-    // 检查分享码是否已被使用
-    if (pasteStorage.has(code)) {
-        return res.status(400).json({ error: '分享码已被使用' });
-    }
-
-    if (!content || typeof content !== 'string') {
-        return res.status(400).json({ error: '内容不能为空' });
-    }
-
-    if (content.length > 100000) {
-        return res.status(400).json({ error: '内容过大' });
-    }
-
-    if (pin && (!/^\d{4}$/.test(pin))) {
-        return res.status(400).json({ error: 'PIN 必须是4位数字' });
-    }
-
-    // 有效期只接受白名单档位；缺失或非法值按 5 分钟处理
-    const ttlMinutes = resolvePasteTtlMinutes(ttl);
-    const expiresAt = Date.now() + PASTE_TTL_OPTIONS[ttlMinutes];
-
-    // 全局容量兜底：限流按 IP 计数，多个 IP 仍可能共同堆高内存。
-    // 不做最旧条目驱逐，避免静默清掉他人仍在有效期内的分享。
-    if (isOverPasteCapacity(pasteStorage.size + 1, pasteStorageBytes() + content.length)) {
-        return res.status(503).json({ error: '分享服务繁忙，请稍后再试' });
-    }
-
-    pasteStorage.set(code, {
-        content,
-        pin: pin || null,
-        expiresAt,
-        attempts: 0
-    });
-
-    console.log(`[Paste] Created: ${code} (expires in ${ttlMinutes}min)`);
-
-    res.json({
-        success: true,
-        code,
-        expiresAt,
-        hasPin: !!pin
-    });
-});
-
-// 获取分享 (API)
-app.post('/api/p/:code', (req, res) => {
-    const ip = resolveClientIp(req);
-
-    if (!consumeRateLimit(pasteRateLimitMap, `${ip}:paste:get`, Date.now(), PASTE_RATE_WINDOW, PASTE_GET_LIMIT).allowed) {
-        return res.status(429).json({ error: '请求过于频繁，请稍后再试' });
-    }
-
-    const { code } = req.params;
-    const { pin } = req.body;
-
-    if (!isPasteCodeFormat(code)) {
-        return res.status(400).json({ error: '无效的分享码格式' });
-    }
-
-    const paste = pasteStorage.get(code);
-
-    if (!paste) {
-        return res.status(404).json({ error: '分享不存在或已过期' });
-    }
-
-    if (Date.now() > paste.expiresAt) {
-        pasteStorage.delete(code);
-        return res.status(404).json({ error: '分享已过期' });
-    }
-
-    // PIN 验证
-    if (paste.pin) {
-        if (!pin) {
-            return res.json({ requirePin: true });
-        }
-        if (pin !== paste.pin) {
-            paste.attempts++;
-            if (paste.attempts >= 3) {
-                pasteStorage.delete(code);
-                console.log(`[Paste] Destroyed due to PIN failures: ${code}`);
-                return res.status(403).json({ error: 'PIN 错误次数过多，分享已销毁' });
-            }
-            return res.status(403).json({ error: `PIN 错误，剩余 ${3 - paste.attempts} 次尝试` });
-        }
-    }
-
-    const content = paste.content;
-
-    // 阅后即删
-    pasteStorage.delete(code);
-    console.log(`[Paste] Retrieved and deleted: ${code}`);
-
-    res.json({
-        success: true,
-        content
-    });
-});
-
-// 分享页面路由
-app.get('/p/:code', (req, res) => {
-    const { code } = req.params;
-
-    if (!isPasteCodeFormat(code)) {
-        return res.redirect('/');
-    }
-
-    const paste = pasteStorage.get(code);
-    const exists = paste && Date.now() <= paste.expiresAt;
-    const requirePin = exists && paste.pin;
-    const appearance = require('./public/navigation-schema').appearance(navigation.read('published').config);
-
-    // 返回支持客户端解密的 HTML 页面（使用分享码作为密钥）
-    const html = `<!DOCTYPE html>
-<html lang="zh-CN" data-theme-style="${appearance.style}" data-theme="${appearance.mode}">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>分享内容</title>
-    <script src="/navigation-schema.js"></script>
-    <script>
-        try {
-            const saved = JSON.parse(sessionStorage.getItem('nav-sylph-appearance'));
-            if (saved && Object.hasOwn(NavigationSchema.THEMES, saved.style) && ['auto', 'light', 'dark'].includes(saved.mode)) {
-                const appearance = NavigationSchema.appearance({ themeStyle: saved.style, theme: saved.mode });
-                document.documentElement.dataset.themeStyle = appearance.style;
-                document.documentElement.dataset.theme = appearance.mode;
-            }
-        } catch (e) {}
-    </script>
-    <style>
-        :root {
-            color-scheme: light;
-            --bg: #efede8; --panel: rgba(252,250,246,.91); --text: #302b27;
-            --text-secondary: #655e57; --border: rgba(92,76,64,.18); --accent: #945e4a;
-            --accent-hover: #79503f; --focus: rgba(148,94,74,.58);
-            --control-top: #fcfaf6; --control-bottom: #eee9e1;
-            --control-hover-top: #fffdf9; --control-hover-bottom: #f4eee6;
-            --control-pressed-top: #e9e2d9; --control-pressed-bottom: #f1ece5;
-            --input-top: #f1ece5; --input-bottom: #fcfaf6;
-            --inner-light: rgba(255,255,255,.67); --inner-dark: rgba(91,70,55,.13);
-            --press-shadow: inset 0 2px 5px rgba(91,70,55,.20),inset 0 -1px rgba(255,255,255,.55);
-            --text-muted: #8b837a;
-            --code-string: #4e7a52; --code-number: #9a6b3f; --code-title: #3f6b8a;
-            --code-attr: #8a5a7a; --code-type: #7a6a3f; --code-deletion: #a4463f;
-        }
-        @media (prefers-color-scheme: dark) {
-            :root:not([data-theme="light"]) {
-                color-scheme: dark;
-                --bg: #211f1c; --panel: rgba(57,51,46,.93); --text: #f3eee8;
-                --text-secondary: #c9beb3; --border: rgba(222,203,185,.18); --accent: #c28d70;
-                --accent-hover: #d4a181; --focus: rgba(223,169,140,.68);
-                --control-top: #625951; --control-bottom: #3c3630;
-                --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
-                --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
-                --input-top: #292521; --input-bottom: #39312b;
-                --inner-light: rgba(255,255,255,.09); --inner-dark: rgba(0,0,0,.24);
-                --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
-                --text-muted: #9c9287;
-                --code-string: #9dc49f; --code-number: #d9a877; --code-title: #8fb8d4;
-                --code-attr: #c99ec0; --code-type: #c7b581; --code-deletion: #e0897f;
-            }
-        }
-        :root[data-theme="dark"] {
-                color-scheme: dark;
-                --bg: #211f1c; --panel: rgba(57,51,46,.93); --text: #f3eee8;
-                --text-secondary: #c9beb3; --border: rgba(222,203,185,.18); --accent: #c28d70;
-                --accent-hover: #d4a181; --focus: rgba(223,169,140,.68);
-                --control-top: #625951; --control-bottom: #3c3630;
-                --control-hover-top: #71655b; --control-hover-bottom: #4a4139;
-                --control-pressed-top: #292521; --control-pressed-bottom: #39312b;
-                --input-top: #292521; --input-bottom: #39312b;
-                --inner-light: rgba(255,255,255,.09); --inner-dark: rgba(0,0,0,.24);
-                --press-shadow: inset 0 3px 7px rgba(0,0,0,.45),inset 0 -1px rgba(255,255,255,.08);
-                --text-muted: #9c9287;
-                --code-string: #9dc49f; --code-number: #d9a877; --code-title: #8fb8d4;
-                --code-attr: #c99ec0; --code-type: #c7b581; --code-deletion: #e0897f;
-            }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
-            background: var(--bg); color: var(--text); min-height: 100dvh;
-            display: flex; align-items: center; justify-content: center;
-            /* 刘海屏与 Home 指示条：viewport-fit=cover 之后必须由内边距让位 */
-            padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
-                     max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
-        }
-        .container {
-            width: 100%; max-width: 560px; background: var(--panel);
-            border: 1px solid var(--border); border-radius: 16px;
-            padding: 24px;
-            /* 与 body 同理：内容本身也要避开刘海与 Home 指示条 */
-            padding-top: max(24px, env(safe-area-inset-top));
-            padding-bottom: max(24px, env(safe-area-inset-bottom));
-            box-shadow: inset 0 1px var(--inner-light), 0 20px 48px rgba(35,27,21,.21);
-            backdrop-filter: blur(23px) saturate(118%); -webkit-backdrop-filter: blur(23px) saturate(118%);
-        }
-        .title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 15px; }
-        .content {
-            background: linear-gradient(180deg,var(--input-top),var(--input-bottom)); border: 1px solid var(--border); border-radius: 9px;
-            box-shadow: inset 0 1px 2px var(--inner-dark), inset 0 -1px var(--inner-light);
-            padding: 16px; font-family: 'SF Mono', Menlo, monospace; font-size: 14px; line-height: 1.7;
-            /* 按词/标点断行；只有链接、哈希这类超长不可断的词才强制折断。
-               旧代码用的是 word-break:break-all，普通英文单词也会被从中间
-               劈开（"whether the" 断成 "whet / her the"），长文读起来很费劲。 */
-            white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; tab-size: 2;
-            max-height: min(60dvh, 460px); overflow-y: auto; overscroll-behavior: contain;
-        }
-        /* 非代码内容用界面字体而不是等宽字体：分享的多半是普通文字，等宽
-           字体让中文与英文都更松散，长段落反而更难读。识别出语言时
-           renderContent 会给容器加 .hljs，代码仍保持等宽。
-           font-family:inherit 直接沿用 body 的字体栈，不再复写一份。 */
-        .content:not(.hljs) { font-family: inherit; font-size: 15px; line-height: 1.75; }
-        .btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            min-height: 38px; padding: 7px 15px; background: linear-gradient(170deg,var(--control-top),var(--control-bottom)); color: var(--text);
-            border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 12px; font-weight: 600;
-            box-shadow: inset 0 1px var(--inner-light); cursor: pointer; margin-top: 16px;
-            transition: transform 110ms, border-color 140ms, background 140ms, box-shadow 140ms;
-        }
-        .btn:hover { transform: translateY(-1px); border-color: var(--focus); background: linear-gradient(170deg,var(--control-hover-top),var(--control-hover-bottom)); }
-        .btn:active { transform: translateY(1px); background: linear-gradient(180deg,var(--control-pressed-top),var(--control-pressed-bottom)); box-shadow: var(--press-shadow); transition-duration: 35ms; }
-        .btn:focus-visible, .pin-input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-        .notice { font-size: 13px; color: var(--text-secondary); margin-top: 12px; }
-        .error { text-align: center; color: var(--text-secondary); }
-        .pin-form { display: flex; gap: 12px; flex-wrap: wrap; }
-        .pin-input {
-            flex: 1; min-width: 120px; padding: 10px 16px; font-size: 18px;
-            text-align: center; letter-spacing: 8px; border: 1px solid var(--border);
-            border-radius: 8px; background: linear-gradient(180deg,var(--input-top),var(--input-bottom)); color: var(--text);
-            box-shadow: inset 0 1px 2px var(--inner-dark), inset 0 -1px var(--inner-light);
-        }
-        .pin-input:focus { border-color: var(--accent); }
-        .msg { padding: 12px; border-radius: 8px; margin-top: 12px; font-size: 14px; }
-        .msg.error-msg { border: 1px solid var(--border); background: var(--input-top); color: var(--accent); }
-        .expired-mark { font-size: 32px; line-height: 1; color: var(--text-secondary); margin-bottom: 14px; }
-        .error .btn { text-decoration: none; margin-top: 22px; }
-        .pin-form .btn { margin-top: 0; }
-        @media (max-width: 480px) { body { padding: 14px; } .container { padding: 20px 17px; } .pin-form .btn { min-height: 44px; } }
-        @media (prefers-reduced-motion: reduce) { .btn { transition: none; } .btn:hover, .btn:active { transform: none; } }
-        @media (prefers-reduced-transparency: reduce) { .container { background: var(--input-bottom); backdrop-filter: none; -webkit-backdrop-filter: none; } }
-        @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .container { background: var(--input-bottom); } }
-
-        /* 代码高亮配色，复用页面既有变量以适配明暗主题 */
-        .hljs { color: var(--text); background: transparent; }
-        .hljs-comment, .hljs-quote { color: var(--text-muted); font-style: italic; }
-        .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: var(--accent); }
-        .hljs-string, .hljs-regexp, .hljs-addition { color: var(--code-string); }
-        .hljs-number, .hljs-symbol, .hljs-bullet { color: var(--code-number); }
-        .hljs-title, .hljs-title.function_, .hljs-section, .hljs-name { color: var(--code-title); }
-        .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: var(--code-attr); }
-        .hljs-type, .hljs-built_in, .hljs-class .hljs-title { color: var(--code-type); }
-        .hljs-meta, .hljs-tag { color: var(--text-secondary); }
-        .hljs-deletion { color: var(--code-deletion); }
-        .hljs-emphasis { font-style: italic; }
-        .hljs-strong { font-weight: 600; }
-    </style>
-    <link rel="stylesheet" href="/themes.css">
-</head>
-<body>
-    <div class="container">
-        ${!exists ? `
-            <div class="error">
-                <p class="expired-mark" aria-hidden="true">◇</p>
-                <p>分享不存在或已过期</p>
-                <a href="/" class="btn">返回首页</a>
-            </div>
-        ` : requirePin ? `
-            <div class="title">此分享需要验证 PIN</div>
-            <form class="pin-form" id="pinForm">
-                <input type="text" class="pin-input" id="pinInput" maxlength="4" pattern="\\d{4}"
-                       placeholder="••••" autocomplete="off" inputmode="numeric">
-                <button type="submit" class="btn">验证</button>
-            </form>
-            <div id="errorMsg"></div>
-        ` : `
-            <div class="title">分享内容</div>
-            <div class="content" id="content">加载中...</div>
-            <button class="btn" id="copyBtn">复制内容</button>
-            <p class="notice">此内容已从服务器删除</p>
-        `}
-    </div>
-    <script src="/lib/highlight.min.js"></script>
-    <script>
-        // 使用分享码进行端到端解密
-        const Crypto = {
-            async deriveKey(code) {
-                const enc = new TextEncoder();
-                const keyMaterial = await crypto.subtle.importKey(
-                    'raw', enc.encode(code + '-nav-sylph-e2e'), 'PBKDF2', false, ['deriveKey']
-                );
-                return crypto.subtle.deriveKey(
-                    { name: 'PBKDF2', salt: enc.encode('nav-sylph-paste-v2'), iterations: 100000, hash: 'SHA-256' },
-                    keyMaterial,
-                    { name: 'AES-GCM', length: 256 },
-                    false,
-                    ['decrypt']
-                );
-            },
-            async decrypt(encryptedBase64, code) {
-                const key = await this.deriveKey(code);
-                const combined = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0));
-                const iv = combined.slice(0, 12);
-                const data = combined.slice(12);
-                const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
-                return new TextDecoder().decode(decrypted);
-            }
-        };
-
-        const code = '${code}';
-        let decryptedText = '';
-
-        // 语言识别：先用高精度签名判定明确语言，再用 hljs 自动识别兜底。
-        // 分享内容多为短片段，hljs 的 relevance 在短文本上区分度不足，
-        // 因此签名层优先，避免把 Python 片段判成 CSS 一类的误判。
-        const CJK = /[\\u4e00-\\u9fff]/;
-        const LANG_SIGNATURES = [
-            ['python', [/^\\s*def\\s+\\w+\\s*\\(.*\\)\\s*(->[^:]*)?:/m, /^\\s*(from\\s+[\\w.]+\\s+)?import\\s+[\\w.,*\\s]+$/m, /\\bself\\.\\w+/, /^\\s*class\\s+\\w+.*:\\s*$/m, /\\bprint\\s*\\(/, /\\b(elif|None|True|False|__init__|__name__)\\b/]],
-            ['javascript', [/\\b(const|let|var)\\s+\\w+\\s*=/, /\\bfunction\\s*\\w*\\s*\\(/, /=>/, /\\brequire\\s*\\(/, /\\bconsole\\.(log|error|warn)\\s*\\(/, /\\bexport\\s+(default|const|function)/]],
-            ['go', [/^\\s*package\\s+\\w+\\s*$/m, /\\bfunc\\s+\\w*\\s*\\(/, /\\bfmt\\.(Println|Printf|Errorf)\\s*\\(/, /:=/]],
-            ['rust', [/\\bfn\\s+\\w+\\s*\\(/, /\\blet\\s+mut\\s+/, /\\bprintln!\\s*\\(/, /\\buse\\s+std::/]],
-            ['java', [/\\b(public|private|protected)\\s+(static\\s+)?(final\\s+)?\\w+[\\w<>\\[\\]]*\\s+\\w+\\s*\\(/, /System\\.out\\.print/]],
-            ['csharp', [/using\\s+System[\\s;]/, /namespace\\s+\\w+/, /Console\\.WriteLine\\s*\\(/]],
-            ['php', [/<\\?php/, /\\$\\w+\\s*=/]],
-            ['sql', [/\\b(SELECT|INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|CREATE\\s+TABLE)\\b/i, /\\bFROM\\s+\\w+/i]],
-            ['bash', [/^\\s*#!\\/.*\\b(ba)?sh\\b/m, /^\\s*(sudo|apt|apt-get|yum|brew|cd|ls|rm|mkdir|chmod|chown|curl|wget|git|export)\\s/m, /\\$\\{?\\w+\\}?/]],
-            ['json', [/^\\s*[{[][\\s\\S]*[}\\]]\\s*$/]],
-            ['yaml', [/^\\s*[\\w-]+:\\s*.*$/m, /^\\s*-\\s+\\w+:/m]]
-        ];
-
-        function detectLanguage(text) {
-            if (!text || !text.trim()) return null;
-            if (CJK.test(text)) return null;
-            for (const [lang, patterns] of LANG_SIGNATURES) {
-                if (patterns.some(pattern => pattern.test(text))) {
-                    return window.hljs && window.hljs.getLanguage(lang) ? lang : null;
-                }
-            }
-            if (!window.hljs) return null;
-            const auto = window.hljs.highlightAuto(text);
-            return auto && auto.language ? auto.language : null;
-        }
-
-        function renderContent(text) {
-            const target = document.getElementById('content');
-            const language = window.hljs ? detectLanguage(text) : null;
-            if (language) {
-                try {
-                    target.classList.add('hljs');
-                    target.innerHTML = window.hljs.highlight(text, { language }).value;
-                    return;
-                } catch {
-                    target.classList.remove('hljs');
-                }
-            }
-            target.textContent = text;
-        }
-
-        async function showContent(encryptedContent) {
-            try {
-                decryptedText = await Crypto.decrypt(encryptedContent, code);
-                renderContent(decryptedText);
-                document.getElementById('copyBtn').onclick = () => {
-                    navigator.clipboard.writeText(decryptedText).then(() => {
-                        document.getElementById('copyBtn').textContent = '已复制';
-                        setTimeout(() => { document.getElementById('copyBtn').textContent = '复制内容'; }, 2000);
-                    });
-                };
-            } catch {
-                document.getElementById('content').textContent = '解密失败';
-            }
-        }
-
-        ${exists && !requirePin ? `
-        fetch('/api/p/' + code, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-            .then(r => r.json())
-            .then(data => {
-                if (data.content) {
-                    showContent(data.content);
-                } else {
-                    document.getElementById('content').textContent = data.error || '获取失败';
-                }
-            })
-            .catch(() => { document.getElementById('content').textContent = '获取失败'; });
-        ` : ''}
-        ${exists && requirePin ? `
-        document.getElementById('pinForm').onsubmit = async (e) => {
-            e.preventDefault();
-            const pin = document.getElementById('pinInput').value;
-            if (!/^\\d{4}$/.test(pin)) return;
-
-            try {
-                const res = await fetch('/api/p/' + code, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pin })
-                });
-                const data = await res.json();
-
-                if (data.content) {
-                    document.querySelector('.container').innerHTML =
-                        '<div class="title">分享内容</div>' +
-                        '<div class="content" id="content">解密中...</div>' +
-                        '<button class="btn" id="copyBtn">复制内容</button>' +
-                        '<p class="notice">此内容已从服务器删除</p>';
-                    showContent(data.content);
-                } else {
-                    // 用 textContent 而非拼接 innerHTML：不必依赖「服务端错误文案恒为
-                    // 固定字符串」这一隐含前提，将来任何把用户输入拼进 error 的改动
-                    // 都不会因此变成 XSS
-                    const errorBox = document.getElementById('errorMsg');
-                    const msg = document.createElement('div');
-                    msg.className = 'msg error-msg';
-                    msg.textContent = data.error || '验证失败';
-                    errorBox.replaceChildren(msg);
-                    if (data.error && data.error.includes('销毁')) {
-                        document.getElementById('pinForm').style.display = 'none';
-                    }
-                }
-            } catch {
-                document.getElementById('errorMsg').innerHTML = '<div class="msg error-msg">请求失败</div>';
-            }
-        };
-        ` : ''}
-    </script>
-</body>
-</html>`;
-
-    res.type('html').send(html);
-});
+// ========== HTTP server ==========
 
 function createServer() {
     if (config.server.https.enabled) {

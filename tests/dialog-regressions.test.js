@@ -196,141 +196,6 @@ function createDocument() {
     return { document, state };
 }
 
-test('backdrop dismissal and cancellation never create a share', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    const shares = [];
-    app.createPaste = async (...args) => { shares.push(args); };
-
-    const pending = app.showPasteOptions('private text');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const overlay = state.dialog;
-    // 点击遮罩：面板不应关闭，也不应创建分享
-    overlay.fire('click', { target: overlay });
-    assert.equal(overlay.removed, false);
-    assert.equal(shares.length, 0);
-
-    // 点击取消：同样不创建分享
-    const cancelButton = { closest: selector => (selector === '[data-action="cancel"]' ? {} : null) };
-    overlay.fire('click', { target: cancelButton });
-    await pending;
-    assert.deepEqual(shares, []);
-});
-
-test('default settings create a share without PIN or expiry override', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    const shares = [];
-    app.createPaste = async (...args) => { shares.push(args); };
-
-    const pending = app.showPasteOptions('hello');
-    await new Promise(resolve => setImmediate(resolve));
-
-    // 保持默认：不勾选 PIN，有效期停在 5 分钟
-    const overlay = state.dialog;
-    const form = overlay.querySelector('form');
-    form.fire('submit', { preventDefault() {} });
-    await pending;
-
-    assert.equal(shares.length, 1);
-    // 默认档位不传第三个参数，保持既有 createPaste 两参数契约
-    assert.equal(shares[0].length, 2);
-    assert.deepEqual(Array.from(shares[0]), ['hello', null]);
-});
-
-test('PIN and expiry selections are forwarded to createPaste', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    const shares = [];
-    app.createPaste = async (...args) => { shares.push(args); };
-
-    const pending = app.showPasteOptions('secret');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const overlay = state.dialog;
-    const pinBox = overlay.querySelectorAll('.ui-dialog-option input').find(i => i.type === 'checkbox');
-    const ttlRadios = overlay.querySelectorAll('.ui-dialog-option input').filter(i => i.type === 'radio');
-    const pinInput = overlay.querySelectorAll('input[name^="field"], .ui-dialog-reveal input')[0];
-
-    pinBox.checked = true;
-    pinInput.value = '4321';
-    // 像真实用户一样点选「1 天」：置为 checked 并触发 change，由浏览器语义负责互斥
-    const day = ttlRadios.find(r => r.value === '1440');
-    day.checked = true;
-    day.fire('change', {});
-
-    const form = overlay.querySelector('form');
-    form.fire('submit', { preventDefault() {} });
-    await pending;
-
-    // app.js 在 vm 上下文中执行，跨 realm 对象不能直接 deepStrictEqual
-    assert.equal(shares.length, 1);
-    assert.equal(shares[0].length, 3);
-    assert.deepEqual(Array.from(shares[0]).slice(0, 2), ['secret', '4321']);
-    assert.equal(shares[0][2].ttlMinutes, 1440);
-});
-
-test('a non-numeric PIN is rejected before the share is created', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    const shares = [];
-    app.createPaste = async (...args) => { shares.push(args); };
-
-    const pending = app.showPasteOptions('secret');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const overlay = state.dialog;
-    const pinBox = overlay.querySelectorAll('.ui-dialog-option input').find(i => i.type === 'checkbox');
-    const pinInput = overlay.querySelectorAll('input[name^="field"], .ui-dialog-reveal input')[0];
-    pinBox.checked = true;
-    pinInput.value = '12';
-
-    const form = overlay.querySelector('form');
-    form.fire('submit', { preventDefault() {} });
-    await new Promise(resolve => setImmediate(resolve));
-
-    assert.deepEqual(shares, []);
-    assert.match(overlay.querySelector('.ui-dialog-error').textContent, /4 位数字/);
-    assert.equal(overlay.removed, false);
-
-    // 修正为 4 位后可以继续
-    pinInput.value = '1234';
-    form.fire('submit', { preventDefault() {} });
-    await pending;
-    assert.equal(shares.length, 1);
-    assert.deepEqual(shares[0].slice(0, 2), ['secret', '1234']);
-    assert.equal(shares[0][2].ttlMinutes, 5);
-});
-
-test('expiry radios share one name so the browser enforces mutual exclusion', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    const shares = [];
-    app.createPaste = async (...args) => { shares.push(args); };
-
-    const pending = app.showPasteOptions('text');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const overlay = state.dialog;
-    const ttlRadios = overlay.querySelectorAll('.ui-dialog-option input').filter(i => i.type === 'radio');
-    assert.equal(ttlRadios.length, 4);
-
-    // 同组必须共用同一个 name，否则浏览器不会实现原生互斥
-    const names = new Set(ttlRadios.map(radio => radio.name));
-    assert.equal(names.size, 1, `有效期单选项应共用一个 name，实际得到: ${[...names].join(', ')}`);
-
-    // 模拟浏览器：勾选 30 分钟后，同组其余项应自动取消
-    const thirty = ttlRadios.find(radio => radio.value === '30');
-    thirty.checked = true;
-    thirty.fire('change', {});
-    assert.equal(ttlRadios.filter(radio => radio.checked).length, 1);
-
-    overlay.querySelector('form').fire('submit', { preventDefault() {} });
-    await pending;
-    assert.equal(shares[0][2].ttlMinutes, 30);
-});
-
 test('every overlay dialog stays vertically centred on narrow screens', () => {
     // 曾经 .ui-dialog-overlay（≤480px）与 .fav-dialog-overlay（≤768px）都被写成
     // 贴底的底部抽屉，结果在移动端被地址栏与 Home 指示条盖住。两处都要守住。
@@ -377,7 +242,7 @@ test('the engine dropdown is bounded and scrollable in landscape', () => {
     assert.equal(/max-height/.test(base[1]), false, '基础规则不应限制高度，留给横屏块处理');
 });
 
-test('dialogs and the composer yield to the on-screen keyboard', () => {
+test('dialogs yield to the on-screen keyboard', () => {
     // vh/dvh 都不跟随软键盘收缩，只有 visualViewport 反映真实可视高度。
     // app.js 把被遮挡高度写进 --kb-inset，各弹窗按它收矮。
     // 断言只匹配可执行代码：先把整行注释与块注释剥掉，否则
@@ -426,83 +291,6 @@ test('the toast clears the home indicator', () => {
     assert.match(narrow, /\.toast\s*\{[^}]*bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/, '提示条避让 Home 指示条');
 });
 
-test('the share receive page declares viewport-fit=cover', () => {
-    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-    const meta = /<meta name="viewport" content="([^"]*)">/.exec(server);
-    assert.ok(meta, '分享页有 viewport meta');
-    assert.match(meta[1], /viewport-fit=cover/, '分享页必须声明 viewport-fit=cover');
-});
-
-test('the share receive page wraps prose at word boundaries', () => {
-    // 旧样式写的是 word-break:break-all，普通英文单词会被从中间劈开
-    // （"whether the" → "whet / her the"），长文读起来很费劲。
-    const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-    // 先剥注释：下面禁止的写法在注释里被原样引用，否则断言会匹配到说明文字。
-    const noComments = server.replace(/\/\*[\s\S]*?\*\//g, '');
-    // 从分享页路由里定位 .content，不依赖模板的字面缩进；两端都断言，
-    // 避免切片落空却仍被后续断言当作「规则存在」。
-    const routeAt = noComments.indexOf("app.get('/p/:code'");
-    const start = noComments.indexOf('.content {', routeAt);
-    const end = noComments.indexOf('}', start);
-    assert.ok(routeAt > -1 && start > routeAt && end > start, '分享页存在 .content 规则');
-    const block = noComments.slice(start, end);
-    assert.ok(block.length > 100, '切片必须覆盖整条规则，不能截断');
-    assert.match(block, /overflow-wrap:\s*break-word/, '只有超长不可断的词才强制换行');
-    assert.match(block, /word-break:\s*normal/, '普通单词按正常规则断行');
-    assert.doesNotMatch(block, /word-break:\s*break-all/, 'break-all 会把普通单词劈开');
-
-    // 纯文字内容用界面字体，识别为代码（.hljs）时才保留等宽字体。
-    assert.match(server, /\.content:not\(\.hljs\)\s*\{[^}]*font-family:\s*inherit/, '纯文本分享继承界面字体栈');
-});
-
-test('the PIN field sits directly under its checkbox, not below the expiry options', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    app.createPaste = async () => {};
-
-    const pending = app.showPasteOptions('text');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const markup = state.dialog.markup;
-    const checkboxAt = markup.indexOf('opt_pin');
-    const pinFieldAt = markup.indexOf('revealField');
-    const firstRadioAt = markup.indexOf('opt_ttl');
-
-    assert.ok(checkboxAt > -1 && pinFieldAt > -1 && firstRadioAt > -1, '面板含 PIN 复选框、PIN 输入框与有效期单选项');
-    assert.ok(pinFieldAt > checkboxAt, 'PIN 输入框必须排在 PIN 复选框之后');
-    assert.ok(pinFieldAt < firstRadioAt, 'PIN 输入框必须排在有效期单选项之前，否则视觉上会掉到弹窗最下面');
-
-    // 弹窗只在提交或取消时 resolve，这里只需要模板内容，按取消收尾
-    state.dialog.fire('click', { target: { closest: s => (s === '[data-action="cancel"]' ? {} : null) } });
-    await pending;
-});
-
-test('the four expiry options share one grid container', async () => {
-    const { document, state } = createDocument();
-    const app = loadApp(document);
-    app.createPaste = async () => {};
-
-    const pending = app.showPasteOptions('text');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const markup = state.dialog.markup;
-    assert.match(markup, /class="ui-dialog-options"/, '有效期需要独立的网格容器才能排成 2×2');
-    assert.match(markup, /class="ui-dialog-group-label">有效期</, '分组需要标题说明这一组是什么');
-
-    // 四个单选项必须都在同一个 .ui-dialog-options 内，否则网格只作用于第一项
-    const gridAt = markup.indexOf('ui-dialog-options');
-    assert.ok(gridAt > -1, '网格容器存在');
-
-    const radios = [...markup.matchAll(/name="opt_ttl"/g)];
-    assert.equal(radios.length, 4, '四档有效期都存在');
-    radios.forEach(match => {
-        assert.ok(match.index > gridAt, '每个有效期单选项都渲染在网格容器之内');
-    });
-
-    state.dialog.fire('click', { target: { closest: s => (s === '[data-action="cancel"]' ? {} : null) } });
-    await pending;
-});
-
 test('promptValue still returns the first field value', async () => {
     const { document, state } = createDocument();
     const app = loadApp(document);
@@ -516,18 +304,6 @@ test('promptValue still returns the first field value', async () => {
     overlay.querySelector('form').fire('submit', { preventDefault() {} });
 
     assert.equal(await pending, '9876');
-});
-
-test('expiry text reflects the requested window', () => {
-    const { document } = createDocument();
-    const app = loadApp(document);
-    const now = Date.now();
-
-    assert.equal(app.pasteExpiryText(now + 30 * 60000), '30分钟后过期');
-    assert.equal(app.pasteExpiryText(now + 2 * 3600000), '2小时后过期');
-    assert.equal(app.pasteExpiryText(now + 3 * 86400000), '3天后过期');
-    assert.equal(app.pasteExpiryText(now - 1000), '已过期');
-    assert.equal(app.pasteExpiryText(null), '5分钟后过期');
 });
 
 test('Enter on a merging category opens one confirmation despite input blur', async () => {

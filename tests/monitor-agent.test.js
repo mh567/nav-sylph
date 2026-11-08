@@ -2488,7 +2488,7 @@ test('服务器配置变更时让采集缓存失效', () => {
     assert.match(addServer, /invalidateMetricsCache\(\)/, '添加/编辑服务器后清缓存');
 
     const delServer = code.slice(code.indexOf("app.delete('/api/modules/servers/:id'"),
-        code.indexOf('// ========== Paste API =========='));
+        code.indexOf('// ========== HTTP server =========='));
     assert.match(delServer, /invalidateMetricsCache\(\)/, '删除服务器后清缓存');
 
     // 切片终点用**下一条路由**，不能用 invalidateMetricsCache 的定义位置——

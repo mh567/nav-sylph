@@ -2563,7 +2563,7 @@ test('sw.js：新模块进预缓存清单（延后加载也要预缓存）且缓
  *  indexOf 返回 -1、slice(-1) 静默给出空串。 */
 function loadTimelineRoutes(timeline) {
     const begin = server.indexOf('// ========== Special Line 时间线 API ==========');
-    const end = server.indexOf('// ========== Paste API ==========', begin);
+    const end = server.indexOf('// ========== HTTP server ==========', begin);
     assert.ok(begin >= 0 && end > begin, '时间线 API 小节存在');
 
     const routes = new Map();
@@ -2728,7 +2728,7 @@ test('时间线没有自带限流 Map（复用既有桶，不必进 sweep 清单
     // 先按原文切（锚点是注释行），再去注释后做匹配
     const section = stripComments(server.slice(
         server.indexOf('// ========== Special Line 时间线 API =========='),
-        server.indexOf('// ========== Paste API ==========')));
+        server.indexOf('// ========== HTTP server ==========')));
     assert.ok(section.length > 2000, `时间线那一节切出来了（${section.length} 字符）`);
     assert.doesNotMatch(section, /new Map\(/,
         '时间线自带一只新 Map 就会出现「只增不减、无人清扫」——复用既有桶即可。' +

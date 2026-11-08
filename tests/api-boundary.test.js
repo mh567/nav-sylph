@@ -188,7 +188,7 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
     // 切片边界用 Paste 段做锚——早先只切到「模块平台 API」标题处，
     // 新加的端点落在标题之后，切片里一条都看不到（数量断言恒为 0）。
     const routes = server.slice(server.indexOf('// ========== 模块平台 API =========='),
-        server.indexOf('// ========== Paste API =========='));
+        server.indexOf('// ========== HTTP server =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
     // 11 条 = 8 条带 requireAdmin（config 读/写、metrics、servers 增/删、

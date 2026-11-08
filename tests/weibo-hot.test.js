@@ -124,16 +124,13 @@ test('标题走常规字重：15 行列表不与书签卡的 600 字重同档', 
 
 // ========== 服务端代理路由 ==========
 
-test('/api/weibo-hot 路由：轮询桶 + publicModuleAccess，且不在 /api/modules 前缀下', () => {
+test('/api/weibo-hot 路由：轮询桶 + requireAdmin，且不在 /api/modules 前缀下', () => {
     const code = stripComments(server);
     const at = code.indexOf("app.get('/api/weibo-hot'");
     assert.ok(at > 0, '路由存在');
     const route = code.slice(at, at + 140);
     assert.ok(route.length > 100, `切出路由（${route.length}）`);
-    // 鉴权不是 requireAdmin 而是 publicModuleAccess：管理员照旧，匿名访客在
-    // 该模块**对外开放**时可读；撤回开放立刻 403。客户端卸载只是体验，
-    // 授权判定必须落在服务端（见 server.js 里该守卫的注释）。
-    assert.match(route, /app\.get\('\/api\/weibo-hot', modulePollLimit, publicModuleAccess\('weibo-hot'\)/,
+    assert.match(route, /app\.get\('\/api\/weibo-hot', modulePollLimit, requireAdmin/,
         '读接口走轮询专用桶（按标签页数线性增长，算进管理桶会自己打满）');
     // /api/modules 前缀有「恰好 11 条」的计数守卫，这条不该混进去
     assert.doesNotMatch(code, /app\.get\('\/api\/modules\/weibo-hot'/);

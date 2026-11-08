@@ -100,7 +100,7 @@ test('批量设为私密：选中的项全部置为私密并保存', async () =>
     assert.ok(list.every(f => f.updatedAt > 1000), 'updatedAt 应从初值推进');
 });
 
-test('批量设为公开：全部置为公开', async () => {
+test('批量设为普通：全部置为公开', async () => {
     const app = loadApp();
     const list = favs(2, [true, true]);
     await runBatch(app, { selected: ['f0', 'f1'], favorites: list, choices: { privacy: 'public' } });
@@ -134,17 +134,17 @@ test('保存失败时完整回滚，不留下与服务端不一致的界面', as
     assert.deepEqual(list.map(f => f.updatedAt), before.map(f => f.updatedAt), 'updatedAt 应回滚到初值');
 });
 
-test('混选时默认预选「设为私密」，全部已私密才预选「设为公开」', () => {
-    // 批量收紧可见性比放宽更安全，混选不能默认落在「设为公开」
+test('混选时默认预选「设为私密」，全部已私密才预选「设为普通」', () => {
+    // 批量收紧可见性比放宽更安全，混选不能默认落在「设为普通」
     assert.match(source, /const allPrivate = targets\.every\(f => f\.private\);/);
     // 只断言 checked 的绑定关系，不把对象写成单行——排版不是这里要钉的东西
     assert.match(source, /label: '设为私密', checked: !allPrivate/);
-    assert.match(source, /label: '设为公开', checked: allPrivate/);
-    // 两个方向风险不对称：设为私密只收紧可见性，设为公开是对匿名访客披露。
+    assert.match(source, /label: '设为普通', checked: allPrivate/);
+    // 两个方向风险不对称：设为私密只收紧可见性，设为普通是对匿名访客披露。
     // 提示必须挂在披露方向上，且不新增弹窗（用户选定的形态就是单层弹窗）
     const publicOption = /\{[^}]*kind: 'radio'[^{}]*value: 'public'[^{}]*\}/.exec(source);
-    assert.ok(publicOption, '找不到「设为公开」选项对象');
-    assert.match(publicOption[0], /hint: '公开后[^\n]*访客/);
+    assert.ok(publicOption, '找不到「设为普通」选项对象');
+    assert.match(publicOption[0], /hint: '普通书签[^\n]*登录/);
     const privateOption = /\{[^}]*kind: 'radio'[^{}]*value: 'private'[^{}]*\}/.exec(source);
     assert.ok(privateOption, '找不到「设为私密」选项对象');
     assert.doesNotMatch(privateOption[0], /hint:/, '收紧方向不需要风险提示');
