@@ -4931,9 +4931,9 @@
                             <p class="help-tip"><code>Shift</code>+Enter 换行，文本输入框可拖右下角调高</p>
                         </div>
                         <div class="help-section">
-                            <strong>多端同步</strong>
-                            <p>多台设备共用导航和设置，修改后自动同步。</p>
-                            <p>在各设备登录，即可使用同一份个人导航和模块设置。</p>
+                            <strong>管理员多设备</strong>
+                            <p>在任意设备登录管理账号，即可取得同一份个人导航与模块设置。</p>
+                            <p>访客导航只保存在本机浏览器，不跨设备同步。</p>
                         </div>
                         <div class="help-section">
                             <strong>可定制模块</strong>

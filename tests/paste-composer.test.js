@@ -658,7 +658,7 @@ test('the exit button and Escape share one code path', () => {
 test('the help text explains the three homepage features and composer shortcuts', () => {
     const help = appSource.slice(appSource.indexOf('        showHelp()'), appSource.indexOf('        async openAdmin()'));
     assert.deepEqual([...help.matchAll(/<strong>(.*?)<\/strong>/g)].map(match => match[1]),
-        ['文本分享', '多端同步', '可定制模块']);
+        ['文本分享', '管理员多设备', '可定制模块']);
     assert.match(help, /Shift<\/code>\+Enter 换行/, 'help mentions Shift+Enter');
     assert.match(help, /拖右下角调高/, 'help mentions dragging the corner');
 });
