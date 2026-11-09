@@ -10,6 +10,10 @@
 - 验证：新增 `tests/admin-navigation-io.test.js` 7 项全部通过，覆盖导出内容、导入成功 / 版本拒绝 / 引擎回退 / 确认取消 / 保存失败。三处变异（删除确认、删除基线前移、删除引擎回退）分别让对应用例变红后已恢复。全量 `node --test tests/*.test.js` 为 730 项通过、0 失败、0 跳过；`public/app.js`、`public/sw.js` 语法检查与 `git diff --check` 通过。
 - 发布前两轴审查：删除了不可达的 `res.success` 分支；「与本地导航导入重复」「导入无撤销 / 重置」「保存失败保留内存结果」按既有 `save()` 语义与本轮范围保留。
 - 仍未在真实浏览器复验文件下载与导入选择框。
+- 实现提交 `de7cbd0`，版本提交 `862e01a`；`main` 与 tag `v2.6.1` 均已推送，`scripts/release.sh` 完成正式发布，latest 指向 v2.6.1。
+- Release：https://github.com/mh567/habu/releases/tag/v2.6.1 。五个附件已下载并与 GitHub 记录逐项比对大小与 SHA-256：完整包 13,689,020 字节、更新包 5,062,600 字节；包内 `version.json` 为 2.6.1、`public/sw.js` 为 nav-v166，`exportAdminNavigation` 与 `pendingMigrations` 均在，无私人文件；更新包不含 `agent/dist`；三个 agent 附件均为正确架构的静态 ELF。
+- 完整包 SHA-256 `149ce561c270505bc079a95209d67710852bf3bf4d0f55c56bb2c83f295a317b`，更新包 `8cba60d5346f0d0932ed9f14509ca769e0acde169a9159ee45797302e44bca9e`；核验目录 `/tmp/habu-v2.6.1-verify-54naQa`。
+- 发布包内含本地忽略的 `public/sw.js.bak`（2.3KB，无私人数据），来自发布脚本的 `cp -r public`；不影响运行，下一轮可清理。
 
 ## 配置排查、公开演示页与首屏并发（2026-11-08，v2.6.0）
 
