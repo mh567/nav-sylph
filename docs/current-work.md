@@ -1,5 +1,16 @@
 # 当前工作交接
 
+## 后台导航导入导出（2026-11-09，v2.6.1）
+
+- 用户要求：管理页面的导航部分增加类似 Pabu 编辑区「数据管理」的导入导出。
+- 后台「首页导航」分区新增「数据管理」折叠块：导出导航 / 导入导航。文件固定为 `{ schemaVersion: 1, config }`，与 Pabu 的导航导出互通（两边 `navigation-schema.js` 逐字相同）。
+- 导入先检查 1 MiB 上限与顶层字段、执行 `NavigationSchema.validate()` 并二次确认，再经既有 `saveNavigation` 立即保存；成功后前移 `configSnapshot`，避免关闭面板时回滚，`privacyMode` 保留当前值。保存失败不回滚导入结果，重画面板并提示可重试。
+- 本版本同时包含上一会话未发布的 `c801fe7`（升级快照仅在确有迁移待执行时生成），已一并写入 CHANGELOG。
+- Service Worker 升为 `nav-v166`；README 与架构文档同步补充。
+- 验证：新增 `tests/admin-navigation-io.test.js` 7 项全部通过，覆盖导出内容、导入成功 / 版本拒绝 / 引擎回退 / 确认取消 / 保存失败。三处变异（删除确认、删除基线前移、删除引擎回退）分别让对应用例变红后已恢复。全量 `node --test tests/*.test.js` 为 730 项通过、0 失败、0 跳过；`public/app.js`、`public/sw.js` 语法检查与 `git diff --check` 通过。
+- 发布前两轴审查：删除了不可达的 `res.success` 分支；「与本地导航导入重复」「导入无撤销 / 重置」「保存失败保留内存结果」按既有 `save()` 语义与本轮范围保留。
+- 仍未在真实浏览器复验文件下载与导入选择框。
+
 ## 配置排查、公开演示页与首屏并发（2026-11-08，v2.6.0）
 
 - 新增 `node server.js config:validate`（只校验、不监听端口，配置有问题以非零码退出并说明原因）与 `config:print`（打印「默认值 < server-config.json < .env < 环境变量」合并后的最终配置，凭据类字段只显示是否存在）。安装目录根下的 `server-config.json` 会被 Node 的扩展名补全抢先加载、遮蔽 `server-config/` 目录，这两个命令正是为排查这类问题而加。

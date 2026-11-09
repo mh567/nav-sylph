@@ -3751,6 +3751,66 @@
             } finally { this.navigationSaving = false; }
         }
 
+        // ========== 后台首页导航：导入与导出 ==========
+        //
+        // 文件形状与 pabu 编辑区的「数据管理」一致（{ schemaVersion: 1, config }）。
+        // 两边的 navigation-schema.js 逐字相同，所以 pabu 导出的导航文件可以直接导入这里。
+        // 导出的是**当前内存里**的个人导航（含面板中尚未保存的修改）；导入会立即保存。
+        // privacyMode 不在公开配置视图里，导入时保留当前值，不跟着文件走。
+
+        exportAdminNavigation() {
+            const blob = new Blob([JSON.stringify({
+                schemaVersion: 1,
+                config: window.NavigationSchema.publicConfig(this.config)
+            }, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'habu-navigation.json';
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        async importAdminNavigation(file) {
+            if (!file) return;
+            let applied = false;
+            try {
+                if (file.size > 1024 * 1024) throw new Error('配置文件超过 1 MiB');
+                const data = JSON.parse(await file.text());
+                if (data.schemaVersion !== 1 || Object.keys(data).some(k => !['schemaVersion', 'config'].includes(k))) throw new Error('配置文件版本或字段无效');
+                const config = data.config;
+                // 与 pabu 的导入保持同一条兜底：搜索引擎列表非空、但默认项不在其中时
+                // 回退首项；否则 schema 会以「请选择有效搜索引擎」拒绝一整份本来可用的导航。
+                if (Array.isArray(config?.searchEngines) && config.searchEngines.length && !config.searchEngines.some(e => e.id === config.searchEngine)) config.searchEngine = config.searchEngines[0].id;
+                window.NavigationSchema.validate(config);
+                if (!await this.confirmAction('导入将替换当前个人导航（分类、书签、搜索引擎与外观，含面板中尚未保存的修改），并立即保存到服务器。', '导入导航')) return;
+                this.config = { ...config, privacyMode: this.config.privacyMode };
+                applied = true;
+                this.markConfigDirty();
+                await this.saveNavigation();
+                // 基线必须跟着前移：否则关闭面板时 closeAdmin 会把 this.config
+                // 回滚成导入前的快照，内存与服务器就此分叉。
+                this.configSnapshot = JSON.stringify(this.config);
+                this.configDirty = false;
+                this.updateConfigStatus();
+                this.applyTheme();
+                this.render();
+                this.renderAdminPanel();
+                const links = this.config.categories.reduce((n, c) => n + c.bookmarks.length, 0);
+                this.showToast(`已导入导航：${this.config.categories.length} 个分类、${links} 个链接`);
+            } catch (error) {
+                // 保存失败不回滚内存里的导入结果，与 save() 同一语义：静默回滚
+                // 等于把用户刚导入的东西凭空抹掉。保留结果并重画，用户可点「保存」重试。
+                if (applied) {
+                    this.applyTheme();
+                    this.render();
+                    this.renderAdminPanel();
+                    this.updateConfigStatus();
+                }
+                this.showToast('导入失败：' + error.message, 'error', 8000);
+            }
+        }
+
         // ========== 站点默认首页：面板内可视化编辑 ==========
         //
         // 编辑的是「模板草稿」，与管理员个人导航是两份独立存储：
@@ -5383,6 +5443,20 @@
                         <button class="add-btn" id="addEngine">添加搜索引擎</button>
                     </div>
                 </div>
+                <div class="section section-collapsible">
+                    <button type="button" class="section-header" aria-expanded="false" aria-controls="navDataSection" onclick="app.toggleSection('navData')">
+                        <span class="section-title">数据管理</span>
+                        <span class="section-toggle-label">展开</span>
+                    </button>
+                    <div class="section-body collapsed" id="navDataSection">
+                        <p class="fav-hint">导出当前个人导航（分类、书签、搜索引擎与外观，含未保存的修改）为 JSON；导入会替换它并立即保存。文件与 pabu 的导航导出互通。</p>
+                        <div class="fav-actions">
+                            <button class="btn" id="exportNavBtn">导出导航</button>
+                            <button class="btn" id="importNavBtn">导入导航</button>
+                        </div>
+                        <input type="file" id="navFileInput" accept="application/json,.json" hidden>
+                    </div>
+                </div>
                 </div>
                 <div class="admin-panel" role="tabpanel" id="adminPanelFav" aria-labelledby="adminTabFav" hidden>
                 <div class="section">
@@ -5488,6 +5562,14 @@
                 this.config.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
                 this.renderEnginesEditor();
                 this.markConfigDirty();
+            };
+
+            // 个人导航的导入导出。导入后立即保存，与 pabu 编辑区「数据管理」一致。
+            $('#exportNavBtn').onclick = () => this.exportAdminNavigation();
+            $('#importNavBtn').onclick = () => $('#navFileInput').click();
+            $('#navFileInput').onchange = (e) => {
+                this.importAdminNavigation(e.target.files[0]);
+                e.target.value = '';
             };
 
             // 收藏夹相关绑定（favorites.json 那套平铺书签，与首页导航分类不同）

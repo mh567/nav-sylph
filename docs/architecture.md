@@ -46,6 +46,8 @@ Issue #3 将首页配置的真相源迁入现有 SQLite，追加第八级迁移�
 
 浏览器确认管理员身份后单独读取个人配置，管理保存统一经过 `saveNavigation`；默认编辑器持有自己的配置、草稿版本和发布版本，不借用个人配置对象。待确认请求暂存本标签页 sessionStorage，刷新重试使用原 operationId；退出清除这些请求及私人状态，页面关闭不保留管理员离线草稿。静态缓存为 nav-v110。普通设备本地配置由 #4 实现，管理员配置协调由 #5 实现，普通空间云同步由后续任务实现。
 
+管理面板「首页导航 → 数据管理」提供个人导航的 JSON 导出与导入。文件形状固定为 `{ schemaVersion: 1, config }`，`config` 经 `publicConfig()` 投影，因此不含 `privacyMode`；同一份 `public/navigation-schema.js` 与 Pabu 共用，两边的导航文件可以互相导入。导入在客户端先执行 `NavigationSchema.validate()` 并二次确认，再走既有的 `saveNavigation`（revision、operationId、回执），成功后同步前移 `configSnapshot`，避免关闭面板时被 `closeAdmin` 回滚成导入前的快照。`privacyMode` 保留导入前的当前值。静态缓存为 nav-v166。
+
 WebDAV 范围尚沿用现有行为，当前从 SQLite 读取实际管理员配置并在个人保存后排期，恢复写入新个人版本，不改变默认模板。备份范围与跨域恢复协调分别由 #12、#13 调整。
 
 ## 管理员跨设备配置协调（Issue #5）
