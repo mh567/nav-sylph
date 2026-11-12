@@ -1711,19 +1711,43 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
     // 只会等到超时（实测：卡满 30 秒且 stub 一次都没被调用）。
     // reset=true：先放一份「旧版」再跑（触发真正的升级）
     // reset=false：沿用上一次留下的 self（已经是最新，用来走「已是最新」分支）
+    // ⚠️ 必须监听 'error'：spawn 失败（ETXTBSY / ENOENT / EAGAIN）时**没有**任何
+    // stdout、stderr，只有 'error' 一个信号。此前只监听 'close'，于是一次
+    // spawn 失败被压缩成「agent 什么都没打印」，断言信息完全指不到真正的原因
+    // （实测：全量并发跑时偶发，单跑永不复现）。
+    // 'close' 的第二个参数（signal）同样要留下：被信号杀掉时它才是唯一线索。
     const runUpgrade = (reset = true) => new Promise(resolve => {
         fs.rmSync(callsFile, { force: true });
         const self = path.join(tmp, 'nav-agent');
-        if (reset) fs.copyFileSync(template, self);   // 上一轮会把 self 换掉
+        if (reset) {
+            // ⚠️ 必须**先删再拷**，不能就地覆写：macOS arm64 会缓存已执行过
+            // 二进制的代码签名（cdhash）与 inode 绑定，用 copyFileSync 覆写同一个
+            // inode 后，下一次 exec 会被内核直接 SIGKILL（用户看到的 "Killed: 9"），
+            // 既不产生 stdout 也不产生 stderr。
+            // 实测（本机 arm64 / macOS 27.2，60 次为一组）：就地覆写有一组失败
+            // 47/60，先删再拷三组共 180 次零失败。表现是断言拿到空字符串，
+            // 看起来像「agent 什么都没打印」，与真实缺陷极难区分。
+            fs.rmSync(self, { force: true });
+            fs.copyFileSync(template, self);   // 上一轮会把 self 换掉
+        }
         const child = require('child_process').spawn(self,
             ['upgrade', '--server', `http://127.0.0.1:${port}`],
             { env: { ...process.env, PATH: stubDir + ':' + process.env.PATH } });
-        let stdout = '', stderr = '';
+        let stdout = '', stderr = '', spawnError = null;
         child.stdout.on('data', d => { stdout += d; });
         child.stderr.on('data', d => { stderr += d; });
+        child.on('error', error => { spawnError = error; });
         const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
-        child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+        child.on('close', (status, signal) => {
+            clearTimeout(timer);
+            resolve({ status, signal, stdout, stderr, spawnError });
+        });
     });
+
+    /** 失败时把「进程怎么结束的」一并打出来，别只剩一个空字符串。 */
+    const why = r => `status=${r.status} signal=${r.signal} `
+        + `spawn=${r.spawnError ? `${r.spawnError.code}: ${r.spawnError.message}` : 'ok'} `
+        + `stdout=${JSON.stringify(r.stdout.slice(0, 300))} stderr=${JSON.stringify(r.stderr.slice(0, 300))}`;
 
     try {
         // A. systemctl 成功 → 真的去重启，并如实说已经生效
@@ -1731,22 +1755,25 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
         const ok = await runUpgrade();
         const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8') : '';
         assert.match(calls, /restart nav-agent/,
-            'upgrade 结束必须自己重启服务——只打印提示的话，旧进程会一直自报旧版本');
-        assert.match(ok.stdout, /已重启/, '并告诉用户新版本已生效');
+            `upgrade 结束必须自己重启服务——只打印提示的话，旧进程会一直自报旧版本（${why(ok)}）`);
+        assert.match(ok.stdout, /已重启/, `并告诉用户新版本已生效（${why(ok)}）`);
         assert.doesNotMatch(ok.stdout, /若它是 systemd 服务，重启后生效/,
-            '不该再把重启留给用户');
+            `不该再把重启留给用户（${why(ok)}）`);
         // 这里本就**不传** --server-ca，顺带钉住那个把环境变量名当默认值的写法：
         // 它会让每次 enroll / upgrade 都白打一行「读取 --server-ca 失败」。
         assert.doesNotMatch(ok.stderr, /读取 --server-ca 失败/,
-            '不传 --server-ca 时不该去读一个叫 NAV_AGENT_SERVER_CA 的文件');
-        assert.doesNotMatch(ok.stderr, /NAV_AGENT_SERVER_CA/);
+            `不传 --server-ca 时不该去读一个叫 NAV_AGENT_SERVER_CA 的文件（${why(ok)}）`);
+        assert.doesNotMatch(ok.stderr, /NAV_AGENT_SERVER_CA/, why(ok));
 
         // B. systemctl 失败 → 给出手动步骤，而不是笼统的「重启后生效」
         writeStub(1);
         const bad = await runUpgrade();
-        assert.match(bad.stdout + bad.stderr, /未能自动重启/, '失败要说出来，不能静默');
-        assert.match(bad.stdout, /systemctl restart nav-agent/, '给 systemd 的手动命令');
-        assert.match(bad.stdout, /pkill -x nav-agent/, '也给手动运行场景的命令');
+        assert.match(bad.stdout + bad.stderr, /未能自动重启/,
+            `失败要说出来，不能静默（${why(bad)}）`);
+        assert.match(bad.stdout, /systemctl restart nav-agent/,
+            `给 systemd 的手动命令（${why(bad)}）`);
+        assert.match(bad.stdout, /pkill -x nav-agent/,
+            `也给手动运行场景的命令（${why(bad)}）`);
 
         // C. 已经是最新版本时**也要**重启。
         // 这是用户实测卡住的那个状态：上一次升级跑的是还没有重启逻辑的旧代码
@@ -1755,10 +1782,11 @@ test('upgrade 结束后自动重启服务，而不是只打印一句提示', asy
         // 「文件是新的、进程是旧的」。所以这条分支同样要收尾。
         writeStub(0);
         const again = await runUpgrade(false);   // self 已是上一轮换上的 9.9.9
-        assert.match(again.stdout, /已是最新版本 9\.9\.9/, '确实走到「已是最新」分支');
+        assert.match(again.stdout, /已是最新版本 9\.9\.9/,
+            `确实走到「已是最新」分支（${why(again)}）`);
         const calls2 = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8') : '';
         assert.match(calls2, /restart nav-agent/,
-            '「已是最新」也要重启——文件是最新的不等于跑着的进程是最新的');
+            `「已是最新」也要重启——文件是最新的不等于跑着的进程是最新的（${why(again)}）`);
     } finally {
         server.close();
         fs.rmSync(tmp, { recursive: true, force: true });

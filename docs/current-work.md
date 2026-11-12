@@ -1,5 +1,13 @@
 # 当前工作交接
 
+## 定位并修复 upgrade 用例偶发失败（2026-11-13，本地完成，未提交）
+
+- 现象：`tests/monitor-agent.test.js` 的「upgrade 结束后自动重启服务」在全量运行时偶发失败，报错固定在同一处——用例 B（`systemctl` 桩 exit 1，应打印「未能自动重启」）拿到 `stdout + stderr` 为空串。
+- 定位手段：`spawn` 原先只监听 `close`，`spawn` 失败或进程被杀时没有任何可读信号。补上 `error` 监听并让断言打印 `status / signal / spawnError / stdout / stderr` 后，现场一次落定：`status=null signal=SIGKILL spawn=ok stdout="" stderr=""`，而整例只跑了 7.4 秒，**不是** 30 秒兜底定时器所为。
+- 根因：夹具用 `fs.copyFileSync(template, self)` **就地覆写**一个刚被 exec 过的二进制。macOS arm64 会把代码签名（cdhash）与 inode 绑定缓存，同一 inode 被覆写后再 exec 会被内核直接 SIGKILL（"Killed: 9"），既不写 stdout 也不写 stderr。对照实验（本机 arm64 / macOS 27.2）：就地覆写一组 60 次失败 47 次；先删再拷三组 180 次零失败。
+- 修复：`runUpgrade(reset=true)` 改为先 `rmSync(self)` 再拷贝，新 inode 不触发签名缓存；断言信息带上进程结束状态。产品侧无需改动——`upgrade` 的下载地址恒为 `nav-agent-linux-<arch>`，macOS 上本就走不到替换那一步，该问题只存在于「在 macOS 上跑 Linux 升级路径」的测试夹具。
+- 验证：并发四实例各跑 `tests/monitor-agent.test.js` → 4×112 全绿（修复前 4 实例中 1 例红）；全量 `node --test tests/*.test.js` → **725 项通过、0 失败、0 跳过**。
+
 ## v2.6.2 已发布（2026-11-12）
 
 - 用户授权提交、推送与发布。实现提交 `ffc8db5`（refactor: 移除访客本机导航层），版本提交 `64334c1`（chore: 发布 v2.6.2）；`main` 已推送，tag `v2.6.2` 指向 `64334c1`，`scripts/release.sh` 完成正式发布，`latest` 指向 v2.6.2。
@@ -25,7 +33,7 @@
 - **测试**：删除 `tests/browser/local-navigation.cjs`、`public-modules.cjs`、`themes.cjs`（三个套件在 HEAD 上已因 `/` 302 与 `[data-module-open]` 消失而跑不通）；改写 `public-modules.test.js`（模块端点数 11 → 10、分类只认 admin、去掉策略与本机偏好相关 4 条）、`theme-switcher.test.js`（访客持久化 → 单一身份）、`homepage-material.test.js`（底栏文案与引擎行模板断言）、`api-boundary.test.js`（路由计数与命名豁免项）、`personal-access-http.test.js`（路由引用改为 `/api/modules/metrics`）。
 - 验证：全量 `node --test tests/*.test.js` 为 **725 项通过、0 失败**（原 730 项，删掉 5 条只对访客成立或已随方法消失的用例）；`node --check` 覆盖 server.js、app.js、sw.js、weibo-hot.js；`git diff --check` 无空白错误。
 - 真实浏览器冒烟（ego-browser + 隔离实例，随机端口、强口令、测完停服并删临时目录）：登录 → 编辑（按钮文案「保存编辑」、取消后恢复）→ 保存编辑（toast「编辑已保存」）→ 后台四个模块块 → 启用微博热搜（`enabledModules: ['weibo-hot']`）→ 首页模块区可见且挂载 1 张卡片 → 后台导航导出仍下载 `habu-navigation.json`（2083 字节）；截图 `/tmp/habu-e2e/smoke-home.png`。
-- ⚠️ **已知不稳定用例**：`tests/monitor-agent.test.js` 的「upgrade 结束后自动重启服务」偶发失败（本轮 2 次全量运行中各红 1 次，单独复跑 112 项全绿）。与本轮改动无关，尚未定位，记为待观察。
+- ✅ **曾记为不稳定的用例已定位并修复**（2026-11-13）：`tests/monitor-agent.test.js` 的「upgrade 结束后自动重启服务」偶发失败，根因是夹具就地覆写已执行过的二进制触发 macOS arm64 的 `Killed: 9`，详见顶部章节。与本轮改动无关。
 - 仍未验证：多视口视觉（390×844 / 360×640 / 834×1112 / 844×390）未逐一走查——本次删掉整块设置抽屉与一批样式，窄屏布局理应更简单，但没有实测；`agent/install.sh` 在真 Linux 上仍未执行过（与上轮相同）。
 - 版本三处统一为 2.6.2，`scripts/release.sh` 发布。
 
