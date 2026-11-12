@@ -1,5 +1,17 @@
 # 当前工作交接
 
+## v2.6.2 已发布（2026-11-12）
+
+- 用户授权提交、推送与发布。实现提交 `ffc8db5`（refactor: 移除访客本机导航层），版本提交 `64334c1`（chore: 发布 v2.6.2）；`main` 已推送，tag `v2.6.2` 指向 `64334c1`，`scripts/release.sh` 完成正式发布，`latest` 指向 v2.6.2。
+- Release：https://github.com/mh567/habu/releases/tag/v2.6.2 。更新亮点只有一条用户可感知变化；正文按脚本模板生成，无开发交付报告。
+- 五个附件已下载并与 GitHub 记录比对大小与 SHA-256：完整包 13,672,734 字节、更新包 5,047,220 字节；三个 agent 附件均为正确架构的静态 ELF（amd64 / arm64 / armv7）。
+  - 完整包 SHA-256 `7853b55c3b380bf3bc3cb81a00d199711f18d2a315c0a7dc836d9df3b9d43269`
+  - 更新包 SHA-256 `3c6ce3e5eeb6dd7e54bfbea6b9ddff91cce2f4aeb0250fa7afe57208085b4ab6`
+  - 核验目录 `/tmp/habu-v2.6.2-verify`
+- 包内容核对：两个包都不含 `public/local-navigation.js`；无 `config.json`、`favorites.json`、`.admin-password.json`、`.webdav-config.json`、`.modules.json`、`habu.db`、`sw.js.bak` 等私人或构建残留；更新包不含 `agent/dist`；包内 `version.json` 为 2.6.2、`public/sw.js` 为 `nav-v167`，`public/app.js` 中已无 `preparePublicModules` 与 `local-navigation` 引用。
+- 发布过程记录：首次执行因工作区存在未跟踪的 `.workbuddy/`（工具记忆目录）触发脚本的「存在未提交的更改」确认，非交互运行时被挂起；第二次以 `printf 'y\n'` 应答后脚本完成打包、打 tag 与上传。该目录不进发布包（脚本只复制指定目录），也不应加入版本库。
+- 本次未部署目标服务器，未在真实手机与多视口下验收；`agent/install.sh` 仍未在真 Linux 上执行过。
+
 ## 移除访客本机导航层（2026-11-12，v2.6.2）
 
 - 起因：v2.6.1 收尾时把两条遗留列为待决定项——根目录三份过期草稿，以及访客时代的不可达兼容路径。用户拍板「全量移除访客层」后一并清理并发布。
