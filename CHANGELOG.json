@@ -1,6 +1,21 @@
 {
   "versions": [
     {
+      "version": "2.6.3",
+      "date": "2026-11-13",
+      "summary": "修复一处测试夹具的偶发失败，功能与界面无任何变化。",
+      "highlights": [
+        "仅内部测试稳定性修复：升级用例在 macOS（Apple 芯片）上偶发失败的问题已定位并修复，安装、升级与界面行为均无变化，无需采取任何操作。"
+      ],
+      "changes": {
+        "fix": [
+          "tests/monitor-agent.test.js 的「upgrade 结束后自动重启服务」在并发跑全量时偶发失败：夹具用 copyFileSync 就地覆写一个刚被执行过的二进制，macOS arm64 会把代码签名与 inode 绑定缓存，同一 inode 被改写后再执行会被内核直接 SIGKILL（\"Killed: 9\"），且不产生任何 stdout/stderr，导致断言只剩一个空字符串。改为先删除再拷贝（新 inode），不影响被测逻辑。",
+          "同一用例的 spawn 补上 error 监听并保留 close 的 signal，断言信息统一带上 status / signal / spawnError / stdout / stderr —— 缺了这些，一次被信号杀掉的子进程会被误读成「agent 没有打印提示」。",
+          "产品代码未改动：upgrade 的下载地址恒为 nav-agent-linux-<arch>，macOS 上走不到替换二进制那一步，该问题只存在于测试夹具。"
+        ]
+      }
+    },
+    {
       "version": "2.6.2",
       "date": "2026-11-12",
       "summary": "清理已停用的访客本机导航层，界面与数据格式保持不变。",
