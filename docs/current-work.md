@@ -1,6 +1,18 @@
 # 当前工作交接
 
-## 定位并修复 upgrade 用例偶发失败（2026-11-13，本地完成，未提交）
+## v2.6.3 已发布（2026-11-13）
+
+- 用户授权提交、推送与发布。实现提交 `6c70ded`（test: 修复 upgrade 用例在 macOS arm64 上的偶发失败），版本提交 `e60fa4d`（chore: 发布 v2.6.3）；`main` 已推送，附注 tag `v2.6.3`（tag 对象 `7a90667`）指向 `e60fa4d`，`latest` 指向 v2.6.3。
+- Release：https://github.com/mh567/habu/releases/tag/v2.6.3 。这次是**纯内部修复**，更新亮点如实写明「安装、升级与界面行为均无变化，无需采取任何操作」，未包装成用户可感知的改进。
+- 五个附件齐全并与 GitHub 记录一致：完整包 13,672,978 字节、更新包 5,047,396 字节；三个 agent 附件经 `file` 确认为正确架构的静态 ELF（x86-64 / aarch64 / ARM EABI5）。
+  - 完整包 SHA-256 `1005df292b10c13c037cc08301f82c9d115044a69c8c64cce3bead9bff27c496`
+  - 更新包 SHA-256 `14b547f4c902c389206f22c517bbef847f85a2b0ce854e63d63fa9b9ca62e61c`
+  - 核验目录 `/tmp/habu-v2.6.3-verify`
+- 包内容核对：无 `config.json`、`favorites.json`、`.admin-password.json`、`.webdav-config.json`、`.modules.json`、`habu.db`、`sw.js.bak`、`.workbuddy/` 等私人或构建残留；更新包不含 `agent/dist`；包内 `version.json` 为 2.6.3、`public/sw.js` 为 `nav-v167`。
+- 说明：发布包不含 `tests/`（脚本只打包运行时目录），因此本次夹具修复不会出现在安装包里——这是既有打包口径，不是遗漏。
+- `scripts/release.sh` 在工作区有未跟踪的 `.workbuddy/` 时仍会停在「存在未提交的更改」确认，非交互执行须 `printf 'y\n'` 应答（第二次踩到，已确认这是稳定行为）。
+
+## 定位并修复 upgrade 用例偶发失败（2026-11-13，v2.6.3）
 
 - 现象：`tests/monitor-agent.test.js` 的「upgrade 结束后自动重启服务」在全量运行时偶发失败，报错固定在同一处——用例 B（`systemctl` 桩 exit 1，应打印「未能自动重启」）拿到 `stdout + stderr` 为空串。
 - 定位手段：`spawn` 原先只监听 `close`，`spawn` 失败或进程被杀时没有任何可读信号。补上 `error` 监听并让断言打印 `status / signal / spawnError / stdout / stderr` 后，现场一次落定：`status=null signal=SIGKILL spawn=ok stdout="" stderr=""`，而整例只跑了 7.4 秒，**不是** 30 秒兜底定时器所为。
