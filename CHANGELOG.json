@@ -1,6 +1,28 @@
 {
   "versions": [
     {
+      "version": "2.6.2",
+      "date": "2026-11-12",
+      "summary": "清理已停用的访客本机导航层，界面与数据格式保持不变。",
+      "highlights": [
+        "移除首页的访客本机导航与公开模块兼容层，首页、编辑与管理面板的使用方式不变。"
+      ],
+      "changes": {
+        "improve": [
+          "删除 public/local-navigation.js（本机导航 IndexedDB 实现）及其脚本引用，index.html 的「导航基础 / 模块配置 / 数据管理」本机设置抽屉、状态行与「采用其他标签页版本」按钮一并移除；底栏「编辑 / 取消 / 保存编辑」三个入口保留，保存按钮改为独立按钮绑定，不再依赖已删除的表单提交。",
+          "移除客户端的公开模块策略链路：publicModulePolicy、preparePublicModules、loadPublicModulePolicy、applyPublicModulePolicy、checkPublicModules 与 moduleGeneration；renderModuleZone 只保留「会话失效即收起模块区」的前置判断，会话校验统一走 privateEpoch。",
+          "移除本机模块存储：localModules / localModulesRevision / localModulesError、readLocalModules、applyLocalModules、saveLocalModules、sanitizeModuleSettings，以及 saveModulesConfig 与 loadModulesConfig 的 local 分支；模块配置只从服务端读取。",
+          "模块分类收敛为单一的 admin：weibo-hot 由 public 改为 admin，移除其用户侧 settings 白名单与 clampPageSize（展示条数恒为 15，此前也不存在管理侧写入路径）；App.MODULE_CATEGORIES 与 validateModuleDef 同步收紧，声明 public 的模块会被拒绝注册。",
+          "服务端删除 GET /api/modules/public（此前固定返回空名单）；PUBLIC_MODULE_IDS 与 .modules.json 的 publicModules 字段保留，仅用于数据格式与备份范围的兼容，不再参与授权。",
+          "样式表移除仅服务本机抽屉的选择器（.local-navigation-tools、.local-settings-*、.local-engine-*、.local-module-*、.local-data-actions 等），保留管理员后台与 Special Line 来源表单共用的 .local-select / .local-select-button / .local-select-menu。",
+          "Service Worker 更新为 nav-v167，并从预缓存清单移除 local-navigation.js。",
+          "测试：删除 tests/browser/local-navigation.cjs、public-modules.cjs、themes.cjs 三个已不可运行的访客套件；改写 public-modules.test.js、theme-switcher.test.js、homepage-material.test.js 与 api-boundary.test.js 中依赖访客身份的断言（模块端点数 11 → 10）。",
+          "文档同步：README 去掉「显示条数可自行设置」与「公开模块」表述；docs/architecture.md 更新当前行为段落，给 Issue #4 章节加历史横幅，并订正四处落后的 Service Worker 版本号。",
+          "根目录 task_plan.md、progress.md、findings.md 为改名前的临时草稿，内容停在 2026-11-08 之前且已被后续交接文档取代，一并删除。"
+        ]
+      }
+    },
+    {
       "version": "2.6.1",
       "date": "2026-11-09",
       "summary": "后台首页导航支持导入导出，升级快照仅在确有数据库迁移时生成。",
