@@ -1,5 +1,37 @@
 # 当前工作交接
 
+## 移除访客本机导航层（2026-11-12，v2.6.2）
+
+- 起因：v2.6.1 收尾时把两条遗留列为待决定项——根目录三份过期草稿，以及访客时代的不可达兼容路径。用户拍板「全量移除访客层」后一并清理并发布。
+- **根目录草稿**：`task_plan.md`、`progress.md`、`findings.md` 内容停在 2026-11-08 之前、已被交接文档取代，全仓无引用，删除。
+- **前端**：删除 `public/local-navigation.js`（本机导航 IndexedDB 实现）与 `index.html` 的本机设置抽屉（导航基础 / 模块配置 / 数据管理）、状态行、「采用其他标签页版本」按钮；移除 `LocalNavigation`、`localStore/localChannel/localRevision`、`localModules` 系列、`localSettings` 系列（含 25 个方法，共 580 行）、公开模块策略链路（`publicModulePolicy` / `preparePublicModules` / `loadPublicModulePolicy` / `applyPublicModulePolicy` / `checkPublicModules` / `moduleGeneration`）、`modulesSource` 与 `sanitizeModuleSettings`。
+- **共享入口解耦（本次最大风险点）**：`#localCancelBtn` 与 `#localDoneBtn` 原绑在 `bindLocalNavigation()` 里，`#localDoneBtn` 还靠 `form="localSettingsForm"` 提交。抽屉删除后表单不复存在，若不迁走这两个入口，管理员会「能进编辑、出不来」。已改为 `bindEditEntries()`：三个自绘下拉的关闭监听、`online` 恢复协调、取消与保存按钮都绑在 `bind()` 里；`#localDoneBtn` 改为 `type="button"` + `onclick`，文案统一为「保存编辑」（`syncEditEntries()` 不再按身份分叉）。
+- **模块分类收敛**：`weibo-hot` 由 `public` 改为 `admin`，移除其 `settings` 白名单与 `clampPageSize`（管理员侧从来没有写入路径，展示条数恒为 15）；`App.MODULE_CATEGORIES` 只保留 `admin`，`validateModuleDef` 丢掉 public 分支，声明 `public` 的模块会被拒绝注册。`mountModule` 不再向模块注入 `state.settings`。
+- **服务端**：删除 `GET /api/modules/public`（此前固定回空名单）。`PUBLIC_MODULE_IDS` 与 `.modules.json` 的 `publicModules` 字段**保留**——它们仍决定备份投影（`weibo-hot` 布局不跨设备恢复），删字段等于改备份范围，需升 `SCOPE_VERSION`，属独立任务。
+- **样式**：删除 `.local-navigation-tools`、`.local-settings-*`、`.local-engine-*`、`.local-module-*`、`.local-data-actions`、`#localAdoptBtn` 及其媒体查询；**保留** `.local-select` / `.local-select-button` / `.local-select-menu`——名字误导，但服务管理员后台与 Special Line 来源表单。
+- **Service Worker**：`nav-v167`，预缓存清单移除 `local-navigation.js`。
+- **测试**：删除 `tests/browser/local-navigation.cjs`、`public-modules.cjs`、`themes.cjs`（三个套件在 HEAD 上已因 `/` 302 与 `[data-module-open]` 消失而跑不通）；改写 `public-modules.test.js`（模块端点数 11 → 10、分类只认 admin、去掉策略与本机偏好相关 4 条）、`theme-switcher.test.js`（访客持久化 → 单一身份）、`homepage-material.test.js`（底栏文案与引擎行模板断言）、`api-boundary.test.js`（路由计数与命名豁免项）、`personal-access-http.test.js`（路由引用改为 `/api/modules/metrics`）。
+- 验证：全量 `node --test tests/*.test.js` 为 **725 项通过、0 失败**（原 730 项，删掉 5 条只对访客成立或已随方法消失的用例）；`node --check` 覆盖 server.js、app.js、sw.js、weibo-hot.js；`git diff --check` 无空白错误。
+- 真实浏览器冒烟（ego-browser + 隔离实例，随机端口、强口令、测完停服并删临时目录）：登录 → 编辑（按钮文案「保存编辑」、取消后恢复）→ 保存编辑（toast「编辑已保存」）→ 后台四个模块块 → 启用微博热搜（`enabledModules: ['weibo-hot']`）→ 首页模块区可见且挂载 1 张卡片 → 后台导航导出仍下载 `habu-navigation.json`（2083 字节）；截图 `/tmp/habu-e2e/smoke-home.png`。
+- ⚠️ **已知不稳定用例**：`tests/monitor-agent.test.js` 的「upgrade 结束后自动重启服务」偶发失败（本轮 2 次全量运行中各红 1 次，单独复跑 112 项全绿）。与本轮改动无关，尚未定位，记为待观察。
+- 仍未验证：多视口视觉（390×844 / 360×640 / 834×1112 / 844×390）未逐一走查——本次删掉整块设置抽屉与一批样式，窄屏布局理应更简单，但没有实测；`agent/install.sh` 在真 Linux 上仍未执行过（与上轮相同）。
+- 版本三处统一为 2.6.2，`scripts/release.sh` 发布。
+
+## 收尾 v2.6.1 遗留项与文档订正（2026-11-12，本地完成，未提交）
+
+- 起点：`main` 与 `origin/main` 同为 `5ea9b18`，工作区干净，无未关闭 Issue。全量 `node --test tests/*.test.js` 为 **730 项通过、0 失败、0 跳过**。两点执行注意：其一，工具沙箱内跑会因 `server-config/defaults.js` 读取被拒而出现 28 项失败（`cpSync` 被 broker 文件策略拒绝），须在非沙箱环境执行，后台运行同样会被拦，否则会误判为回归；其二，本轮共 5 次运行中出现过 **1 次单项失败**（729 通过），日志被 `tail` 截断未取到用例名，其后 4 次均全绿，尚未定位，属待观察的不稳定用例。
+- 清理：删除发布遗留的 `public/sw.js.bak`（v2.6.1 记录标注「下一轮可清理」）。全仓无代码引用，仅该文件自身为发布脚本 `cp -r public` 带出的副本，已移入废纸篓。
+- 文档订正 `docs/architecture.md`「当前结构」表：`server.js` 原写负责「分享页面」、`public/sw.js` 原写「分享页不在缓存范围内」，而分享功能已在 v2.5.0 移除。改为按当前代码描述（统一登录门禁、会话、导航与模块接口；缓存范围为 `ASSETS` 清单，首页 `/`、演示页 `/demo/` 与动态接口不进缓存）。
+- 「登录后模块平台」开头补当前边界一段：`GET /api/modules/public` 固定回 `{ modules: [] }`，`preparePublicModules()` 因此在策略为空时总是提前返回 false，不下载任何模块脚本；`admin` / `public` 分类、`PUBLIC_MODULE_IDS` 与 `publicModuleAccess()` 作为平台约束保留，但匿名侧已无启用入口，下文关于「匿名访客 / 普通访客」的描述属该边界确立前的实现沿革。
+- 补上 v2.6.1 唯一未验项——**真实浏览器复验后台导航导入导出**。隔离实例：临时目录复制程序文件、已知强密码、随机端口、`GEO_ENABLED=false`，测完已停服务并删除临时目录。
+  - 未登录访问 `/` 跳转 `/login.html`；登录后进入首页。
+  - **导出**：真实点击触发浏览器下载，文件名 `habu-navigation.json`、2083 字节、顶层键仅 `config` 与 `schemaVersion`、`schemaVersion: 1`、3 个分类 9 个链接。
+  - **导入**：改造导出文件后经文件选择框导入，确认对话框点「确定」。分类名改动立即出现在首页与面板；`configDirty` 随后落回 `false`、`configSnapshot` 与 `config` 一致（关闭面板不回滚导入结果）；`/api/config` 返回首分类「导入验证分类」，服务器已落盘。
+  - **非法版本**：`schemaVersion: 2` 导入提示「导入失败：配置文件版本或字段无效」，导航保持不变。
+  - 截图 `/tmp/habu-e2e/admin-nav-io.png`；日志为该次运行的 stdout。
+- 本轮未改动运行代码，未改版本号，`public/` 未变（Service Worker 无需升级），未提交、未推送、未发布。
+- 遗留候选（需用户决定，本轮未动）：根目录 `task_plan.md`、`progress.md`、`findings.md` 是改名前的临时草稿且已被 Git 跟踪，内容停在 2026-11-08 之前；匿名/访客时代的兼容路径（`/api/modules/public`、`preparePublicModules`、`loadPublicModulePolicy`）已不可达，是否删除属产品与风险权衡。
+
 ## 后台导航导入导出（2026-11-09，v2.6.1）
 
 - 用户要求：管理页面的导航部分增加类似 Pabu 编辑区「数据管理」的导入导出。

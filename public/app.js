@@ -7,11 +7,8 @@
     const html = (str) => { const t = document.createElement('template'); t.innerHTML = str.trim(); return t.content.firstChild; };
     const uid = () => 'id_' + Math.random().toString(36).slice(2, 9);
 
-    // 匿名可达的模块接口白名单：公开模块的**策略**读接口本身要匿名可读。
-    // 公开模块的数据接口（如 /api/weibo-hot）不在下面那条特权限定里，
-    // 本来就不拦——它们的授权在服务端（publicModuleAccess），客户端这层只防
-    // 「未登录还去请求管理员接口」这种明显的错误。
-    const ANONYMOUS_MODULE_ROUTES = /^\/api\/modules\/public$/;
+    // 工作台只有一种身份：正常管理会话。下面的特权限定只防「未登录还去请求
+    // 管理员接口」这种明显错误，真正的授权在服务端（统一登录门禁 + requireAdmin）。
 
     /**
      * 恢复计划里每个**域**在界面上的说法（#13）。
@@ -61,7 +58,6 @@
         // 会抛 "body stream already read"。
         async request(url, options, binary = false) {
             if (/^\/api\/(?:admin\/|modules\/|timeline(?:\/|$)|memos(?:\/|$)|favorites(?:\/|$))/.test(url)
-                && !ANONYMOUS_MODULE_ROUTES.test(url)
                 && !window.app?.authenticated) throw new Error('需要管理员登录');
             const epoch = window.app?.privateEpoch || 0;
             const res = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...options?.headers, 'X-Habu-Request': '1' } });
@@ -157,20 +153,6 @@
             this.modulesLoading = false;
             this.modulesError = null;
             this.modulesEditorRendered = false;
-            // 模块配置的来源：'server'（管理员，存服务端）或 'local'（普通访客，存本机）。
-            // 只有两个 I/O 边界（loadModulesConfig / saveModulesConfig）按它分叉，
-            // 布局与拖拽那一段完全不关心来源。
-            this.modulesSource = null;
-            // 本机模块记录（普通访客的开关 / 布局 / 偏好）与它的乐观并发基线。
-            this.localModules = null;
-            this.localModulesRevision = 0;
-            this.localModulesError = null;
-            // 公开模块策略：管理员把哪些公开模块对外开放了。null = 未知。
-            // 未知时一个公开模块都不加载——「未知授权不加载」。
-            this.publicModulePolicy = null;
-            // 身份或策略代次。在飞的模块区渲染发现它变了就作废
-            // （管理员那侧另有 privateEpoch 管登录态变化）。
-            this.moduleGeneration = 0;
             // 已挂载的模块 id。某模块离开启用集合时要通知它收掉自己的定时器。
             this.mountedModuleIds = new Set();
             // 未启用模块被用户点开「展开配置」的那些 id。面板重建时清空，
@@ -244,31 +226,18 @@
          * 运行时只有「管理员开放」与「用户启用」两个开关，它们只能缩小可用
          * 集合，不能把声明为 admin 的模块变成 public。
          */
-        static MODULE_CATEGORIES = ['admin', 'public'];
+        static MODULE_CATEGORIES = ['admin'];
 
         /**
          * 校验模块声明，返回拒绝注册的理由（字符串）或 null（通过）。
          *
-         * 缺分类一律拒绝：没有分类的模块渲染出来就等于绕过分类边界。
-         * 公开模块还必须显式声明用户侧配置的白名单与逐项校验规则——那份配置
-         * 要跟着用户走（本机保存，后续同步到云空间），没有白名单就无从判断
-         * 哪些键能落盘、什么值算合法。宁可拒绝注册，也不放行一个「什么都能存」
-         * 的模块。
+         * 缺分类一律拒绝：没有分类的模块渲染出来就等于绕过分类边界。分类在
+         * 开发时固定，运行时只有「启用 / 停用」一个开关，它只能缩小集合。
          */
         static validateModuleDef(def) {
             if (!def || typeof def.id !== 'string' || !def.id) return '缺少 id';
             if (!App.MODULE_CATEGORIES.includes(def.category)) {
-                return '缺少 admin/public 分类声明（开发时固定，不可运行时指定）';
-            }
-            if (def.category === 'public') {
-                if (!def.settings || typeof def.settings !== 'object' || Array.isArray(def.settings)) {
-                    return '公开模块必须声明可同步配置白名单（settings）';
-                }
-                for (const [key, rule] of Object.entries(def.settings)) {
-                    if (!rule || typeof rule.validate !== 'function' || !('default' in rule)) {
-                        return `配置 ${key} 缺少默认值或校验规则`;
-                    }
-                }
+                return '缺少 admin 分类声明（开发时固定，不可运行时指定）';
             }
             return null;
         }
@@ -321,16 +290,14 @@
         }
 
         /**
-         * 拉取模块配置。管理员走服务端（个人配置），普通访客走本机
-         * （本机记录 + 服务端策略）。两条路径汇入同一个 `this.modulesConfig` 形状，
-         * 下游的布局、拖拽、挂载代码完全不必知道来源。
+         * 拉取模块配置。工作台只有管理员一种身份，配置一律来自服务端个人配置。
          */
         async loadModulesConfig() {
             if (this.modulesLoading) return this.modulesConfig;
+            if (!this.authenticated) return null;
             this.modulesLoading = true;
             this.modulesError = null;
             try {
-                if (!this.authenticated) return await this.loadLocalModulesConfig();
                 const epoch = this.privateEpoch || 0;
                 const data = await API.get('/api/modules/config');
                 if (!this.authenticated || epoch !== (this.privateEpoch || 0)) return null;
@@ -345,11 +312,10 @@
                     // 落盘了、首页轮询也真按新周期在跑（那条路径走
                     // /api/modules/metrics 回的 pollInterval），唯独回显是假的。
                     pollInterval: Number(data?.pollInterval) || 15,
-                    // 管理员对外开放了哪些公开模块。少了这一项，后台那个开关
-                    // 每次打开面板都显示「未开放」——而服务端其实存着。
+                    // 旧数据格式里的公开模块名单。访客层已移除、没有授权效果，
+                    // 仍原样带回以保持 `.modules.json` 与备份范围不变。
                     publicModules: Array.isArray(data?.publicModules) ? data.publicModules : []
                 };
-                this.modulesSource = 'server';
                 this.modulesLoaded = true;
                 return this.modulesConfig;
             } catch (e) {
@@ -364,189 +330,6 @@
             } finally {
                 this.modulesLoading = false;
             }
-        }
-
-        /** 普通访客：本机记录 + 服务端策略，汇成与管理端同形状的模块配置。 */
-        async loadLocalModulesConfig() {
-            await this.readLocalModules();
-            if (this.authenticated) return null;
-            this.modulesSource = 'local';
-            this.applyLocalModules();
-            this.modulesLoaded = true;
-            return this.modulesConfig;
-        }
-
-        /** 读本机模块记录。只读一次，之后以内存那份为准（写回时整体替换）。 */
-        async readLocalModules() {
-            if (this.localModules) return this.localModules;
-            try {
-                const record = await this.localStore.readModules();
-                this.localModulesRevision = record?.revision || 0;
-                // 清洗在**读**这一侧也做一遍：本机存储可以被用户、别的标签页或
-                // 浏览器扩展改动过，不能假定落盘的就是合法的。
-                this.localModules = record?.modules
-                    ? { ...record.modules, settings: this.sanitizeModuleSettings(record.modules.settings) }
-                    : { enabled: [], widgets: [], settings: {} };
-            } catch (e) {
-                this.localModulesError = '未能读取本机模块设置：' + e.message;
-                console.error('Load local modules failed:', e);
-                this.localModules = { enabled: [], widgets: [], settings: {} };
-            }
-            return this.localModules;
-        }
-
-        /**
-         * 把本机记录写成生效的模块配置（**原地**更新 `this.modulesConfig`，
-         * 与管理员路径 Object.assign(this.modulesConfig, merged) 同一条纪律：
-         * 模块挂载时拿的是这个对象的引用，换对象会让它们读到上一版）。
-         *
-         * `enabledModules` 是「本机偏好 ∩ 当前开放名单」：管理员撤回开放后，
-         * 本机里那条启用记录仍然留着（**偏好保留**），只是不进 enabledModules，
-         * 于是它不会被加载、也不会被轮询；重新开放时它自动回来。
-         */
-        applyLocalModules() {
-            const raw = this.localModules || { enabled: [], widgets: [], settings: {} };
-            const open = new Set(Array.isArray(this.publicModulePolicy) ? this.publicModulePolicy : []);
-            this.modulesConfig = this.modulesConfig || {};
-            Object.assign(this.modulesConfig, {
-                enabledModules: raw.enabled.filter(id => open.has(id)),
-                widgets: Array.isArray(raw.widgets) ? raw.widgets : [],
-                // 这里再过一遍白名单：读本机记录时模块脚本可能还没注册
-                // （声明读不到 → 原样保留），走到这一步时已经预加载好了。
-                settings: this.sanitizeModuleSettings(raw.settings),
-                servers: [],
-                pollInterval: 15
-            });
-        }
-
-        /**
-         * 按各模块**声明的白名单**清洗用户侧配置：白名单外的键丢掉，值过一遍
-         * 声明的校验规则，不合法或缺失时回落到声明的默认值。
-         *
-         * 尚未加载的模块（脚本还没执行、声明因此读不到）原样保留——丢掉就等于
-         * 「用户改一次设置，把别的模块的偏好一并抹掉」。它会在下次保存时
-         * 被清洗（那时脚本已加载）。
-         */
-        sanitizeModuleSettings(settings) {
-            const source = (settings && typeof settings === 'object' && !Array.isArray(settings)) ? settings : {};
-            const out = {};
-            for (const id of App.KNOWN_MODULES) {
-                const def = this.getModule(id);
-                const current = source[id];
-                if (!def) {
-                    if (current && typeof current === 'object' && !Array.isArray(current)) out[id] = { ...current };
-                    continue;
-                }
-                if (def.category !== 'public' || !def.settings) continue;
-                const values = (current && typeof current === 'object' && !Array.isArray(current)) ? current : {};
-                const clean = {};
-                for (const [key, rule] of Object.entries(def.settings)) {
-                    const validated = rule.validate(values[key]);
-                    clean[key] = (validated === undefined || validated === null) ? rule.default : validated;
-                }
-                out[id] = clean;
-            }
-            return out;
-        }
-
-        /**
-         * 写本机模块设置。与导航保存共用同一条本地队列，两个写入不会互相插队。
-         *
-         * 失败时内存不变（先在副本上算，落盘成功才替换）——这样界面上的开关
-         * 就能像管理员那侧一样「失败拨回去」，而不是显示一个没落盘的状态。
-         */
-        async saveLocalModules(patch) {
-            const raw = this.localModules || { enabled: [], widgets: [], settings: {} };
-            const next = {
-                enabled: patch.enabledModules !== undefined
-                    ? [...new Set(patch.enabledModules.filter(id => typeof id === 'string' && id))]
-                    : raw.enabled.slice(),
-                widgets: patch.widgets !== undefined ? patch.widgets : raw.widgets,
-                settings: this.sanitizeModuleSettings(patch.settings !== undefined
-                    ? Object.assign({}, raw.settings, patch.settings)
-                    : raw.settings)
-            };
-            this.localPending++;
-            this.setLocalStatus('正在保存模块设置');
-            const task = this.localQueue.then(async () => {
-                try {
-                    if (this.localUnavailable) throw new Error('本地存储不可用，无法保存模块设置');
-                    const record = await this.localStore.writeModules(next, this.localModulesRevision);
-                    this.localModulesRevision = record.revision;
-                    this.localModules = record.modules;
-                    this.localModulesError = null;
-                    this.applyLocalModules();
-                    if (!this.authenticated) this.setLocalStatus('仅保存在本机');
-                    return true;
-                } catch (error) {
-                    this.localModulesError = '未能保存模块设置：' + error.message;
-                    this.setLocalStatus(this.localModulesError, true);
-                    this.showToast(this.localModulesError, 'error', 8000);
-                    return false;
-                } finally { this.localPending--; }
-            });
-            this.localQueue = task;
-            return task;
-        }
-
-        /** 拉取公开模块策略。管理员不需要——他的模块来自服务端个人配置。 */
-        async loadPublicModulePolicy() {
-            if (this.authenticated) return;
-            try {
-                const data = await API.get('/api/modules/public');
-                await this.applyPublicModulePolicy(Array.isArray(data?.modules) ? data.modules : []);
-            } catch (e) {
-                // ⚠️ 取不到时**沿用上一次已知的策略**，而不是置成 null。
-                // 置 null 会让下一次渲染（窗口尺寸变化、换停靠等都会触发
-                // renderModuleZone）判定「未知授权」把已经显示的卡片拆掉——
-                // 而服务端此刻仍在正常放行，用户看到的是「卡片莫名消失」。
-                // 语义上这也对：离线时用最近一次已知结果，联网后重新确认。
-                // 从未确认过时 publicModulePolicy 本来就是 null，才会不加载——
-                // 「未知授权不加载」指的是那一种，不是「一次刷新失败就清零」。
-                console.warn('读取公开模块策略失败，沿用上一次已知策略:', e);
-            }
-        }
-
-        /** 策略真的变了才重渲染：每次确认都重挂一遍会让公开模块反复闪。 */
-        async applyPublicModulePolicy(modules) {
-            const next = modules.filter(id => typeof id === 'string' && id);
-            const previous = this.publicModulePolicy;
-            const changed = !previous
-                || next.length !== previous.length
-                || next.some(id => !previous.includes(id));
-            this.publicModulePolicy = next;
-            if (this.authenticated || !changed) return;
-            this.moduleGeneration++;
-            await this.renderModuleZone();
-        }
-
-        /**
-         * 联网、回到前台时各确认一次策略——撤回开放要尽快落地，而不是等到下次
-         * 刷新。服务端的 403 才是授权；这里只是让界面不必等一轮刷新。
-         */
-        async checkPublicModules() {
-            if (this.authenticated) return;
-            await this.loadPublicModulePolicy();
-        }
-
-        /**
-         * 匿名渲染前的准备。返回 false 表示模块区不该出现（策略未知，或没有
-         * 任何启用项）。
-         */
-        async preparePublicModules() {
-            const policy = this.publicModulePolicy;
-            // 未知授权不加载：策略还没拿到（或上次取失败）时一个模块都不加载。
-            if (!Array.isArray(policy) || !policy.length) return false;
-            const raw = await this.readLocalModules();
-            const open = policy.filter(id => App.KNOWN_MODULES.includes(id));
-            const wanted = raw.enabled.filter(id => open.includes(id));
-            // 一个都没启用就不预加载脚本——首屏不为「可能用得上」付下载成本。
-            if (!wanted.length) return false;
-            // 脚本要先注册好：清洗用户配置要读模块声明的白名单与校验规则。
-            await this.preloadModuleDefs(wanted);
-            if (this.authenticated) return false;
-            if (this.modulesConfig) return true;
-            return !!(await this.loadModulesConfig());
         }
 
         /**
@@ -572,20 +355,11 @@
 
         /**
          * 已启用的模块 id，按 widgets 里的 order 排序；未配置 layout 的按注册顺序。
-         *
-         * 普通访客额外按**模块自己声明的分类**过滤：即使开放名单里混进了声明为
-         * admin 的 id（服务端归一化挡不住有人手改配置文件），也不会渲染给访客。
-         * 管理员不过滤——他可以用自己尚未对外开放的公开模块。
          */
         enabledModuleIds() {
             const enabled = new Set(this.modulesConfig?.enabledModules || []);
             const layout = this.modulesConfig?.widgets || [];
-            const ids = App.KNOWN_MODULES.filter(id => {
-                if (!enabled.has(id)) return false;
-                if (this.authenticated) return true;
-                const def = this.getModule(id);
-                return !!(def && def.category === 'public');
-            });
+            const ids = App.KNOWN_MODULES.filter(id => enabled.has(id));
             const orderOf = id => {
                 const item = layout.find(w => w.id === id);
                 return item && Number.isFinite(item.order) ? item.order : 0;
@@ -730,28 +504,20 @@
             // 变化、模块开关等都会重渲染，那些不该再播一遍。
             const wasHidden = zone.hidden;
             const epoch = this.privateEpoch || 0;
-            const generation = this.moduleGeneration;
-            // 身份或策略变了就作废这次渲染。管理员看 privateEpoch（登录态），
-            // 普通访客看 moduleGeneration（策略或身份切换）。
-            const stillValid = () => (this.authenticated
-                ? epoch === (this.privateEpoch || 0)
-                : !this.authenticated && generation === this.moduleGeneration);
+            // 登录态变了就作废这次渲染（会话失效后不能再把私人模块画回去）。
+            const stillValid = () => this.authenticated && epoch === (this.privateEpoch || 0);
 
             if (!this.authenticated) {
-                // 普通访客：本机偏好 ∩ 服务端开放名单。策略未知、或一个都没启用
-                // 时收起模块区——「未知授权不加载」。
-                if (!await this.preparePublicModules()) {
-                    zone.hidden = true;
-                    zone.replaceChildren();
-                    this.teardownUnusedModules([]);
-                    // 未登录不该让背板继续收窄——让位是给登录后那条时间线的。
-                    // 走 syncRail（它自己判未登录 + 清宽度变量），别再手写一份 'narrow'。
-                    this.syncRail();
-                    return;
-                }
-            } else if (!this.modulesConfig) {
-                await this.loadModulesConfig();
+                // 会话已失效：收起模块区，私人内容一律不渲染。
+                zone.hidden = true;
+                zone.replaceChildren();
+                this.teardownUnusedModules([]);
+                // 未登录不该让背板继续收窄——让位是给登录后那条时间线的。
+                // 走 syncRail（它自己判未登录 + 清宽度变量），别再手写一份 'narrow'。
+                this.syncRail();
+                return;
             }
+            if (!this.modulesConfig) await this.loadModulesConfig();
             if (!stillValid()) return;
 
             // ⚠️ 定义必须在 `syncRail()` **之前**注册好：宽栏判定读的是模块定义里的
@@ -1019,9 +785,6 @@
             try {
                 const mounted = def.mountWidget(shell, {
                     config: this.modulesConfig,
-                    // 该模块自己的用户侧偏好（公开模块用）。管理员那侧没有这份
-                    // 配置，取到的是空对象——模块必须自己兜底默认值。
-                    settings: (this.modulesConfig?.settings || {})[id] || {},
                     editLayout: this.editLayout,
                     api: API,
                     // 轮询路径的纵向重排放到这里注入，而不是让每个模块各自去摸
@@ -1265,11 +1028,10 @@
                 widgets: JSON.parse(JSON.stringify(this.modulesConfig?.widgets || []))
             };
             this.editLayout = true;
-            if (!this.authenticated) this.renderLocalSettings();
             this.syncEditLayoutUI();
         }
 
-        /** 底栏三条编辑入口互斥：「编辑」与编辑态的「取消 / 保存配置」。
+        /** 底栏三条编辑入口互斥：「编辑」与编辑态的「取消 / 保存编辑」。
          *  文案只有一处来源，其余位置只调这一个方法，避免两处各写一遍后漂移。 */
         syncEditEntries() {
             const editing = this.editLayout;
@@ -1284,8 +1046,8 @@
             const save = $('#localDoneBtn');
             if (save) {
                 save.hidden = !editing;
-                save.textContent = this.authenticated ? '保存编辑' : '保存配置';
-                save.title = this.authenticated ? '保存全部改动并退出编辑' : '保存导航设置并退出编辑';
+                save.textContent = '保存编辑';
+                save.title = '保存全部改动并退出编辑';
             }
         }
 
@@ -1294,15 +1056,6 @@
             const grid = $('#grid');
             const editing = this.editLayout;
             this.syncEditEntries();
-            const tools = $('#localNavigationTools');
-            if (tools) this.setLocalSettingsVisible(!this.authenticated && editing);
-            const status = $('#localNavigationStatus');
-            if (status) status.hidden = this.authenticated || (!editing && !this.localStatusError);
-            const engine = $('#engineBtn');
-            if (engine && !this.authenticated) {
-                engine.disabled = editing || !!this.suspendedAdministrator;
-                engine.title = editing ? '在下方设置默认搜索引擎' : '切换搜索引擎';
-            }
             if (zone) zone.classList.toggle('is-editing', editing);
             if (grid) grid.classList.toggle('is-editing', editing);
             // 网格的增删控件（＋卡片、分类删除把手）由模板分支生成，
@@ -1318,52 +1071,6 @@
 
         /** 提交草稿：模块布局与首页书签分两套存储，串行提交，前者失败即中止。 */
         async saveEditSession() {
-            if (!this.authenticated) {
-                if (this.localSettingsSaving) return;
-                this.localSettingsSaving = true;
-                $('#localSettingsForm').inert = true;
-                $('#grid').inert = true;
-                $('#engineBtn').disabled = true;
-                $('#localDoneBtn').disabled = true;
-                $('#localSettingsError').hidden = true;
-                this.setLocalStatus('正在保存到本机');
-                try {
-                    await this.localQueue;
-                    const candidate = this.localNavigationCandidate();
-                    window.NavigationSchema.validate(candidate);
-                    if (JSON.stringify(candidate) !== JSON.stringify(this.localSaved) || this.localError) {
-                        if (!await this.saveLocalNavigation(candidate) || this.authenticated) return;
-                    }
-                    // 模块布局也是本机存储。与管理端同款：布局是**草稿**，由
-                    // 「保存配置」统一提交；模块开关与偏好则是即时保存。
-                    if (this.editSession && this.modulesConfig
-                        && JSON.stringify(this.modulesConfig.widgets || []) !== JSON.stringify(this.editSession.widgets || [])) {
-                        if (!await this.saveLocalModules({ widgets: this.modulesConfig.widgets }) || this.authenticated) return;
-                    }
-                    this.setLocalStatus('仅保存在本机');
-                    this.config = candidate;
-                    this.applyTheme();
-                    this.render();
-                    this.localSettingsDraft = null;
-                    this.editSession = null;
-                    this.exitEditLayout();
-                    $('#layoutBtn').focus();
-                    this.showToast('导航设置已保存到本机');
-                } catch (error) {
-                    const status = $('#localSettingsError');
-                    status.textContent = error.message;
-                    status.hidden = false;
-                    this.setLocalDrawerOpen(true);
-                } finally {
-                    this.localSettingsSaving = false;
-                    $('#localSettingsForm').inert = false;
-                    $('#grid').inert = false;
-                    $('#engineBtn').disabled = this.editLayout || !!this.suspendedAdministrator;
-                    $('#localDoneBtn').disabled = false;
-                    if (!$('#localSettingsError').hidden) $('#localSettingsError').focus();
-                }
-                return;
-            }
             if (!this.editSession) { this.exitEditLayout(); return; }
             if (this.modulesConfig && JSON.stringify(this.modulesConfig.widgets) !== JSON.stringify(this.editSession.widgets)) {
                 const ok = await this.saveWidgetLayout();
@@ -1393,21 +1100,6 @@
 
         /** Esc 放弃编辑：有改动时先问一句，没改动则静默退出。 */
         async cancelEditSession() {
-            if (!this.authenticated) {
-                if (this.localSettingsSaving) return;
-                if (this.localSettingsChanged() && !await this.confirmAction('放弃尚未保存的导航设置？已保存的分类与链接调整会保留。', '取消设置')) return;
-                this.localSettingsDraft = null;
-                // 模块布局与导航结构一样是草稿：取消就整体回滚，
-                // 否则「拖了一下又按取消」会留下一个没提交过的位置。
-                if (this.editSession && this.modulesConfig) this.modulesConfig.widgets = this.editSession.widgets;
-                this.editSession = null;
-                this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
-                this.exitEditLayout();
-                $('#layoutBtn').focus();
-                this.refreshLocalNavigation();
-                this.renderModuleZone();
-                return;
-            }
             if (!this.editSession) { this.exitEditLayout(); return; }
             const changed =
                 JSON.stringify(this.config) !== JSON.stringify(this.editSession.config)
@@ -1464,8 +1156,6 @@
 
         /** 登录态变化时统一走这里：显示或彻底收起模块区与布局按钮。 */
         async syncModuleVisibility() {
-            // 身份或策略一变就作废在飞的模块区渲染
-            this.moduleGeneration++;
             // 首页底栏的「退出」只在登录后出现，与模块区同一时机同步。
             const homeLogoutBtn = $('#homeLogoutBtn');
             const homeLogoutSep = $('#homeLogoutSep');
@@ -1477,199 +1167,24 @@
                 if (this.personalNavigationLoaded) this.rollbackEditSession();
                 this.exitEditLayout();
                 const zone = $('#moduleZone');
-                // 先卸掉管理员那几个模块的定时器再清 DOM：模块停用后仍在按
-                // 周期请求是这段代码一直有的隐患，登出时最不该留着（请求会 401）。
+                // 先卸掉模块的定时器再清 DOM：模块停用后仍在按周期请求是
+                // 这段代码一直有的隐患，登出时最不该留着（请求会 401）。
                 this.teardownUnusedModules([]);
                 if (zone) { zone.hidden = true; zone.replaceChildren(); }
-                if (btn) btn.hidden = this.editLayout;
-                // 模块配置**不再整块作废**：普通访客自己启用的公开模块还要显示。
-                // 配置源切回本机（loadModulesConfig 按 this.authenticated 分叉），
-                // 由 renderModuleZone 按当前策略过滤后重渲染。
+                if (btn) btn.hidden = true;
                 this.modulesConfig = null;
                 this.modulesLoaded = false;
                 this.modulesError = null;
-                await this.renderModuleZone();
                 return;
             }
             if (btn) btn.hidden = this.editLayout;
             await this.renderModuleZone();
         }
 
-        setLocalStatus(message, error = false) {
-            const status = $('#localNavigationStatus');
-            if (status) {
-                status.textContent = message;
-                status.hidden = this.authenticated || (!this.editLayout && !error);
-                this.localStatusError = error;
-                status.dataset.state = error ? 'error' : '';
-            }
-            const tools = $('#localNavigationTools');
-            if (tools) tools.dataset.state = error ? 'error' : '';
-        }
-
-        async loadLocalNavigation() {
-            this.localStore = new window.LocalNavigation();
-            this.localQueue = Promise.resolve();
-            this.localPending = 0;
-            let record;
-            try { record = await this.localStore.read(); }
-            catch (error) {
-                this.localUnavailable = true;
-                this.localError = '未能保存到本机：' + error.message;
-            }
-            if (!record) {
-                const config = await (window.__habuConfigPromise || API.get('/api/config'));
-                try { const legacy = localStorage.getItem(THEME_STORAGE_KEY); if (APPEARANCE_ORDER.includes(legacy)) config.theme = legacy; } catch (e) {}
-                window.NavigationSchema.validate(config);
-                if (!this.localUnavailable) {
-                    try { record = await this.localStore.write(config, 0); }
-                    catch (error) {
-                        // 另一个首次访问标签页可能已经建立了副本。
-                        record = await this.localStore.read();
-                        if (!record) { this.localUnavailable = true; this.localError = '未能保存到本机：' + error.message; }
-                    }
-                }
-                this.config = structuredClone(record?.config || config);
-            } else this.config = structuredClone(record.config);
-            if (record) { try { localStorage.removeItem(THEME_STORAGE_KEY); } catch (e) {} }
-            this.localRevision = record?.revision || 0;
-            this.localSaved = structuredClone(record?.config || this.config);
-        }
-
-        saveLocalNavigation(config = this.config, undo = false) {
-            if (this.authenticated || this.personalNavigationLoaded || this.suspendedAdministrator) return Promise.resolve(false);
-            const candidate = window.NavigationSchema.publicConfig(structuredClone(config));
-            this.localPending++;
-            this.setLocalStatus('正在保存到本机');
-            const task = this.localQueue.then(async () => {
-                try {
-                    if (this.localUnavailable) throw new Error('本地存储不可用，请导出导航保留副本');
-                    const record = await this.localStore.write(candidate, this.localRevision, undo);
-                    this.localRevision = record.revision;
-                    this.localSaved = structuredClone(record.config);
-                    this.localError = null;
-                    if (undo && !this.authenticated) { this.config = structuredClone(record.config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
-                    this.localChannel?.postMessage(record.revision);
-                    if (!this.authenticated) this.setLocalStatus('仅保存在本机');
-                    // 同步的唯一触发点：**本地真的落盘之后**才排上传。
-                    // 挂在编辑动作里会散成很多处，且会在没保存成功时就发出去。
-                    return true;
-                } catch (error) {
-                    this.localError = '未能保存到本机：' + error.message;
-                    if (error.code === 'conflict') $('#localAdoptBtn').hidden = false;
-                    this.setLocalStatus(this.localError, true);
-                    this.showToast(this.localError, 'error', 8000);
-                    return false;
-                } finally { this.localPending--; }
-            });
-            this.localQueue = task;
-            return task;
-        }
-
-        async refreshLocalNavigation(adopt = false) {
-            if (this.authenticated || this.personalNavigationLoaded || this.localPending) return;
-            try {
-                const record = await this.localStore.read();
-                if (this.authenticated || this.personalNavigationLoaded || this.localPending || !record || record.revision === this.localRevision) return;
-                if (!adopt && (this.editLayout || $('.ui-dialog-overlay') || this.localError)) {
-                    this.setLocalStatus('其他标签页已修改导航，当前输入已保留。请先导出或采用其他标签页版本。', true);
-                    $('#localAdoptBtn').hidden = false;
-                    return;
-                }
-                this.localRevision = record.revision;
-                this.localSaved = structuredClone(record.config);
-                this.config = structuredClone(record.config);
-                this.localError = null;
-                $('#localAdoptBtn').hidden = true;
-                this.applyTheme(); this.render();
-                this.setLocalStatus('仅保存在本机');
-            } catch (error) { this.setLocalStatus('无法读取本地导航：' + error.message, true); }
-        }
-
-        exportLocalNavigation() {
-            const blob = new Blob([JSON.stringify({ schemaVersion: 1, config: window.NavigationSchema.publicConfig(this.localNavigationCandidate()) }, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url; link.download = 'sylph-navigation.json'; link.click();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-        }
-
-        async importLocalNavigation(file) {
-            if (!file || this.authenticated) return;
-            const revision = this.localRevision;
-            try {
-                if (file.size > 1024 * 1024) throw new Error('配置超过 1 MiB');
-                const data = JSON.parse(await file.text());
-                if (data.schemaVersion !== 1 || Object.keys(data).some(k => !['schemaVersion', 'config'].includes(k))) throw new Error('配置文件版本或字段无效');
-                const config = data.config;
-                if (Array.isArray(config?.searchEngines) && config.searchEngines.length && !config.searchEngines.some(e => e.id === config.searchEngine)) config.searchEngine = config.searchEngines[0].id;
-                window.NavigationSchema.validate(config);
-                if (!await this.confirmAction('导入将替换本机导航，可通过撤销恢复上一份配置。', '导入导航')) return;
-                if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新导入');
-                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
-            } catch (error) { this.showToast('导入失败：' + error.message, 'error'); }
-        }
-
-        async resetLocalNavigation() {
-            if (this.authenticated) return;
-            const revision = this.localRevision;
-            try {
-                const config = await API.get('/api/config');
-                window.NavigationSchema.validate(config);
-                if (!await this.confirmAction('用当前已发布默认首页替换本机导航及未保存设置？可通过撤销恢复。', '重置导航')) return;
-                if (this.authenticated || this.localRevision !== revision) throw new Error('导航状态已变化，请重新重置');
-                if (await this.saveLocalNavigation(config) && !this.authenticated) { this.config = structuredClone(config); this.applyTheme(); this.render(); if (this.editLayout) this.renderLocalSettings(); }
-            } catch (error) { this.showToast('重置失败，原导航已保留：' + error.message, 'error'); }
-        }
-
-        localNavigationCandidate() {
-            const candidate = window.NavigationSchema.publicConfig(structuredClone(this.config));
-            if (this.localSettingsDraft) for (const key of LOCAL_SETTINGS_FIELDS) candidate[key] = structuredClone(this.localSettingsDraft[key]);
-            return candidate;
-        }
-
-        localSettingsChanged() {
-            return !!this.localSettingsDraft && LOCAL_SETTINGS_FIELDS.some(key => JSON.stringify(this.localSettingsDraft[key]) !== JSON.stringify(this.config[key]));
-        }
-
-        setLocalSettingsVisible(visible) {
-            const tools = $('#localNavigationTools');
-            if (!tools || this.localToolsVisible === visible) return;
-            this.localToolsVisible = visible;
-            tools.getAnimations().forEach(animation => animation.cancel());
-            tools.style.overflow = '';
-            if (visible) tools.hidden = false;
-            else this.closeLocalSelects();
-            tools.inert = !visible;
-            if (matchMedia('(prefers-reduced-motion: reduce)').matches) { tools.hidden = !visible; return; }
-            const height = tools.getBoundingClientRect().height;
-            tools.style.overflow = 'clip';
-            const animation = tools.animate([
-                { height: `${visible ? 0 : height}px`, opacity: visible ? 0 : 1, transform: visible ? 'translateY(-8px)' : 'none' },
-                { height: `${visible ? height : 0}px`, opacity: visible ? 1 : 0, transform: visible ? 'none' : 'translateY(-8px)' }
-            ], { duration: 260, easing: 'cubic-bezier(.16,1,.3,1)' });
-            animation.onfinish = () => { tools.hidden = !visible; tools.style.overflow = ''; };
-        }
-
-        setLocalDrawerOpen(open) {
-            const tools = $('#localNavigationTools');
-            this.closeLocalSelects();
-            tools.dataset.open = String(open);
-            $('#localSettingsToggle').setAttribute('aria-expanded', String(open));
-            $('#localSettingsToggleText').textContent = open ? '收起设置' : '展开设置';
-            $('#localSettingsForm').inert = !open;
-            $('#localSettingsBody').setAttribute('aria-hidden', String(!open));
-        }
-
         closeLocalSelects() {
             document.querySelectorAll('.local-select-menu:popover-open').forEach(menu => menu.hidePopover());
         }
 
-        syncLocalSelects() {
-            const root = $('#localSettingsForm');
-            this.enhanceSelects(root);
-            this.syncSelectControls(root);
-        }
 
         /**
          * 把原生 select 换成与首页编辑区同一套自绘下拉。
@@ -1808,210 +1323,16 @@
             this.adminSelectObserver.observe(modal, { childList: true, subtree: true });
         }
 
-        renderLocalSettings() {
-            const draft = this.localSettingsDraft = window.NavigationSchema.publicConfig(structuredClone(this.config));
-            const select = $('#localCurrentEngine');
-            const editor = $('#localEngineEditor');
-            this.renderThemeStyleSelect($('#localThemeStyleSelect'), draft);
-            $('#localThemeSelect').value = window.NavigationSchema.appearance(draft).mode;
-            $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[window.NavigationSchema.appearance(draft).style].mode;
-            $('#localIconsToggle').checked = draft.showBookmarkIcons;
-            $('#localSettingsError').hidden = true;
-            const renderSelection = () => {
-                select.innerHTML = draft.searchEngines.map(e => `<option value="${this.esc(e.id)}">${this.esc(e.name)}</option>`).join('');
-                select.value = draft.searchEngine;
-                this.syncLocalSelects();
-            };
-            const render = () => {
-                editor.innerHTML = draft.searchEngines.map((e, i) => {
-                    const position = `引擎 ${i + 1}`;
-                    const [name, url] = ['name', 'url'].map((key, j) => {
-                        const label = ['名称', '搜索地址'][j];
-                        return `<input data-field="${key}" aria-label="${position} ${label}" aria-describedby="localEngineHint" value="${this.esc(e[key])}" ${key === 'url' ? 'type="url" spellcheck="false"' : 'type="text"'}>`;
-                    });
-                    // 默认项就在它自己的名称右侧标出来，与上方「默认搜索引擎」下拉同源。
-                    // 默认项标记：每个引擎都留一个空槽，切默认时只改文本，不整表重绘
-                    // （整表重绘会把正在输入的框和焦点一起换掉）。空槽由 :empty 隐藏。
-                    const badge = `<span class="local-engine-badge">${e.id === draft.searchEngine ? '默认' : ''}</span>`;
-                    // 操作是图标，可访问名与 title 都带上序号：图标本身读不出是给哪一项的。
-                    const actions = [
-                        ['up', '↑', '上移', i === 0],
-                        ['down', '↓', '下移', i === draft.searchEngines.length - 1],
-                        ['delete', '✕', '删除', draft.searchEngines.length === 1]
-                    ].map(([action, glyph, label, disabled]) =>
-                        `<button type="button" class="btn btn-sm" data-action="${action}" title="${label}" aria-label="${position} ${label}"${disabled ? ' disabled' : ''}>${glyph}</button>`).join('');
-                    return `<div class="local-engine-item" data-index="${i}">`
-                        + `<span class="local-engine-index" aria-hidden="true">${i + 1}</span>`
-                        + `<div class="local-engine-name">${name}${badge}</div>`
-                        + url
-                        + `<div class="local-engine-actions">${actions}</div>`
-                        + `</div>`;
-                }).join('');
-                $('#localEngineCount').textContent = `${draft.searchEngines.length} 个`;
-                renderSelection();
-            };
-            // 事件委托都在 #localEngineEditor 上，行序号从最近的 .local-engine-item 读——
-            // 引擎行已从 fieldset 改成一行一项的 div，选择器必须跟着走。
-            const indexOf = event => +event.target.closest('.local-engine-item').dataset.index;
-            editor.oninput = event => {
-                const field = event.target.dataset.field;
-                if (!field) return;
-                draft.searchEngines[indexOf(event)][field] = event.target.value;
-                renderSelection();
-            };
-            // 切换默认引擎只改动草稿与「默认」标记，不重绘整张表——
-            // 重绘会把正在输入的框和焦点一起换掉。
-            const syncDefaultBadge = () => {
-                [...editor.children].forEach((row, i) => {
-                    const badge = row.querySelector('.local-engine-badge');
-                    if (badge) badge.textContent = draft.searchEngines[i]?.id === draft.searchEngine ? '默认' : '';
-                });
-            };
-            select.onchange = () => { draft.searchEngine = select.value; syncDefaultBadge(); };
-            $('#localThemeStyleSelect').onchange = event => {
-                draft.themeStyle = event.target.value;
-                $('#localThemeSelect').disabled = !!window.NavigationSchema.THEMES[draft.themeStyle].mode;
-                $('#localThemeSelect').value = window.NavigationSchema.appearance(draft).mode;
-            };
-            $('#localThemeSelect').onchange = event => { draft.theme = event.target.value; };
-            $('#localIconsToggle').onchange = event => { draft.showBookmarkIcons = event.target.checked; };
-            editor.onclick = event => {
-                const action = event.target.dataset.action;
-                if (!action) return;
-                const list = draft.searchEngines;
-                const index = indexOf(event);
-                if (action === 'delete' && list.length > 1) {
-                    const [removed] = list.splice(index, 1);
-                    if (removed.id === draft.searchEngine) draft.searchEngine = list[0].id;
-                } else {
-                    const target = action === 'up' ? index - 1 : index + 1;
-                    if (target < 0 || target >= list.length) return;
-                    [list[index], list[target]] = [list[target], list[index]];
-                }
-                render();
-            };
-            $('#localAddEngineBtn').onclick = () => {
-                if (draft.searchEngines.length >= 50) { this.showToast('搜索引擎最多 50 个', 'error'); return; }
-                draft.searchEngines.push({ id: uid(), name: '新引擎', url: 'https://' });
-                render();
-                editor.querySelector('.local-engine-item:last-child input').focus();
-            };
-            render();
-            // 公开模块分组只填自己的那块容器（#localModulesList），
-            // 所以它异步完成后不会碰到上面的引擎草稿。
-            this.renderLocalModulesGroup();
-            this.syncLocalSelects();
-            this.setLocalDrawerOpen(true);
-        }
 
         /**
-         * 普通访客的「模块」分组：列出管理员**已开放**的公开模块，
-         * 逐个开关 + 由模块声明的偏好白名单生成的控件。
+         * 编辑态的两个底栏入口，以及自绘下拉的关闭钩子。
          *
-         * 三个条件同时满足才有这一行：公开分类（注册时声明）、管理员开放
-         * （服务端策略）、本机未撤回。这里是前两个的界面入口，第三个就是开关本身。
+         * 这些原先与「访客本机导航」绑在一起（`bindLocalNavigation`）。访客层移除后
+         * 只保留管理员仍在用的部分：`#localCancelBtn` / `#localDoneBtn` 是底栏编辑
+         * 入口，三条 `closeLocalSelects` 监听服务后台自绘下拉（Special Line 来源
+         * 表单也在用同一套控件），`online` 用于恢复联网后的配置协调。
          */
-        async renderLocalModulesGroup() {
-            const group = $('#localModulesGroup');
-            const list = $('#localModulesList');
-            if (!group || !list) return;
-            const policy = this.publicModulePolicy;
-            const ids = Array.isArray(policy) ? policy.filter(id => App.KNOWN_MODULES.includes(id)) : [];
-            if (this.authenticated || !ids.length) {
-                group.hidden = this.authenticated;
-                list.innerHTML = '<p class="local-modules-empty">暂无可用模块<span>管理员开放后，可在这里选择与配置。</span></p>';
-                return;
-            }
-            group.hidden = false;
-            list.innerHTML = '<p class="local-settings-hint">正在加载模块…</p>';
-            // 只有真的要配置时才下载模块脚本：标题与偏好白名单都住在声明里。
-            // 平时不预载，所以从未打开设置的访客不会为公开模块付下载成本。
-            await this.preloadModuleDefs(ids);
-            // 等待期间登录了、或用户已退出编辑态（草稿被清掉）：都不该再渲染这一组
-            if (this.authenticated || !this.localSettingsDraft) { group.hidden = true; return; }
-            // 策略可能在等待期间被撤回，这里按最新那份过滤
-            const open = this.publicModulePolicy || [];
-            const enabled = new Set(this.localModules?.enabled || []);
-            const rows = ids
-                .filter(id => open.includes(id) && this.getModule(id))
-                .map(id => this.renderLocalModuleRow(this.getModule(id), enabled.has(id)));
-            list.innerHTML = rows.join('') || '<p class="local-settings-hint">当前没有可用的公开模块。</p>';
-            this.bindLocalModuleRows(list);
-        }
-
-        /** 一个公开模块一行：开关 + 它自己声明的偏好。 */
-        renderLocalModuleRow(def, on) {
-            const stored = (this.localModules?.settings?.[def.id]) || {};
-            // 偏好控件由白名单生成，所以新增一个公开模块不必再改这里；
-            // 目前只支持「整数区间」这一种形状（weibo-hot 的显示条数），
-            // 需要别的形状时在这里加类型，而不是让模块自己拼 DOM。
-            const settings = Object.entries(def.settings || {}).map(([key, rule]) => {
-                const value = stored[key] === undefined ? rule.default : stored[key];
-                return `<label class="local-module-setting">
-                    <span>${this.esc(rule.label || key)}</span>
-                    <input type="number" data-module-setting-input="${this.esc(def.id)}"
-                           data-setting-key="${this.esc(key)}" value="${this.esc(String(value))}"
-                           min="${this.esc(String(rule.min ?? ''))}" max="${this.esc(String(rule.max ?? ''))}">
-                </label>`;
-            }).join('');
-            return `
-                <div class="local-module-row" data-module-row="${this.esc(def.id)}">
-                    <label class="local-module-toggle">
-                        <input type="checkbox" data-module-local-toggle="${this.esc(def.id)}" ${on ? 'checked' : ''}>
-                        <span class="local-module-title">${this.esc(def.title)}</span>
-                    </label>
-                    ${def.summary ? `<p class="local-settings-hint">${this.esc(def.summary)}</p>` : ''}
-                    ${on && settings ? `<div class="local-module-settings">${settings}</div>` : ''}
-                </div>`;
-        }
-
-        bindLocalModuleRows(list) {
-            for (const box of list.querySelectorAll('[data-module-local-toggle]')) {
-                box.addEventListener('change', async () => {
-                    const id = box.dataset.moduleLocalToggle;
-                    const on = box.checked;
-                    // 以**本机偏好**为基准增删，而不是以已被策略过滤的
-                    // enabledModules 为基准——后者会把「撤回期间保留的偏好」丢掉，
-                    // 于是管理员关一次再开，用户的启用状态就没了。
-                    const before = (this.localModules?.enabled || []).slice();
-                    const next = on ? [...new Set([...before, id])] : before.filter(x => x !== id);
-                    if (!await this.saveLocalModules({ enabledModules: next })) {
-                        box.checked = !on;
-                        return;
-                    }
-                    const title = this.getModule(id)?.title || id;
-                    this.showToast(on ? `已启用「${title}」` : `已停用「${title}」`);
-                    // 偏好区随开关显隐，所以整组重画
-                    await this.renderLocalModulesGroup();
-                    await this.renderModuleZone();
-                });
-            }
-            for (const input of list.querySelectorAll('[data-module-setting-input]')) {
-                input.addEventListener('change', async () => {
-                    const id = input.dataset.moduleSettingInput;
-                    const key = input.dataset.settingKey;
-                    const def = this.getModule(id);
-                    const rule = def?.settings?.[key];
-                    const parsed = rule ? rule.validate(Number(input.value)) : null;
-                    if (parsed === null || parsed === undefined) {
-                        // 非法值不静默接受：说清楚范围并回到默认值
-                        this.showToast(
-                            `${def?.title || id}的「${rule?.label || key}」只接受 ${rule?.min}–${rule?.max}`,
-                            'error');
-                        input.value = String(rule ? rule.default : '');
-                        return;
-                    }
-                    const settings = { [id]: { ...((this.localModules?.settings?.[id]) || {}), [key]: parsed } };
-                    if (!await this.saveLocalModules({ settings })) return;
-                    input.value = String(parsed);
-                    // 显示条数会直接改变卡片高度，重排一次
-                    await this.renderModuleZone();
-                });
-            }
-        }
-
-        bindLocalNavigation() {
-            this.setLocalStatus(this.localError || '仅保存在本机', !!this.localError);
+        bindEditEntries() {
             window.addEventListener('resize', () => this.closeLocalSelects());
             // popover="manual" 不再由浏览器自动收起，点击选择器以外的地方要显式关闭。
             // 用 pointerdown 捕获：在按钮的 click 切换之前判断，点同一按钮仍是「再次点击收起」。
@@ -2021,40 +1342,14 @@
             window.addEventListener('scroll', event => {
                 if (!event.target.closest?.('.local-select-menu')) this.closeLocalSelects();
             }, { capture: true, passive: true });
-            $('#localSettingsToggle').onclick = () => this.setLocalDrawerOpen($('#localNavigationTools').dataset.open !== 'true');
-            $('#localSettingsForm').addEventListener('change', () => this.syncLocalSelects());
-            $('#localSettingsForm').onsubmit = event => { event.preventDefault(); this.saveEditSession(); };
             $('#localCancelBtn').onclick = () => this.cancelEditSession();
-            $('#localUndoBtn').onclick = async () => {
-                if (this.localSettingsChanged() && !await this.confirmAction('撤销将替换尚未保存的设置，是否继续？', '撤销上一操作')) return;
-                await this.saveLocalNavigation(this.config, true);
-            };
-            $('#localExportBtn').onclick = () => this.exportLocalNavigation();
-            $('#localImportBtn').onclick = () => $('#localImportFile').click();
-            $('#localImportFile').onchange = event => { this.importLocalNavigation(event.target.files[0]); event.target.value = ''; };
-            $('#localResetBtn').onclick = () => this.resetLocalNavigation();
-            $('#localAdoptBtn').onclick = async () => {
-                if (await this.confirmAction('放弃当前草稿并采用其他标签页已保存的版本？', '采用已保存版本')) {
-                    this.localSettingsDraft = null;
-                    this.editSession = null; this.exitEditLayout();
-                    await this.refreshLocalNavigation(true);
-                }
-            };
-            if ('BroadcastChannel' in window) {
-                this.localChannel = new BroadcastChannel('nav-sylph-local-navigation');
-                this.localChannel.onmessage = () => this.refreshLocalNavigation();
-            }
-            window.addEventListener('beforeunload', event => {
-                if (!this.authenticated && (this.localPending || this.localError || this.localSettingsChanged() || $('.ui-dialog-overlay input, .ui-dialog-overlay textarea'))) { event.preventDefault(); event.returnValue = ''; }
-            });
-            window.addEventListener('focus', () => this.refreshLocalNavigation());
+            $('#localDoneBtn').onclick = () => this.saveEditSession();
             window.addEventListener('online', () => this.checkAdministratorSync());
         }
 
-        async finishLocalDraft() {
-            if (this.editLayout || $('.ui-dialog-overlay')) this.setLocalStatus('管理员会话已确认，请完成当前编辑后切换管理员首页');
+        /** 等当前编辑与对话框收尾：切换管理员首页前必须让草稿先落地或放弃。 */
+        async finishPendingEdits() {
             while (this.editLayout || $('.ui-dialog-overlay')) await new Promise(resolve => setTimeout(resolve, 100));
-            await this.localQueue;
         }
 
         async init() {
@@ -2187,10 +1482,8 @@
             this.config = candidate;
             this.applyTheme();
             try {
-                if (this.authenticated) {
-                    const result = await this.saveNavigation();
-                    if (!result.success) throw new Error(result.error || '主题保存失败');
-                } else if (!await this.saveLocalNavigation(candidate)) throw new Error('主题未能保存到本机');
+                const result = await this.saveNavigation();
+                if (!result.success) throw new Error(result.error || '主题保存失败');
             } catch (error) {
                 // 身份变化后不把旧配置重新带回当前首页。
                 if (this.config === candidate) {
@@ -2368,7 +1661,7 @@
         }
 
         bind() {
-            this.bindLocalNavigation();
+            this.bindEditEntries();
             this.observeAdminSelects();
             this.syncEditEntries();
             $('#modeBtn').hidden = !this.authenticated;
@@ -2484,7 +1777,6 @@
                 const option = e.target.closest('.engine-option');
                 if (option) {
                     this.config.searchEngine = option.dataset.id;
-                    if (!this.authenticated) this.saveLocalNavigation();
                     this.renderEngines();
                     dropdown.hidden = true;
                     engineBtn.setAttribute('aria-expanded', 'false');
@@ -3140,9 +2432,6 @@
                 if (epoch !== (this.privateEpoch || 0)) return;
                 if (!session.authenticated) {
                     if (this.authenticated) this.expirePrivateState();
-                    // 匿名时顺带确认一次公开模块策略：管理员撤回开放后，
-                    // 30 秒内（或切回前台、联网时）界面就会卸下那个模块。
-                    await this.checkPublicModules();
                     return;
                 }
                 if (!this.authenticated) { await this.restoreSession(); return; }
@@ -3186,7 +2475,6 @@
             if (!draft) { location.replace('/login.html'); return; }
             this.suspendedAdministrator = draft;
             $('#engineBtn').disabled = true;
-            $('#localNavigationTools').hidden = true;
             // 三条编辑入口一起收起：此刻页面已被清空，任何一条留着都会指向不存在的内容。
             $('#layoutBtn').hidden = true;
             $('#localCancelBtn').hidden = true;
@@ -3199,7 +2487,6 @@
             }
             if (!this.suspendedAdministrator) {
                 $('#engineBtn').disabled = false;
-                $('#localNavigationTools').hidden = true;
                 this.syncEditEntries();
             }
         }
@@ -3207,15 +2494,6 @@
         clearPrivateState({ preservePending = false } = {}) {
             this.authenticated = false;
             $('#app').hidden = true;
-            $('#localNavigationTools').hidden = true;
-            $('#localNavigationStatus').hidden = !this.localError;
-            this.localSettingsDraft = null;
-            if (this.publicNavigation) {
-                this.config = structuredClone(this.publicNavigation);
-                this.publicNavigation = null;
-                this.applyTheme();
-                this.render();
-            }
             this.editSession = null;
             this.configDirty = false;
             this.configSnapshot = null;
@@ -3600,7 +2878,7 @@
                     if (epoch !== (this.privateEpoch || 0) || this.suspendedAdministrator) return false;
                     if (session.authenticated) {
                         if (this.authenticated) return true;
-                        await this.finishLocalDraft();
+                        await this.finishPendingEdits();
                         this.privateEpoch = (this.privateEpoch || 0) + 1;
                         this.authenticated = true;
                         await this.loadPersonalNavigation();
@@ -3616,17 +2894,13 @@
                         // 模块区同样不占首屏：会话确认后才拉配置、才加载模块文件。
                         // 失败不影响首屏，也不影响上面的私密检索。
                         this.syncModuleVisibility();
-                    } else {
-                        // 匿名访客：确认公开模块策略，再渲染本机启用的公开模块。
-                        // 与管理员模块区同一时机（会话探测之后），同样不占首屏。
-                        await this.checkPublicModules();
                     }
                     return session.authenticated;
                 })
                 .catch(e => {
                     console.error('Restore session failed:', e);
                     if (this.authenticated && !this.personalNavigationLoaded) this.clearPrivateState({ preservePending: true });
-                    this.setLocalStatus('无法确认管理员登录，可继续使用本地导航，网络恢复后重新确认', true);
+                    this.showToast('无法确认登录状态，网络恢复后会重新确认', 'error', 8000);
                     return false;
                 });
             return probe;
@@ -3704,7 +2978,6 @@
             }
             const data = await API.get('/api/admin/navigation');
             if (!this.authenticated || epoch !== (this.privateEpoch || 0)) throw new Error('登录状态已变化');
-            if (!this.personalNavigationLoaded) this.publicNavigation = structuredClone(this.config);
             this.config = this.recoveredNavigationDraft || data.config;
             this.recoveredNavigationDraft = null;
             this.navigationRevision = data.revision;
@@ -3724,8 +2997,6 @@
             }
             this.personalNavigationLoaded = true;
             $('#engineBtn').disabled = false;
-            $('#localNavigationTools').hidden = true;
-            $('#localNavigationStatus').hidden = true;
             this.migrateConfig();
             this.adoptServerTheme();
             this.render();
@@ -4658,7 +3929,7 @@
                     await this.changePassword();
                     return;
                 }
-                await this.finishLocalDraft();
+                await this.finishPendingEdits();
                 this.privateEpoch = (this.privateEpoch || 0) + 1;
                 this.authenticated = true;
                 this.notifyIdentityChanged();
@@ -4710,7 +3981,6 @@
         }
 
         markConfigDirty() {
-            if (!this.authenticated) { this.saveLocalNavigation(); return; }
             this.configDirty = this.configSnapshot !== null && JSON.stringify(this.config) !== this.configSnapshot;
             this.updateConfigStatus();
         }
@@ -5087,14 +4357,6 @@
 
         /** 模块设置和目标增删共享版本及待确认操作，成功后原地更新配置引用。 */
         async saveModulesConfig(patch, route = '/api/modules/config', method = 'POST') {
-            // 普通访客的模块设置存在本机：不走服务端，也没有 revision/operationId
-            // 那套跨设备同步协议。后台那几处调用方照旧调这里，来源分叉收在
-            // 这一个函数里——布局与拖拽那一段因此完全不必知道来源。
-            if (this.modulesSource === 'local') {
-                const ok = await this.saveLocalModules(patch);
-                if (!ok) throw new Error(this.localModulesError || '未能保存模块设置');
-                return this.modulesConfig;
-            }
             const current = this.modulesConfig || {};
             const merged = { ...current, ...patch };
             if (this.modulesSaving) throw new Error('模块配置正在保存，请稍后重试');

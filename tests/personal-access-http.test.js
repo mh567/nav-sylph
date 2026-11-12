@@ -10,7 +10,7 @@ test('personal workspace requires a normal session for pages and data', async t 
     const app = await installation(t);
     fs.writeFileSync(path.join(app.dir, '.admin-password.json'), JSON.stringify({ passwordHash: await bcrypt.hash('StrongPass123!', 4) }));
     await app.start();
-    for (const route of ['/api/config', '/api/server-flags', '/api/modules/public', '/api/weibo-hot', '/api/version', '/api/changelog', '/api/favorites', '/API/CONFIG']) {
+    for (const route of ['/api/config', '/api/server-flags', '/api/modules/metrics', '/api/weibo-hot', '/api/version', '/api/changelog', '/api/favorites', '/API/CONFIG']) {
         const res = await app.request(route);
         assert.equal(res.status, 401, route);
         assert.match(res.headers.get('cache-control'), /no-store/);
@@ -36,7 +36,7 @@ test('restricted login cannot enter the workspace before changing password', asy
     const login = await app.request('/api/verify-password', { password: 'admin123', body: {} });
     assert.equal((await login.json()).passwordChangeRequired, true);
     const weak = login.headers.get('set-cookie').split(';')[0];
-    for (const route of ['/api/config', '/api/modules/public']) {
+    for (const route of ['/api/config', '/api/modules/metrics']) {
         assert.equal((await app.request(route, { cookie: weak, ...(route.endsWith('/code') ? { body: {} } : {}) })).status, 401);
     }
     const changed = await app.request('/api/change-password', { cookie: weak, body: { currentPassword: 'admin123', newPassword: 'StrongPass123!' } });

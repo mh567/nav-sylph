@@ -11,37 +11,30 @@ const end = source.indexOf('        renderThemeStyleSelect(', begin);
 assert.ok(begin > 0 && end > begin);
 const switchTheme = vm.runInNewContext(`({${source.slice(begin, end)}}).setThemeStyle`, { window: { NavigationSchema: schema }, $: () => null });
 function context(overrides = {}) {
-    return { config: { theme: 'light', themeStyle: 'prism' }, authenticated: false,
+    return { config: { theme: 'light', themeStyle: 'prism' }, authenticated: true,
         applyTheme() {}, renderHomeThemeSwitcher() {}, showToast() {},
-        async saveLocalNavigation() { return true; }, ...overrides };
+        async saveNavigation() { return { success: true }; }, ...overrides };
 }
 
-test('theme switcher: visitor choice is persisted without changing classic brightness', async () => {
-    const app = context({ async saveLocalNavigation(config) { assert.equal(config.themeStyle, 'classic'); return true; } });
+test('theme switcher: choice is persisted without changing classic brightness', async () => {
+    const app = context({ async saveNavigation() { assert.equal(this.config.themeStyle, 'classic'); return { success: true }; } });
     await switchTheme.call(app, 'classic');
     assert.equal(app.config.themeStyle, 'classic');
     assert.equal(app.config.theme, 'light');
     assert.equal(app.themeStyleSaving, false);
 });
 
-test('theme switcher: failed local write restores the original configuration', async () => {
-    const app = context({ async saveLocalNavigation() { return false; } });
+test('theme switcher: failed save restores the original configuration', async () => {
+    const app = context({ async saveNavigation() { throw new Error('主题保存失败'); } });
     const original = app.config;
     await switchTheme.call(app, 'classic');
     assert.equal(app.config, original);
     assert.equal(app.themeStyleSaving, false);
 });
 
-test('theme switcher: administrator saves through personal navigation', async () => {
-    let saved = false;
-    const app = context({ authenticated: true, async saveNavigation() { saved = this.config.themeStyle === 'classic'; return { success: true }; } });
-    await switchTheme.call(app, 'classic');
-    assert.ok(saved);
-});
-
 test('theme switcher: an active draft or invalid theme is never submitted', async () => {
     let saves = 0;
-    const app = context({ editLayout: true, async saveLocalNavigation() { saves++; return true; } });
+    const app = context({ editLayout: true, async saveNavigation() { saves++; return { success: true }; } });
     await switchTheme.call(app, 'classic');
     app.editLayout = false;
     await switchTheme.call(app, 'unknown');

@@ -1,3 +1,4 @@
+// nav-v167：移除访客本机导航层（本机设置抽屉、本机模块与公开模块策略）。
 // nav-v166：后台首页导航新增 JSON 导入导出（与 pabu 导航文件互通）。
 // nav-v165：新增公开演示页 public/demo/（纯静态，不进预缓存清单）。
 // nav-v164：首屏并发优化，server-flags 与会话并行、版本与日志并行。
@@ -13,7 +14,7 @@
 // nav-v154：项目更名 Habu，站点标题改为数字工作台。
 // nav-v153：清理拆分后遗留的多端同步说明，改为管理员多设备。
 // nav-v152：Sylph 定位个人数字工作台，移除口令同步。
-const CACHE = 'nav-v166';
+const CACHE = 'nav-v167';
 const ASSETS = [
     '/login.html',
     '/login.js',
@@ -24,7 +25,6 @@ const ASSETS = [
     '/fonts/inter-tight-latin-variable.woff2',
     '/app.js',
     '/navigation-schema.js',
-    '/local-navigation.js',
     '/lib/uFuzzy.iife.min.js',
     '/lib/pinyin.js',
     '/modules/server-monitor.js',

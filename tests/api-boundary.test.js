@@ -191,13 +191,13 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         server.indexOf('// ========== HTTP server =========='));
     assert.ok(routes.length > 500, '模块平台段被正确切出');
     const moduleRoutes = routes.match(/app\.(?:get|post|put|delete)\('\/api\/modules[^']*'/g) || [];
-    // 11 条 = 8 条带 requireAdmin（config 读/写、metrics、servers 增/删、
-    // 推送凭据、探测、部署令牌）+ 3 条不带（agent-push、enroll、public）。
+    // 10 条 = 7 条带 requireAdmin（config 读/写、metrics、servers 增/删、
+    // 推送凭据、探测、部署令牌）+ 2 条不带（agent-push、enroll）。
     // 数量必须逐条跟上：少一条是漏枚举，多一条可能是有人新加了路由却
     // 没走到下面的守卫循环——那正是本条断言存在的意义。
-    assert.equal(moduleRoutes.length, 11, `模块端点应恰好 11 条，实际 ${moduleRoutes.length}`);
+    assert.equal(moduleRoutes.length, 10, `模块端点应恰好 10 条，实际 ${moduleRoutes.length}`);
 
-    // 有**三个**端点是故意不带 requireAdmin 的，理由不同但都必须具名写出，
+    // 有**两个**端点是故意不带 requireAdmin 的，理由不同但都必须具名写出，
     // 否则「给它们加上 requireAdmin」会显得像是在收紧守卫：
     //
     //  · agent-push：agent 主动上报，鉴权是推送凭据
@@ -215,11 +215,6 @@ test('模块配置不进 config.json，也不出现在匿名可见的投影里',
         "app.post('/api/modules/enroll'": {
             middleware: 'enrollLimit',
             why: 'agent 注册时尚无任何凭据，鉴权是一次性部署令牌'
-        },
-        "app.get('/api/modules/public'": {
-            middleware: 'publicReadLimit',
-            why: '匿名访客要能读到「哪些公开模块被开放了」，否则公开模块无法加载；'
-                + '它只回公开模块的 id，不含配置、不含凭据'
         }
     };
     const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

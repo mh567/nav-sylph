@@ -14,10 +14,8 @@
     'use strict';
 
     const POLL_MS = 60000;
-    /** 显示条数的默认值与上下限。真实取值来自用户偏好（state.settings.pageSize）。 */
+    /** 首页展示的条数。 */
     const PAGE_SIZE = 15;
-    const PAGE_MIN = 5;
-    const PAGE_MAX = 30;
     const FLIP_MS = 280;
     const ROW_MOTION = `transform ${FLIP_MS}ms cubic-bezier(.2,.8,.25,1), opacity 220ms ease`;
 
@@ -44,7 +42,7 @@
     let syncState = 'synced'; // synced | failed
     let rateLimited = false;  // 最近一次失败是不是 429（文案要分开说）
     let items = [];
-    let pageSize = PAGE_SIZE; // 用户偏好，来自 state.settings（平台已按声明清洗过）
+    let pageSize = PAGE_SIZE;
     let rowEls = new Map();   // title → 行节点（keyed 复用的核心）
     // null 是「尚未渲染过」的哨兵：空榜单的指纹是 ''，初值若也是 '' 会短路掉
     // 空态占位符的首绘。
@@ -265,19 +263,10 @@
 
     // ================= 挂载 =================
 
-    /**
-     * 偏好值兜底。平台已按声明的校验规则清洗过，但模块不假定上游一定给了
-     * 合法值——自己再夹一次，免得一个畸形值把列表截成空的或者几十条。
-     */
-    function clampPageSize(value) {
-        const n = Math.floor(Number(value));
-        return Number.isFinite(n) && n >= PAGE_MIN && n <= PAGE_MAX ? n : PAGE_SIZE;
-    }
-
     function mountWidget(shell, state) {
         api = (state && state.api) || null;
         requestStack = (state && state.requestStack) || null;
-        pageSize = clampPageSize(state && state.settings && state.settings.pageSize);
+        pageSize = PAGE_SIZE;
         if (!api) {
             // 平台契约变化要让它在界面上可见，而不是退化成一连串同步失败
             const box = document.createElement('div');
@@ -346,25 +335,10 @@
 
     window.app.registerModule({
         id: 'weibo-hot',
-        // 公开模块：管理员可在后台对外开放，普通访客据此自行启用。
-        // 分类在开发时固定，运行时无法改变。
-        category: 'public',
+        // 分类在开发时固定，运行时无法改变。访客层移除后只剩 admin 一种。
+        category: 'admin',
         title: '微博热搜',
         summary: '首页展示微博热搜榜单，每分钟自动刷新，换榜平滑过渡。',
-        // 用户侧配置白名单：声明了默认值与校验规则，平台据此生成设置控件、
-        // 并在读写两侧清洗。白名单外的键不会落盘。
-        settings: {
-            pageSize: {
-                default: PAGE_SIZE,
-                min: PAGE_MIN,
-                max: PAGE_MAX,
-                label: '显示条数',
-                validate(value) {
-                    const n = Math.floor(Number(value));
-                    return Number.isFinite(n) && n >= PAGE_MIN && n <= PAGE_MAX ? n : null;
-                }
-            }
-        },
         mountWidget,
         unmount
     });

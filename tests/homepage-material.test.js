@@ -751,22 +751,22 @@ function methodBody(source, name) {
 }
 
 test('编辑入口随状态显隐，文案只有一处来源', () => {
-    // 底栏那一行里「编辑」与编辑态的「取消 / 保存配置」互斥显示。文案（尤其
-    // 管理员的「保存编辑」）只写在 syncEditEntries 一处，别处不许再写一遍。
+    // 底栏那一行里「编辑」与编辑态的「取消 / 保存编辑」互斥显示。文案只写在
+    // syncEditEntries 一处，别处不许再写一遍。
     assert.match(indexHtml, /id="layoutBtn"[^>]*>编辑</,
         'index.html 里 #layoutBtn 的初值文案是「编辑」');
     assert.match(indexHtml, /id="layoutBtn"[^>]*aria-pressed="false"/,
         '#layoutBtn 带初始 aria-pressed');
     assert.match(indexHtml, /id="localCancelBtn"[^>]*hidden>取消</,
         '「取消」初值收起');
-    assert.match(indexHtml, /id="localDoneBtn"[^>]*hidden>保存配置</,
-        '「保存配置」初值收起');
+    assert.match(indexHtml, /id="localDoneBtn"[^>]*hidden>保存编辑</,
+        '「保存编辑」初值收起');
 
     const entries = methodBody(appSource, 'syncEditEntries');
     assert.match(entries, /btn\.hidden\s*=\s*editing/, '编辑态收起「编辑」');
     assert.match(entries, /cancel\.hidden\s*=\s*!editing/, '非编辑态收起「取消」');
-    assert.match(entries, /save\.textContent\s*=\s*this\.authenticated\s*\?\s*'保存编辑'\s*:\s*'保存配置'/,
-        '保存入口的文案按身份切换');
+    assert.match(entries, /save\.textContent\s*=\s*'保存编辑'/,
+        '保存入口只有一种身份，文案不再分叉');
     assert.match(entries, /btn\.setAttribute\(\s*'aria-pressed',\s*String\(editing\)\s*\)/,
         'aria-pressed 跟着同一个 editing 走，不另开真相来源');
 
@@ -1725,18 +1725,4 @@ test('底栏入口的排版与窄屏触控下限', () => {
     const narrow = mediaBlock(fullCode, '@media (max-width: 600px)', '.site-footer-link');
     assert.match(narrow, /\.site-footer-link \{[^}]*min-height:\s*44px/,
         '窄屏把底栏入口撑到 44px 触控下限');
-});
-
-test('引擎行的事件委托锚点与模板标记同源', () => {
-    const fn = methodBodyOf(appCode, 'renderLocalSettings() {');
-    // 委托用 closest() 找行容器，模板用 class 造行容器——两者必须是同一个名字。
-    // 本轮把 fieldset 改成一行一项的 div 时只改了模板，输入不落草稿、删除按钮
-    // 点不动，而全部源码形状断言仍然是绿的（只有真实浏览器会红）。
-    const rowClass = /class="(local-engine-item)"/.exec(fn);
-    assert.ok(rowClass, '模板里有引擎行的容器类名');
-    const anchor = /closest\('\.([\w-]+)'\)/.exec(fn);
-    assert.ok(anchor, '委托里用 closest 定位行容器');
-    assert.equal(anchor[1], rowClass[1], '委托锚点与模板类名一致');
-    assert.ok(!fn.includes("closest('fieldset')"), '旧的 fieldset 锚点不得残留');
-    assert.ok(fn.includes('.local-engine-item:last-child input'), '新增后聚焦新行用的是同一类名');
 });

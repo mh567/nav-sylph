@@ -1,16 +1,16 @@
 'use strict';
 
 /**
- * Issue #6「开放获准公开模块」。
+ * 模块平台（Issue #6）的当前契约。
+ *
+ * 访客层已在 v2.7.0 移除：`/api/modules/public` 端点、公开模块策略与本机模块
+ * 存储都不再存在，因此本文件只覆盖「仅本人会话」这一种身份。
  *
  * 两条证据链，缺一不算验收：
  *  ① **真实 HTTP + 真实持久化**：临时安装、真实会话、真实 .modules.json。
- *     越权（匿名直读私人模块接口）、策略撤回（撤回后立刻 403）、
- *     共享缓存的并发合并、管理员可用未开放的公开模块、私人模块不能被转公开。
+ *     越权（匿名直读模块接口）、共享缓存的并发合并、重启后仍需登录。
  *  ② **执行真实代码的客户端契约**：把 app.js 的方法体与模块文件里的真实声明
  *     切出来真跑一遍——不是读源码字符串。
- *     少数几条仍是源码形状断言（例如「两处名单一致」这种跨文件登记关系，
- *     跑起来也表达不出「两处」这件事），凡是形状断言都写明它守的是什么。
  */
 
 const test = require('node:test');
@@ -23,7 +23,6 @@ const bcrypt = require('bcrypt');
 const { installation } = require('./helpers/installation');
 
 const ROOT = path.join(__dirname, '..');
-const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 const MODULE_IDS = ['memo', 'server-monitor', 'special-line', 'weibo-hot'];
 
@@ -69,32 +68,14 @@ async function adminSession(t) {
     return { app, stub, cookie: res.headers.get('set-cookie').split(';')[0] };
 }
 
-/** 改对外开放名单。走真实写接口（含 revision/operationId 协议）。 */
-async function setOpen(app, cookie, publicModules, operationId) {
-    const base = await (await app.request('/api/modules/config', { cookie })).json();
-    const res = await app.request('/api/modules/config', {
-        cookie,
-        body: {
-            publicModules,
-            revision: base.revision,
-            operationId: operationId || `open-${publicModules.join('-') || 'none'}-${base.revision}`
-        }
-    });
-    assert.equal(res.status, 200, '开放名单写入成功');
-    return res.json();
-}
-
 const anon = (app, route) => app.request(route);
 
 // ===================== ① 真实 HTTP =====================
 
-test('HTTP：旧开放策略不会授权匿名访问，重启后仍需登录', async t => {
+test('HTTP：模块接口只接受本人会话，重启后仍需登录', async t => {
     const { app, cookie } = await adminSession(t);
-    await setOpen(app, cookie, ['weibo-hot']);
     for (let i = 0; i < 2; i++) {
-        assert.equal((await anon(app, '/api/modules/public')).status, 401);
         assert.equal((await anon(app, '/api/weibo-hot')).status, 401);
-        assert.deepEqual((await (await app.request('/api/modules/public', { cookie })).json()).modules, []);
         for (const route of ['/api/memos', '/api/timeline/events', '/api/modules/config', '/api/modules/metrics']) {
             assert.equal((await anon(app, route)).status, 401, route);
         }
@@ -159,24 +140,20 @@ function buildMethod(source, name, context) {
         ...names.map(n => context[n]));
 }
 
-const KNOWN = { KNOWN_MODULES: MODULE_IDS, MODULE_CATEGORIES: ['admin', 'public'] };
+const KNOWN = { KNOWN_MODULES: MODULE_IDS, MODULE_CATEGORIES: ['admin'] };
 
-test('模块声明校验：缺分类、公开模块缺配置白名单都被拒绝', () => {
+test('模块声明校验：缺分类与已废弃的 public 分类都被拒绝', () => {
     const validate = buildMethod(appSource, 'validateModuleDef', { App: KNOWN });
 
-    assert.equal(validate({ id: 'x', category: 'admin' }), null, '合法的私人模块通过');
-    assert.equal(validate({ id: 'x', category: 'public', settings: {} }), null,
-        '公开模块声明空白名单也通过（它确实没有用户侧配置）');
-
+    assert.equal(validate({ id: 'x', category: 'admin' }), null, '合法的工作台模块通过');
     assert.match(validate({ id: 'x' }), /分类声明/, '缺分类 → 拒绝');
     assert.match(validate({ id: 'x', category: 'admin-only' }), /分类声明/, '非法分类 → 拒绝');
-    assert.match(validate({ id: 'x', category: 'public' }), /可同步配置白名单/, '公开模块缺白名单 → 拒绝');
-    assert.match(validate({ id: 'x', category: 'public', settings: { a: { default: 1 } } }), /校验规则/, '缺 validate → 拒绝');
-    assert.match(validate({ id: 'x', category: 'public', settings: { a: { validate: () => 1 } } }), /校验规则/, '缺默认值 → 拒绝');
+    assert.match(validate({ id: 'x', category: 'public' }), /分类声明/,
+        'public 分类随访客层移除，声明它的模块不再被接受');
 });
 
 test('注册被拒绝时不会进注册表（声明不合法就不能被加载渲染）', () => {
-    const app = { moduleDefs: new Map(), MODULE_CATEGORIES: ['admin', 'public'] };
+    const app = { moduleDefs: new Map(), MODULE_CATEGORIES: ['admin'] };
     app.validateModuleDef = buildMethod(appSource, 'validateModuleDef', { App: app });
     const errors = [];
     const register = buildMethod(appSource, 'registerModule', { App: app, console: { error: m => errors.push(m) } });
@@ -185,41 +162,22 @@ test('注册被拒绝时不会进注册表（声明不合法就不能被加载�
     assert.equal(app.moduleDefs.size, 0, '被拒绝的模块不进注册表');
     assert.match(errors.join('\n'), /注册被拒绝/);
 
-    assert.ok(register({ id: 'weibo-hot', category: 'public', settings: {} }), '合法声明注册成功');
+    assert.ok(register({ id: 'weibo-hot', category: 'admin' }), '合法声明注册成功');
     assert.deepEqual([...app.moduleDefs.keys()], ['weibo-hot']);
 });
 
-test('enabledModuleIds：普通访客只放行声明为 public 的模块', () => {
+test('enabledModuleIds：按启用集合输出并按布局顺序排序', () => {
     const fn = buildMethod(appSource, 'enabledModuleIds', { App: KNOWN });
-    const defs = { 'server-monitor': { category: 'admin' }, 'weibo-hot': { category: 'public' } };
     const base = {
-        getModule: id => defs[id],
-        modulesConfig: { enabledModules: ['server-monitor', 'weibo-hot'], widgets: [] }
+        modulesConfig: {
+            enabledModules: ['server-monitor', 'weibo-hot'],
+            widgets: [{ id: 'weibo-hot', order: 1 }, { id: 'server-monitor', order: 2 }]
+        }
     };
-    assert.deepEqual([...fn.call({ ...base, authenticated: false })], ['weibo-hot'],
-        '本机或策略里混进私人模块 id 也不渲染给访客');
-    assert.deepEqual([...fn.call({ ...base, authenticated: true })], ['server-monitor', 'weibo-hot'],
-        '管理员不受分类限制（可以用自己尚未对外开放的公开模块）');
-});
-
-test('sanitizeModuleSettings：白名单外的键丢弃，越界与缺失回落到默认', () => {
-    const fn = buildMethod(appSource, 'sanitizeModuleSettings', { App: KNOWN });
-    const defs = {
-        'weibo-hot': {
-            category: 'public',
-            settings: { pageSize: { default: 15, min: 5, max: 30, validate: v => (Number.isInteger(v) && v >= 5 && v <= 30 ? v : null) } }
-        },
-        'server-monitor': { category: 'admin' }
-    };
-    const call = settings => fn.call({ getModule: id => defs[id] }, settings);
-
-    assert.deepEqual(call({ 'weibo-hot': { pageSize: 20, evil: 'x' } }), { 'weibo-hot': { pageSize: 20 } },
-        '白名单外的键不落盘');
-    assert.deepEqual(call({ 'weibo-hot': { pageSize: 999 } }), { 'weibo-hot': { pageSize: 15 } },
-        '越界值回落默认');
-    assert.deepEqual(call({ 'weibo-hot': {} }), { 'weibo-hot': { pageSize: 15 } }, '缺失补默认');
-    assert.equal('server-monitor' in call({ 'server-monitor': { a: 1 } }), false,
-        '私人模块没有用户侧配置（不因提交就被收进来）');
+    assert.deepEqual([...fn.call({ ...base, authenticated: true })], ['weibo-hot', 'server-monitor'],
+        '按 widgets 里的 order 排序，不按注册顺序');
+    assert.deepEqual([...fn.call({ ...base, modulesConfig: { enabledModules: [], widgets: [] } })], [],
+        '没有启用项时为空');
 });
 
 test('平台在策略/身份变化时卸载离开启用集合的模块', () => {
@@ -266,7 +224,7 @@ test('登出路径整体卸载已挂载的模块（执行真实 syncModuleVisibi
     assert.equal(app.mountedModuleIds.size, 0, '卸载后名册清空');
 });
 
-test('mountModule 登记已挂载的模块，并把该模块的用户偏好注入给它（执行真实方法）', async () => {
+test('mountModule 登记已挂载的模块（执行真实方法）', async () => {
     const body = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
     const shell = { className: '', dataset: {}, children: [], classList: { add() {} }, appendChild() {} };
     let seenState = null;
@@ -275,8 +233,7 @@ test('mountModule 登记已挂载的模块，并把该模块的用户偏好注�
         mountWidget(node, state) { seenState = state; return [node]; }
     };
     const app = {
-        // 偏好只对公开模块存在；注入点必须按 id 取出**该模块自己的**那一份
-        modulesConfig: { settings: { 'weibo-hot': { pageSize: 5 } } },
+        modulesConfig: { enabledModules: ['weibo-hot'], widgets: [] },
         editLayout: false,
         mountedModuleIds: new Set(),
         getModule: id => (id === 'weibo-hot' ? def : undefined),
@@ -291,26 +248,7 @@ test('mountModule 登记已挂载的模块，并把该模块的用户偏好注�
 
     assert.deepEqual([...app.mountedModuleIds], ['weibo-hot'],
         '挂载即登记——否则卸载时平台根本不认识它');
-    assert.deepEqual(seenState.settings, { pageSize: 5 }, '该模块的用户偏好经 state.settings 注入');
     assert.equal(seenState.config, app.modulesConfig, '整份模块配置仍然注入');
-});
-
-test('策略刷新失败时沿用上一次已知结果，不清成「未知」', async () => {
-    // 语义是「离线时用最近一次已知结果，联网后重新确认」。清成 null 的后果不是
-    // 「本次不加载」，而是**已经显示的卡片会在下一次渲染被拆掉**（窗口尺寸变化、
-    // 换停靠都会触发 renderModuleZone，而它看到「未知授权」就收起模块区）——
-    // 服务端此刻仍在正常放行，用户看到的是卡片莫名消失。
-    const run = buildMethod(appSource, 'loadPublicModulePolicy', {
-        API: { get: async () => { throw new Error('offline'); } }
-    });
-    const known = { authenticated: false, publicModulePolicy: ['weibo-hot'] };
-    await run.call(known);
-    assert.deepEqual(known.publicModulePolicy, ['weibo-hot'], '取不到时保留上一次已知策略');
-
-    // 从未确认过时保持 null —— 那一种才是「未知授权不加载」
-    const fresh = { authenticated: false, publicModulePolicy: null };
-    await run.call(fresh);
-    assert.equal(fresh.publicModulePolicy, null, '从未确认过时不假装知道');
 });
 
 test('renderModuleZone 按新的启用集合卸载模块（执行真实方法 + 真实 teardown）', async () => {
@@ -326,17 +264,16 @@ test('renderModuleZone 按新的启用集合卸载模块（执行真实方法 + 
     });
     const unmounted = [];
     const defs = {
-        'weibo-hot': { category: 'public', unmount: () => unmounted.push('weibo-hot') },
+        'weibo-hot': { category: 'admin', unmount: () => unmounted.push('weibo-hot') },
         memo: { category: 'admin', unmount: () => unmounted.push('memo') }
     };
     const app = {
-        authenticated: false,
-        moduleGeneration: 0,
+        authenticated: true,
+        privateEpoch: 1,
         mountedModuleIds: new Set(['weibo-hot', 'memo']), // memo 已在册，但这次不在启用集合里
         modulesError: null,
         modulesConfig: { enabledModules: ['weibo-hot'], widgets: [] },
         getModule: id => defs[id],
-        preparePublicModules: async () => true,
         enabledModuleIds: () => ['weibo-hot'],
         preloadModuleDefs: async () => {},
         // 让位/停靠/入场这一串不是本条的主题，给空壳；顺序另有专条执行真实实现
@@ -427,7 +364,7 @@ function loadModuleDef(id) {
     return registered;
 }
 
-test('四个模块的真实声明都能通过平台校验，且只有微博热搜是公开模块', () => {
+test('四个模块的真实声明都能通过平台校验，且分类统一为 admin', () => {
     const validate = buildMethod(appSource, 'validateModuleDef', { App: KNOWN });
     const defs = MODULE_IDS.map(loadModuleDef);
 
@@ -436,39 +373,10 @@ test('四个模块的真实声明都能通过平台校验，且只有微博热�
         assert.equal(typeof def.unmount, 'function', `${def.id} 声明了 unmount（平台靠它停表）`);
     }
     assert.deepEqual(defs.map(d => d.id), MODULE_IDS, '四个模块都注册成功——声明不合法的会被 registerModule 扔掉');
-    assert.deepEqual(defs.filter(d => d.category === 'public').map(d => d.id), ['weibo-hot'],
-        '本轮唯一的公开模块');
-    assert.deepEqual(defs.filter(d => d.category === 'admin').map(d => d.id),
-        ['memo', 'server-monitor', 'special-line'], '三个私人模块声明为 admin');
-
+    assert.deepEqual(defs.map(d => d.category), ['admin', 'admin', 'admin', 'admin'],
+        '访客层移除后，四个模块的分类统一为 admin');
+    assert.deepEqual(defs.filter(d => d.category === 'public').map(d => d.id), [],
+        '不再有 public 分类的模块');
     const weibo = defs.find(d => d.id === 'weibo-hot');
-    assert.deepEqual(Object.keys(weibo.settings), ['pageSize'], '公开模块带可同步配置白名单');
-    assert.equal(typeof weibo.settings.pageSize.validate, 'function', '白名单里每一项都有校验规则');
-
-    // 跨文件登记关系只能靠源码断言：服务端那份白名单与客户端声明必须逐项一致。
-    // 任一层单独失效都不该放行，所以两处都要有——这条就是防止只改一处的。
-    const serverList = [...(/const PUBLIC_MODULE_IDS = new Set\(\[([^\]]*)\]\)/.exec(server)[1]
-        .matchAll(/'([^']+)'/g))].map(m => m[1]);
-    assert.deepEqual(serverList, ['weibo-hot'], '服务端白名单与客户端声明一致');
-});
-
-test('普通访客没有启用任何公开模块时不预加载脚本（首屏不为「可能用得上」付成本）', () => {
-    const fn = buildMethod(appSource, 'preparePublicModules', { App: { KNOWN_MODULES: MODULE_IDS } });
-    const loaded = [];
-    const app = {
-        publicModulePolicy: ['weibo-hot'],
-        localModules: { enabled: [], widgets: [], settings: {} },
-        readLocalModules: async () => app.localModules,
-        preloadModuleDefs: async ids => { loaded.push(...ids); },
-        modulesConfig: null,
-        loadModulesConfig: async () => { throw new Error('不该走到这里'); }
-    };
-    return fn.call(app).then(result => {
-        assert.equal(result, false, '没有启用项 → 不渲染模块区');
-        assert.deepEqual(loaded, [], '一个脚本都不下载');
-
-        // 对照：策略未知时同样不加载
-        const unknown = { ...app, publicModulePolicy: null };
-        return fn.call(unknown).then(r => assert.equal(r, false, '未知授权不加载'));
-    });
+    assert.equal(weibo.settings, undefined, '不再有用户侧配置白名单（没有访客可配置的项）');
 });

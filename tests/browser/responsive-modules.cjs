@@ -2,11 +2,8 @@
 // Run with Playwright available in NODE_PATH:
 //   NODE_PATH=<playwright 的 node_modules> node --test tests/browser/public-modules.cjs
 //
-// 本用例走**用户真实入口**，不用夹具替用户做掉那一步：
-//   · 管理员：登录 → 后台「模块」分区 → 拨「对普通访客开放」开关；
-//   · 普通访客：编辑 → 导航设置里的「模块」分组 → 启用 → 首页出现卡片；
-//   · 撤回：管理员关掉开关 → 访客页重新确认策略后**卸下卡片并停止请求**。
-// 因此需要两个隔离上下文（一个访客、一个管理员），它们不共享 Cookie 与 IndexedDB。
+// 本用例走**用户真实入口**：管理员登录 → 后台「模块」分区 → 拨启用开关 →
+// 首页出现卡片。访客层已在 v2.7.0 移除，不再有「对普通访客开放」这一步。
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -17,7 +14,7 @@ const { chromium } = require('playwright');
 const { installation } = require('../helpers/installation');
 
 const PASSWORD = 'StrongPass123!';
-const ROW_COUNT = 20; // 20 > 默认 15，这样「显示条数」偏好才看得出效果
+const ROW_COUNT = 20; // 热搜默认展示 15 条，桩数据比它多，折叠才看得出来
 
 /** 上游桩：返回 20 条，供偏好截断与轮询使用。 */
 async function weiboStub(t) {
@@ -78,7 +75,7 @@ async function openAdminModules(page) {
         await page.locator('#modal').waitFor({ state: 'visible' });
     }
     await page.locator('#adminTabModules').click();
-    await page.locator('[data-module-open="weibo-hot"]').waitFor({ state: 'attached' });
+    await page.locator('[data-module-toggle="weibo-hot"]').waitFor({ state: 'attached' });
 }
 
 test('browser: 模块随窗口重排，长标题完整且不挤压导航', async t => {

@@ -866,7 +866,8 @@ const defaultFavorites = {
 const defaultModulesConfig = {
     version: 1,
     enabledModules: [],
-    // 管理员**对外开放**的公开模块。与 enabledModules 是两件事：
+    // 旧数据格式里的「对外开放」名单。访客层已移除、不再产生任何授权效果，
+    // 保留仅为 `.modules.json` 与备份范围的兼容。与 enabledModules 是两件事：
     //   enabledModules  = 管理员自己在个人首页启用了哪些（含未开放的公开模块）
     //   publicModules   = 允许普通访客自行启用的公开模块
     // 默认空：新公开模块一律默认关闭，要管理员显式开放才对匿名可见。
@@ -2874,13 +2875,6 @@ function moduleMutation(req, res, next) {
     } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 }
 
-/** 某个公开模块当前是否对外开放。每次读配置，撤回即刻生效（不缓存判定）。 */
-// 旧版模块策略接口仅供已登录旧客户端兼容，不再开放任何模块。
-app.get('/api/modules/public', publicReadLimit, (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    res.json({ modules: [] });
-});
-
 app.get('/api/modules/config', rateLimit, requireAdmin, async (req, res) => {
     try {
         res.setHeader('Cache-Control', 'no-store');
@@ -4285,8 +4279,8 @@ app.delete('/api/todos/:id', rateLimit, requireAdmin, todoLimit, (req, res) => {
 // 上游一旦换榜最坏 60 秒内可见。
 //
 // 路由走轮询专用桶（与 /api/memos 同理：按标签页数线性增长，算进管理桶会自己打满）。
-// 鉴权用 publicModuleAccess：管理员照旧，匿名访客在该模块对外开放时可读。
-// ⚠️ 路径**不**用 /api/modules 前缀——api-boundary.test.js 对该前缀有恰好 11 条的计数守卫。
+// 鉴权与其他工作台模块一样走 requireAdmin：热搜只对本人开放。
+// ⚠️ 路径**不**用 /api/modules 前缀——api-boundary.test.js 对该前缀有恰好 10 条的计数守卫。
 // 上游地址可用环境变量覆盖：测试要打本地桩（否则用例会真的连外网、且无法
 // 断言「并发只打一趟」），自建部署也可能想换成自己的镜像。
 const WEIBO_HOT_URL = process.env.NAV_WEIBO_HOT_URL || 'https://api.xunjinlu.fun/api/rebang/weibo.php';

@@ -69,76 +69,15 @@
             <span id="favSearchHint" hidden><kbd>/</kbd> 查书签</span>
         </div>
         <main class="grid" id="grid"></main>
-        <section id="localNavigationTools" class="local-navigation-tools" aria-label="首页配置" data-open="true" hidden>
-            <button type="button" id="localSettingsToggle" class="local-settings-toggle" aria-expanded="true" aria-controls="localSettingsBody">
-                <span class="local-settings-rule" aria-hidden="true"></span>
-                <span id="localSettingsToggleText">收起设置</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
-                <span class="local-settings-rule" aria-hidden="true"></span>
-            </button>
-            <div class="local-settings-body" id="localSettingsBody">
-            <form id="localSettingsForm" novalidate>
-                <div class="local-settings-grid">
-                    <section class="local-settings-group local-settings-base" aria-labelledby="localBaseTitle">
-                        <h2 id="localBaseTitle">导航基础</h2>
-                        <div class="local-settings-row">
-                            <label for="localCurrentEngine">搜索引擎</label>
-                            <select id="localCurrentEngine"></select>
-                        </div>
-                        <div class="local-settings-row">
-                            <label for="localThemeStyleSelect">视觉主题</label>
-                            <select id="localThemeStyleSelect"></select>
-                        </div>
-                        <div class="local-settings-row">
-                            <label for="localThemeSelect">明暗模式</label>
-                            <select id="localThemeSelect"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
-                        </div>
-                        <div class="local-settings-row">
-                            <label for="localIconsToggle">导航图标</label>
-                            <label class="local-settings-inline"><input type="checkbox" id="localIconsToggle">显示图标</label>
-                        </div>
-                        <details class="local-settings-disclosure" id="localEnginesDetails">
-                            <summary>管理搜索引擎<span class="local-settings-count" id="localEngineCount"></span></summary>
-                            <p class="local-settings-hint" id="localEngineHint">搜索地址填写关键词前缀，例如 https://example.com/?q=。</p>
-                            <div class="local-engine-head" aria-hidden="true"><span></span><span>名称</span><span>搜索地址</span><span></span></div>
-                            <div id="localEngineEditor" class="local-engine-list"></div>
-                            <button type="button" class="btn btn-sm" id="localAddEngineBtn">添加搜索引擎</button>
-                        </details>
-                    </section>
-                    <section class="local-settings-group local-settings-modules" id="localModulesGroup" aria-labelledby="localModulesTitle">
-                        <h2 id="localModulesTitle">模块配置</h2>
-                        <p class="local-settings-hint" id="localModulesHint">选择要显示在首页的公开模块。</p>
-                        <div id="localModulesList" class="local-module-list"></div>
-                    </section>
-                    <details class="local-settings-disclosure local-settings-span" id="localDataDetails">
-                        <summary>数据管理</summary>
-                        <p class="local-settings-hint">导入、重置和撤销会替换当前设置。清除浏览器数据可能删除本机导航，请定期导出备份。</p>
-                        <div class="local-data-actions">
-                            <button type="button" class="btn btn-sm" id="localUndoBtn">撤销上一操作</button>
-                            <button type="button" class="btn btn-sm" id="localExportBtn">导出导航</button>
-                            <button type="button" class="btn btn-sm" id="localImportBtn">导入导航</button>
-                            <input type="file" id="localImportFile" accept="application/json,.json" hidden>
-                            <button type="button" class="btn btn-sm" id="localResetBtn">重置为当前默认</button>
-                        </div>
-                    </details>
-                </div>
-                <p id="localSettingsError" class="local-settings-error" role="alert" tabindex="-1" hidden></p>
-            </form>
-            </div>
-        </section>
-        <div class="local-navigation-feedback">
-            <p id="localNavigationStatus" role="status" aria-live="polite" hidden></p>
-            <button type="button" class="btn btn-sm" id="localAdoptBtn" hidden>采用其他标签页版本</button>
-        </div>
         <!-- 页面级操作栏：背板底部的纯文字一行，随编辑态换词。
-             说明 / 编辑（编辑态换成 取消 + 保存配置）/ 管理。 -->
+             说明 / 编辑（编辑态换成 取消 + 保存编辑）/ 管理 / 退出。 -->
         <footer class="site-footer" aria-label="页面操作">
             <nav class="site-footer-links">
                 <button type="button" class="site-footer-link" id="helpBtn" title="帮助">说明</button>
                 <span class="site-footer-sep" aria-hidden="true">·</span>
                 <button type="button" class="site-footer-link" id="layoutBtn" title="编辑首页导航" aria-pressed="false">编辑</button>
                 <button type="button" class="site-footer-link" id="localCancelBtn" hidden>取消</button>
-                <button type="submit" form="localSettingsForm" class="site-footer-link is-save" id="localDoneBtn" hidden>保存配置</button>
+                <button type="button" class="site-footer-link is-save" id="localDoneBtn" hidden>保存编辑</button>
                 <span class="site-footer-sep" aria-hidden="true">·</span>
                 <button type="button" class="site-footer-link" id="adminBtn" title="管理 (Alt+A)">管理</button>
                 <span class="site-footer-sep" id="homeLogoutSep" aria-hidden="true" hidden>·</span>
@@ -166,14 +105,13 @@
         </div>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-    <!-- 全部 defer：脚本下载期间 HTML 解析不被打断，四个文件按文档顺序执行，
-         app.js 仍能在 navigation-schema.js / local-navigation.js 之后跑。
+    <!-- 全部 defer：脚本下载期间 HTML 解析不被打断，三个文件按文档顺序执行，
+         app.js 仍能在 navigation-schema.js 之后跑。
          uFuzzy 是 app.js 搜索路径的依赖，同样不能在它之后执行。 -->
     <script defer src="lib/uFuzzy.iife.min.js"></script>
     <!-- pinyin.js（拼音搜索）改为按需加载，
          见 app.js loadScript；仍在 sw.js 的 ASSETS 预缓存清单里 -->
     <script defer src="navigation-schema.js"></script>
-    <script defer src="local-navigation.js"></script>
     <script defer src="app.js"></script>
 </body>
 </html>

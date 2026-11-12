@@ -229,7 +229,6 @@
 :root[data-theme-style="prism"] :is(.memo-tabs,.memo-tab) { border-radius: 999px; }
 :root[data-theme-style="prism"] .memo-row:hover { box-shadow: none; }
 :root[data-theme-style="prism"] .memo-card .module-widget-head { background: none; border-bottom: 1px solid var(--border); }
-:root[data-theme-style="prism"] :is(.local-settings-error,.local-navigation-feedback [data-state="error"]) { color: var(--admin-error); }
 :root[data-theme-style="prism"] .site-footer { padding-top: 22px; margin-top: 30px; }
 :root[data-theme-style="prism"] .site-footer-link { font-size: 13px; }
 :root[data-theme-style="prism"] .site-footer-link:hover { color: var(--text); text-decoration: none; }
